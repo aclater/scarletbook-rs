@@ -288,6 +288,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "scarletbook-bench"
+version = "0.1.0"
+dependencies = [
+ "rayon",
+ "scarletbook",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "scarletbook-conformance"
 version = "0.1.0"
 dependencies = [
