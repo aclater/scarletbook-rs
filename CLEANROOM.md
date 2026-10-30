@@ -16,6 +16,17 @@ proceeds; each stage adds to the log at the end.
 - Where the specification is ambiguous or incomplete, an issue is opened on
   `aclater/sacd-spec`, the affected code is marked with a `TODO` naming the issue, and work
   continues elsewhere. The issues are listed below.
+- From round 3 of the performance work (2026-10-30), by the owner's written instruction,
+  general references that are neither SACD nor DST material may also be consulted for
+  performance work: algorithm books and papers, Rust performance and SIMD guides,
+  profilers and their documentation, CPU optimisation manuals, and general techniques of
+  unrelated projects. Every such source that survives in the record is listed under
+  "General references consulted" below. One gap: the first agent session on #31 failed
+  before reporting, and its own list of sources was lost with its run (noted on #31). Its
+  work-in-progress commit was kept; the agent that finished #31 read no external source
+  beyond those already recorded (Giesen 2014, below), and the code was reviewed here. The prohibition on SACD and DST implementations, and on searching for them,
+  is unchanged; agents doing this work were instructed not to use search terms that name
+  SACD, DSD or DST, and to report any such result they came across without opening it.
 
 ## Specification version
 
@@ -98,6 +109,10 @@ machine.
 | crates: thiserror, rayon, proptest, serde_json, sha2, libfuzzer-sys and their dependencies | crates.io | dependencies; none is SACD- or DST-specific |
 | cbindgen 0.29.4 | crates.io (`cargo install`) | generating the C header |
 | `perf` (Linux perf 7.2) and GNU `time` | Fedora 44 repositories (`dnf`) | profiling and timing our own code |
+| `poppler-utils` and `tesseract` (OCR) | Fedora 44 repositories (`dnf`) | reading a scanned paper for the patent-hygiene record (#40) |
+| criterion 0.7.0 (published 2025-07-25) | crates.io dev-dependency, no default features | the benchmark suite (#30); only its `--help` output and result files were used |
+| inferno 0.12.8 (published 2026-07-18) | crates.io (`cargo install --locked`) | flame graphs (#30) |
+| `llvm-tools-preview` for rustc 1.99.1 (LLVM 23.1.1) | rustup component | `llvm-profdata` for the PGO measurements (#32) |
 
 ## Sources consulted
 
@@ -175,6 +190,160 @@ corpus's own DST frames, which it repacks. Figures measured on its images are no
 measurements of the benchmark discs of `benchmarks/README.md`: its DST frames are the
 corpus's feature-test frames, and its plain DSD is pseudo-random.
 
+### Round 3 (#30 to #32)
+
+Round 3 again measured only this repository's code, on the corpus frames, the encoder's
+stress set and `scarletbook-synth` images, and drew general techniques from the references
+listed under "General references consulted" and dated under "Patent hygiene". What it merged:
+
+- `DstDecoder::decode_many` (#31): two to four independent DST frames decoded in lockstep
+  on one thread, so their arithmetic-decoder chains overlap; the lane count per channel
+  count was chosen by measurement. `TrackAudioCursor` decodes groups of consecutive frames
+  with it, on the pool and on the calling thread.
+- Build configuration (#32): a `dist` profile (`codegen-units = 1`) for the generic `bench`
+  asset and a labelled x86-64-v3 asset. Fat LTO and PGO were measured and not adopted.
+- Tooling (#30): criterion benchmarks, `perf` scripts, and the tools listed under
+  "Environment".
+
+Two agent sessions worked on #31 under the same rules; the first failed before reporting
+(see "Rules followed" for its lost source list), the second finished from its
+work-in-progress commit. Their commits were reviewed, re-tested (corpus, property tests
+at 1000 cases, Miri) and re-measured here before being merged.
+
+## Patent hygiene (record-keeping rule, not a legal opinion)
+
+By the owner's instruction (2026-10-30): no patent, live or expired, is read. Every source in
+the corroboration record carries its publication date; techniques documented in
+publications more than 20 years old (before 2006) are preferred; and every technique this
+project adopts whose earliest non-code source found is from 2006 or later is flagged in the
+table below, for review before 1.0. The research survey (#33) opened no patent page.
+
+| Technique | Where used | Earliest non-code source found and read (date) | Before 2006 | Flag |
+|---|---|---|---|---|
+| Multi-bit renormalisation from a wider code register | arithmetic decoder (`dst.rs`) | A. Moffat, R. Neal, I. Witten, "Arithmetic Coding Revisited", ACM TOIS 16(3), 1998 | yes | |
+| Normalisation by count-leading-zeros and one shift, instead of a loop | arithmetic decoder | M. S. Schmookler, K. J. Nowka, "Leading Zero Anticipation and Detection – A Comparison of Methods", ARITH-15, 2001 (leading-zero count for single-shift normalisation in floating-point units); Alpha Architecture Reference Manual, 4th ed., Compaq, January 2002 (CTLZ instruction) | yes | cleared (the match is to floating-point normalisation, not arithmetic coding) |
+| Branch-free selection (if-conversion, conditional moves) | arithmetic decoder | S. A. Mahlke et al., "Effective Compiler Support for Predicated Execution Using the Hyperblock", MICRO-25, December 1992 (if-conversion); Alpha Architecture Reference Manual, 4th ed., January 2002 (CMOVxx "may be used to avoid branching") | yes | cleared |
+| Reading zero bits past the end of the code | code-bit reader | A. Said, "Introduction to Arithmetic Coding – Theory and Practice", HP Labs HPL-2004-76, 2004 | yes | |
+| Bit buffer with amortised refill (several bytes at a time) | code-bit reader | Full text read: A. Moffat, A. Turpin, "On the Implementation of Minimum Redundancy Prefix Codes", IEEE Trans. Communications 45(10), October 1997: p. 1203, a value "maintained as a w-bit window into the compressed bit stream", shifted left by a codeword's length with "the next length bits from the input stream" inserted into the vacated low bits (Algorithm ONE-SHIFT); p. 1204, w "chosen either as the next multiple of eight ... or as the machine word size"; p. 1206, footnote 1, decoding is faster "because of the use of a 32-bit input token in the compressed bit stream rather than an 8-bit input token". Also I. H. Witten, R. M. Neal, J. G. Cleary, CACM 30(6), June 1987, pp. 527-528 (byte buffer, reading past end-of-file) | yes | cleared (#40) |
+| Precomputed tables of coefficient partial sums indexed by input bits | prediction (`dst.rs`) | Full text read: S. A. White, "Applications of Distributed Arithmetic to Digital Signal Processing: A Tutorial Review", IEEE ASSP Magazine 6(3), July 1989, pp. 4-19: p. 5, because each input bit "may take on values of 0 and 1 only", the sum of the coefficients it selects "may have only 2^K possible values. Rather than compute these values on line, we may precompute the values and store them in a ROM. The input data can be used to directly address the memory"; p. 7, a table indexed by several bits per input at once ("word capacity becomes 2^KL"). White dates the technique to Peled & Liu, 1974 (p. 4). Also NTU lecture slides on White 1989, PDF dated October 2002, slide pp. 5-8. L. B. Jackson, J. F. Kaiser, H. S. McDonald, IEEE Trans. Audio Electroacoustics AU-16(3), September 1968, pp. 413-421, read in full: does not state it | yes | cleared (#40) |
+| Interleaving independent work in one thread to hide latency | `DstDecoder::decode_many` (`dst.rs`) and grouped decoding in `TrackAudioCursor` (`audio.rs`), #31 | Full text read: M. Lam, "Software Pipelining: An Effective Scheduling Technique for VLIW Machines", Proceedings of SIGPLAN '88, Atlanta, June 22-24, 1988, pp. 318-320: "multiple iterations, in different stages of their computations, are in progress simultaneously"; four in flight give "four times the speed". (University seminar copy, a scan read by OCR.) Applied here to independent decoders rather than loop iterations; F. Giesen, "Interleaved entropy coders", 2014, for that form | yes | cleared (the general technique) |
+| Profile-guided and link-time optimisation | #32: measured, **not adopted** (fat LTO slower everywhere, PGO no consistent gain); only `codegen-units = 1` for the generic asset, plus an `x86-64-v3` asset | D. W. Wall, "Global Register Allocation at Link Time", SIGPLAN '86 Symposium on Compiler Construction, 1986 (link-time optimisation guided by profile data); DEC WRL Research Report 86/3 | yes | cleared |
+
+Texts the owner obtained for #40 (in `~/papers`, read in full; none is a patent):
+
+- Moffat & Turpin, IEEE Trans. Communications 45(10), October 1997, pp. 1200-1207: states the
+  wide-window refill (pp. 1203, 1204, 1206 as quoted above).
+- Moffat & Turpin, *Compression and Coding Algorithms*, Kluwer, 2002 (preface dated January
+  2002): front matter only (title, contents, preface; 10 pages). Does not state the technique;
+  the sections the contents list for decoding (4.4, p. 63; 5.3, p. 98) were not in the file.
+- Jackson, Kaiser & McDonald, IEEE Trans. Audio Electroacoustics AU-16(3), September 1968,
+  pp. 413-421: does not state the table technique (coefficients in ROM, bit-serial
+  multipliers).
+- White, IEEE ASSP Magazine 6(3), July 1989, pp. 4-19: states the table technique (pp. 5,
+  7, as quoted above). Its reference [3] (Croisier et al.) is a patent; it was not opened.
+- NTU lecture slides on White 1989, PDF dated 8 October 2002: states the table technique
+  (slide pp. 5-8).
+- C.-W. Liu, NCTU lecture slides on distributed arithmetic, PDF dated 3 July 2011, and
+  Nagajyothi & SriDevi, review paper, WiSPNET 2017: both state the table technique, both
+  after 2006, so neither is relied on.
+- Peled & Liu 1974 was not delivered; White 1989 cites it as the first description.
+
+The dated search opened no patent; about twenty patent results (USPTO, Google Patents,
+Justia) were skipped unopened. Sources it could only see as citations or bibliographic
+records are marked as such above and do not clear a flag.
+
+Where the rows above without a "Full text read" note were read: the dated search
+(2026-10-30, an agent session under the same rules) opened each of these and extracted its
+text locally, treating the file as data:
+
+- Schmookler & Nowka, ARITH-15, 2001: author copy at
+  https://userpages.cs.umbc.edu/phatak/645/supl/lza/lza-survey-arith01.pdf. Abstract: the
+  leading-zero anticipator or detector "is pivotal to the normalization of results"; the
+  introduction: the leading-digit position is found "so as to enable the normalization
+  shift to start as soon as the addition completes".
+- Alpha Architecture Reference Manual, 4th ed., Compaq, January 2002:
+  https://csclub.uwaterloo.ca/~pbarfuss/alpha_arch_ref.pdf. CTLZ "Count leading zero"
+  (CIX extension); CMOVxx, documented as usable to avoid branching.
+- Mahlke et al., MICRO-25, December 1992, pp. 45-54: author copy at
+  https://web.eecs.umich.edu/~mahlke/courses/583f18/reading/mahlke_micro92.pdf. If-conversion
+  "replaces conditional branches with comparison instructions which set a predicate", so
+  "control dependences are converted to data dependences".
+- Wall, "Global Register Allocation at Link Time", SIGPLAN '86, as DEC WRL Research Report
+  86/3: https://ftp.mirrorservice.org/sites/www.bitsavers.org/pdf/dec/tech_reports/WRL-86-3.pdf.
+  Abstract: allocation "can be nearly that large if we use previously collected profile
+  information to guide the allocation"; a link-time allocator rewrites the object code.
+
+Techniques the specification itself prescribes (the decoding process of specification 5) are
+not choices of this project and are not listed.
+
+## General references consulted
+
+Performance round 3 (#30, #31, #32). Each entry: the source, and what was taken from it.
+None is an SACD or DST implementation or describes one.
+
+**Third-party source code read during the survey, and the owner's decision.** The survey
+read two source files of unrelated video codecs: FFmpeg's `libavcodec/cabac_functions.h`
+(the H.264 arithmetic decoder, LGPL) and dav1d's `src/msac.c` (the AV1 entropy decoder,
+BSD-2-Clause). Neither is SACD or DST code, and the round 3 allowance covers general
+techniques of unrelated projects. But FFmpeg is the tree that also contains a forbidden DST
+decoder, and its code is LGPL. On 2026-10-30 the owner decided (option "B"):
+
+- the reading is recorded here, as consulted for general techniques only;
+- **no code is copied** from either file;
+- **no technique is adopted on the strength of those two files alone**: every technique this
+  project uses must also be supported by a paper, article, book or documentation recorded
+  in this section;
+- from that point on, no source file is opened from any repository that also contains an
+  SACD or DST implementation (so nothing more from FFmpeg), and papers, articles and
+  documentation are preferred to code.
+
+The research survey (issue #33) consulted the following. Its findings are in #33; the
+corroboration required by the decision above is its table "Corroboration (decision B)".
+
+- [S1] *Fast renormalization for H.264/MPEG4-AVC arithmetic coding*, D. Marpe, H. Kirchhoffer, G. Marten (Fraunhofer HHI), EUSIPCO 2006, https://new.eurasip.org/Proceedings/Eusipco/Eusipco2006/papers/1568982338.pdf — multi-bit register scheme; bit-scan or table shift count; 23.5–26.9% decoder gain.
+- [S2] *Introduction to Arithmetic Coding — Theory and Practice*, A. Said, HP Labs HPL-2004-76 (arXiv 2302.00819), https://ar5iv.labs.arxiv.org/html/2302.00819 — renormalisation frequency and digit size; low-precision products; reading zero bits past the end.
+- [S3] *Arithmetic Coding Revisited*, A. Moffat, R. Neal, I. Witten, ACM TOIS 16(3), 1998, https://pierre-hyvernat.apps.math.cnrs.fr/data/Enseignement/2425/info666/Files/acm98_arithmetic_coding_revisited.pdf — byte-wise renormalisation; shift/add; a specialised binary coder.
+- [S4] *Range coder*, Hugi magazine #18 (describes Subbotin's coder), https://hugi.scene.org/online/coding/hugi%2018%20-%20corange.htm — byte-wise renormalisation about 2× faster for 0.01% loss.
+- [S5] *[RFC] cmov-vs-branch optimization*, LLVM Discourse, 2021, https://discourse.llvm.org/t/rfc-cmov-vs-branch-optimization/6040 — Agner Fog's cmov-versus-branch rules.
+- [S6] *Interleaved entropy coders*, F. Giesen, arXiv 1402.3392, 2014, https://ar5iv.labs.arxiv.org/html/1402.3392 — interleaving gains; branch-free SIMD decoder.
+- [S7] *Low level conditional move optimization*, Acta Cybernetica, 2013, https://cyber.bibl.u-szeged.hu/index.php/actcybern/article/view/3827 — search summary only: cmov can help or regress.
+- [S8] *Context-based adaptive binary arithmetic coding in the H.264/AVC video compression standard*, D. Marpe, H. Schwarz, T. Wiegand, IEEE TCSVT 13(7), 2003 — the bypass engine; renormalisation.
+- [S9] Sze, Budagavi, high-throughput CABAC for HEVC, IEEE SiPS 2013, https://eems.mit.edu/wp-content/uploads/2013/11/sze_sips_2013.pdf — bypass bins skip the context feedback loop; diminishing returns past 4–8 bins per cycle.
+- [S10] *Reading bits in far too many ways, part 2*, F. Giesen, 2018-02-20, https://fgiesen.wordpress.com/2018/02/20/reading-bits-in-far-too-many-ways-part-2/ — branch-free refill; 10% gain; padding.
+- [S11] *Reading bits in far too many ways, part 1*, F. Giesen, 2018-02-19, https://fgiesen.wordpress.com/2018/02/19/reading-bits-in-far-too-many-ways-part-1/ — reads past the end; the 57-bit limit.
+- [S12] *Discussing AMD's Zen 5 at Hot Chips 2024*, Chips and Cheese, 2024-09-15, https://chipsandcheese.com/p/discussing-amds-zen-5-at-hot-chips-2024 — 4-cycle L1D load-to-use; SMT rationale; one decode cluster per thread.
+- [S13] *A whirlwind introduction to dataflow graphs*, F. Giesen, 2018-03-05, https://fgiesen.wordpress.com/2018/03/05/a-whirlwind-introduction-to-dataflow-graphs/ — latency versus throughput; independent chains.
+- [S14] *Profiles*, The Cargo Book, https://doc.rust-lang.org/cargo/reference/profiles.html — LTO and codegen-units semantics.
+- [S15] *Build Configuration*, The Rust Performance Book (N. Nethercote), https://nnethercote.github.io/perf-book/build-configuration.html — LTO 10–20%, PGO 10%+.
+- [S16] *Faster Rust Toolchains for Android*, Google Android Developers Blog, Dec 2023, https://android-developers.googleblog.com/2023/12/faster-rust-toolchains-for-android.html — stepwise CGU1, LTO, PGO and BOLT gains.
+- [S17] *Microarchitecture Levels*, Reloaded-III research notes, https://reloaded-project.github.io/Reloaded-III/Research/Microarchitecture-Levels.html — search snippet: x86-64-v3 and v4 contents.
+- [S18] *Optimized Repositories*, CachyOS wiki, https://wiki.cachyos.org/ko/features/optimized_repos — a 5–20% v3 claim with no workload (judged weak).
+- [S19] *Tracking issue for portable SIMD*, rust-lang/rust#86656, https://github.com/rust-lang/rust/issues/86656 — still unstable.
+- [S20] *Announcing Rust 1.86.0*, Rust Blog, 2025-04-03, https://blog.rust-lang.org/2025/04/03/Rust-1.86.0/ — target_feature 1.1 stabilised.
+- [S21] *RFC 2396: target_feature 1.1*, https://rust-lang.github.io/rfcs/2396-target-feature-1.1.html — unmatched-context calls still need `unsafe`.
+- [S22] pulp documentation v0.22.3, https://docs.rs/pulp/latest/pulp/ — the safe dispatch API.
+- [S23] pulp README, https://github.com/sarah-quinones/pulp — `#[inline(always)]` usage.
+- [S24] multiversion documentation, https://docs.rs/multiversion/latest/multiversion/ — runtime dispatch through its `std` feature.
+- [S25] multiversion attribute documentation, https://docs.rs/multiversion/0.6.1/multiversion/attr.multiversion.html — search summary: safe wrapper, `unsafe = true` contract.
+- [S26] wide documentation v1.7.1, https://docs.rs/wide/latest/wide/ — SIMD types; no runtime dispatch.
+- [S27] rayon `ThreadPoolBuilder` documentation, https://docs.rs/rayon/latest/rayon/struct.ThreadPoolBuilder.html — RAYON_NUM_THREADS; default thread count.
+- [S28] rayon `IndexedParallelIterator` documentation, https://docs.rs/rayon/latest/rayon/iter/trait.IndexedParallelIterator.html — with_min_len / with_max_len; ordered collect.
+- [S29] rayon-core sleep README, https://github.com/rayon-rs/rayon/blob/main/rayon-core/src/sleep/README.md — the worker sleep protocol (documentation, not code).
+- [S30] rayon issue #576, https://github.com/rayon-rs/rayon/issues/576 — search summary: spinning on bursty workloads.
+- [S31] *AMD's Ryzen 9950X: Zen 5 on Desktop*, Chips and Cheese, 2024-08-14, https://old.chipsandcheese.com/2024/08/14/amds-ryzen-9950x-zen-5-on-desktop/ — ROB partitioning under SMT; 1T IPC.
+- [S32] uops.info, Zen 5 instruction latencies, https://uops.info/ — imul 3, lzcnt 1, cmov 1, shlx 1, shl r,cl 1.
+- [S33] *Profile-guided optimization*, the rustc book, https://doc.rust-lang.org/rustc/profile-guided-optimization.html — the PGO workflow.
+- [S34] cargo-pgo README and `ci/pgo.yml`, J. Beránek, https://github.com/Kobzol/cargo-pgo — PGO tooling and CI.
+- [S35] awesome-pgo, A. Zaitsev, https://github.com/zamazan4ik/awesome-pgo — a survey of PGO results.
+- [S36] **Read before the stricter rule (decision B):** FFmpeg `libavcodec/cabac_functions.h` (LGPL) and dav1d `src/msac.c` (BSD-2-Clause). Nothing copied; no finding above depends on them.
+- [S37] AMD *Software Optimization Guide for the AMD Zen5 Microarchitecture*, pub. 58455 rev 1.00, Aug 2024 — identified by search, **not read**.
+- From the first run: Agner Fog's *Instruction tables* (unreadable, not used) and Phoronix's Zen 5 SMT review (HTTP 403, not used).
+
+Deliberately not opened under the rules: FFmpeg commit pages and mailing-list threads (the
+whole FFmpeg repository is excluded), xz's `range_decoder.h`, the turbo-range-coder page, and
+patent pages on CABAC renormalisation and branch-free arithmetic decoding. No search used
+SACD, DSD or DST terms, and no result opened was about them.
+
 ## Statement
 
 None of the forbidden sources listed under "Rules followed" was read, searched for, fetched
@@ -210,3 +379,4 @@ on 2026-10-30: the name `scarletbook` is not taken on crates.io. Nothing was pub
 | 2026-10-30 | follow-ups | review fixes and issues #5 to #12; two specification gaps filed (sacd-spec#4, #5), answered upstream in `07adda2` and then implemented as specified. No new sources consulted beyond sacd-spec. |
 | 2026-10-30 | benchmarking | `bench` program and release workflow (#14, #15); a third specification gap filed (sacd-spec#9, answered in `af3c3dd`); DST and parallel performance work (#16, #17) and large-image measurements (#18), see "Performance work". No new sources consulted beyond sacd-spec. |
 | 2026-10-30 | round 2 | the round 1 results (sacd-spec `775f4ab`, numbers and conditions only) turned into issues #21 to #25; parallel decoding, decoder and release-provenance work, see "Round 2"; version 0.2.0. No new sources consulted beyond sacd-spec. |
+| 2026-10-30 | round 3 | interleaved DST decoding (#31), performance tooling (#30) and build configuration (#32), see "Round 3"; general references under the owner's round 3 allowance and decision B, see "General references consulted"; patent-hygiene table with every flag cleared on full texts read (#40). |

@@ -30,3 +30,13 @@ opt-level = 2
 # mistake shows up as a test or fuzz failure rather than as silent wrapping.
 [profile.release]
 overflow-checks = true
+
+# The generic x86-64 release asset of `bench` (.github/workflows/release.yml). One codegen
+# unit made generic builds 1-2% faster per 2-channel frame and 3-8% per 6-channel frame
+# (issue #32, perf/build-configs.sh); for x86-64-v3 and znver5 it was up to 6% slower on
+# 6 channels, so those assets keep the release profile. Fat LTO was 0-21% slower and PGO
+# gained nothing consistent at any level, so neither is used. Re-measure with
+# perf/build-configs.sh after changes to the decoder.
+[profile.dist]
+inherits = "release"
+codegen-units = 1

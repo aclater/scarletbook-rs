@@ -1,9 +1,13 @@
 name: Release
 
-# On a version tag (v0.1.0, ...): run the correctness gate, build the benchmark program
-# `bench` for generic x86-64 (sacd-spec benchmarks/README.md, "Release binaries"), and
-# publish it with a SHA-256 checksum. A second, labelled asset is built for AMD Zen 5
-# (the measuring machine's CPU); it runs only on Zen 5.
+# On a version tag (v0.1.0, ...): build the benchmark program `bench` for generic x86-64
+# (sacd-spec benchmarks/README.md, "Release binaries"), run the correctness gate against
+# that build, and publish it with a SHA-256 checksum. Two more labelled assets are built:
+# for x86-64-v3 (AVX2, BMI2, FMA: most x86-64 CPUs since 2013-2015), and for AMD Zen 5
+# (the measuring machine's CPU; it runs only on Zen 5).
+#
+# The generic asset uses the `dist` profile (release with one codegen unit), the others
+# the release profile; see Cargo.toml and issue #32 for the measurements.
 
 on:
   push:
@@ -40,10 +44,27 @@ jobs:
             exit 1
           fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
-      - name: Correctness gate (every corpus case, 1 and all threads)
-        run: cargo test --release --locked -p scarletbook-bench
       - name: Build (generic x86-64)
+        run: cargo build --profile dist --locked -p scarletbook-bench --target x86_64-unknown-linux-gnu
+      # The gate's `bench` is the binary just built: same profile, flags and target dir.
+      - name: Correctness gate on the generic build (every corpus case, 1 and all threads)
+        run: cargo test --profile dist --locked -p scarletbook-bench --target x86_64-unknown-linux-gnu
+      - name: Build (x86-64-v3)
+        env:
+          RUSTFLAGS: -C target-cpu=x86-64-v3
+          CARGO_TARGET_DIR: target-v3
         run: cargo build --release --locked -p scarletbook-bench --target x86_64-unknown-linux-gnu
+      - name: Correctness gate on the x86-64-v3 build
+        env:
+          RUSTFLAGS: -C target-cpu=x86-64-v3
+          CARGO_TARGET_DIR: target-v3
+        run: |
+          # The v3 asset is published only if it passed the gate on this runner.
+          if ! { grep -qw avx2 /proc/cpuinfo && grep -qw bmi2 /proc/cpuinfo && grep -qw fma /proc/cpuinfo && grep -qw movbe /proc/cpuinfo; }; then
+            echo "::error::runner CPU is not x86-64-v3; the v3 build cannot be gated, so the release stops"
+            exit 1
+          fi
+          cargo test --release --locked -p scarletbook-bench --target x86_64-unknown-linux-gnu
       - name: Build (AMD Zen 5)
         env:
           RUSTFLAGS: -C target-cpu=znver5
@@ -62,8 +83,11 @@ jobs:
             (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
           }
           package "bench-$VERSION-x86_64-linux" \
-            target/x86_64-unknown-linux-gnu/release/bench \
-            "Generic x86-64 build (no target-cpu)."
+            target/x86_64-unknown-linux-gnu/dist/bench \
+            "Generic x86-64 build (no target-cpu; profile dist: release with one codegen unit)."
+          package "bench-$VERSION-x86_64-linux-v3" \
+            target-v3/x86_64-unknown-linux-gnu/release/bench \
+            "Built with -C target-cpu=x86-64-v3 (AVX2, BMI1/2, FMA, MOVBE); runs on x86-64-v3 CPUs only."
           package "bench-$VERSION-x86_64-linux-znver5" \
             target-znver5/x86_64-unknown-linux-gnu/release/bench \
             "Built with -C target-cpu=znver5 for AMD Zen 5 (the measuring machine's CPU); runs only on Zen 5."
@@ -79,15 +103,20 @@ jobs:
       - name: No attestation for a private repository
         if: github.event.repository.visibility != 'public'
         run: echo "::warning::repository is not public; release assets are published without a build provenance attestation"
-      - name: Smoke-test the packaged generic binary against the manifest
+      - name: Smoke-test the packaged binaries against the manifest
         run: |
-          tar -C /tmp -xzf "dist/bench-$VERSION-x86_64-linux.tar.gz"
-          bin="/tmp/bench-$VERSION-x86_64-linux/bench"
-          "$bin" --version
-          for area in 2ch mc; do
-            "$bin" decode corpus/images/dst-features-2ch-6ch.iso --area "$area" --threads 0 --sink hash > "got-$area.txt"
-            python3 .github/scripts/compare-hashes.py dst-features-2ch-6ch "$area" "got-$area.txt"
-          done
+          smoke() {
+            tar -C /tmp -xzf "dist/$1.tar.gz"
+            bin="/tmp/$1/bench"
+            "$bin" --version
+            for area in 2ch mc; do
+              "$bin" decode corpus/images/dst-features-2ch-6ch.iso --area "$area" --threads 0 --sink hash > "got-$area.txt"
+              python3 .github/scripts/compare-hashes.py dst-features-2ch-6ch "$area" "got-$area.txt"
+            done
+          }
+          smoke "bench-$VERSION-x86_64-linux"
+          # The gate above already stopped the release on a runner that is not x86-64-v3.
+          smoke "bench-$VERSION-x86_64-linux-v3"
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -95,6 +124,7 @@ jobs:
           gh release create "$GITHUB_REF_NAME" --title "scarletbook $VERSION" --verify-tag \
             --notes "Benchmark program \`bench\` for sacd-spec benchmarks/README.md, built from $GITHUB_SHA.
           - \`bench-$VERSION-x86_64-linux.tar.gz\`: generic x86-64 (the required asset).
-          - \`bench-$VERSION-x86_64-linux-znver5.tar.gz\`: built for AMD Zen 5 only (labelled; MAY asset).
-          Each has a \`.sha256\` checksum and, for a public repository, a signed build provenance attestation: \`gh attestation verify <asset> -R $GITHUB_REPOSITORY\`. The correctness gate (every corpus case, 1 and all threads) passed before the build." \
+          - \`bench-$VERSION-x86_64-linux-znver5.tar.gz\`: built for AMD Zen 5, the measuring machine's CPU (the optional labelled asset of benchmarks/README.md).
+          - \`bench-$VERSION-x86_64-linux-v3.tar.gz\`: built for x86-64-v3 (AVX2 and later CPUs), labelled; an extra build for users, not one of the benchmark assets.
+          Each has a \`.sha256\` checksum and, for a public repository, a signed build provenance attestation: \`gh attestation verify <asset> -R $GITHUB_REPOSITORY\`. The correctness gate (every corpus case, 1 and all threads) passed on the generic and x86-64-v3 builds." \
             dist/*.tar.gz dist/*.sha256

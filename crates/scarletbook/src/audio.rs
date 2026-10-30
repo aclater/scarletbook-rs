@@ -33,11 +33,17 @@ pub const MAX_MALFORMED_WARNINGS: usize = 4096;
 ///
 /// With `parallel`, a track's positions are demultiplexed on the calling thread up to
 /// [`PARALLEL_FRAMES_PER_THREAD`] per thread of the current rayon pool ahead of the frame
-/// returned last, at most this many (none ahead on a pool of one thread). Each DST frame
+/// returned last, at most this many (on a pool of one thread, one group, as below). Each DST frame
 /// becomes one job on the pool as soon as it is demultiplexed, so that the pool decodes
 /// while the caller consumes the frames before it; every call tops the window up again.
 /// Plain DSD and missing positions are filled in on the calling thread when they are
 /// returned. Frames are returned in timeline order whatever order the jobs finish in.
+///
+/// A job decodes up to [`crate::dst::lanes`] consecutive DST frames together
+/// ([`DstDecoder::decode_many`]), so the window is topped up in whole groups: a call
+/// demultiplexes ahead only once at least a group fits below the bound, and never past it.
+/// On the calling thread (without `parallel`, or on a pool of one thread) the window is
+/// one such group, decoded on the calling thread when its first frame is asked for.
 ///
 /// Each position held ahead is at most one DST frame's bytes (at most 65 536,
 /// [`MAX_FRAME_BYTES`]) and, once decoded, its audio (at most 6 x 4704 bytes): a cursor
@@ -46,6 +52,11 @@ pub const MAX_MALFORMED_WARNINGS: usize = 4096;
 /// at 2 channels and 10 MB at 6. The cap is a constant so that the memory held does not
 /// grow with the host's thread count; 256 positions still keep 8 frames per thread in
 /// flight at 32 threads.
+///
+/// Besides the window, each decoder holds its tables: per lane of
+/// [`DstDecoder::decode_many`], at most 12 filters' byte tables (64 KiB each) and 12
+/// ptables' probability tables (8 KiB each), about 0.85 MB. A cursor's own decoder, and
+/// each pool thread's, holds up to [`crate::dst::lanes`] lanes of them.
 pub const MAX_PARALLEL_BATCH: usize = 256;
 
 /// Positions held ahead per pool thread with the `parallel` feature (see
@@ -237,6 +248,9 @@ impl AreaCursor {
     /// Number of malformed sectors processed so far by this cursor's scan of its area. The
     /// scan starts at the area's first audio sector, not at the track, and a continued
     /// cursor keeps counting from where the earlier tracks left off.
+    /// Track cursors read ahead of the frames they return (a group of
+    /// [`crate::dst::lanes`] frames, or with `parallel` up to [`MAX_PARALLEL_BATCH`]
+    /// positions), so this may count sectors of frames not yet returned.
     pub fn malformed_sectors(&self) -> u64 {
         self.demux.malformed_sectors()
     }
@@ -244,7 +258,7 @@ impl AreaCursor {
     /// The `audio-sector-malformed` warnings of the sectors processed so far, with slot
     /// and LSN, in processing order (specification 4, 4.4.5). At most
     /// [`MAX_MALFORMED_WARNINGS`] are kept; [`AreaCursor::malformed_sectors`] counts them
-    /// all.
+    /// all. Like that count, they may include sectors of frames not yet returned.
     pub fn warnings(&self) -> &[Warning] {
         &self.warnings
     }
@@ -333,6 +347,9 @@ impl<'a, R: Read + Seek> AreaFrames<'a, R> {
     /// Number of malformed sectors processed so far by this cursor's scan of its area. The
     /// scan starts at the area's first audio sector, not at the track, and a continued
     /// cursor keeps counting from where the earlier tracks left off.
+    /// Track cursors read ahead of the frames they return (a group of
+    /// [`crate::dst::lanes`] frames, or with `parallel` up to [`MAX_PARALLEL_BATCH`]
+    /// positions), so this may count sectors of frames not yet returned.
     pub fn malformed_sectors(&self) -> u64 {
         self.cursor.malformed_sectors()
     }
@@ -514,6 +531,9 @@ impl TrackCursor {
     /// Number of malformed sectors processed so far by this cursor's scan of its area. The
     /// scan starts at the area's first audio sector, not at the track, and a continued
     /// cursor keeps counting from where the earlier tracks left off.
+    /// Track cursors read ahead of the frames they return (a group of
+    /// [`crate::dst::lanes`] frames, or with `parallel` up to [`MAX_PARALLEL_BATCH`]
+    /// positions), so this may count sectors of frames not yet returned.
     pub fn malformed_sectors(&self) -> u64 {
         self.area.malformed_sectors()
     }
@@ -584,6 +604,9 @@ impl<'a, R: Read + Seek> TrackFrames<'a, R> {
     /// Number of malformed sectors processed so far by this cursor's scan of its area. The
     /// scan starts at the area's first audio sector, not at the track, and a continued
     /// cursor keeps counting from where the earlier tracks left off.
+    /// Track cursors read ahead of the frames they return (a group of
+    /// [`crate::dst::lanes`] frames, or with `parallel` up to [`MAX_PARALLEL_BATCH`]
+    /// positions), so this may count sectors of frames not yet returned.
     pub fn malformed_sectors(&self) -> u64 {
         self.cursor.malformed_sectors()
     }
@@ -673,6 +696,46 @@ fn decode_checked(decoder: &mut DstDecoder, frame: TrackFrame, channels: u8) -> 
     AudioFrame { number: frame.number, status, data }
 }
 
+/// [`decode_checked`] for DST frames (`frames` all have `FrameContent::Dst`), together
+/// with [`DstDecoder::decode_many`]: the same frames as decoding them one by one.
+fn decode_dst_run(decoder: &mut DstDecoder, frames: Vec<TrackFrame>, channels: u8) -> Vec<AudioFrame> {
+    let size = usize::from(channels) * FRAME_BYTES_PER_CHANNEL;
+    let mut outs = vec![vec![0u8; size]; frames.len()];
+    let results = {
+        let bytes: Vec<&[u8]> = frames
+            .iter()
+            .map(|f| match &f.content {
+                FrameContent::Dst(b) => b.as_slice(),
+                _ => &[],
+            })
+            .collect();
+        let mut slices: Vec<&mut [u8]> = outs.iter_mut().map(Vec::as_mut_slice).collect();
+        decoder.decode_many(&bytes, channels, &mut slices)
+    };
+    frames
+        .into_iter()
+        .zip(outs)
+        .zip(results)
+        .map(|((frame, mut out), result)| {
+            let status = match result {
+                Ok(()) => FrameStatus::Decoded,
+                Err(e) => {
+                    // The channel count was checked (4.8) and the buffers sized from it, so
+                    // only frame rules can fail here.
+                    debug_assert_ne!(
+                        e,
+                        DstError::InvalidArguments,
+                        "decoder arguments checked by check_track"
+                    );
+                    out.fill(INVALID_FILL);
+                    FrameStatus::Invalid(e)
+                }
+            };
+            AudioFrame { number: frame.number, status, data: out }
+        })
+        .collect()
+}
+
 /// The decoding state of one track's audio (specification 4, 4.6 and 4.7), independent
 /// of the image it reads from. [`TrackAudio`] is the borrowing iterator.
 ///
@@ -688,6 +751,9 @@ pub struct TrackAudioCursor {
     /// Positions demultiplexed but not yet returned, in timeline order: they come before
     /// `pending_error`.
     ahead: VecDeque<Pending>,
+    /// Frames decoded on the calling thread together with the one returned before them,
+    /// not yet returned: they come before `ahead`.
+    ready: VecDeque<AudioFrame>,
     /// An error met while demultiplexing, reported after every frame before it.
     pending_error: Option<Error>,
     missing: u64,
@@ -699,9 +765,9 @@ pub struct TrackAudioCursor {
 enum Pending {
     /// Decoded on the calling thread when it is returned.
     Here(TrackFrame),
-    /// A DST frame being decoded on the pool.
+    /// The `usize`th frame of a group of DST frames being decoded on the pool.
     #[cfg(feature = "parallel")]
-    Pool(std::sync::Arc<pool::Job>),
+    Pool(std::sync::Arc<pool::Job>, usize),
 }
 
 impl TrackAudioCursor {
@@ -748,6 +814,7 @@ impl TrackAudioCursor {
             frames,
             decoder: DstDecoder::new(),
             ahead: VecDeque::new(),
+            ready: VecDeque::new(),
             pending_error: None,
             missing: 0,
             invalid: 0,
@@ -772,6 +839,9 @@ impl TrackAudioCursor {
     /// Number of malformed sectors processed so far by this cursor's scan of its area. The
     /// scan starts at the area's first audio sector, not at the track, and a continued
     /// cursor keeps counting from where the earlier tracks left off.
+    /// Track cursors read ahead of the frames they return (a group of
+    /// [`crate::dst::lanes`] frames, or with `parallel` up to [`MAX_PARALLEL_BATCH`]
+    /// positions), so this may count sectors of frames not yet returned.
     pub fn malformed_sectors(&self) -> u64 {
         self.frames.malformed_sectors()
     }
@@ -782,45 +852,78 @@ impl TrackAudioCursor {
         self.frames.warnings()
     }
 
-    /// Most positions held ahead of the caller, the one being returned included.
-    fn window() -> usize {
+    /// Most positions held ahead of the caller, the one being returned included: one group
+    /// of frames decoded together on the calling thread (see [`MAX_PARALLEL_BATCH`]) or,
+    /// with `parallel` on a pool of more than one thread, many.
+    fn window(channels: u8) -> usize {
+        let group = crate::dst::lanes(channels);
         #[cfg(feature = "parallel")]
         {
-            // One thread decodes everything on the calling thread, frame by frame as
-            // without `parallel`: reading ahead would only cost cache.
             match rayon::current_num_threads() {
-                1 => 1,
+                1 => group,
                 n => (PARALLEL_FRAMES_PER_THREAD * n).min(MAX_PARALLEL_BATCH),
             }
         }
         #[cfg(not(feature = "parallel"))]
         {
-            1
+            group
         }
     }
 
-    /// Demultiplexes positions until the window is full, the track ends or an error is
-    /// met (kept for after the positions before it). With `parallel` on a pool of more
-    /// than one thread, each DST frame goes to the pool at once.
+    /// Demultiplexes positions, a whole number of groups of `lanes` of them, when a group
+    /// fits in the window, until the track ends or an error is met (kept for after the
+    /// positions before it). With `parallel` on a pool of more than one thread, each group
+    /// of consecutive DST frames goes to the pool at once.
     ///
     /// The image reader stays on the calling thread: only decoding jobs, which own their
     /// frames, go to the pool.
     fn fill<R: Read + Seek>(&mut self, image: &mut Image<R>) {
-        let window = Self::window();
-        #[cfg(feature = "parallel")]
         let channels = self.channels();
-        while self.pending_error.is_none() && self.ahead.len() < window {
+        let window = Self::window(channels);
+        let group = crate::dst::lanes(channels);
+        let held = self.ahead.len() + self.ready.len();
+        if self.pending_error.is_some() || (held > 0 && held + group > window) {
+            return;
+        }
+        let mut room = (window - held) / group * group;
+        #[cfg(feature = "parallel")]
+        let mut batch: Vec<TrackFrame> = Vec::with_capacity(group);
+        while self.pending_error.is_none() && room > 0 {
             match self.frames.next_frame(image) {
                 #[cfg(feature = "parallel")]
-                Some(Ok(TrackFrame { number, content: FrameContent::Dst(bytes) })) if window > 1 => {
-                    let frame = TrackFrame { number, content: FrameContent::Dst(bytes) };
-                    self.ahead.push_back(Pending::Pool(pool::Job::spawn(frame, channels)));
+                Some(Ok(f @ TrackFrame { content: FrameContent::Dst(_), .. })) if window > group => {
+                    batch.push(f);
+                    if batch.len() == group {
+                        self.spawn_batch(&mut batch, channels);
+                    }
                 }
-                Some(Ok(f)) => self.ahead.push_back(Pending::Here(f)),
-                Some(Err(e)) => self.pending_error = Some(e),
+                Some(Ok(f)) => {
+                    #[cfg(feature = "parallel")]
+                    self.spawn_batch(&mut batch, channels);
+                    self.ahead.push_back(Pending::Here(f));
+                }
+                Some(Err(e)) => {
+                    #[cfg(feature = "parallel")]
+                    self.spawn_batch(&mut batch, channels);
+                    self.pending_error = Some(e);
+                }
                 None => break,
             }
+            room -= 1;
         }
+        #[cfg(feature = "parallel")]
+        self.spawn_batch(&mut batch, channels);
+    }
+
+    /// Sends the DST frames of `batch` (consecutive positions) to the pool as one job.
+    #[cfg(feature = "parallel")]
+    fn spawn_batch(&mut self, batch: &mut Vec<TrackFrame>, channels: u8) {
+        if batch.is_empty() {
+            return;
+        }
+        let n = batch.len();
+        let job = pool::Job::spawn(std::mem::take(batch), channels);
+        self.ahead.extend((0..n).map(|i| Pending::Pool(std::sync::Arc::clone(&job), i)));
     }
 
     /// The next decoded frame, `None` after the track's last frame.
@@ -830,15 +933,38 @@ impl TrackAudioCursor {
     /// or when there are none, it blocks until the frame is decoded. A panic while decoding
     /// on the pool is resumed on the calling thread.
     pub fn next_frame<R: Read + Seek>(&mut self, image: &mut Image<R>) -> Option<Result<AudioFrame, Error>> {
-        self.fill(image);
-        let frame = match self.ahead.pop_front() {
-            Some(Pending::Here(f)) => {
-                let channels = self.channels();
-                decode_checked(&mut self.decoder, f, channels)
+        let frame = if let Some(f) = self.ready.pop_front() {
+            f
+        } else {
+            self.fill(image);
+            match self.ahead.pop_front() {
+                Some(Pending::Here(f)) => {
+                    let channels = self.channels();
+                    if matches!(f.content, FrameContent::Dst(_)) {
+                        // This frame and the DST frames waiting behind it, together.
+                        let mut run = vec![f];
+                        while run.len() < crate::dst::lanes(channels) {
+                            match self.ahead.front() {
+                                Some(Pending::Here(TrackFrame { content: FrameContent::Dst(_), .. })) => {
+                                    if let Some(Pending::Here(g)) = self.ahead.pop_front() {
+                                        run.push(g);
+                                    }
+                                }
+                                _ => break,
+                            }
+                        }
+                        let mut decoded = decode_dst_run(&mut self.decoder, run, channels).into_iter();
+                        let first = decoded.next()?;
+                        self.ready.extend(decoded);
+                        first
+                    } else {
+                        decode_checked(&mut self.decoder, f, channels)
+                    }
+                }
+                #[cfg(feature = "parallel")]
+                Some(Pending::Pool(job, i)) => job.wait(i),
+                None => return self.pending_error.take().map(Err),
             }
-            #[cfg(feature = "parallel")]
-            Some(Pending::Pool(job)) => job.wait(),
-            None => return self.pending_error.take().map(Err),
         };
         // Counted as frames are returned, so the counts never run ahead of the caller,
         // whatever the window.
@@ -859,7 +985,7 @@ mod pool {
     use std::panic::AssertUnwindSafe;
     use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
-    use super::{AudioFrame, TrackFrame, decode_checked};
+    use super::{AudioFrame, TrackFrame, decode_dst_run};
     use crate::dst::DstDecoder;
 
     thread_local! {
@@ -867,17 +993,21 @@ mod pool {
         static DECODER: RefCell<DstDecoder> = RefCell::new(DstDecoder::new());
     }
 
-    /// One frame decoded on the pool; its result is taken once.
+    /// A group of consecutive DST frames decoded on the pool; each frame is taken once.
     #[derive(Debug, Default)]
     pub(super) struct Job {
         state: Mutex<State>,
         done: Condvar,
     }
 
+    /// The payload of a panic, until it is resumed.
+    type Panic = Option<Box<dyn Any + Send>>;
+
     #[derive(Debug, Default)]
     struct State {
-        /// The decoded frame, or the panic that stopped its decoding.
-        result: Option<Result<AudioFrame, Box<dyn Any + Send>>>,
+        /// The decoded frames, or the panic that stopped their decoding (`None` once
+        /// resumed on a thread).
+        result: Option<Result<Vec<Option<AudioFrame>>, Panic>>,
         /// Whether the owner sleeps on `done`: only then does the job wake it.
         waiting: bool,
     }
@@ -888,16 +1018,16 @@ mod pool {
             self.state.lock().unwrap_or_else(PoisonError::into_inner)
         }
 
-        /// Starts decoding `frame` on the current pool.
-        pub(super) fn spawn(frame: TrackFrame, channels: u8) -> Arc<Job> {
+        /// Starts decoding `frames` (DST frames) on the current pool.
+        pub(super) fn spawn(frames: Vec<TrackFrame>, channels: u8) -> Arc<Job> {
             let job = Arc::new(Job::default());
             let out = Arc::clone(&job);
             rayon::spawn(move || {
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                     DECODER.with(|d| match d.try_borrow_mut() {
-                        Ok(mut d) => decode_checked(&mut d, frame, channels),
+                        Ok(mut d) => decode_dst_run(&mut d, frames, channels),
                         // Not reached (decoding never yields to other jobs); stay correct.
-                        Err(_) => decode_checked(&mut DstDecoder::new(), frame, channels),
+                        Err(_) => decode_dst_run(&mut DstDecoder::new(), frames, channels),
                     })
                 }));
                 if result.is_err() {
@@ -908,6 +1038,7 @@ mod pool {
                         }
                     });
                 }
+                let result = result.map(|v| v.into_iter().map(Some).collect()).map_err(Some);
                 let mut state = out.lock();
                 state.result = Some(result);
                 if state.waiting {
@@ -917,26 +1048,36 @@ mod pool {
             job
         }
 
-        /// The decoded frame: runs other pool jobs while it is not ready, or blocks when
-        /// there are none (every job then runs on some thread, and finishes) or this
-        /// thread is not one of the pool's.
-        pub(super) fn wait(&self) -> AudioFrame {
-            let result = loop {
-                if let Some(r) = self.lock().result.take() {
-                    break r;
+        /// Frame `i` of the group, decoded: runs other pool jobs while it is not ready, or
+        /// blocks when there are none (every job then runs on some thread, and finishes) or
+        /// this thread is not one of the pool's.
+        pub(super) fn wait(&self, i: usize) -> AudioFrame {
+            loop {
+                if let Some(f) = Self::take(&mut self.lock(), i) {
+                    return f;
                 }
                 if rayon::yield_now() != Some(rayon::Yield::Executed) {
                     let mut state = self.lock();
                     state.waiting = true;
-                    break loop {
-                        if let Some(r) = state.result.take() {
-                            break r;
+                    loop {
+                        if let Some(f) = Self::take(&mut state, i) {
+                            return f;
                         }
                         state = self.done.wait(state).unwrap_or_else(PoisonError::into_inner);
-                    };
+                    }
                 }
-            };
-            result.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            }
+        }
+
+        /// Frame `i`, if the group is decoded; resumes the panic of a group that failed
+        /// (for later frames of it, a new one).
+        fn take(state: &mut State, i: usize) -> Option<AudioFrame> {
+            match state.result.as_mut()? {
+                Ok(frames) => frames.get_mut(i).and_then(Option::take),
+                Err(panic) => std::panic::resume_unwind(
+                    panic.take().unwrap_or_else(|| Box::new("a group of DST frames panicked while decoding")),
+                ),
+            }
         }
     }
 }
@@ -982,6 +1123,9 @@ impl<'a, R: Read + Seek> TrackAudio<'a, R> {
     /// Number of malformed sectors processed so far by this cursor's scan of its area. The
     /// scan starts at the area's first audio sector, not at the track, and a continued
     /// cursor keeps counting from where the earlier tracks left off.
+    /// Track cursors read ahead of the frames they return (a group of
+    /// [`crate::dst::lanes`] frames, or with `parallel` up to [`MAX_PARALLEL_BATCH`]
+    /// positions), so this may count sectors of frames not yet returned.
     pub fn malformed_sectors(&self) -> u64 {
         self.cursor.malformed_sectors()
     }
@@ -1102,11 +1246,11 @@ mod tests {
     #[test]
     fn parallel_window_is_capped() {
         let wide = rayon::ThreadPoolBuilder::new().num_threads(64).build().unwrap();
-        wide.install(|| assert_eq!(TrackAudioCursor::window(), MAX_PARALLEL_BATCH));
+        wide.install(|| assert_eq!(TrackAudioCursor::window(2), MAX_PARALLEL_BATCH));
         let narrow = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
-        narrow.install(|| assert_eq!(TrackAudioCursor::window(), 2 * PARALLEL_FRAMES_PER_THREAD));
+        narrow.install(|| assert_eq!(TrackAudioCursor::window(2), 2 * PARALLEL_FRAMES_PER_THREAD));
         let single = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
-        single.install(|| assert_eq!(TrackAudioCursor::window(), 1));
+        single.install(|| assert_eq!(TrackAudioCursor::window(2), crate::dst::lanes(2)));
         // The bound documented on MAX_PARALLEL_BATCH: each position held ahead is at most
         // one frame of DST bytes and one of decoded audio, about 24 MB in all.
         let bound = MAX_PARALLEL_BATCH * (MAX_FRAME_BYTES + 6 * FRAME_BYTES_PER_CHANNEL);
