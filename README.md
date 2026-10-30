@@ -36,7 +36,7 @@ for frame in disc.track_audio(Slot::TwoChannel, 1)? {
 }
 ```
 
-Features: `parallel` decodes DST frames in parallel batches with rayon.
+Features: `parallel` decodes DST frames on rayon's thread pool, ahead of the caller.
 
 ## C
 

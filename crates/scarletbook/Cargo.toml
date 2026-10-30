@@ -11,7 +11,7 @@ categories = ["multimedia::audio", "parser-implementations"]
 include = ["src/**", "data/**", "Cargo.toml", "LICENSE-*", "README.md"]
 
 [features]
-# Decode DST frames in parallel batches on rayon's thread pool.
+# Decode DST frames on rayon's thread pool, ahead of the caller.
 parallel = ["dep:rayon"]
 
 [dependencies]

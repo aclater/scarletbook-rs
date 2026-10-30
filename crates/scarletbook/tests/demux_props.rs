@@ -115,7 +115,7 @@ proptest! {
 }
 
 /// The missing-frame count follows the frames returned, with or without `parallel`
-/// (whose batches decode ahead of the caller).
+/// (which decodes ahead of the caller).
 #[test]
 fn counts_follow_returned_frames() {
     let spec = Spec {
@@ -457,16 +457,17 @@ fn a_cursor_never_reads_another_image() {
     assert!(matches!(audio.next(), Some(Err(scarletbook::Error::InvalidArgument(_)))));
 }
 
-/// With `parallel`, a pool of `threads` threads, whose batches (16 frames per thread) are
-/// shorter than the tracks below, so that batches with DST frames are demultiplexed ahead
-/// of decoding (a one-thread pool decodes on the calling thread, without reading ahead).
+/// With `parallel`, a pool of `threads` threads, whose windows (16 positions per thread)
+/// are shorter than the tracks below, so that positions are demultiplexed ahead and DST
+/// frames decoded on the pool ahead of the caller (a one-thread pool decodes on the
+/// calling thread, without reading ahead).
 #[cfg(feature = "parallel")]
 fn small_pool(threads: usize) -> rayon::ThreadPool {
     rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap()
 }
 
-/// Up to 80 frames, mostly DST, at positions below 200: enough DST frames per batch for
-/// batches to go to the pool.
+/// Up to 80 frames, mostly DST, at positions below 200: enough DST frames per window for
+/// several jobs to be on the pool at once.
 #[cfg(feature = "parallel")]
 fn dense_frames() -> impl Strategy<Value = Vec<PFrame>> {
     proptest::collection::btree_map(0u32..200, (0u8..4, 1usize..3000, any::<u8>()), 0..80).prop_map(|m| {
@@ -485,7 +486,7 @@ fn dense_frames() -> impl Strategy<Value = Vec<PFrame>> {
 proptest! {
     #![proptest_config(config())]
 
-    /// As `continuation_equals_fresh_scans`, with tracks of several batches each, stopped
+    /// As `continuation_equals_fresh_scans`, with tracks of several windows each, stopped
     /// anywhere: whatever was demultiplexed ahead and not returned, continuing gives the
     /// frames of a fresh cursor.
     #[test]
@@ -551,7 +552,7 @@ impl std::io::Seek for FailsPast {
     }
 }
 
-/// With batches demultiplexed ahead of decoding, a read error is still reported after
+/// With positions demultiplexed and decoded ahead of the caller, a read error is still reported after
 /// exactly the frames before it, the counts follow the frames returned, and the cursor
 /// then ends.
 #[cfg(feature = "parallel")]
