@@ -16,6 +16,8 @@
 //! for a rejected image, `no-such-area` when the slot yields no area, and `io-error`,
 //! `usage-error` or `internal-error` otherwise. A message follows on the next line.
 
+#![forbid(unsafe_code)]
+
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -240,8 +242,13 @@ fn decode_area(path: &Path, slot: Slot, out: &mut dyn Output) -> Result<(), Fail
 }
 
 fn run(args: Args) -> Result<(), Failure> {
+    // `--threads 0` is one thread per logical CPU, whatever RAYON_NUM_THREADS says.
+    let threads = match args.threads {
+        0 => std::thread::available_parallelism().map_or(1, usize::from),
+        n => n,
+    };
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(args.threads)
+        .num_threads(threads)
         .build()
         .map_err(|e| Failure { class: "internal-error", message: e.to_string() })?;
     pool.install(|| match &args.sink {

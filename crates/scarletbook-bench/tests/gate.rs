@@ -55,6 +55,8 @@ fn expected_lines(area: &Value) -> Vec<String> {
 #[test]
 fn hash_sink_matches_the_manifest() {
     let mut checked = 0;
+    // Cases without a 2-channel area, and without a multichannel area.
+    let mut missing = [0; 2];
     for case in cases() {
         let img = image(&case);
         let expected = &case["expected"];
@@ -81,16 +83,20 @@ fn hash_sink_matches_the_manifest() {
                 checked += 1;
             }
         }
-        // An area the disc does not have.
+        // A slot that yields no area, in either direction.
         let slots: Vec<&str> =
             expected["audio"].as_array().unwrap().iter().filter_map(|a| a["area"].as_str()).collect();
-        if !slots.contains(&"multichannel") {
-            let out = bench(&["decode", &img, "--area", "mc", "--threads", "1", "--sink", "null"]);
-            assert!(!out.status.success());
-            assert_eq!(String::from_utf8_lossy(&out.stderr).lines().next(), Some("no-such-area"));
+        for (slot, flag) in [("2ch", "2ch"), ("multichannel", "mc")] {
+            if !slots.contains(&slot) {
+                let out = bench(&["decode", &img, "--area", flag, "--threads", "1", "--sink", "null"]);
+                assert!(!out.status.success(), "{} --area {flag}", case["id"]);
+                assert_eq!(String::from_utf8_lossy(&out.stderr).lines().next(), Some("no-such-area"));
+                missing[usize::from(flag == "mc")] += 1;
+            }
         }
     }
     assert!(checked > 200, "only {checked} area runs checked");
+    assert!(missing[0] > 0 && missing[1] > 0, "missing-area checks: {missing:?}");
 }
 
 #[test]

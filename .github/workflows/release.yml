@@ -65,12 +65,15 @@ jobs:
             target-znver5/x86_64-unknown-linux-gnu/release/bench \
             "Built with -C target-cpu=znver5 for AMD Zen 5 (the measuring machine's CPU); runs only on Zen 5."
           ls -l dist
-      - name: Smoke-test the generic binary
+      - name: Smoke-test the packaged generic binary against the manifest
         run: |
           tar -C /tmp -xzf "dist/bench-$VERSION-x86_64-linux.tar.gz"
-          "/tmp/bench-$VERSION-x86_64-linux/bench" --version
-          "/tmp/bench-$VERSION-x86_64-linux/bench" decode corpus/images/dst-features-2ch-6ch.iso \
-            --area 2ch --threads 1 --sink hash
+          bin="/tmp/bench-$VERSION-x86_64-linux/bench"
+          "$bin" --version
+          for area in 2ch mc; do
+            "$bin" decode corpus/images/dst-features-2ch-6ch.iso --area "$area" --threads 0 --sink hash > "got-$area.txt"
+            python3 .github/scripts/compare-hashes.py dst-features-2ch-6ch "$area" "got-$area.txt"
+          done
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
