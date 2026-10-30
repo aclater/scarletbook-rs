@@ -1,0 +1,86 @@
+name: Release
+
+# On a version tag (v0.1.0, ...): run the correctness gate, build the benchmark program
+# `bench` for generic x86-64 (sacd-spec benchmarks/README.md, "Release binaries"), and
+# publish it with a SHA-256 checksum. A second, labelled asset is built for AMD Zen 5
+# (the measuring machine's CPU); it runs only on Zen 5.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_STABLE: 1.99.1
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup toolchain install "$RUST_STABLE" --profile minimal && rustup default "$RUST_STABLE"
+      - name: The tag matches the crate version
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 --locked \
+            | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "scarletbook-bench"))')
+          if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match version $version"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Correctness gate (every corpus case, 1 and all threads)
+        run: cargo test --release --locked -p scarletbook-bench
+      - name: Build (generic x86-64)
+        run: cargo build --release --locked -p scarletbook-bench --target x86_64-unknown-linux-gnu
+      - name: Build (AMD Zen 5)
+        env:
+          RUSTFLAGS: -C target-cpu=znver5
+          CARGO_TARGET_DIR: target-znver5
+        run: cargo build --release --locked -p scarletbook-bench --target x86_64-unknown-linux-gnu
+      - name: Package
+        run: |
+          package() {
+            local name=$1 bin=$2 note=$3
+            mkdir -p "dist/$name"
+            cp "$bin" "dist/$name/bench"
+            cp LICENSE-MIT LICENSE-APACHE "dist/$name/"
+            printf '%s\n' "scarletbook bench $VERSION ($GITHUB_SHA)" "$note" \
+              "Interface: sacd-spec benchmarks/README.md." > "dist/$name/README.txt"
+            tar -C dist -czf "dist/$name.tar.gz" "$name"
+            (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+          }
+          package "bench-$VERSION-x86_64-linux" \
+            target/x86_64-unknown-linux-gnu/release/bench \
+            "Generic x86-64 build (no target-cpu)."
+          package "bench-$VERSION-x86_64-linux-znver5" \
+            target-znver5/x86_64-unknown-linux-gnu/release/bench \
+            "Built with -C target-cpu=znver5 for AMD Zen 5 (the measuring machine's CPU); runs only on Zen 5."
+          ls -l dist
+      - name: Smoke-test the packaged generic binary against the manifest
+        run: |
+          tar -C /tmp -xzf "dist/bench-$VERSION-x86_64-linux.tar.gz"
+          bin="/tmp/bench-$VERSION-x86_64-linux/bench"
+          "$bin" --version
+          for area in 2ch mc; do
+            "$bin" decode corpus/images/dst-features-2ch-6ch.iso --area "$area" --threads 0 --sink hash > "got-$area.txt"
+            python3 .github/scripts/compare-hashes.py dst-features-2ch-6ch "$area" "got-$area.txt"
+          done
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --title "scarletbook $VERSION" --verify-tag \
+            --notes "Benchmark program \`bench\` for sacd-spec benchmarks/README.md, built from $GITHUB_SHA.
+          - \`bench-$VERSION-x86_64-linux.tar.gz\`: generic x86-64 (the required asset).
+          - \`bench-$VERSION-x86_64-linux-znver5.tar.gz\`: built for AMD Zen 5 only (labelled; MAY asset).
+          Each has a \`.sha256\` checksum. The correctness gate (every corpus case, 1 and all threads) passed before the build." \
+            dist/*.tar.gz dist/*.sha256
