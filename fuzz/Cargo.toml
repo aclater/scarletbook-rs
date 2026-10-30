@@ -28,3 +28,10 @@ path = "fuzz_targets/demux.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "dst"
+path = "fuzz_targets/dst.rs"
+test = false
+doc = false
+bench = false

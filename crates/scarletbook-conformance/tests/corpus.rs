@@ -10,12 +10,11 @@ fn corpus() {
     let cases = load_cases(&dir).unwrap_or_else(|e| panic!("manifest: {e}"));
     assert_eq!(cases.len(), 129, "unexpected case count");
     let mut failed = Vec::new();
-    let (mut compared, mut pending) = (0, 0);
+    let mut compared = 0;
     for case in &cases {
         let id = case["id"].as_str().unwrap_or("?");
         let report = check_case_report(&dir, case);
         compared += report.tracks_compared;
-        pending += report.dst_pending;
         let fails = report.failures;
         if !fails.is_empty() {
             eprintln!("FAIL {id}:");
@@ -25,7 +24,8 @@ fn corpus() {
             failed.push(id.to_owned());
         }
     }
-    eprintln!("tracks with audio compared: {compared}; with DST frames, not yet decoded: {pending}");
-    assert!(compared > 0);
+    eprintln!("tracks with audio compared: {compared}");
+    // Every track the manifest expects audio for.
+    assert_eq!(compared, 437);
     assert!(failed.is_empty(), "{} of {} cases failed: {failed:?}", failed.len(), cases.len());
 }

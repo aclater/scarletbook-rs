@@ -10,7 +10,7 @@ use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 
 use scarletbook::audio::{self, FRAME_BYTES_PER_CHANNEL};
-use scarletbook::{Disc, FrameContent, Slot, WarningCode};
+use scarletbook::{Disc, Slot, WarningCode};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -58,9 +58,6 @@ fn warning_key(v: &Value) -> (String, String, String) {
 pub struct CaseReport {
     /// Mismatches; empty when the case passes.
     pub failures: Vec<String>,
-    /// Tracks whose audio was not compared because they contain DST frames, which this
-    /// stage does not decode yet.
-    pub dst_pending: usize,
     /// Tracks whose audio was compared.
     pub tracks_compared: usize,
 }
@@ -76,38 +73,28 @@ pub struct TrackAudio {
     pub invalid_dst_frames: u64,
 }
 
-/// Hashes a track's audio per channel, or returns `Ok(None)` if it has DST frames.
+/// Decodes a track and hashes its audio per channel.
 pub fn track_audio<R: std::io::Read + std::io::Seek>(
     disc: &mut Disc<R>,
     slot: Slot,
     number: u32,
-) -> Result<Option<TrackAudio>, scarletbook::Error> {
-    let mut frames = disc.track_frames(slot, number)?;
-    let channels = frames.channels();
+) -> Result<TrackAudio, scarletbook::Error> {
+    let mut audio = disc.track_audio(slot, number)?;
+    let channels = audio.channels();
     let mut hashers: Vec<Sha256> = (0..channels).map(|_| Sha256::new()).collect();
     let mut chan = vec![0u8; FRAME_BYTES_PER_CHANNEL];
-    let missing_fill = audio::fill_frame(channels, audio::MISSING_FILL);
-    let mut missing = 0;
-    for frame in frames.by_ref() {
+    for frame in audio.by_ref() {
         let frame = frame?;
-        let data = match &frame.content {
-            FrameContent::Dsd(d) => d,
-            FrameContent::Dst(_) => return Ok(None),
-            FrameContent::Missing => {
-                missing += 1;
-                &missing_fill
-            }
-        };
         for (c, h) in hashers.iter_mut().enumerate() {
-            audio::deinterleave(data, channels, c as u8, &mut chan)?;
+            audio::deinterleave(&frame.data, channels, c as u8, &mut chan)?;
             h.update(&chan);
         }
     }
-    Ok(Some(TrackAudio {
+    Ok(TrackAudio {
         sha256: hashers.into_iter().map(|h| hex(&h.finalize())).collect(),
-        missing_frames: missing,
-        invalid_dst_frames: 0,
-    }))
+        missing_frames: audio.missing_frames(),
+        invalid_dst_frames: audio.invalid_dst_frames(),
+    })
 }
 
 fn slot_from(name: &str) -> Option<Slot> {
@@ -167,8 +154,7 @@ fn check_audio<R: std::io::Read + std::io::Seek>(
             }
             match track_audio(disc, slot, n) {
                 Err(e) => fails.push(format!("{what}: {e}")),
-                Ok(None) => report.dst_pending += 1,
-                Ok(Some(got)) => {
+                Ok(got) => {
                     report.tracks_compared += 1;
                     let exp_sha: Vec<String> = et["sha256"]
                         .as_array()

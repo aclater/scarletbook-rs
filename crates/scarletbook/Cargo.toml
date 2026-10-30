@@ -10,7 +10,12 @@ keywords = ["sacd", "dsd", "dst", "audio", "scarletbook"]
 categories = ["multimedia::audio", "parser-implementations"]
 include = ["src/**", "data/**", "Cargo.toml", "LICENSE-*", "README.md"]
 
+[features]
+# Decode DST frames in parallel batches on rayon's thread pool.
+parallel = ["dep:rayon"]
+
 [dependencies]
+rayon = { version = "1.10", optional = true }
 thiserror = "2"
 
 [dev-dependencies]
