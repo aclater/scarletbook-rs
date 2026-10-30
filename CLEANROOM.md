@@ -107,6 +107,9 @@ machine.
 | cbindgen 0.29.4 | crates.io (`cargo install`) | generating the C header |
 | `perf` (Linux perf 7.2) and GNU `time` | Fedora 44 repositories (`dnf`) | profiling and timing our own code |
 | `poppler-utils` and `tesseract` (OCR) | Fedora 44 repositories (`dnf`) | reading a scanned paper for the patent-hygiene record (#40) |
+| criterion 0.7.0 (published 2025-07-25) | crates.io dev-dependency, no default features | the benchmark suite (#30); only its `--help` output and result files were used |
+| inferno 0.12.8 (published 2026-07-18) | crates.io (`cargo install --locked`) | flame graphs (#30) |
+| `llvm-tools-preview` for rustc 1.99.1 (LLVM 23.1.1) | rustup component | `llvm-profdata` for the PGO measurements (#32) |
 
 ## Sources consulted
 
@@ -201,7 +204,7 @@ table below, for review before 1.0. The research survey (#33) opened no patent p
 | Bit buffer with amortised refill (several bytes at a time) | code-bit reader | Full text read: I. H. Witten, R. M. Neal, J. G. Cleary, "Arithmetic Coding for Data Compression", CACM 30(6), June 1987, pp. 527-528: a byte buffer refilled 8 bits at a time, reading deliberately past end-of-file ("garbage_bits"), but bits consumed one at a time, not a wide register refilled several bytes at once. F. Giesen, "Reading bits in far too many ways", 2018, for the wide-register form. Moffat & Turpin (1996/1997) full text not obtained | partly | **owner review before 1.0** (#40) |
 | Precomputed tables of coefficient partial sums indexed by input bits | prediction (`dst.rs`) | A. Peled, B. Liu, IEEE Trans. ASSP 22(6), December 1974, and S. A. White, IEEE ASSP Magazine 6(3), July 1989 (distributed arithmetic): full texts not obtained from a legitimate free copy | not verified | **owner review before 1.0** (#40) |
 | Interleaving independent work in one thread to hide latency | #31 (in progress) | Full text read: M. Lam, "Software Pipelining: An Effective Scheduling Technique for VLIW Machines", Proceedings of SIGPLAN '88, Atlanta, June 22-24, 1988, pp. 318-320: "multiple iterations, in different stages of their computations, are in progress simultaneously"; four in flight give "four times the speed". (University seminar copy, a scan read by OCR.) Applied here to independent decoders rather than loop iterations; F. Giesen, "Interleaved entropy coders", 2014, for that form | yes | cleared (the general technique) |
-| Profile-guided and link-time optimisation | #32 (build, in progress) | D. W. Wall, "Global Register Allocation at Link Time", SIGPLAN '86 Symposium on Compiler Construction, 1986 (link-time optimisation guided by profile data); DEC WRL Research Report 86/3 | yes | cleared |
+| Profile-guided and link-time optimisation | #32: measured, **not adopted** (fat LTO slower everywhere, PGO no consistent gain); only `codegen-units = 1` for the generic asset, plus an `x86-64-v3` asset | D. W. Wall, "Global Register Allocation at Link Time", SIGPLAN '86 Symposium on Compiler Construction, 1986 (link-time optimisation guided by profile data); DEC WRL Research Report 86/3 | yes | cleared |
 
 The dated search opened no patent; about twenty patent results (USPTO, Google Patents,
 Justia) were skipped unopened. Sources it could only see as citations or bibliographic
