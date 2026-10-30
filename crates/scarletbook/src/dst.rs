@@ -606,10 +606,14 @@ impl<const U: usize> Predict for Fixed<'_, U> {
     const HI: bool = U > 8;
     #[inline(always)]
     fn predict(self, lo: u64, hi: u64) -> i32 {
+        // At most 16 terms of at most 2048 in magnitude: the sum cannot wrap, and the
+        // wrapping form lets the loops be unrolled without overflow checks.
         let mut s = 0i32;
-        for (k, table) in self.0.iter().enumerate() {
-            let byte = if k < 8 { lo >> (8 * k) } else { hi >> (8 * (k - 8)) };
-            s += i32::from(table[(byte & 0xFF) as usize]);
+        for k in 0..U.min(8) {
+            s = s.wrapping_add(i32::from(self.0[k][((lo >> (8 * k)) & 0xFF) as usize]));
+        }
+        for k in 8..U {
+            s = s.wrapping_add(i32::from(self.0[k][((hi >> (8 * (k - 8))) & 0xFF) as usize]));
         }
         s
     }
@@ -633,12 +637,13 @@ impl Predict for Var<'_> {
     const HI: bool = true;
     #[inline(always)]
     fn predict(self, lo: u64, hi: u64) -> i32 {
+        // As for `Fixed`: the sum cannot wrap.
         let mut s = 0i32;
         for (k, table) in self.lo.iter().enumerate() {
-            s += i32::from(table[((lo >> (8 * k)) & 0xFF) as usize]);
+            s = s.wrapping_add(i32::from(table[((lo >> (8 * k)) & 0xFF) as usize]));
         }
         for (k, table) in self.hi.iter().enumerate() {
-            s += i32::from(table[((hi >> (8 * k)) & 0xFF) as usize]);
+            s = s.wrapping_add(i32::from(table[((hi >> (8 * k)) & 0xFF) as usize]));
         }
         s
     }
