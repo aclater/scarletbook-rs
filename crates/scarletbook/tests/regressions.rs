@@ -25,3 +25,9 @@ fn replay(target: &str, run: fn(&[u8])) {
 fn toc_regressions() {
     replay("toc", harness::toc);
 }
+
+#[test]
+#[cfg_attr(miri, ignore = "slow under Miri")]
+fn demux_regressions() {
+    replay("demux", harness::demux);
+}

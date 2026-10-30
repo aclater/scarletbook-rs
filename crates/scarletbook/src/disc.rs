@@ -4,7 +4,8 @@
 
 use std::io::{Read, Seek};
 
-use crate::error::{Error, Warning};
+use crate::audio::{self, AreaFrames, TrackFrames};
+use crate::error::{Error, Slot, Warning};
 use crate::image::{Image, SectorFormat};
 use crate::toc::{self, Toc};
 
@@ -55,6 +56,43 @@ impl<R: Read + Seek> Disc<R> {
     /// The warnings emitted while reading the TOC (specification 7, 7.7.3).
     pub fn warnings(&self) -> &[Warning] {
         &self.warnings
+    }
+
+    /// The accepted frames of the area from `slot`, read from its audio sectors
+    /// (specification 4, 4.2 to 4.5).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NoSuchArea`] if the TOC has no area from that slot.
+    pub fn area_frames(&mut self, slot: Slot) -> Result<AreaFrames<'_, R>, Error> {
+        let area = self.toc.area(slot).ok_or(Error::NoSuchArea(slot))?;
+        Ok(AreaFrames::new(&mut self.image, area))
+    }
+
+    /// Whether track `number` of the area from `slot` produces audio (specification 4,
+    /// 4.8).
+    ///
+    /// # Errors
+    ///
+    /// The per-track outcomes [`Error::ChannelCountUnsupported`], [`Error::TrackEmpty`]
+    /// and [`Error::TrackExceedsCapacity`], or [`Error::NoSuchArea`] /
+    /// [`Error::NoSuchTrack`].
+    pub fn check_track(&self, slot: Slot, number: u32) -> Result<(), Error> {
+        let (area, track) = audio::find_track(&self.toc.areas, slot, number)?;
+        audio::check_track(area, track, self.image.sector_count())
+    }
+
+    /// The timeline positions of track `number` (1-based) of the area from `slot`, each
+    /// holding a plain DSD frame, a DST frame or nothing (specification 4, 4.6 and 4.7).
+    ///
+    /// Plain DSD frames are passed through unchanged; see `track_audio` for decoded audio.
+    ///
+    /// # Errors
+    ///
+    /// As [`Disc::check_track`].
+    pub fn track_frames(&mut self, slot: Slot, number: u32) -> Result<TrackFrames<'_, R>, Error> {
+        let (area, track) = audio::find_track(&self.toc.areas, slot, number)?;
+        TrackFrames::new(&mut self.image, area, track)
     }
 
     /// The underlying image.

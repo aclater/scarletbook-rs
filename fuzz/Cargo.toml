@@ -21,3 +21,10 @@ bench = false
 
 # Not part of the main workspace: cargo-fuzz needs nightly and its own profile.
 [workspace]
+
+[[bin]]
+name = "demux"
+path = "fuzz_targets/demux.rs"
+test = false
+doc = false
+bench = false
