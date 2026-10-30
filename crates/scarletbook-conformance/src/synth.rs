@@ -167,9 +167,19 @@ fn put32(buf: &mut [u8], at: usize, v: u32) {
     put(buf, at, &v.to_be_bytes());
 }
 
-/// A timecode for frame number `n` (specification 0, 0.5 item 3); `n <= MAX_FRAMES`.
+/// A timecode whose frame number (specification 0, 0.5 item 2) is `n`, for any
+/// `n <= MAX_FRAMES`.
+///
+/// Up to 255:59:74 the timecode is normalised (0.5 item 3). Beyond it the minutes byte
+/// stays at 255 and the seconds and frames bytes carry the rest, which 0.5 item 2 allows
+/// (readers accept s >= 60 and f >= 75): that is how a timecode reaches MAX_FRAMES.
 fn tc(n: u32) -> [u8; 3] {
-    [(n / 4500) as u8, (n / 75 % 60) as u8, (n % 75) as u8]
+    let m = (n / 4500).min(255);
+    let s = ((n - 4500 * m) / 75).min(255);
+    let f = n - 4500 * m - 75 * s;
+    // For n <= MAX_FRAMES every part is at most 255.
+    let byte = |v: u32| u8::try_from(v).unwrap_or(u8::MAX);
+    [byte(m), byte(s), byte(f)]
 }
 
 /// Writes logical sectors in the stored format, tracking the LSN of the position.
@@ -524,4 +534,29 @@ pub fn write_image<W: Write + Seek>(w: W, cfg: &Config, src: &DstSource) -> io::
     out.seek(end)?;
     out.w.flush()?;
     Ok(Layout { areas, sectors: end })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The frame number of a timecode (specification 0, 0.5 item 2).
+    fn frame_number(t: [u8; 3]) -> u32 {
+        (u32::from(t[0]) * 60 + u32::from(t[1])) * 75 + u32::from(t[2])
+    }
+
+    #[test]
+    fn timecodes_round_trip_up_to_the_largest_frame_number() {
+        for n in
+            [0, 1, 74, 75, 4499, 4500, 1_151_999, 1_152_000, 1_152_074, 1_152_075, MAX_FRAMES - 1, MAX_FRAMES]
+        {
+            assert_eq!(frame_number(tc(n)), n, "frame {n}");
+        }
+        // Normalised up to 255:59:74; s and f carry the rest beyond it.
+        assert_eq!(tc(1_151_999), [255, 59, 74]);
+        assert_eq!(tc(1_152_000), [255, 60, 0]);
+        assert_eq!(tc(MAX_FRAMES), [255, 255, 255]);
+        // Every frame number round-trips.
+        assert!((0..=MAX_FRAMES).all(|n| frame_number(tc(n)) == n));
+    }
 }

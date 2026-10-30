@@ -138,6 +138,12 @@ across threads. What crossed the wall from the other side is limited to what
 `benchmarks/README.md` publishes: target figures and the other readers' timings, as numbers
 only. No profile, explanation or technique of another reader was consulted.
 
+`scarletbook-synth`, the generator of large test images used for these measurements, is
+built only from specifications 1 to 4 (layout, TOCs, audio sector packing) and from the
+corpus's own DST frames, which it repacks. Figures measured on its images are not
+measurements of the benchmark discs of `benchmarks/README.md`: its DST frames are the
+corpus's feature-test frames, and its plain DSD is pseudo-random.
+
 ## Statement
 
 None of the forbidden sources listed under "Rules followed" was read, searched for, fetched
