@@ -14,7 +14,9 @@ fn config() -> ProptestConfig {
     if cfg!(miri) {
         ProptestConfig { cases: 2, failure_persistence: None, ..ProptestConfig::default() }
     } else {
-        ProptestConfig { cases: 48, ..ProptestConfig::default() }
+        // PROPTEST_CASES, if set, overrides the default number of cases.
+        let cases = std::env::var("PROPTEST_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(48);
+        ProptestConfig { cases, ..ProptestConfig::default() }
     }
 }
 

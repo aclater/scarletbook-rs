@@ -18,7 +18,9 @@ fn config() -> ProptestConfig {
         // Miri's isolation forbids the file system access of failure persistence.
         ProptestConfig { cases: 4, failure_persistence: None, ..ProptestConfig::default() }
     } else {
-        ProptestConfig { cases: 256, ..ProptestConfig::default() }
+        // PROPTEST_CASES, if set, overrides the default number of cases.
+        let cases = std::env::var("PROPTEST_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(256);
+        ProptestConfig { cases, ..ProptestConfig::default() }
     }
 }
 
