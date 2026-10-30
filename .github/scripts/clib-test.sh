@@ -43,7 +43,10 @@ done
 # The sb_* symbols of the shared library's export table.
 case "$(uname -s)" in
   MINGW* | MSYS* | CYGWIN*)
-    objdump -p "$pkg/lib/scarletbook_ffi.dll" | sed -n 's/^[[:space:]]*\[ *[0-9]*\] \(sb_[A-Za-z0-9_]*\)$/\1/p' ;;
+    # The names are the last field of the "[Ordinal/Name Pointer] Table" lines.
+    objdump -p "$pkg/lib/scarletbook_ffi.dll" | tr -d '\r' \
+      | awk '/\[Ordinal\/Name Pointer\] Table/ { t = 1; next } t && NF == 0 { t = 0 } t { print $NF }' \
+      | grep '^sb_' ;;
   Darwin) nm -gU "$pkg/lib/libscarletbook_ffi.dylib" | awk '$2 == "T" { print $3 }' | sed -n 's/^_\(sb_.*\)/\1/p' ;;
   *) nm -D --defined-only "$pkg/lib/libscarletbook_ffi.so" | awk '$2 == "T" { print $3 }' | grep '^sb_' ;;
 esac > exports.txt
