@@ -353,6 +353,11 @@ pub const MAX_LANES: usize = 4;
 /// AVX-512 (`avx512cd`) have more registers, but the compiler pairs the steps of
 /// two frames into vector operations there, which is much slower for 6 channels, so 3
 /// frames are used.
+///
+/// The 1-, 3- and 4-channel choices were measured on generated frames only: the corpus has
+/// no areas of those channel counts yet.
+// TODO(sacd-spec#15): re-check these choices and their outputs on the 1/3/4-channel corpus
+// cases once they are published.
 pub fn lanes(channels: u8) -> usize {
     let avx512 = cfg!(target_feature = "avx512cd");
     match channels {

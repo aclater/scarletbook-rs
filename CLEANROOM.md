@@ -50,6 +50,16 @@ interface and quotes speed figures of two other readers as numbers only; its pro
 entry states that no implementation detail crosses the wall, and none was found in it.
 No benchmark program has been written.
 
+**Update to `1df1e6f` and `34f78a3`.** `1df1e6f` ("Merge pull request #13", round 2 results)
+adds the round 1 real-world survey and the round 2 results to `benchmarks/README.md`, as
+numbers and conditions only, and was the specification for round 3. `34f78a3` ("Merge pull
+request #19") answers sacd-spec#14 (names of the checksum, CPU-specific and other `bench`
+assets) and sacd-spec#18 (7.1 item 3 and the new 4.2 item 6: at most one pass over an area's
+sectors per track or frame range requested). Neither changes the corpus or the charset
+tables (`git diff --stat 775f4ab 34f78a3 -- corpus/ spec/charsets/` is empty), so the
+vendored copies are unchanged. Following `34f78a3`, the x86-64-v3 `bench` asset was
+renamed to `bench-<version>-x86-64-v3-linux.tar.gz`, outside the patterns of benchmark assets.
+
 ## Environment
 
 Work was done on 2026-10-30 in an isolated VM (hostname `scarletbook-cleanroom`, Fedora 44,
@@ -380,3 +390,4 @@ on 2026-10-30: the name `scarletbook` is not taken on crates.io. Nothing was pub
 | 2026-10-30 | benchmarking | `bench` program and release workflow (#14, #15); a third specification gap filed (sacd-spec#9, answered in `af3c3dd`); DST and parallel performance work (#16, #17) and large-image measurements (#18), see "Performance work". No new sources consulted beyond sacd-spec. |
 | 2026-10-30 | round 2 | the round 1 results (sacd-spec `775f4ab`, numbers and conditions only) turned into issues #21 to #25; parallel decoding, decoder and release-provenance work, see "Round 2"; version 0.2.0. No new sources consulted beyond sacd-spec. |
 | 2026-10-30 | round 3 | interleaved DST decoding (#31), performance tooling (#30) and build configuration (#32), see "Round 3"; general references under the owner's round 3 allowance and decision B, see "General references consulted"; patent-hygiene table with every flag cleared on full texts read (#40). |
+| 2026-10-30 | specification `34f78a3` | answers to sacd-spec#14 and #18 applied: the x86-64-v3 `bench` asset renamed outside the benchmark asset patterns; see "Specification version". No new sources consulted beyond sacd-spec. |
