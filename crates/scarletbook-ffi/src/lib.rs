@@ -2,24 +2,12 @@
 
 //! C ABI over the `scarletbook` crate.
 //!
-//! Conventions, for every function:
-//!
-//! - The return value is an `SbStatus`. On failure, `sb_last_error_message()` describes
-//!   the error; the message belongs to the calling thread and stays valid until that
-//!   thread's next call into this library.
-//! - Handles (`SbDisc`, `SbTrackAudio`) are opaque. Each is created by one function and
-//!   released by exactly one call to its `_free` function. Passing NULL to a `_free`
-//!   function does nothing.
-//! - Pointer arguments must be NULL or valid for the access the function documents. NULL
-//!   where a value is required gives `SB_STATUS_INVALID_ARGUMENT`.
-//! - Enumerations passed in (slots, string fields) are plain integers and are validated.
-//! - Strings are copied out as UTF-8 with a terminating NUL: `*len` receives the length
-//!   without the NUL; if `cap <= len` nothing is written and `SB_STATUS_BUFFER_TOO_SMALL`
-//!   is returned. A string can contain U+0000 (a language code can), so use `*len`.
-//! - No panic crosses the boundary: an internal panic returns `SB_STATUS_PANIC`.
-//! - A handle may be moved between threads but must not be used by two threads at once.
+//! The conventions every function follows (status codes, handles, copy-out strings,
+//! threading, callbacks and re-entrancy, panics) are stated once, at the top of the
+//! generated header `include/scarletbook.h`; their source is the `header` of
+//! `cbindgen.toml`.
 
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell, RefMut};
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::fs::File;
 use std::io::{self, BufReader, Cursor, Read, Seek, SeekFrom};
@@ -57,7 +45,7 @@ pub enum SbStatus {
     NoSuchArea = -8,
     /// No track with that number.
     NoSuchTrack = -9,
-    /// A NULL or otherwise invalid argument.
+    /// A NULL or otherwise invalid argument, or a handle used re-entrantly from a callback.
     InvalidArgument = -10,
     /// The output buffer is too small.
     BufferTooSmall = -11,
@@ -65,7 +53,7 @@ pub enum SbStatus {
     Io = -12,
     /// The DST frame is invalid (`sb_dst_decode`).
     InvalidDstFrame = -13,
-    /// An internal error (a bug in this library).
+    /// An internal error (a bug in this library). Free the handles involved.
     Panic = -14,
 }
 
@@ -93,18 +81,46 @@ pub enum SbFrameStatus {
     Invalid = 3,
 }
 
-/// Disc-level strings for `sb_disc_string`: 0 to 15 are the disc text items in the order
-/// of specification 2, 2.5.4; then the two catalogue numbers.
+/// Disc-level strings for `sb_disc_string`: the 16 disc text items of specification 2,
+/// 2.5.4, then the two catalogue numbers.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub enum SbDiscString {
-    /// Album title (0); items 1 to 15 follow in specification order.
+    /// Album title.
     AlbumTitle = 0,
-    /// Disc copyright, phonetic (15).
+    /// Album artist.
+    AlbumArtist = 1,
+    /// Album publisher.
+    AlbumPublisher = 2,
+    /// Album copyright.
+    AlbumCopyright = 3,
+    /// Album title, phonetic.
+    AlbumTitlePhonetic = 4,
+    /// Album artist, phonetic.
+    AlbumArtistPhonetic = 5,
+    /// Album publisher, phonetic.
+    AlbumPublisherPhonetic = 6,
+    /// Album copyright, phonetic.
+    AlbumCopyrightPhonetic = 7,
+    /// Disc title.
+    DiscTitle = 8,
+    /// Disc artist.
+    DiscArtist = 9,
+    /// Disc publisher.
+    DiscPublisher = 10,
+    /// Disc copyright.
+    DiscCopyright = 11,
+    /// Disc title, phonetic.
+    DiscTitlePhonetic = 12,
+    /// Disc artist, phonetic.
+    DiscArtistPhonetic = 13,
+    /// Disc publisher, phonetic.
+    DiscPublisherPhonetic = 14,
+    /// Disc copyright, phonetic.
     DiscCopyrightPhonetic = 15,
-    /// Album catalogue number.
+    /// Album catalogue number (always present; may be empty).
     AlbumCatalogNumber = 16,
-    /// Disc catalogue number.
+    /// Disc catalogue number (always present; may be empty).
     DiscCatalogNumber = 17,
 }
 
@@ -122,14 +138,38 @@ pub enum SbAreaString {
     CopyrightPhonetic = 3,
 }
 
-/// Track strings for `sb_track_string`: 0 to 6 are item types 0x01 to 0x07, 7 to 13 are
-/// 0x81 to 0x87 (specification 3, 3.8); then the ISRC.
+/// Track strings for `sb_track_string`: the text item types 0x01 to 0x07 and 0x81 to 0x87
+/// of specification 3, 3.8, then the ISRC.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub enum SbTrackString {
-    /// Title (0).
+    /// Title (type 0x01).
     Title = 0,
-    /// Extra message, phonetic (13).
+    /// Performer (type 0x02).
+    Performer = 1,
+    /// Songwriter (type 0x03).
+    Songwriter = 2,
+    /// Composer (type 0x04).
+    Composer = 3,
+    /// Arranger (type 0x05).
+    Arranger = 4,
+    /// Message (type 0x06).
+    Message = 5,
+    /// Extra message (type 0x07).
+    ExtraMessage = 6,
+    /// Title, phonetic (type 0x81).
+    TitlePhonetic = 7,
+    /// Performer, phonetic (type 0x82).
+    PerformerPhonetic = 8,
+    /// Songwriter, phonetic (type 0x83).
+    SongwriterPhonetic = 9,
+    /// Composer, phonetic (type 0x84).
+    ComposerPhonetic = 10,
+    /// Arranger, phonetic (type 0x85).
+    ArrangerPhonetic = 11,
+    /// Message, phonetic (type 0x86).
+    MessagePhonetic = 12,
+    /// Extra message, phonetic (type 0x87).
     ExtraMessagePhonetic = 13,
     /// ISRC.
     Isrc = 14,
@@ -251,9 +291,15 @@ pub struct SbFrameInfo {
     pub size: usize,
 }
 
+type Reader = Box<dyn ReadSeek + Send>;
+
 /// An opened disc image.
+///
+/// Its state sits in a `RefCell`: every call takes a shared reference to the handle and
+/// borrows the state, so a call made from inside one of this disc's callbacks finds the
+/// state borrowed and fails cleanly instead of aliasing it.
 pub struct SbDisc {
-    disc: Disc<Box<dyn ReadSeek>>,
+    inner: RefCell<Disc<Reader>>,
     id: u64,
 }
 
@@ -263,13 +309,22 @@ impl std::fmt::Debug for SbDisc {
     }
 }
 
-/// The decoding state of one track. It reads through the disc it was opened from, which
-/// must outlive it.
+/// The decoding state of one track. Each `sb_track_audio_read` call reads through the
+/// disc it was opened from; the disc must be live for those calls (it may be freed
+/// before the track handle, which can then only be freed).
 #[derive(Debug)]
 pub struct SbTrackAudio {
-    cursor: TrackAudioCursor,
+    inner: RefCell<TrackAudioCursor>,
     disc_id: u64,
 }
+
+// Handles may be moved between threads (the conventions allow it); this must keep
+// compiling.
+const _: () = {
+    const fn assert_send<T: Send>() {}
+    assert_send::<SbDisc>();
+    assert_send::<SbTrackAudio>();
+};
 
 trait ReadSeek: Read + Seek {}
 impl<T: Read + Seek> ReadSeek for T {}
@@ -330,6 +385,8 @@ fn guard(f: impl FnOnce() -> Result<SbStatus, Failure>) -> SbStatus {
     }
 }
 
+const REENTRANT: &str = "the handle is in use by the call that invoked this callback";
+
 /// Writes `value` through an output pointer.
 ///
 /// # Safety
@@ -344,28 +401,51 @@ unsafe fn write_out<T>(out: *mut T, value: T) -> Result<(), Failure> {
     Ok(())
 }
 
+/// Sets a handle output pointer to NULL, so that it is defined if the call fails.
+///
+/// # Safety
+///
+/// `out` must be NULL or valid for a write.
+unsafe fn clear_out<T>(out: *mut *mut T) {
+    if !out.is_null() {
+        // SAFETY: non-NULL and valid for a write by this function's contract.
+        unsafe { out.write(std::ptr::null_mut()) };
+    }
+}
+
 /// Borrows a disc handle.
 ///
 /// # Safety
 ///
-/// `disc` must be NULL or a live handle from `sb_disc_open_*`, not used elsewhere for
-/// the duration of the borrow.
-unsafe fn disc_mut<'a>(disc: *mut SbDisc) -> Result<&'a mut SbDisc, Failure> {
-    // SAFETY: NULL or a live, exclusively used handle by this function's contract.
-    unsafe { disc.as_mut() }.ok_or_else(|| Failure::arg("NULL disc handle"))
-}
-
-/// Borrows a disc handle immutably.
-///
-/// # Safety
-///
-/// As [`disc_mut`].
-unsafe fn disc_ref<'a>(disc: *const SbDisc) -> Result<&'a SbDisc, Failure> {
-    // SAFETY: NULL or a live handle by this function's contract.
+/// `disc` must be NULL or a live handle from `sb_disc_open_*`.
+unsafe fn disc_handle<'a>(disc: *const SbDisc) -> Result<&'a SbDisc, Failure> {
+    // SAFETY: NULL or a live handle by this function's contract; only shared references
+    // to it are ever made, so this one cannot alias a mutable one.
     unsafe { disc.as_ref() }.ok_or_else(|| Failure::arg("NULL disc handle"))
 }
 
-/// Copies a string out (see the module conventions).
+/// Borrows a track audio handle.
+///
+/// # Safety
+///
+/// `audio` must be NULL or a live handle from `sb_track_audio_open`.
+unsafe fn audio_handle<'a>(audio: *const SbTrackAudio) -> Result<&'a SbTrackAudio, Failure> {
+    // SAFETY: NULL or a live handle by this function's contract; only shared references
+    // to it are ever made.
+    unsafe { audio.as_ref() }.ok_or_else(|| Failure::arg("NULL track audio handle"))
+}
+
+impl SbDisc {
+    fn get(&self) -> Result<Ref<'_, Disc<Reader>>, Failure> {
+        self.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))
+    }
+
+    fn get_mut(&self) -> Result<RefMut<'_, Disc<Reader>>, Failure> {
+        self.inner.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))
+    }
+}
+
+/// Copies a string out (see the conventions in the header).
 ///
 /// # Safety
 ///
@@ -376,15 +456,9 @@ unsafe fn copy_string(
     cap: usize,
     len: *mut usize,
 ) -> Result<SbStatus, Failure> {
-    let Some(s) = s else {
-        if !len.is_null() {
-            // SAFETY: non-NULL and valid for a write by this function's contract.
-            unsafe { len.write(0) };
-        }
-        return Ok(SbStatus::Absent);
-    };
-    // SAFETY: forwarded contract.
-    unsafe { write_out(len, s.len()) }?;
+    // SAFETY: forwarded contract; `len` is required whatever the string.
+    unsafe { write_out(len, s.map_or(0, str::len)) }?;
+    let Some(s) = s else { return Ok(SbStatus::Absent) };
     if buf.is_null() || cap <= s.len() {
         return Ok(SbStatus::BufferTooSmall);
     }
@@ -414,18 +488,24 @@ fn slot_index(slot: Slot) -> u32 {
     }
 }
 
-fn find_area(disc: &SbDisc, slot: u32) -> Result<&Area, Failure> {
+fn find_area(disc: &Disc<Reader>, slot: u32) -> Result<&Area, Failure> {
     let slot = slot_from(slot)?;
-    disc.disc.toc().area(slot).ok_or_else(|| Error::NoSuchArea(slot).into())
+    disc.toc().area(slot).ok_or_else(|| Error::NoSuchArea(slot).into())
 }
 
-fn open_reader(reader: Box<dyn ReadSeek>, out: *mut *mut SbDisc) -> Result<SbStatus, Failure> {
+/// Opens a disc from a reader; `*out` must already be cleared by the caller.
+///
+/// # Safety
+///
+/// `out` must be NULL or valid for a write.
+unsafe fn open_reader(reader: Reader, out: *mut *mut SbDisc) -> Result<SbStatus, Failure> {
     if out.is_null() {
         return Err(Failure::arg("NULL output pointer"));
     }
     let disc = Disc::open(reader)?;
-    let handle = Box::new(SbDisc { disc, id: NEXT_DISC_ID.fetch_add(1, Ordering::Relaxed) });
-    // SAFETY: `out` is non-NULL and valid for a write by the callers' contracts.
+    let handle =
+        Box::new(SbDisc { inner: RefCell::new(disc), id: NEXT_DISC_ID.fetch_add(1, Ordering::Relaxed) });
+    // SAFETY: `out` is non-NULL and valid for a write by this function's contract.
     unsafe { out.write(Box::into_raw(handle)) };
     Ok(SbStatus::Ok)
 }
@@ -469,13 +549,16 @@ pub extern "C" fn sb_status_name(status: i32) -> *const c_char {
     name.as_ptr()
 }
 
-/// Opens a disc image file. `path` is a NUL-terminated UTF-8 path.
+/// Opens a disc image file. `path` is a NUL-terminated UTF-8 path. On failure `*out` is
+/// set to NULL.
 ///
 /// # Safety
 ///
 /// `path` must be NULL or a valid NUL-terminated string; `out` NULL or valid for a write.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sb_disc_open_file(path: *const c_char, out: *mut *mut SbDisc) -> SbStatus {
+    // SAFETY: forwarded contract.
+    unsafe { clear_out(out) };
     guard(|| {
         if path.is_null() {
             return Err(Failure::arg("NULL path"));
@@ -484,12 +567,13 @@ pub unsafe extern "C" fn sb_disc_open_file(path: *const c_char, out: *mut *mut S
         let path = unsafe { CStr::from_ptr(path) };
         let path = path.to_str().map_err(|_| Failure::arg("path is not UTF-8"))?;
         let file = File::open(path).map_err(|e| Failure(SbStatus::Io, format!("{path}: {e}")))?;
-        open_reader(Box::new(BufReader::new(file)), out)
+        // SAFETY: forwarded contract.
+        unsafe { open_reader(Box::new(BufReader::new(file)), out) }
     })
 }
 
 /// Opens a disc image held in memory. The bytes are copied; the caller may free `data`
-/// when the call returns.
+/// when the call returns. On failure `*out` is set to NULL.
 ///
 /// # Safety
 ///
@@ -497,6 +581,8 @@ pub unsafe extern "C" fn sb_disc_open_file(path: *const c_char, out: *mut *mut S
 /// or valid for a write.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sb_disc_open_memory(data: *const u8, len: usize, out: *mut *mut SbDisc) -> SbStatus {
+    // SAFETY: forwarded contract.
+    unsafe { clear_out(out) };
     guard(|| {
         let bytes = if len == 0 {
             Vec::new()
@@ -506,7 +592,8 @@ pub unsafe extern "C" fn sb_disc_open_memory(data: *const u8, len: usize, out: *
             // SAFETY: non-NULL and valid for `len` bytes of reads by this function's contract.
             unsafe { std::slice::from_raw_parts(data, len) }.to_vec()
         };
-        open_reader(Box::new(Cursor::new(bytes)), out)
+        // SAFETY: forwarded contract.
+        unsafe { open_reader(Box::new(Cursor::new(bytes)), out) }
     })
 }
 
@@ -525,6 +612,10 @@ struct Callbacks {
     seek: SeekFn,
     user: *mut c_void,
 }
+
+// SAFETY: the caller of sb_disc_open_callbacks guarantees that the callbacks and `user`
+// may be used from whichever thread the disc handle is moved to (its # Safety section).
+unsafe impl Send for Callbacks {}
 
 impl Read for Callbacks {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
@@ -552,13 +643,18 @@ impl Seek for Callbacks {
     }
 }
 
-/// Opens a disc image read through callbacks.
+/// Opens a disc image read through callbacks. On failure `*out` is set to NULL.
+///
+/// The callbacks run during this call and during `sb_track_audio_read`, on the calling
+/// thread. A callback that calls back into this library with this disc or one of its
+/// track handles gets `SB_STATUS_INVALID_ARGUMENT` (and `sb_disc_free` /
+/// `sb_track_audio_free` do nothing); other handles may be used.
 ///
 /// # Safety
 ///
-/// `read` and `seek` must be safe to call with `user` until the disc is freed, must not
-/// unwind, and `read` must write at most `len` bytes to `buf`. `out` must be NULL or valid
-/// for a write.
+/// `read` and `seek` must be safe to call with `user`, from any thread the disc is moved
+/// to, until the disc is freed; they must not unwind; `read` must write at most `len`
+/// bytes to `buf`. `out` must be NULL or valid for a write.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sb_disc_open_callbacks(
     read: SbReadFn,
@@ -566,28 +662,36 @@ pub unsafe extern "C" fn sb_disc_open_callbacks(
     user: *mut c_void,
     out: *mut *mut SbDisc,
 ) -> SbStatus {
+    // SAFETY: forwarded contract.
+    unsafe { clear_out(out) };
     guard(|| {
         let (Some(read), Some(seek)) = (read, seek) else {
             return Err(Failure::arg("NULL callback"));
         };
-        open_reader(Box::new(Callbacks { read, seek, user }), out)
+        // SAFETY: forwarded contract.
+        unsafe { open_reader(Box::new(Callbacks { read, seek, user }), out) }
     })
 }
 
-/// Frees a disc. NULL is ignored. Track audio handles opened from it must not be used
-/// afterwards.
+/// Frees a disc. NULL is ignored, and so is a disc whose callback is running (the call is
+/// then a no-op). Track audio handles opened from it can afterwards only be freed.
 ///
 /// # Safety
 ///
 /// `disc` must be NULL or a live handle, freed only once.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sb_disc_free(disc: *mut SbDisc) {
-    if !disc.is_null() {
-        let _ = catch_unwind(AssertUnwindSafe(|| {
-            // SAFETY: a live handle created by Box::into_raw, freed only once.
-            drop(unsafe { Box::from_raw(disc) });
-        }));
-    }
+    let _ = guard(|| {
+        // SAFETY: forwarded contract.
+        let handle = unsafe { disc_handle(disc) }?;
+        if handle.inner.try_borrow_mut().is_err() {
+            return Err(Failure::arg(REENTRANT));
+        }
+        // SAFETY: a live handle created by Box::into_raw and not in use (no borrow is
+        // active, so no call on any frame holds a reference into it), freed only once.
+        drop(unsafe { Box::from_raw(disc) });
+        Ok(SbStatus::Ok)
+    });
 }
 
 /// Disc-level information.
@@ -599,8 +703,8 @@ pub unsafe extern "C" fn sb_disc_free(disc: *mut SbDisc) {
 pub unsafe extern "C" fn sb_disc_info(disc: *const SbDisc, out: *mut SbDiscInfo) -> SbStatus {
     guard(|| {
         // SAFETY: forwarded contract.
-        let d = unsafe { disc_ref(disc) }?;
-        let toc = d.disc.toc();
+        let d = unsafe { disc_handle(disc) }?.get()?;
+        let toc = d.toc();
         let m = &toc.master;
         let info = SbDiscInfo {
             sector_size: toc.sector_format.stored_size() as u32,
@@ -615,7 +719,7 @@ pub unsafe extern "C" fn sb_disc_info(disc: *const SbDisc, out: *mut SbDiscInfo)
             month: m.date.month,
             day: m.date.day,
             area_count: toc.areas.len() as u32,
-            warning_count: u32::try_from(d.disc.warnings().len()).unwrap_or(u32::MAX),
+            warning_count: u32::try_from(d.warnings().len()).unwrap_or(u32::MAX),
         };
         // SAFETY: forwarded contract.
         unsafe { write_out(out, info) }?;
@@ -639,8 +743,8 @@ pub unsafe extern "C" fn sb_disc_string(
 ) -> SbStatus {
     guard(|| {
         // SAFETY: forwarded contract.
-        let d = unsafe { disc_ref(disc) }?;
-        let m = &d.disc.toc().master;
+        let d = unsafe { disc_handle(disc) }?.get()?;
+        let m = &d.toc().master;
         let s = match field {
             16 => Some(m.album_catalog_number.as_str()),
             17 => Some(m.disc_catalog_number.as_str()),
@@ -664,9 +768,8 @@ pub unsafe extern "C" fn sb_disc_string(
 pub unsafe extern "C" fn sb_disc_area(disc: *const SbDisc, index: u32, out: *mut SbAreaInfo) -> SbStatus {
     guard(|| {
         // SAFETY: forwarded contract.
-        let d = unsafe { disc_ref(disc) }?;
-        let a =
-            d.disc.toc().areas.get(index as usize).ok_or_else(|| Failure::arg("area index out of range"))?;
+        let d = unsafe { disc_handle(disc) }?.get()?;
+        let a = d.toc().areas.get(index as usize).ok_or_else(|| Failure::arg("area index out of range"))?;
         let info = SbAreaInfo {
             slot: slot_index(a.slot),
             kind_channels: match a.kind {
@@ -707,8 +810,8 @@ pub unsafe extern "C" fn sb_area_string(
 ) -> SbStatus {
     guard(|| {
         // SAFETY: forwarded contract.
-        let d = unsafe { disc_ref(disc) }?;
-        let area = find_area(d, slot)?;
+        let d = unsafe { disc_handle(disc) }?.get()?;
+        let area = find_area(&d, slot)?;
         let item =
             AreaTextItem::ALL.get(field as usize).ok_or_else(|| Failure::arg("unknown area string"))?;
         // SAFETY: forwarded contract.
@@ -730,8 +833,8 @@ pub unsafe extern "C" fn sb_track_info(
 ) -> SbStatus {
     guard(|| {
         // SAFETY: forwarded contract.
-        let d = unsafe { disc_ref(disc) }?;
-        let area = find_area(d, slot)?;
+        let d = unsafe { disc_handle(disc) }?.get()?;
+        let area = find_area(&d, slot)?;
         let t = area.track(number).ok_or(Error::NoSuchTrack { slot: area.slot, track: number })?;
         let info = SbTrackInfo {
             number: u32::from(t.number),
@@ -768,8 +871,8 @@ pub unsafe extern "C" fn sb_track_string(
 ) -> SbStatus {
     guard(|| {
         // SAFETY: forwarded contract.
-        let d = unsafe { disc_ref(disc) }?;
-        let area = find_area(d, slot)?;
+        let d = unsafe { disc_handle(disc) }?.get()?;
+        let area = find_area(&d, slot)?;
         let t = area.track(number).ok_or(Error::NoSuchTrack { slot: area.slot, track: number })?;
         let s = if field == 14 {
             t.isrc.as_deref()
@@ -815,12 +918,8 @@ fn warning_code(code: WarningCode) -> &'static CStr {
 pub unsafe extern "C" fn sb_disc_warning(disc: *const SbDisc, index: u32, out: *mut SbWarning) -> SbStatus {
     guard(|| {
         // SAFETY: forwarded contract.
-        let d = unsafe { disc_ref(disc) }?;
-        let w = d
-            .disc
-            .warnings()
-            .get(index as usize)
-            .ok_or_else(|| Failure::arg("warning index out of range"))?;
+        let d = unsafe { disc_handle(disc) }?.get()?;
+        let w = d.warnings().get(index as usize).ok_or_else(|| Failure::arg("warning index out of range"))?;
         let info = SbWarning {
             code: warning_code(w.code).as_ptr(),
             slot: w.slot.map_or(-1, |s| slot_index(s) as i32),
@@ -843,14 +942,14 @@ pub unsafe extern "C" fn sb_disc_warning(disc: *const SbDisc, index: u32, out: *
 pub unsafe extern "C" fn sb_track_check(disc: *const SbDisc, slot: u32, number: u32) -> SbStatus {
     guard(|| {
         // SAFETY: forwarded contract.
-        let d = unsafe { disc_ref(disc) }?;
-        d.disc.check_track(slot_from(slot)?, number)?;
+        let d = unsafe { disc_handle(disc) }?.get()?;
+        d.check_track(slot_from(slot)?, number)?;
         Ok(SbStatus::Ok)
     })
 }
 
 /// Opens the decoded audio of a track. Fails with the per-track outcome if the track has
-/// no audio.
+/// no audio. On failure `*out` is set to NULL.
 ///
 /// # Safety
 ///
@@ -862,60 +961,65 @@ pub unsafe extern "C" fn sb_track_audio_open(
     number: u32,
     out: *mut *mut SbTrackAudio,
 ) -> SbStatus {
+    // SAFETY: forwarded contract.
+    unsafe { clear_out(out) };
     guard(|| {
         // SAFETY: forwarded contract.
-        let d = unsafe { disc_ref(disc) }?;
+        let handle = unsafe { disc_handle(disc) }?;
         if out.is_null() {
             return Err(Failure::arg("NULL output pointer"));
         }
-        let cursor = d.disc.track_audio_cursor(slot_from(slot)?, number)?;
-        let handle = Box::new(SbTrackAudio { cursor, disc_id: d.id });
+        let cursor = handle.get()?.track_audio_cursor(slot_from(slot)?, number)?;
+        let audio = Box::new(SbTrackAudio { inner: RefCell::new(cursor), disc_id: handle.id });
         // SAFETY: non-NULL and valid for a write by this function's contract.
-        unsafe { out.write(Box::into_raw(handle)) };
+        unsafe { out.write(Box::into_raw(audio)) };
         Ok(SbStatus::Ok)
     })
 }
 
-/// The channel count of a track's audio (1 to 6), or 0 for NULL.
+/// The channel count of a track's audio (1 to 6), or 0 for NULL or a handle in use.
 ///
 /// # Safety
 ///
 /// `audio` must be NULL or a live handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sb_track_audio_channels(audio: *const SbTrackAudio) -> u32 {
-    // SAFETY: NULL or a live handle by this function's contract.
-    unsafe { audio.as_ref() }.map_or(0, |a| u32::from(a.cursor.channels()))
+    // SAFETY: forwarded contract.
+    let Ok(a) = (unsafe { audio_handle(audio) }) else { return 0 };
+    a.inner.try_borrow().map_or(0, |c| u32::from(c.channels()))
 }
 
 /// Decodes the next frame of a track into `buf` (interleaved, channels x 4704 bytes).
-/// Returns `SB_STATUS_END` after the last frame. `disc` must be the disc the track was
-/// opened from.
+/// Returns `SB_STATUS_END` after the last frame. `disc` must be the live disc the track
+/// was opened from. The disc's read callbacks, if any, run during this call.
 ///
 /// # Safety
 ///
-/// `audio` and `disc` must be NULL or live handles, used by no other thread during the
-/// call; `buf` NULL or valid for `cap` bytes of writes; `info` NULL or valid for a write.
+/// `audio` and `disc` must be NULL or live handles; `buf` NULL or valid for `cap` bytes of
+/// writes; `info` NULL or valid for a write.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sb_track_audio_read(
-    audio: *mut SbTrackAudio,
-    disc: *mut SbDisc,
+    audio: *const SbTrackAudio,
+    disc: *const SbDisc,
     buf: *mut u8,
     cap: usize,
     info: *mut SbFrameInfo,
 ) -> SbStatus {
     guard(|| {
-        // SAFETY: NULL or a live, exclusively used handle by this function's contract.
-        let a = unsafe { audio.as_mut() }.ok_or_else(|| Failure::arg("NULL track audio handle"))?;
         // SAFETY: forwarded contract.
-        let d = unsafe { disc_mut(disc) }?;
+        let a = unsafe { audio_handle(audio) }?;
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?;
         if a.disc_id != d.id {
             return Err(Failure::arg("the track audio handle belongs to another disc"));
         }
-        let size = usize::from(a.cursor.channels()) * scarletbook::audio::FRAME_BYTES_PER_CHANNEL;
+        let mut cursor = a.inner.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))?;
+        let size = usize::from(cursor.channels()) * scarletbook::audio::FRAME_BYTES_PER_CHANNEL;
         if buf.is_null() || cap < size {
             return Err(Failure(SbStatus::BufferTooSmall, format!("a frame needs {size} bytes")));
         }
-        let Some(frame) = a.cursor.next_frame(d.disc.image_mut()) else {
+        let mut disc = d.get_mut()?;
+        let Some(frame) = cursor.next_frame(disc.image_mut()) else {
             return Ok(SbStatus::End);
         };
         let frame = frame?;
@@ -938,11 +1042,12 @@ pub unsafe extern "C" fn sb_track_audio_read(
     })
 }
 
-/// The missing and invalid DST frame counts of a track so far.
+/// The missing and invalid DST frame counts of the frames returned so far.
 ///
 /// # Safety
 ///
-/// `audio` must be NULL or a live handle; `missing` and `invalid` NULL or valid for writes.
+/// `audio` must be NULL or a live handle; `missing` and `invalid` NULL or valid for writes
+/// (both are required; nothing is written unless both are given).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sb_track_audio_counts(
     audio: *const SbTrackAudio,
@@ -950,34 +1055,43 @@ pub unsafe extern "C" fn sb_track_audio_counts(
     invalid: *mut u64,
 ) -> SbStatus {
     guard(|| {
-        // SAFETY: NULL or a live handle by this function's contract.
-        let a = unsafe { audio.as_ref() }.ok_or_else(|| Failure::arg("NULL track audio handle"))?;
         // SAFETY: forwarded contract.
-        unsafe { write_out(missing, a.cursor.missing_frames()) }?;
-        // SAFETY: forwarded contract.
-        unsafe { write_out(invalid, a.cursor.invalid_dst_frames()) }?;
+        let a = unsafe { audio_handle(audio) }?;
+        if missing.is_null() || invalid.is_null() {
+            return Err(Failure::arg("NULL output pointer"));
+        }
+        let cursor = a.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
+        // SAFETY: forwarded contract (checked non-NULL above).
+        unsafe { write_out(missing, cursor.missing_frames()) }?;
+        // SAFETY: forwarded contract (checked non-NULL above).
+        unsafe { write_out(invalid, cursor.invalid_dst_frames()) }?;
         Ok(SbStatus::Ok)
     })
 }
 
-/// Frees a track audio handle. NULL is ignored.
+/// Frees a track audio handle. NULL is ignored, and so is a handle whose read is running
+/// (the call is then a no-op).
 ///
 /// # Safety
 ///
 /// `audio` must be NULL or a live handle, freed only once.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sb_track_audio_free(audio: *mut SbTrackAudio) {
-    if !audio.is_null() {
-        let _ = catch_unwind(AssertUnwindSafe(|| {
-            // SAFETY: a live handle created by Box::into_raw, freed only once.
-            drop(unsafe { Box::from_raw(audio) });
-        }));
-    }
+    let _ = guard(|| {
+        // SAFETY: forwarded contract.
+        let handle = unsafe { audio_handle(audio) }?;
+        if handle.inner.try_borrow_mut().is_err() {
+            return Err(Failure::arg(REENTRANT));
+        }
+        // SAFETY: a live handle created by Box::into_raw and not in use, freed only once.
+        drop(unsafe { Box::from_raw(audio) });
+        Ok(SbStatus::Ok)
+    });
 }
 
-/// Decodes one DST frame of `channels` channels (1 to 6) into `out` (`channels x 4704`
-/// bytes). On `SB_STATUS_INVALID_DST_FRAME`, `*rule` (if not NULL) receives the rule of
-/// specification 5, 5.6 and `out` is unspecified.
+/// Decodes one DST frame of `channels` channels (1 to 6) into the first `channels x 4704`
+/// bytes of `out`. On `SB_STATUS_INVALID_DST_FRAME`, `*rule` (if not NULL) receives the
+/// rule of specification 5, 5.6 and the output bytes are unspecified.
 ///
 /// # Safety
 ///
@@ -997,8 +1111,8 @@ pub unsafe extern "C" fn sb_dst_decode(
         let ch = u8::try_from(channels).ok().filter(|c| (1..=6).contains(c));
         let Some(ch) = ch else { return Err(Failure::arg("channels must be 1 to 6")) };
         let need = usize::from(ch) * scarletbook::dst::FL;
-        if out.is_null() || out_len != need {
-            return Err(Failure(SbStatus::BufferTooSmall, format!("the output must be {need} bytes")));
+        if out.is_null() || out_len < need {
+            return Err(Failure(SbStatus::BufferTooSmall, format!("the output needs {need} bytes")));
         }
         let input: &[u8] = if len == 0 {
             &[]
@@ -1008,9 +1122,9 @@ pub unsafe extern "C" fn sb_dst_decode(
             // SAFETY: non-NULL and valid for `len` bytes of reads by this function's contract.
             unsafe { std::slice::from_raw_parts(frame, len) }
         };
-        // SAFETY: non-NULL, valid for out_len bytes of writes and not overlapping `frame`,
-        // by this function's contract.
-        let output = unsafe { std::slice::from_raw_parts_mut(out, out_len) };
+        // SAFETY: non-NULL, valid for out_len >= need bytes of writes and not overlapping
+        // `frame`, by this function's contract.
+        let output = unsafe { std::slice::from_raw_parts_mut(out, need) };
         match scarletbook::dst::decode(input, ch, output) {
             Ok(()) => Ok(SbStatus::Ok),
             Err(e) => {
@@ -1022,4 +1136,28 @@ pub unsafe extern "C" fn sb_dst_decode(
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guard_turns_a_panic_into_a_status() {
+        let status = guard(|| -> Result<SbStatus, Failure> {
+            #[allow(clippy::panic)]
+            {
+                panic!("deliberate")
+            }
+        });
+        assert_eq!(status, SbStatus::Panic);
+        // SAFETY: sb_last_error_message returns a valid NUL-terminated string.
+        let msg = unsafe { CStr::from_ptr(sb_last_error_message()) };
+        assert!(msg.to_bytes().starts_with(b"internal error"));
+        // The next call clears the message.
+        assert_eq!(guard(|| Ok(SbStatus::Ok)), SbStatus::Ok);
+        // SAFETY: as above.
+        let msg = unsafe { CStr::from_ptr(sb_last_error_message()) };
+        assert!(msg.to_bytes().is_empty());
+    }
 }

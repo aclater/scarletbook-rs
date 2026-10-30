@@ -1,5 +1,44 @@
 /* SPDX-License-Identifier: MIT OR Apache-2.0 */
 
+/*
+ * scarletbook: a clean-room reader for Super Audio CD (Scarletbook) disc images.
+ *
+ * Conventions, for every function:
+ *
+ * - Status. Calls return an SbStatus (functions returning other types say so). On
+ *   failure, sb_last_error_message() describes the error. The message belongs to the
+ *   calling thread and stays valid until that thread's next call into this library.
+ *
+ * - Handles. SbDisc and SbTrackAudio are opaque. Each is created by one function and
+ *   released by exactly one call to its _free function; passing NULL to a _free function
+ *   does nothing. A function that creates a handle sets *out to NULL when it fails, so
+ *   freeing that pointer afterwards is safe.
+ *
+ * - Pointers. Pointer arguments must be NULL or valid for the access the function
+ *   documents. NULL where a value is required gives SB_STATUS_INVALID_ARGUMENT.
+ *   Enumerations passed in (slots, string fields) are plain integers and are validated.
+ *
+ * - Strings are copied out as UTF-8 with a terminating NUL. len must not be NULL.
+ *   *len receives the string's length without the NUL (0 when the string is absent).
+ *   If the string is absent the call returns SB_STATUS_ABSENT and writes nothing to buf.
+ *   If buf is NULL or cap <= *len, nothing is written to buf and the call returns
+ *   SB_STATUS_BUFFER_TOO_SMALL: call again with cap > *len. A string can contain U+0000
+ *   (a language code can), so use *len rather than strlen.
+ *
+ * - Threads. A handle may be moved between threads, but must not be used by two threads
+ *   at once. Read and seek callbacks (sb_disc_open_callbacks) run on the thread that
+ *   makes the call that needs them.
+ *
+ * - Callbacks and re-entrancy. While a disc's callback runs, that disc and its track
+ *   handles are in use: calling into this library with them from the callback returns
+ *   SB_STATUS_INVALID_ARGUMENT, and sb_disc_free / sb_track_audio_free on them do
+ *   nothing. Other handles may be used.
+ *
+ * - Panics. No panic crosses the boundary: an internal error returns SB_STATUS_PANIC.
+ *   The handles involved should then be freed and not used further. If the library is
+ *   built with panic=abort, the process aborts instead.
+ */
+
 #ifndef SCARLETBOOK_H
 #define SCARLETBOOK_H
 
@@ -62,7 +101,7 @@ typedef enum SbStatus {
    */
   SB_STATUS_NO_SUCH_TRACK = -9,
   /*
-   A NULL or otherwise invalid argument.
+   A NULL or otherwise invalid argument, or a handle used re-entrantly from a callback.
    */
   SB_STATUS_INVALID_ARGUMENT = -10,
   /*
@@ -78,7 +117,7 @@ typedef enum SbStatus {
    */
   SB_STATUS_INVALID_DST_FRAME = -13,
   /*
-   An internal error (a bug in this library).
+   An internal error (a bug in this library). Free the handles involved.
    */
   SB_STATUS_PANIC = -14,
 } SbStatus;
@@ -120,24 +159,80 @@ typedef enum SbSlot {
 } SbSlot;
 
 /*
- Disc-level strings for `sb_disc_string`: 0 to 15 are the disc text items in the order
- of specification 2, 2.5.4; then the two catalogue numbers.
+ Disc-level strings for `sb_disc_string`: the 16 disc text items of specification 2,
+ 2.5.4, then the two catalogue numbers.
  */
 typedef enum SbDiscString {
   /*
-   Album title (0); items 1 to 15 follow in specification order.
+   Album title.
    */
   SB_DISC_STRING_ALBUM_TITLE = 0,
   /*
-   Disc copyright, phonetic (15).
+   Album artist.
+   */
+  SB_DISC_STRING_ALBUM_ARTIST = 1,
+  /*
+   Album publisher.
+   */
+  SB_DISC_STRING_ALBUM_PUBLISHER = 2,
+  /*
+   Album copyright.
+   */
+  SB_DISC_STRING_ALBUM_COPYRIGHT = 3,
+  /*
+   Album title, phonetic.
+   */
+  SB_DISC_STRING_ALBUM_TITLE_PHONETIC = 4,
+  /*
+   Album artist, phonetic.
+   */
+  SB_DISC_STRING_ALBUM_ARTIST_PHONETIC = 5,
+  /*
+   Album publisher, phonetic.
+   */
+  SB_DISC_STRING_ALBUM_PUBLISHER_PHONETIC = 6,
+  /*
+   Album copyright, phonetic.
+   */
+  SB_DISC_STRING_ALBUM_COPYRIGHT_PHONETIC = 7,
+  /*
+   Disc title.
+   */
+  SB_DISC_STRING_DISC_TITLE = 8,
+  /*
+   Disc artist.
+   */
+  SB_DISC_STRING_DISC_ARTIST = 9,
+  /*
+   Disc publisher.
+   */
+  SB_DISC_STRING_DISC_PUBLISHER = 10,
+  /*
+   Disc copyright.
+   */
+  SB_DISC_STRING_DISC_COPYRIGHT = 11,
+  /*
+   Disc title, phonetic.
+   */
+  SB_DISC_STRING_DISC_TITLE_PHONETIC = 12,
+  /*
+   Disc artist, phonetic.
+   */
+  SB_DISC_STRING_DISC_ARTIST_PHONETIC = 13,
+  /*
+   Disc publisher, phonetic.
+   */
+  SB_DISC_STRING_DISC_PUBLISHER_PHONETIC = 14,
+  /*
+   Disc copyright, phonetic.
    */
   SB_DISC_STRING_DISC_COPYRIGHT_PHONETIC = 15,
   /*
-   Album catalogue number.
+   Album catalogue number (always present; may be empty).
    */
   SB_DISC_STRING_ALBUM_CATALOG_NUMBER = 16,
   /*
-   Disc catalogue number.
+   Disc catalogue number (always present; may be empty).
    */
   SB_DISC_STRING_DISC_CATALOG_NUMBER = 17,
 } SbDiscString;
@@ -165,16 +260,64 @@ typedef enum SbAreaString {
 } SbAreaString;
 
 /*
- Track strings for `sb_track_string`: 0 to 6 are item types 0x01 to 0x07, 7 to 13 are
- 0x81 to 0x87 (specification 3, 3.8); then the ISRC.
+ Track strings for `sb_track_string`: the text item types 0x01 to 0x07 and 0x81 to 0x87
+ of specification 3, 3.8, then the ISRC.
  */
 typedef enum SbTrackString {
   /*
-   Title (0).
+   Title (type 0x01).
    */
   SB_TRACK_STRING_TITLE = 0,
   /*
-   Extra message, phonetic (13).
+   Performer (type 0x02).
+   */
+  SB_TRACK_STRING_PERFORMER = 1,
+  /*
+   Songwriter (type 0x03).
+   */
+  SB_TRACK_STRING_SONGWRITER = 2,
+  /*
+   Composer (type 0x04).
+   */
+  SB_TRACK_STRING_COMPOSER = 3,
+  /*
+   Arranger (type 0x05).
+   */
+  SB_TRACK_STRING_ARRANGER = 4,
+  /*
+   Message (type 0x06).
+   */
+  SB_TRACK_STRING_MESSAGE = 5,
+  /*
+   Extra message (type 0x07).
+   */
+  SB_TRACK_STRING_EXTRA_MESSAGE = 6,
+  /*
+   Title, phonetic (type 0x81).
+   */
+  SB_TRACK_STRING_TITLE_PHONETIC = 7,
+  /*
+   Performer, phonetic (type 0x82).
+   */
+  SB_TRACK_STRING_PERFORMER_PHONETIC = 8,
+  /*
+   Songwriter, phonetic (type 0x83).
+   */
+  SB_TRACK_STRING_SONGWRITER_PHONETIC = 9,
+  /*
+   Composer, phonetic (type 0x84).
+   */
+  SB_TRACK_STRING_COMPOSER_PHONETIC = 10,
+  /*
+   Arranger, phonetic (type 0x85).
+   */
+  SB_TRACK_STRING_ARRANGER_PHONETIC = 11,
+  /*
+   Message, phonetic (type 0x86).
+   */
+  SB_TRACK_STRING_MESSAGE_PHONETIC = 12,
+  /*
+   Extra message, phonetic (type 0x87).
    */
   SB_TRACK_STRING_EXTRA_MESSAGE_PHONETIC = 13,
   /*
@@ -185,12 +328,17 @@ typedef enum SbTrackString {
 
 /*
  An opened disc image.
+
+ Its state sits in a `RefCell`: every call takes a shared reference to the handle and
+ borrows the state, so a call made from inside one of this disc's callbacks finds the
+ state borrowed and fails cleanly instead of aliasing it.
  */
 typedef struct SbDisc SbDisc;
 
 /*
- The decoding state of one track. It reads through the disc it was opened from, which
- must outlive it.
+ The decoding state of one track. Each `sb_track_audio_read` call reads through the
+ disc it was opened from; the disc must be live for those calls (it may be freed
+ before the track handle, which can then only be freed).
  */
 typedef struct SbTrackAudio SbTrackAudio;
 
@@ -428,7 +576,8 @@ const char *sb_last_error_message(void);
 const char *sb_status_name(int32_t status);
 
 /*
- Opens a disc image file. `path` is a NUL-terminated UTF-8 path.
+ Opens a disc image file. `path` is a NUL-terminated UTF-8 path. On failure `*out` is
+ set to NULL.
 
  # Safety
 
@@ -438,7 +587,7 @@ enum SbStatus sb_disc_open_file(const char *path, struct SbDisc **out);
 
 /*
  Opens a disc image held in memory. The bytes are copied; the caller may free `data`
- when the call returns.
+ when the call returns. On failure `*out` is set to NULL.
 
  # Safety
 
@@ -448,19 +597,24 @@ enum SbStatus sb_disc_open_file(const char *path, struct SbDisc **out);
 enum SbStatus sb_disc_open_memory(const uint8_t *data, size_t len, struct SbDisc **out);
 
 /*
- Opens a disc image read through callbacks.
+ Opens a disc image read through callbacks. On failure `*out` is set to NULL.
+
+ The callbacks run during this call and during `sb_track_audio_read`, on the calling
+ thread. A callback that calls back into this library with this disc or one of its
+ track handles gets `SB_STATUS_INVALID_ARGUMENT` (and `sb_disc_free` /
+ `sb_track_audio_free` do nothing); other handles may be used.
 
  # Safety
 
- `read` and `seek` must be safe to call with `user` until the disc is freed, must not
- unwind, and `read` must write at most `len` bytes to `buf`. `out` must be NULL or valid
- for a write.
+ `read` and `seek` must be safe to call with `user`, from any thread the disc is moved
+ to, until the disc is freed; they must not unwind; `read` must write at most `len`
+ bytes to `buf`. `out` must be NULL or valid for a write.
  */
 enum SbStatus sb_disc_open_callbacks(SbReadFn read, SbSeekFn seek, void *user, struct SbDisc **out);
 
 /*
- Frees a disc. NULL is ignored. Track audio handles opened from it must not be used
- afterwards.
+ Frees a disc. NULL is ignored, and so is a disc whose callback is running (the call is
+ then a no-op). Track audio handles opened from it can afterwards only be freed.
 
  # Safety
 
@@ -563,7 +717,7 @@ enum SbStatus sb_track_check(const struct SbDisc *disc, uint32_t slot, uint32_t 
 
 /*
  Opens the decoded audio of a track. Fails with the per-track outcome if the track has
- no audio.
+ no audio. On failure `*out` is set to NULL.
 
  # Safety
 
@@ -575,7 +729,7 @@ enum SbStatus sb_track_audio_open(const struct SbDisc *disc,
                                   struct SbTrackAudio **out);
 
 /*
- The channel count of a track's audio (1 to 6), or 0 for NULL.
+ The channel count of a track's audio (1 to 6), or 0 for NULL or a handle in use.
 
  # Safety
 
@@ -585,33 +739,35 @@ uint32_t sb_track_audio_channels(const struct SbTrackAudio *audio);
 
 /*
  Decodes the next frame of a track into `buf` (interleaved, channels x 4704 bytes).
- Returns `SB_STATUS_END` after the last frame. `disc` must be the disc the track was
- opened from.
+ Returns `SB_STATUS_END` after the last frame. `disc` must be the live disc the track
+ was opened from. The disc's read callbacks, if any, run during this call.
 
  # Safety
 
- `audio` and `disc` must be NULL or live handles, used by no other thread during the
- call; `buf` NULL or valid for `cap` bytes of writes; `info` NULL or valid for a write.
+ `audio` and `disc` must be NULL or live handles; `buf` NULL or valid for `cap` bytes of
+ writes; `info` NULL or valid for a write.
  */
-enum SbStatus sb_track_audio_read(struct SbTrackAudio *audio,
-                                  struct SbDisc *disc,
+enum SbStatus sb_track_audio_read(const struct SbTrackAudio *audio,
+                                  const struct SbDisc *disc,
                                   uint8_t *buf,
                                   size_t cap,
                                   struct SbFrameInfo *info);
 
 /*
- The missing and invalid DST frame counts of a track so far.
+ The missing and invalid DST frame counts of the frames returned so far.
 
  # Safety
 
- `audio` must be NULL or a live handle; `missing` and `invalid` NULL or valid for writes.
+ `audio` must be NULL or a live handle; `missing` and `invalid` NULL or valid for writes
+ (both are required; nothing is written unless both are given).
  */
 enum SbStatus sb_track_audio_counts(const struct SbTrackAudio *audio,
                                     uint64_t *missing,
                                     uint64_t *invalid);
 
 /*
- Frees a track audio handle. NULL is ignored.
+ Frees a track audio handle. NULL is ignored, and so is a handle whose read is running
+ (the call is then a no-op).
 
  # Safety
 
@@ -620,9 +776,9 @@ enum SbStatus sb_track_audio_counts(const struct SbTrackAudio *audio,
 void sb_track_audio_free(struct SbTrackAudio *audio);
 
 /*
- Decodes one DST frame of `channels` channels (1 to 6) into `out` (`channels x 4704`
- bytes). On `SB_STATUS_INVALID_DST_FRAME`, `*rule` (if not NULL) receives the rule of
- specification 5, 5.6 and `out` is unspecified.
+ Decodes one DST frame of `channels` channels (1 to 6) into the first `channels x 4704`
+ bytes of `out`. On `SB_STATUS_INVALID_DST_FRAME`, `*rule` (if not NULL) receives the
+ rule of specification 5, 5.6 and the output bytes are unspecified.
 
  # Safety
 
