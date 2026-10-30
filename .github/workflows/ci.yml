@@ -43,6 +43,16 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  # The criterion benchmarks are compiled so that they do not rot; timing them on shared
+  # runners would mean nothing (README, "Measuring performance").
+  bench-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup toolchain install "$RUST_STABLE" --profile minimal && rustup default "$RUST_STABLE"
+      - run: cargo bench --workspace --locked --no-run
+      - run: bash -n perf/*.sh
+
   msrv:
     runs-on: ubuntu-latest
     steps:

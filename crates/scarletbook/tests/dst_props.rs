@@ -5,10 +5,13 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "common/dst_enc.rs"]
+mod dst_enc;
 mod harness;
 
+use dst_enc::{encode_simple as encode, interleave};
 use proptest::prelude::*;
-use scarletbook::dst::{self, DstError, FL, NB};
+use scarletbook::dst::{self, DstError, FL};
 
 fn config() -> ProptestConfig {
     if cfg!(miri) {
@@ -18,138 +21,6 @@ fn config() -> ProptestConfig {
         let cases = std::env::var("PROPTEST_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(48);
         ProptestConfig { cases, ..ProptestConfig::default() }
     }
-}
-
-#[derive(Default)]
-struct BitWriter {
-    bits: Vec<u8>,
-}
-
-impl BitWriter {
-    fn put(&mut self, v: u32, n: u32) {
-        for i in (0..n).rev() {
-            self.bits.push(((v >> i) & 1) as u8);
-        }
-    }
-
-    fn bytes(&self) -> Vec<u8> {
-        self.bits.chunks(8).map(|c| c.iter().enumerate().fold(0u8, |b, (i, &x)| b | (x << (7 - i)))).collect()
-    }
-}
-
-/// The arithmetic encoder of annex 5.A.6; `lo` holds Lo's bits, most significant first.
-struct ArithEncoder {
-    lo: Vec<u8>,
-    a: u32,
-}
-
-impl ArithEncoder {
-    fn new() -> Self {
-        ArithEncoder { lo: vec![0; 12], a: 4095 }
-    }
-
-    /// Adds `v << shift` to Lo, propagating the carry towards the most significant bit.
-    fn add(&mut self, v: u32, shift: usize) {
-        let mut carry = 0u32;
-        let n = self.lo.len();
-        let mut i = 0;
-        while carry != 0 || (i < 32 && v >> i != 0) {
-            let idx = (n - 1).checked_sub(shift + i).expect("carry reached cb[0]");
-            let bit = if i < 32 { (v >> i) & 1 } else { 0 };
-            let sum = u32::from(self.lo[idx]) + bit + carry;
-            self.lo[idx] = (sum & 1) as u8;
-            carry = sum >> 1;
-            i += 1;
-        }
-    }
-
-    fn encode(&mut self, e: u32, p: u32) {
-        let q = (self.a >> 8) | ((self.a >> 7) & 1);
-        let w0 = q * p;
-        let w1 = self.a - w0;
-        if e == 1 {
-            self.a = w1;
-        } else {
-            self.add(w1, 0);
-            self.a = w0;
-        }
-        while self.a < 2048 {
-            self.a <<= 1;
-            self.lo.push(0);
-        }
-    }
-
-    /// The codeword: cb[0] = 0, then the bits of floor(Mv / 2^11).
-    fn finish(mut self) -> Vec<u8> {
-        let n = self.lo.len();
-        if self.lo[n - 11..].iter().any(|&b| b != 0) {
-            self.lo[n - 11..].fill(0);
-            self.add(1, 11);
-        }
-        let mut out = vec![0u8];
-        out.extend_from_slice(&self.lo[..n - 11]);
-        out
-    }
-}
-
-/// Encodes per-channel DSD (each `FL` bytes) with one filter and one ptable for every
-/// channel, the simplest coded frame of annex 5.A.1.
-fn encode(signal: &[Vec<u8>], coefs: &[i32], ptable: &[u32], half: &[bool]) -> Vec<u8> {
-    let nch = signal.len();
-    // A one-entry ptable sends only its length; its entry is 128 (specification 5, 5.3.6).
-    let ptable: &[u32] = if ptable.len() == 1 { &[128] } else { ptable };
-    let mut w = BitWriter::default();
-    w.put(1, 1); // DST_coded
-    w.put(1, 1); // same_segmentation
-    w.put(1, 1); // same_segm_all_ch
-    w.put(1, 1); // end_of_channel_segm
-    w.put(1, 1); // same_mapping
-    w.put(1, 1); // same_map_all_ch (one segment: no table indexes)
-    for &h in half {
-        w.put(u32::from(h), 1);
-    }
-    let order = coefs.len();
-    w.put(order as u32 - 1, 7);
-    w.put(0, 1); // coefficients verbatim
-    for &a in coefs {
-        w.put((a as u32) & 0x1FF, 9);
-    }
-    w.put(ptable.len() as u32 - 1, 6);
-    if ptable.len() > 1 {
-        w.put(0, 1);
-        for &p in ptable {
-            w.put(p - 1, 7);
-        }
-    }
-    let mut enc = ArithEncoder::new();
-    let px = u32::from(((coefs[0] & 0x7F) as u8).reverse_bits() >> 1) + 1;
-    enc.encode(0, px);
-    let mut history = vec![0xAAAA_AAAA_AAAA_AAAA_AAAA_AAAA_AAAA_AAAAu128; nch];
-    for n in 0..NB {
-        for c in 0..nch {
-            let h = history[c];
-            let s: i32 = coefs.iter().enumerate().map(|(i, &a)| if (h >> i) & 1 == 1 { a } else { -a }).sum();
-            let s = if s == 32768 { -32768 } else { s };
-            let sign = u32::from(s < 0);
-            let p = if half[c] && n < order {
-                128
-            } else {
-                ptable[((s.unsigned_abs() / 8) as usize).min(ptable.len() - 1)]
-            };
-            let y = u32::from((signal[c][n / 8] >> (7 - n % 8)) & 1);
-            enc.encode(y ^ sign, p);
-            history[c] = (h << 1) | u128::from(y);
-        }
-    }
-    for b in enc.finish() {
-        w.put(u32::from(b), 1);
-    }
-    w.bytes()
-}
-
-fn interleave(signal: &[Vec<u8>]) -> Vec<u8> {
-    let nch = signal.len();
-    (0..FL * nch).map(|i| signal[i % nch][i / nch]).collect()
 }
 
 fn signal_strategy(nch: usize) -> impl Strategy<Value = Vec<Vec<u8>>> {
@@ -248,4 +119,24 @@ fn header_overrun_is_invalid() {
     put(0, 1);
     let frame = (w << (64 - n)).to_be_bytes();
     assert_eq!(dst::decode(&frame[..4], 1, &mut out), Err(DstError::ArithmeticCode));
+}
+
+/// The generated stress set (as used by the benchmarks) decodes to its signal, in every
+/// layout: segmented, per-channel and coded filters and ptables.
+#[test]
+#[cfg_attr(miri, ignore = "decodes full frames")]
+fn stress_set_round_trip() {
+    let mut dec = scarletbook::DstDecoder::new();
+    for f in dst_enc::stress_set(1) {
+        let mut out = vec![0u8; FL * usize::from(f.channels)];
+        dec.decode(&f.frame, f.channels, &mut out).unwrap();
+        assert!(out == f.audio, "{} channels, {}: decoded audio differs", f.channels, f.layout);
+        eprintln!(
+            "{} ch {}: {} bytes ({:.1}%)",
+            f.channels,
+            f.layout,
+            f.frame.len(),
+            100.0 * f.frame.len() as f64 / out.len() as f64
+        );
+    }
 }

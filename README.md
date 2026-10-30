@@ -71,6 +71,43 @@ build provenance attestation:
 gh attestation verify bench-<version>-x86_64-linux.tar.gz -R aclater/scarletbook-rs
 ```
 
+## Measuring performance
+
+Two criterion benchmarks track the decoder between releases:
+
+```sh
+cargo bench -p scarletbook --bench dst_frames             # DstDecoder::decode, one frame per iteration
+cargo bench -p scarletbook --bench dst_frames -- stress/2ch
+cargo bench -p scarletbook-conformance --bench pipeline   # Disc::open + TrackAudio, in-memory images
+```
+
+- `dst_frames` reports the time per frame and symbols per second (37 632 x channels per
+  frame) for two sets, per channel count: `corpus/Nch`, every coded DST frame of the corpus
+  images `dst-*.iso` that decodes; and `stress/Nch-LAYOUT`, 2- and 6-channel frames
+  generated at start-up by the annex 5.A encoder of `crates/scarletbook/tests/common/dst_enc.rs`
+  from a seeded sigma-delta signal (order-128 filters, order-32 filters, and a layout with
+  several filter and ptable segments). The stress frames are identical on every run.
+- `pipeline` reads every track of a 2-channel and a 6-channel area of small synthetic
+  images (plain DSD, DST, DST in 2064-byte sectors) on one thread.
+
+The scripts in `perf/` need Linux and `perf`:
+
+| Script | What it does |
+|---|---|
+| `perf/cycles-per-symbol.sh [NAME...]` | cycles, instructions, IPC per decoded symbol and ms per frame for `dst_frames` benchmarks, from `perf stat` |
+| `perf/flamegraph.sh NAME [OUT.svg]` | `perf record` and inferno (`cargo install --locked inferno --version 0.12.8`) flame graph of `DstDecoder::decode` |
+| `perf/compare.sh REV_A REV_B [FILTER]` | builds two revisions (`.` is the working tree) into separate target directories, runs `dst_frames` alternately, pinned, and prints per-benchmark and per-group changes |
+
+Pinning: run on an otherwise idle machine and pin to one CPU (the scripts use `taskset`,
+CPU 2 by default; set `CPU=`). Turbo and frequency scaling still move results by a few
+per cent between sessions, so compare only figures taken in one session, alternately, as
+`compare.sh` does. `RUSTFLAGS="-C target-cpu=znver5"` builds for the measuring machine's CPU.
+
+Which figures count: these benchmarks are for development and catch regressions; the corpus
+frames are small test streams and the stress frames are synthetic. The figures against the
+targets come only from the benchmark rounds on real discs recorded in sacd-spec
+`benchmarks/README.md`. CI only compiles the benchmarks; it never times them.
+
 Minimum supported Rust version: 1.85.
 
 ## Licence

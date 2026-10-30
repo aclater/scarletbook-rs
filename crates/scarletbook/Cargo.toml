@@ -19,9 +19,15 @@ rayon = { version = "1.10", optional = true }
 thiserror = "2"
 
 [dev-dependencies]
+# Benchmarks (benches/); no plotting.
+criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
 proptest = { version = "1", default-features = false, features = ["std"] }
 # Small thread pools in the tests of the `parallel` feature.
 rayon = "1.10"
+
+[[bench]]
+name = "dst_frames"
+harness = false
 
 [lints]
 workspace = true
