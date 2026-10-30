@@ -93,7 +93,7 @@ impl ArithEncoder {
         }
     }
 
-    /// The codeword: cb[0] = 0, then the bits of floor(Mv / 2^11).
+    /// The codeword: `cb[0] = 0`, then the bits of floor(Mv / 2^11).
     pub fn finish(mut self) -> Vec<u8> {
         let n = self.lo.len();
         if self.lo[n - 11..].iter().any(|&b| b != 0) {
@@ -332,7 +332,7 @@ fn write_ptable(w: &mut BitWriter, ptable: &[u32], coded: bool) {
 /// The initial prediction history of 5.5.2.
 pub const INITIAL_HISTORY: u128 = 0xAAAA_AAAA_AAAA_AAAA_AAAA_AAAA_AAAA_AAAA;
 
-/// Spred of 5.5.3 for a history (bit i = h[i]).
+/// Spred of 5.5.3 for a history (bit i = `h[i]`).
 pub fn predict(h: u128, coefs: &[i32]) -> i32 {
     let s: i32 = coefs.iter().enumerate().map(|(i, &a)| if (h >> i) & 1 == 1 { a } else { -a }).sum();
     if s == 32768 { -32768 } else { s }
