@@ -65,10 +65,14 @@ Compatibility policy and verification of this archive (SHA-256, build provenance
 https://github.com/aclater/scarletbook-rs#c-library
 EOF
 tar -C dist -czf "$pkg.tar.gz" "$name"
+# "<hash>  <file>" (two spaces, text mode) on every platform: Git Bash's sha256sum would
+# otherwise write binary mode, "<hash> *<file>".
 if command -v sha256sum > /dev/null; then
-  (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+  hash=$(sha256sum "dist/$name.tar.gz" | cut -d ' ' -f 1)
 else
-  (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+  hash=$(shasum -a 256 "dist/$name.tar.gz" | cut -d ' ' -f 1)
 fi
+printf '%s  %s\n' "$hash" "$name.tar.gz" > "dist/$name.tar.gz.sha256"
+grep -Eq "^[0-9a-f]{64}  $name\.tar\.gz\$" "dist/$name.tar.gz.sha256"
 ls -l "$pkg/lib" "$pkg.tar.gz"
 cat "$pkg.tar.gz.sha256"

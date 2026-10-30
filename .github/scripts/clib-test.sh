@@ -40,4 +40,11 @@ for id in hostile-base dst-features-2ch-6ch dst-invalid-frames-6ch layout-2054 t
   echo "$id: C smoke test passed (static and shared)"
 done
 
-"$python" .github/scripts/clib-smoke.py "$pkg"
+# The sb_* symbols of the shared library's export table.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN*)
+    objdump -p "$pkg/lib/scarletbook_ffi.dll" | sed -n 's/^[[:space:]]*\[ *[0-9]*\] \(sb_[A-Za-z0-9_]*\)$/\1/p' ;;
+  Darwin) nm -gU "$pkg/lib/libscarletbook_ffi.dylib" | awk '$2 == "T" { print $3 }' | sed -n 's/^_\(sb_.*\)/\1/p' ;;
+  *) nm -D --defined-only "$pkg/lib/libscarletbook_ffi.so" | awk '$2 == "T" { print $3 }' | grep '^sb_' ;;
+esac > exports.txt
+"$python" .github/scripts/clib-smoke.py "$pkg" exports.txt

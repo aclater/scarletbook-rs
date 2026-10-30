@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 """Checks the C ABI against its baseline, so that a breaking change bumps SB_ABI_VERSION.
 
-Usage: abi-check.py [--write]
+Usage: abi-check.py [--write] [--base FILE]
 
 crates/scarletbook-ffi/abi/ holds one baseline per ABI version, abi-N.txt: the
 declarations of include/scarletbook.h with comments and layout removed, so that only a
@@ -17,7 +17,12 @@ baseline of the header's SB_ABI_VERSION must exist, be the newest, and match the
 
 --write writes the baseline of the header's SB_ABI_VERSION. It overwrites an existing
 baseline only for an addition; baselines of earlier versions are history.
+
+--base FILE also classifies the header against FILE, the same version's baseline on the
+base branch (CI passes it on pull requests), so that rewriting the baseline by hand cannot
+hide a breaking change.
 """
+import argparse
 import difflib
 import pathlib
 import re
@@ -69,12 +74,15 @@ def classify(old, new):
         if line.startswith("}"):
             stack.pop()
         if line.endswith("{"):
-            stack.append("struct" if re.search(r"\bstruct\b", line) else "enum" if "enum" in line else "top")
+            # Struct and union bodies are layout; enum bodies take new enumerators.
+            stack.append(
+                "layout" if re.search(r"\b(struct|union)\b", line) else "enum" if "enum" in line else "top"
+            )
     context.append("top")
     for op, i1, _, _, _ in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
-        # Inserted lines are new declarations, or new enumerators; a new struct field
-        # changes the struct's layout.
-        if op in ("replace", "delete") or (op == "insert" and context[i1] == "struct"):
+        # Inserted lines are new declarations, or new enumerators; a new struct or union
+        # field changes the layout.
+        if op in ("replace", "delete") or (op == "insert" and context[i1] == "layout"):
             return "breaking"
     return "additive"
 
@@ -83,21 +91,34 @@ def diff(old, new, name):
     return "".join(difflib.unified_diff(old.splitlines(True), new.splitlines(True), name, "include/scarletbook.h"))
 
 
+def breaking(old, abi, version, name):
+    sys.exit(
+        f"breaking change: bump SB_ABI_VERSION and add abi-{version + 1}.txt (bump it in "
+        "crates/scarletbook-ffi/src/lib.rs, regenerate the header with cbindgen, then run "
+        f"`python3 .github/scripts/abi-check.py --write`)\n{diff(old, abi, name)}"
+    )
+
+
 def main():
-    write = sys.argv[1:] == ["--write"]
-    if sys.argv[1:] not in ([], ["--write"]):
-        sys.exit(__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--write", action="store_true", help="write the baseline (see above)")
+    parser.add_argument("--base", type=pathlib.Path, help="the base branch's baseline of the same version")
+    args = parser.parse_args()
     abi = normalise(HEADER.read_text(encoding="utf-8"))
     found = re.search(r"^#define SB_ABI_VERSION (\d+)$", abi, flags=re.M)
     if not found:
         sys.exit(f"{HEADER}: no #define SB_ABI_VERSION")
     version = int(found.group(1))
+    if args.base is not None and classify(args.base.read_text(encoding="utf-8"), abi) == "breaking":
+        breaking(args.base.read_text(encoding="utf-8"), abi, version, f"{args.base.name} (base branch)")
     baseline = SNAPSHOTS / f"abi-{version}.txt"
-    versions = sorted(int(p.stem[4:]) for p in SNAPSHOTS.glob("abi-*.txt"))
+    versions = sorted(
+        int(m.group(1)) for p in SNAPSHOTS.iterdir() if (m := re.fullmatch(r"abi-(\d+)\.txt", p.name))
+    )
     newest = versions[-1] if versions else None
     name = baseline.relative_to(FFI)
     if not baseline.exists():
-        if write and (newest is None or version == newest + 1):
+        if args.write and (newest is None or version == newest + 1):
             baseline.write_text(abi, encoding="utf-8", newline="\n")
             print(f"wrote {name}")
             return
@@ -113,7 +134,7 @@ def main():
     change = classify(old, abi)
     if change is None:
         print(f"ABI matches {name} (SB_ABI_VERSION {version})")
-    elif change == "additive" and write:
+    elif change == "additive" and args.write:
         baseline.write_text(abi, encoding="utf-8", newline="\n")
         print(f"additive change: rewrote {name}")
     elif change == "additive":
@@ -122,11 +143,8 @@ def main():
             f"(`python3 .github/scripts/abi-check.py --write`) in the same commit\n{diff(old, abi, baseline.name)}"
         )
     else:
-        sys.exit(
-            f"breaking change: bump SB_ABI_VERSION and add abi-{version + 1}.txt (bump it in "
-            "crates/scarletbook-ffi/src/lib.rs, regenerate the header with cbindgen, then run "
-            f"`python3 .github/scripts/abi-check.py --write`)\n{diff(old, abi, baseline.name)}"
-        )
+        breaking(old, abi, version, baseline.name)
 
 
-main()
+if __name__ == "__main__":
+    main()

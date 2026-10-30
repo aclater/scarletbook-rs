@@ -18,7 +18,21 @@
 set -euo pipefail
 
 target=$1 platform=$2
-curl -sSf https://sh.rustup.rs | sh -s -- -y --quiet --profile minimal --default-toolchain "$RUST_STABLE"
+# rustup-init of a pinned rustup release, checked against its pinned SHA-256
+# (static.rust-lang.org/rustup/archive/<version>/<host>/rustup-init.sha256).
+rustup_version=1.29.2
+host="$(uname -m)-unknown-linux-${target##*-}"
+case "$host" in
+  x86_64-unknown-linux-gnu) sha=5be191e8c70a5007074254cb74d78dbfdd25cd5a61c27de7b8e5410122ec24f4 ;;
+  aarch64-unknown-linux-gnu) sha=a9c168dbea81a84671c6b7a5c1795cb0eb699020110d107ddfca427bd797e697 ;;
+  x86_64-unknown-linux-musl) sha=2ba97d668c06dc4b1884f2a3fa6f4cf14b9bd0c1db379af7e4f87a705ff19edd ;;
+  aarch64-unknown-linux-musl) sha=7fdbb23acf6495efee2e371580c52b365917551b4835090a225c44ac30915235 ;;
+  *) echo "no pinned rustup-init for $host" >&2; exit 1 ;;
+esac
+curl -sSfo /tmp/rustup-init "https://static.rust-lang.org/rustup/archive/$rustup_version/$host/rustup-init"
+echo "$sha  /tmp/rustup-init" | sha256sum -c -
+chmod +x /tmp/rustup-init
+/tmp/rustup-init -y --quiet --profile minimal --default-toolchain "$RUST_STABLE"
 # shellcheck source=/dev/null
 source "$HOME/.cargo/env"
 rustup target add "$target"

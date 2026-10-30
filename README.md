@@ -79,14 +79,25 @@ conformance manifest.
 | `aarch64-unknown-linux-musl` | musl 1.2 or later (musllinux_1_2), with `libgcc_s.so.1` | musllinux_1_2 image |
 | `x86_64-apple-darwin` | macOS 10.12 or later | `MACOSX_DEPLOYMENT_TARGET=10.12` |
 | `aarch64-apple-darwin` | macOS 11.0 or later | `MACOSX_DEPLOYMENT_TARGET=11.0` |
-| `x86_64-pc-windows-gnu` | Windows 10 or later; links with MinGW-w64 GCC | MinGW-w64 target |
+| `x86_64-pc-windows-gnu` | Windows 10 or later; links with a UCRT MinGW-w64 GCC (MSYS2 UCRT64 or equivalent) | MinGW-w64 target |
 
 The glibc builds are linked against glibc 2.17 itself, inside the manylinux2014 image, and
 the build fails if the shared library asks for a newer glibc symbol version. The
 macOS minimums are Rust's own for those targets. The Windows build uses Rust's MinGW-w64
 target because its static library (`libscarletbook_ffi.a`) and import library
 (`libscarletbook_ffi.dll.a`) are in the format MinGW-w64 GCC links; the DLL exports every
-`sb_*` function (checked in CI) and depends only on Windows system DLLs.
+`sb_*` function (checked in CI) and depends only on Windows system DLLs. It uses the
+Universal C Runtime (UCRT, `api-ms-win-crt-*.dll`, part of Windows 10 and later), so link
+the static library with a UCRT MinGW-w64 toolchain (MSYS2 UCRT64 or equivalent); there is
+no msvcrt variant.
+
+Runtime dependencies on Linux: the shared libraries need `libgcc_s.so.1` (the unwinder) as
+well as the C library. glibc systems have it as part of GCC's runtime (manylinux allows
+it); on Alpine and other musl systems it is the `libgcc` package (`apk add libgcc`). The
+static libraries list it in `native-static-libs.txt` (`-lgcc_s`).
+
+The PyPA build images are pinned by digest; `.github/workflows/clib.yml` says how to move
+to newer ones.
 
 An archive unpacks to:
 
@@ -124,10 +135,11 @@ cc app.c -I$PKG/include -L$PKG/lib -lscarletbook_ffi -Wl,-rpath,'$ORIGIN'
 
 The Linux shared library has the SONAME `libscarletbook_ffi.so` and the macOS one the
 install name `@rpath/libscarletbook_ffi.dylib`, so a program finds them through its rpath
-(`-Wl,-rpath,@loader_path` on macOS). With MinGW-w64 GCC, `-lscarletbook_ffi` picks the
-import library (`.dll.a`), so the program needs `scarletbook_ffi.dll` at run time; link the
-static library by its path instead to avoid that. The DLL uses the Universal C Runtime
-(`api-ms-win-crt-*.dll`), part of Windows 10 and later. From Python:
+(`-Wl,-rpath,@loader_path` on macOS). The SONAME is unversioned, since integrators ship the
+library with their program; to be revisited at 1.0. With MinGW-w64 GCC,
+`-lscarletbook_ffi` picks the import library (`.dll.a`), so the program needs
+`scarletbook_ffi.dll` at run time; link the static library by its path instead to avoid
+that. From Python:
 
 ```python
 import ctypes
@@ -151,7 +163,8 @@ changes:
 - **Breaking changes increment `SB_ABI_VERSION` by one**: removing or renaming a
   declaration, changing a signature, changing a struct's layout (adding a field included:
   callers allocate the structs), changing an enum value, or changing documented behaviour
-  incompatibly.
+  incompatibly. The check below compares declarations as text, so it also counts renaming
+  a parameter and reordering existing declarations as breaking; avoid both.
 - Comments and documentation fixes that do not change behaviour are not ABI changes.
 
 Releases follow this:
@@ -163,10 +176,10 @@ Releases follow this:
 While the version is `0.y.z`, as in Cargo, the `y` step is the major one and the `z` step
 the minor one, so there are no patch releases before 1.0.
 
-A program checks `sb_abi_version() == SB_ABI_VERSION` before using the library. A function
-added after the release whose header it was built with needs a library at least that new
-(`sb_version()`); a program that loads the library at run time can look the symbol up
-instead.
+A program checks `sb_abi_version() == SB_ABI_VERSION` before using the library. Since
+additions keep `SB_ABI_VERSION`, a program that needs a function added in a later minor
+release also checks `sb_version()`: the library must be at least that release. A program
+that loads the library at run time can look the symbol up instead.
 
 | `SB_ABI_VERSION` | First release |
 |---|---|
@@ -180,12 +193,16 @@ compares the header with the baseline of its `SB_ABI_VERSION` and says which cas
   `python3 .github/scripts/abi-check.py --write` in the same commit, so the baseline always
   matches the header on `main`;
 - anything else fails with "breaking change: bump SB_ABI_VERSION and add abi-(N+1).txt".
-  Increment `SB_ABI_VERSION` in `crates/scarletbook-ffi/src/lib.rs`, regenerate the header,
-  run `--write` to add the new baseline, and add a row to the table.
+  Increment `SB_ABI_VERSION` in `crates/scarletbook-ffi/src/lib.rs`, regenerate the header
+  with cbindgen (see above; editing the header alone fails CI's `--verify`), run `--write`
+  to add the new baseline, and add a row to the table.
 
-Baselines of earlier versions are never edited. A behaviour change that leaves the
-declarations alone is invisible to the check: bump `SB_ABI_VERSION` by hand (the header
-then differs only in that line) and run `--write`.
+On a pull request, CI also classifies the header against the base branch's baseline of the
+same version, so rewriting the baseline by hand does not hide a breaking change, and fails
+if a baseline of an earlier version is edited, moved or removed.
+`.github/scripts/abi-check-test.py` tests the check. A behaviour change that leaves the
+declarations alone is invisible to it: bump `SB_ABI_VERSION` in `src/lib.rs` by hand,
+regenerate the header (it then differs only in that line) and run `--write`.
 
 ## Benchmarks
 

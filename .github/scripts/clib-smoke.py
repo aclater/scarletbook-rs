@@ -1,22 +1,26 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 """Smoke test of a packaged C library through Python's ctypes.
 
-Usage: clib-smoke.py PACKAGE_DIR   (run from the repository root)
+Usage: clib-smoke.py PACKAGE_DIR EXPORTS   (run from the repository root)
 
-Loads the package's shared library, checks that every function the header declares is
-exported, that sb_abi_version() equals the header's SB_ABI_VERSION and sb_version() the
+EXPORTS lists the sb_* symbols of the shared library's export table, one per line
+(clib-test.sh writes it with nm or objdump). Loads the package's shared library, checks
+that the functions the header declares are exactly the exported ones and can be looked up,
+that sb_abi_version() equals the header's SB_ABI_VERSION and sb_version() the
 package version, then opens corpus image dst-features-2ch-6ch, compares its TOC with the
 conformance manifest and decodes track 1 of each area against the manifest's per-channel
 SHA-256.
 """
 import ctypes as C
 import hashlib
+import importlib.util
 import json
 import pathlib
 import re
 import sys
 
 pkg = pathlib.Path(sys.argv[1]).resolve()
+exports = set(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8").split())
 header = (pkg / "include" / "scarletbook.h").read_text(encoding="utf-8")
 lib_path = next(p for n in ("scarletbook_ffi.dll", "libscarletbook_ffi.dylib", "libscarletbook_ffi.so")
                 for p in [pkg / "lib" / n] if p.exists())
@@ -31,18 +35,24 @@ def check(what, got, want):
         failures.append(f"{what}: got {got!r}, want {want!r}")
 
 
-# Every declared function is exported (on Windows: by the DLL's export table).
-names = re.findall(r"^[^#\s/*][^;{]*?\b(sb_\w+)\(", header, flags=re.M)
-missing = [n for n in names if not hasattr(lib, n)]
-check("functions declared in the header but not exported", missing, [])
-print(f"{len(names)} functions exported")
+# The declared functions are the exported ones (on Windows: the DLL's export table). The
+# header is read through abi-check.py's normalisation: one declaration per line.
+spec = importlib.util.spec_from_file_location("abi_check", pathlib.Path(__file__).with_name("abi-check.py"))
+abi_check = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(abi_check)
+names = set(re.findall(r"^(?!typedef)[^(]*?\b(sb_\w+)\(", abi_check.normalise(header), flags=re.M))
+check("functions declared but not in the export table", sorted(names - exports), [])
+check("sb_* symbols exported but not declared", sorted(exports - names), [])
+check("declared functions ctypes cannot find", sorted(n for n in names if not hasattr(lib, n)), [])
+print(f"{len(names)} functions declared, {len(exports)} exported")
 
 lib.sb_abi_version.restype = C.c_uint32
 lib.sb_version.restype = C.c_char_p
 lib.sb_last_error_message.restype = C.c_char_p
 abi = int(re.search(r"^#define SB_ABI_VERSION (\d+)$", header, flags=re.M).group(1))
 check("sb_abi_version()", lib.sb_abi_version(), abi)
-version = pkg.name.split("-")[2]
+# scarletbook-ffi-<version>-<target>; the version may carry a prerelease (0.3.0-rc.1).
+version = re.fullmatch(r"scarletbook-ffi-(.+)-(x86_64|aarch64)-[a-z0-9_]+-[a-z0-9_]+(-[a-z0-9_]+)?", pkg.name).group(1)
 check("sb_version()", lib.sb_version().decode(), version)
 print(f"sb_version() {lib.sb_version().decode()}, sb_abi_version() {lib.sb_abi_version()}")
 

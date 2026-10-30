@@ -18,9 +18,29 @@ name: C library
 #   archive and its import library a .dll.a, both of which MinGW-w64 GCC links; the MSVC
 #   target's .lib files are not meant for GCC. The DLL exports the sb_* functions and
 #   loads through ctypes like any DLL. Tested with the runner's MinGW-w64 GCC.
+#
+# The PyPA images are pinned by digest. To move to a newer image, read the digest of its
+# `latest` tag (`docker buildx imagetools inspect quay.io/pypa/manylinux2014_x86_64`, or
+# `curl -sI -H 'Accept: application/vnd.docker.distribution.manifest.v2+json'
+# https://quay.io/v2/pypa/manylinux2014_x86_64/manifests/latest`, header
+# docker-content-digest), replace it below for each of the four images, and let this
+# workflow run on the pull request.
+#
+# Pull requests run it only when something that goes into the library or its packaging
+# changes; manual runs and the release workflow always run it.
 
 on:
   pull_request:
+    paths:
+      - "crates/**"
+      - Cargo.toml
+      - Cargo.lock
+      - "rust-toolchain*"
+      - .github/workflows/clib.yml
+      - .github/workflows/release.yml
+      - ".github/scripts/clib-*"
+      # clib-smoke.py reads the header through its normalisation.
+      - .github/scripts/abi-check.py
   workflow_dispatch:
   workflow_call:
 
