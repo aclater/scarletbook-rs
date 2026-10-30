@@ -204,7 +204,52 @@ decoder, and its code is LGPL. On 2026-10-30 the owner decided (option "B"):
   SACD or DST implementation (so nothing more from FFmpeg), and papers, articles and
   documentation are preferred to code.
 
-The full source list of the survey follows when it reports (issue #33).
+The research survey (issue #33) consulted the following. Its findings are in #33; the
+corroboration required by the decision above is its table "Corroboration (decision B)".
+
+- [S1] *Fast renormalization for H.264/MPEG4-AVC arithmetic coding*, D. Marpe, H. Kirchhoffer, G. Marten (Fraunhofer HHI), EUSIPCO 2006, https://new.eurasip.org/Proceedings/Eusipco/Eusipco2006/papers/1568982338.pdf — multi-bit register scheme; bit-scan or table shift count; 23.5–26.9% decoder gain.
+- [S2] *Introduction to Arithmetic Coding — Theory and Practice*, A. Said, HP Labs HPL-2004-76 (arXiv 2302.00819), https://ar5iv.labs.arxiv.org/html/2302.00819 — renormalisation frequency and digit size; low-precision products; reading zero bits past the end.
+- [S3] *Arithmetic Coding Revisited*, A. Moffat, R. Neal, I. Witten, ACM TOIS 16(3), 1998, https://pierre-hyvernat.apps.math.cnrs.fr/data/Enseignement/2425/info666/Files/acm98_arithmetic_coding_revisited.pdf — byte-wise renormalisation; shift/add; a specialised binary coder.
+- [S4] *Range coder*, Hugi magazine #18 (describes Subbotin's coder), https://hugi.scene.org/online/coding/hugi%2018%20-%20corange.htm — byte-wise renormalisation about 2× faster for 0.01% loss.
+- [S5] *[RFC] cmov-vs-branch optimization*, LLVM Discourse, 2021, https://discourse.llvm.org/t/rfc-cmov-vs-branch-optimization/6040 — Agner Fog's cmov-versus-branch rules.
+- [S6] *Interleaved entropy coders*, F. Giesen, arXiv 1402.3392, 2014, https://ar5iv.labs.arxiv.org/html/1402.3392 — interleaving gains; branch-free SIMD decoder.
+- [S7] *Low level conditional move optimization*, Acta Cybernetica, 2013, https://cyber.bibl.u-szeged.hu/index.php/actcybern/article/view/3827 — search summary only: cmov can help or regress.
+- [S8] *Context-based adaptive binary arithmetic coding in the H.264/AVC video compression standard*, D. Marpe, H. Schwarz, T. Wiegand, IEEE TCSVT 13(7), 2003 — the bypass engine; renormalisation.
+- [S9] Sze, Budagavi, high-throughput CABAC for HEVC, IEEE SiPS 2013, https://eems.mit.edu/wp-content/uploads/2013/11/sze_sips_2013.pdf — bypass bins skip the context feedback loop; diminishing returns past 4–8 bins per cycle.
+- [S10] *Reading bits in far too many ways, part 2*, F. Giesen, 2018-02-20, https://fgiesen.wordpress.com/2018/02/20/reading-bits-in-far-too-many-ways-part-2/ — branch-free refill; 10% gain; padding.
+- [S11] *Reading bits in far too many ways, part 1*, F. Giesen, 2018-02-19, https://fgiesen.wordpress.com/2018/02/19/reading-bits-in-far-too-many-ways-part-1/ — reads past the end; the 57-bit limit.
+- [S12] *Discussing AMD's Zen 5 at Hot Chips 2024*, Chips and Cheese, 2024-09-15, https://chipsandcheese.com/p/discussing-amds-zen-5-at-hot-chips-2024 — 4-cycle L1D load-to-use; SMT rationale; one decode cluster per thread.
+- [S13] *A whirlwind introduction to dataflow graphs*, F. Giesen, 2018-03-05, https://fgiesen.wordpress.com/2018/03/05/a-whirlwind-introduction-to-dataflow-graphs/ — latency versus throughput; independent chains.
+- [S14] *Profiles*, The Cargo Book, https://doc.rust-lang.org/cargo/reference/profiles.html — LTO and codegen-units semantics.
+- [S15] *Build Configuration*, The Rust Performance Book (N. Nethercote), https://nnethercote.github.io/perf-book/build-configuration.html — LTO 10–20%, PGO 10%+.
+- [S16] *Faster Rust Toolchains for Android*, Google Android Developers Blog, Dec 2023, https://android-developers.googleblog.com/2023/12/faster-rust-toolchains-for-android.html — stepwise CGU1, LTO, PGO and BOLT gains.
+- [S17] *Microarchitecture Levels*, Reloaded-III research notes, https://reloaded-project.github.io/Reloaded-III/Research/Microarchitecture-Levels.html — search snippet: x86-64-v3 and v4 contents.
+- [S18] *Optimized Repositories*, CachyOS wiki, https://wiki.cachyos.org/ko/features/optimized_repos — a 5–20% v3 claim with no workload (judged weak).
+- [S19] *Tracking issue for portable SIMD*, rust-lang/rust#86656, https://github.com/rust-lang/rust/issues/86656 — still unstable.
+- [S20] *Announcing Rust 1.86.0*, Rust Blog, 2025-04-03, https://blog.rust-lang.org/2025/04/03/Rust-1.86.0/ — target_feature 1.1 stabilised.
+- [S21] *RFC 2396: target_feature 1.1*, https://rust-lang.github.io/rfcs/2396-target-feature-1.1.html — unmatched-context calls still need `unsafe`.
+- [S22] pulp documentation v0.22.3, https://docs.rs/pulp/latest/pulp/ — the safe dispatch API.
+- [S23] pulp README, https://github.com/sarah-quinones/pulp — `#[inline(always)]` usage.
+- [S24] multiversion documentation, https://docs.rs/multiversion/latest/multiversion/ — runtime dispatch through its `std` feature.
+- [S25] multiversion attribute documentation, https://docs.rs/multiversion/0.6.1/multiversion/attr.multiversion.html — search summary: safe wrapper, `unsafe = true` contract.
+- [S26] wide documentation v1.7.1, https://docs.rs/wide/latest/wide/ — SIMD types; no runtime dispatch.
+- [S27] rayon `ThreadPoolBuilder` documentation, https://docs.rs/rayon/latest/rayon/struct.ThreadPoolBuilder.html — RAYON_NUM_THREADS; default thread count.
+- [S28] rayon `IndexedParallelIterator` documentation, https://docs.rs/rayon/latest/rayon/iter/trait.IndexedParallelIterator.html — with_min_len / with_max_len; ordered collect.
+- [S29] rayon-core sleep README, https://github.com/rayon-rs/rayon/blob/main/rayon-core/src/sleep/README.md — the worker sleep protocol (documentation, not code).
+- [S30] rayon issue #576, https://github.com/rayon-rs/rayon/issues/576 — search summary: spinning on bursty workloads.
+- [S31] *AMD's Ryzen 9950X: Zen 5 on Desktop*, Chips and Cheese, 2024-08-14, https://old.chipsandcheese.com/2024/08/14/amds-ryzen-9950x-zen-5-on-desktop/ — ROB partitioning under SMT; 1T IPC.
+- [S32] uops.info, Zen 5 instruction latencies, https://uops.info/ — imul 3, lzcnt 1, cmov 1, shlx 1, shl r,cl 1.
+- [S33] *Profile-guided optimization*, the rustc book, https://doc.rust-lang.org/rustc/profile-guided-optimization.html — the PGO workflow.
+- [S34] cargo-pgo README and `ci/pgo.yml`, J. Beránek, https://github.com/Kobzol/cargo-pgo — PGO tooling and CI.
+- [S35] awesome-pgo, A. Zaitsev, https://github.com/zamazan4ik/awesome-pgo — a survey of PGO results.
+- [S36] **Read before the stricter rule (decision B):** FFmpeg `libavcodec/cabac_functions.h` (LGPL) and dav1d `src/msac.c` (BSD-2-Clause). Nothing copied; no finding above depends on them.
+- [S37] AMD *Software Optimization Guide for the AMD Zen5 Microarchitecture*, pub. 58455 rev 1.00, Aug 2024 — identified by search, **not read**.
+- From the first run: Agner Fog's *Instruction tables* (unreadable, not used) and Phoronix's Zen 5 SMT review (HTTP 403, not used).
+
+Deliberately not opened under the rules: FFmpeg commit pages and mailing-list threads (the
+whole FFmpeg repository is excluded), xz's `range_decoder.h`, the turbo-range-coder page, and
+patent pages on CABAC renormalisation and branch-free arithmetic decoding. No search used
+SACD, DSD or DST terms, and no result opened was about them.
 
 ## Statement
 
