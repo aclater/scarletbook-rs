@@ -125,7 +125,15 @@ sacd-spec specifications at the commit above, checked against its corpus.
 
 ## Specification issues filed
 
-None yet.
+None. Specifications 0 to 5 and 7 were implemented without meeting a gap or ambiguity
+that required a guess, so no issue was opened on `aclater/sacd-spec` and no code carries
+a spec-gap `TODO`. (Specification 6, the optional PS3 network protocol, was out of scope
+and not read.)
+
+## Crate name
+
+`cargo search scarletbook` and `GET https://crates.io/api/v1/crates/scarletbook` (HTTP 404)
+on 2026-10-30: the name `scarletbook` is not taken on crates.io. Nothing was published.
 
 ## Log
 
