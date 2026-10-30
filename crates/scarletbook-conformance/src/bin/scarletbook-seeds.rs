@@ -5,6 +5,7 @@
 //! `toc`: each image from LSN 510 on, cut to 160 sectors (the TOC region of every case).
 //! `demux`: for each area of each accepted case, its channel count followed by its first
 //! 64 audio sectors.
+//! `dst`: up to 8 DST frames of each area, each preceded by its channel count minus 1.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -14,6 +15,7 @@ use scarletbook_conformance::{corpus_dir, load_cases};
 
 const TOC_SEED_SECTORS: usize = 160;
 const DEMUX_SEED_SECTORS: u64 = 64;
+const DST_SEEDS_PER_AREA: usize = 8;
 
 fn main() -> ExitCode {
     let Some(out) = std::env::args_os().nth(1).map(PathBuf::from) else {
@@ -36,7 +38,8 @@ fn run(out: &std::path::Path) -> Result<usize, String> {
     let corpus = corpus_dir();
     let toc_dir = out.join("toc");
     let demux_dir = out.join("demux");
-    for d in [&toc_dir, &demux_dir] {
+    let dst_dir = out.join("dst");
+    for d in [&toc_dir, &demux_dir, &dst_dir] {
         std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
     }
     let mut n = 0;
@@ -61,6 +64,18 @@ fn run(out: &std::path::Path) -> Result<usize, String> {
             }
             std::fs::write(demux_dir.join(format!("{id}-{}", area.slot)), seed).map_err(|e| e.to_string())?;
             n += 1;
+            if !(1..=6).contains(&area.channel_count) {
+                continue;
+            }
+            let frames = disc.area_frames(area.slot).map_err(|e| e.to_string())?;
+            let dst = frames.filter_map(Result::ok).filter(|f| f.kind == scarletbook::FrameKind::Dst);
+            for (i, f) in dst.take(DST_SEEDS_PER_AREA).enumerate() {
+                let mut seed = vec![area.channel_count - 1];
+                seed.extend_from_slice(&f.data);
+                std::fs::write(dst_dir.join(format!("{id}-{}-{i}", area.slot)), seed)
+                    .map_err(|e| e.to_string())?;
+                n += 1;
+            }
         }
     }
     Ok(n)

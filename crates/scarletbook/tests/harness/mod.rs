@@ -8,7 +8,8 @@
 use std::io::{self, Read, Seek, SeekFrom};
 
 use scarletbook::audio::{FRAME_BYTES_PER_CHANNEL, MAX_FRAME_BYTES};
-use scarletbook::{Demuxer, Disc, FrameKind};
+use scarletbook::dst::FL;
+use scarletbook::{Demuxer, Disc, DstDecoder, FrameKind};
 
 /// Bytes of 510 empty plain sectors, prepended to fuzz input so that the input starts at
 /// the master TOC.
@@ -121,4 +122,20 @@ pub fn demux(data: &[u8]) {
     }
     d.finish();
     check(&mut d);
+}
+
+/// Single-frame DST decoding: byte 0 picks the channel count (`byte % 6 + 1`), the rest
+/// is the frame. Decoding the same frame twice with one decoder gives the same result.
+pub fn dst(data: &[u8]) {
+    let Some((&c, frame)) = data.split_first() else { return };
+    let channels = c % 6 + 1;
+    let mut decoder = DstDecoder::new();
+    let mut a = vec![0u8; usize::from(channels) * FL];
+    let mut b = vec![1u8; usize::from(channels) * FL];
+    let ra = decoder.decode(frame, channels, &mut a);
+    let rb = decoder.decode(frame, channels, &mut b);
+    assert_eq!(ra, rb, "decoding is not deterministic");
+    if ra.is_ok() {
+        assert!(a == b, "decoded output is not deterministic");
+    }
 }

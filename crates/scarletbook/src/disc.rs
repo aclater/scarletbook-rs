@@ -4,7 +4,7 @@
 
 use std::io::{Read, Seek};
 
-use crate::audio::{self, AreaFrames, TrackFrames};
+use crate::audio::{self, AreaFrames, TrackAudio, TrackFrames};
 use crate::error::{Error, Slot, Warning};
 use crate::image::{Image, SectorFormat};
 use crate::toc::{self, Toc};
@@ -85,7 +85,8 @@ impl<R: Read + Seek> Disc<R> {
     /// The timeline positions of track `number` (1-based) of the area from `slot`, each
     /// holding a plain DSD frame, a DST frame or nothing (specification 4, 4.6 and 4.7).
     ///
-    /// Plain DSD frames are passed through unchanged; see `track_audio` for decoded audio.
+    /// Plain DSD frames are passed through unchanged; see [`Disc::track_audio`] for
+    /// decoded audio.
     ///
     /// # Errors
     ///
@@ -93,6 +94,17 @@ impl<R: Read + Seek> Disc<R> {
     pub fn track_frames(&mut self, slot: Slot, number: u32) -> Result<TrackFrames<'_, R>, Error> {
         let (area, track) = audio::find_track(&self.toc.areas, slot, number)?;
         TrackFrames::new(&mut self.image, area, track)
+    }
+
+    /// The decoded audio of track `number` (1-based) of the area from `slot`: every
+    /// timeline position as `C x 4704` interleaved DSD bytes, DST frames decoded and
+    /// missing or invalid frames filled (specification 4, 4.6).
+    ///
+    /// # Errors
+    ///
+    /// As [`Disc::check_track`].
+    pub fn track_audio(&mut self, slot: Slot, number: u32) -> Result<TrackAudio<'_, R>, Error> {
+        Ok(TrackAudio::new(self.track_frames(slot, number)?))
     }
 
     /// The underlying image.

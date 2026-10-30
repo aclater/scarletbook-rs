@@ -5,6 +5,7 @@
 use std::collections::VecDeque;
 use std::io::{Read, Seek};
 
+use crate::dst::{DstDecoder, DstError};
 use crate::error::{Error, Slot};
 use crate::image::{Image, ReadOutcome, SECTOR_SIZE};
 use crate::toc::{Area, Track};
@@ -373,6 +374,149 @@ impl<R: Read + Seek> Iterator for TrackFrames<'_, R> {
             None => FrameContent::Missing,
         };
         Some(Ok(TrackFrame { number: t, content }))
+    }
+}
+
+/// How a decoded timeline position was produced (specification 4, 4.6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FrameStatus {
+    /// A plain DSD frame, passed through unchanged.
+    Dsd,
+    /// A DST frame, decoded.
+    Decoded,
+    /// No frame: filled with 0x69.
+    Missing,
+    /// An invalid DST frame: filled with 0x55.
+    Invalid(DstError),
+}
+
+/// One decoded timeline position: `C x 4704` bytes in interleaved layout.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AudioFrame {
+    /// The frame number.
+    pub number: u32,
+    /// How it was produced.
+    pub status: FrameStatus,
+    /// The DSD bytes, interleaved (specification 0, 0.6).
+    pub data: Vec<u8>,
+}
+
+/// Decodes one timeline position (specification 4, 4.6).
+pub fn decode_frame(decoder: &mut DstDecoder, frame: TrackFrame, channels: u8) -> AudioFrame {
+    let (status, data) = match frame.content {
+        FrameContent::Dsd(data) => (FrameStatus::Dsd, data),
+        FrameContent::Missing => (FrameStatus::Missing, fill_frame(channels, MISSING_FILL)),
+        FrameContent::Dst(bytes) => {
+            let mut out = vec![0u8; usize::from(channels) * FRAME_BYTES_PER_CHANNEL];
+            match decoder.decode(&bytes, channels, &mut out) {
+                Ok(()) => (FrameStatus::Decoded, out),
+                Err(e) => {
+                    out.fill(INVALID_FILL);
+                    (FrameStatus::Invalid(e), out)
+                }
+            }
+        }
+    };
+    AudioFrame { number: frame.number, status, data }
+}
+
+/// The decoded audio of one track, frame by frame (specification 4, 4.6 and 4.7).
+///
+/// With the `parallel` feature, DST frames are decoded in batches on rayon's thread
+/// pool; memory stays bounded by the batch size.
+#[derive(Debug)]
+pub struct TrackAudio<'a, R> {
+    frames: TrackFrames<'a, R>,
+    #[cfg(not(feature = "parallel"))]
+    decoder: DstDecoder,
+    ready: VecDeque<AudioFrame>,
+    pending_error: Option<Error>,
+    missing: u64,
+    invalid: u64,
+}
+
+impl<'a, R: Read + Seek> TrackAudio<'a, R> {
+    pub(crate) fn new(frames: TrackFrames<'a, R>) -> Self {
+        TrackAudio {
+            frames,
+            #[cfg(not(feature = "parallel"))]
+            decoder: DstDecoder::new(),
+            ready: VecDeque::new(),
+            pending_error: None,
+            missing: 0,
+            invalid: 0,
+        }
+    }
+
+    /// The area's channel count `C` (1 to 6).
+    pub fn channels(&self) -> u8 {
+        self.frames.channels()
+    }
+
+    /// Frames so far that were missing (filled with 0x69).
+    pub fn missing_frames(&self) -> u64 {
+        self.missing
+    }
+
+    /// Frames so far that were invalid DST frames (filled with 0x55).
+    pub fn invalid_dst_frames(&self) -> u64 {
+        self.invalid
+    }
+
+    fn batch_size() -> usize {
+        #[cfg(feature = "parallel")]
+        {
+            4 * rayon::current_num_threads()
+        }
+        #[cfg(not(feature = "parallel"))]
+        {
+            1
+        }
+    }
+
+    fn refill(&mut self) {
+        let mut batch = Vec::new();
+        while batch.len() < Self::batch_size() {
+            match self.frames.next() {
+                Some(Ok(f)) => batch.push(f),
+                Some(Err(e)) => {
+                    self.pending_error = Some(e);
+                    break;
+                }
+                None => break,
+            }
+        }
+        let channels = self.channels();
+        #[cfg(feature = "parallel")]
+        let decoded: Vec<AudioFrame> = {
+            use rayon::prelude::*;
+            batch.into_par_iter().map_init(DstDecoder::new, |d, f| decode_frame(d, f, channels)).collect()
+        };
+        #[cfg(not(feature = "parallel"))]
+        let decoded: Vec<AudioFrame> =
+            batch.into_iter().map(|f| decode_frame(&mut self.decoder, f, channels)).collect();
+        for f in &decoded {
+            match f.status {
+                FrameStatus::Missing => self.missing += 1,
+                FrameStatus::Invalid(_) => self.invalid += 1,
+                FrameStatus::Dsd | FrameStatus::Decoded => {}
+            }
+        }
+        self.ready.extend(decoded);
+    }
+}
+
+impl<R: Read + Seek> Iterator for TrackAudio<'_, R> {
+    type Item = Result<AudioFrame, Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.ready.is_empty() && self.pending_error.is_none() {
+            self.refill();
+        }
+        match self.ready.pop_front() {
+            Some(f) => Some(Ok(f)),
+            None => self.pending_error.take().map(Err),
+        }
     }
 }
 

@@ -23,13 +23,18 @@
 
 pub mod audio;
 mod disc;
+pub mod dst;
 mod error;
 mod image;
 pub mod text;
 pub mod toc;
 
-pub use audio::{AreaFrame, AreaFrames, Demuxer, FrameContent, FrameKind, TrackFrame, TrackFrames};
+pub use audio::{
+    AreaFrame, AreaFrames, AudioFrame, Demuxer, FrameContent, FrameKind, FrameStatus, TrackAudio, TrackFrame,
+    TrackFrames,
+};
 pub use disc::Disc;
+pub use dst::{DstDecoder, DstError};
 pub use error::{Error, ErrorClass, Slot, Warning, WarningCode};
 pub use image::{Image, MASTER_TOC_LSN, SECTOR_SIZE, SectorFormat};
 pub use toc::{Area, AreaKind, MasterToc, Toc, Track};

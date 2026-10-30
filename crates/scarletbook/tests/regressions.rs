@@ -31,3 +31,9 @@ fn toc_regressions() {
 fn demux_regressions() {
     replay("demux", harness::demux);
 }
+
+#[test]
+#[cfg_attr(miri, ignore = "slow under Miri")]
+fn dst_regressions() {
+    replay("dst", harness::dst);
+}
