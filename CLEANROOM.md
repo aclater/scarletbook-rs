@@ -138,6 +138,13 @@ across threads. What crossed the wall from the other side is limited to what
 `benchmarks/README.md` publishes: target figures and the other readers' timings, as numbers
 only. No profile, explanation or technique of another reader was consulted.
 
+Parts of #16, #17 and #18 were done by agent sessions started from this session, each in
+its own git worktree on this VM, under the same rules: the same allowed sources (sacd-spec
+only, at the commit above, plus Rust documentation), the same prohibitions, and the same
+instruction to stop and report on finding any SACD or DST implementation (none was found).
+Their commits were reviewed, re-tested (corpus, property tests, Miri) and re-measured here
+before being merged into this branch.
+
 `scarletbook-synth`, the generator of large test images used for these measurements, is
 built only from specifications 1 to 4 (layout, TOCs, audio sector packing) and from the
 corpus's own DST frames, which it repacks. Figures measured on its images are not
