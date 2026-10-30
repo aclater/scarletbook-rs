@@ -1,0 +1,168 @@
+#ifndef SCARLETBOOK_H
+#define SCARLETBOOK_H
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#define SB_ABI_VERSION 1
+typedef enum SbStatus {
+SB_STATUS_OK = 0,
+SB_STATUS_END = 1,
+SB_STATUS_ABSENT = 2,
+SB_STATUS_NOT_SCARLETBOOK = -1,
+SB_STATUS_MASTER_TOC_TRUNCATED = -2,
+SB_STATUS_MASTER_TOC_VERSION_UNSUPPORTED = -3,
+SB_STATUS_NO_AUDIO_AREAS = -4,
+SB_STATUS_CHANNEL_COUNT_UNSUPPORTED = -5,
+SB_STATUS_TRACK_EMPTY = -6,
+SB_STATUS_TRACK_EXCEEDS_CAPACITY = -7,
+SB_STATUS_NO_SUCH_AREA = -8,
+SB_STATUS_NO_SUCH_TRACK = -9,
+SB_STATUS_INVALID_ARGUMENT = -10,
+SB_STATUS_BUFFER_TOO_SMALL = -11,
+SB_STATUS_IO = -12,
+SB_STATUS_INVALID_DST_FRAME = -13,
+SB_STATUS_PANIC = -14,
+} SbStatus;
+typedef enum SbFrameStatus {
+SB_FRAME_STATUS_DSD = 0,
+SB_FRAME_STATUS_DECODED = 1,
+SB_FRAME_STATUS_MISSING = 2,
+SB_FRAME_STATUS_INVALID = 3,
+} SbFrameStatus;
+typedef enum SbSlot {
+SB_SLOT_TWO_CHANNEL = 0,
+SB_SLOT_MULTICHANNEL = 1,
+} SbSlot;
+typedef enum SbDiscString {
+SB_DISC_STRING_ALBUM_TITLE = 0,
+SB_DISC_STRING_ALBUM_ARTIST = 1,
+SB_DISC_STRING_ALBUM_PUBLISHER = 2,
+SB_DISC_STRING_ALBUM_COPYRIGHT = 3,
+SB_DISC_STRING_ALBUM_TITLE_PHONETIC = 4,
+SB_DISC_STRING_ALBUM_ARTIST_PHONETIC = 5,
+SB_DISC_STRING_ALBUM_PUBLISHER_PHONETIC = 6,
+SB_DISC_STRING_ALBUM_COPYRIGHT_PHONETIC = 7,
+SB_DISC_STRING_DISC_TITLE = 8,
+SB_DISC_STRING_DISC_ARTIST = 9,
+SB_DISC_STRING_DISC_PUBLISHER = 10,
+SB_DISC_STRING_DISC_COPYRIGHT = 11,
+SB_DISC_STRING_DISC_TITLE_PHONETIC = 12,
+SB_DISC_STRING_DISC_ARTIST_PHONETIC = 13,
+SB_DISC_STRING_DISC_PUBLISHER_PHONETIC = 14,
+SB_DISC_STRING_DISC_COPYRIGHT_PHONETIC = 15,
+SB_DISC_STRING_ALBUM_CATALOG_NUMBER = 16,
+SB_DISC_STRING_DISC_CATALOG_NUMBER = 17,
+} SbDiscString;
+typedef enum SbAreaString {
+SB_AREA_STRING_DESCRIPTION = 0,
+SB_AREA_STRING_COPYRIGHT = 1,
+SB_AREA_STRING_DESCRIPTION_PHONETIC = 2,
+SB_AREA_STRING_COPYRIGHT_PHONETIC = 3,
+} SbAreaString;
+typedef enum SbTrackString {
+SB_TRACK_STRING_TITLE = 0,
+SB_TRACK_STRING_PERFORMER = 1,
+SB_TRACK_STRING_SONGWRITER = 2,
+SB_TRACK_STRING_COMPOSER = 3,
+SB_TRACK_STRING_ARRANGER = 4,
+SB_TRACK_STRING_MESSAGE = 5,
+SB_TRACK_STRING_EXTRA_MESSAGE = 6,
+SB_TRACK_STRING_TITLE_PHONETIC = 7,
+SB_TRACK_STRING_PERFORMER_PHONETIC = 8,
+SB_TRACK_STRING_SONGWRITER_PHONETIC = 9,
+SB_TRACK_STRING_COMPOSER_PHONETIC = 10,
+SB_TRACK_STRING_ARRANGER_PHONETIC = 11,
+SB_TRACK_STRING_MESSAGE_PHONETIC = 12,
+SB_TRACK_STRING_EXTRA_MESSAGE_PHONETIC = 13,
+SB_TRACK_STRING_ISRC = 14,
+} SbTrackString;
+typedef struct SbDisc SbDisc;
+typedef struct SbTrackAudio SbTrackAudio;
+typedef int64_t(*SbReadFn)(void *user, uint8_t *buf, size_t len);
+typedef int64_t(*SbSeekFn)(void *user, int64_t offset, int32_t whence);
+typedef struct SbDiscInfo {
+uint32_t sector_size;
+uint64_t sectors;
+uint8_t version_major;
+uint8_t version_minor;
+uint16_t album_set_size;
+uint16_t album_sequence_number;
+bool hybrid;
+bool manufacturer_sector;
+uint16_t year;
+uint8_t month;
+uint8_t day;
+uint32_t area_count;
+uint32_t warning_count;
+} SbDiscInfo;
+typedef struct SbAreaInfo {
+uint32_t slot;
+uint32_t kind_channels;
+uint32_t toc_lsn;
+uint32_t toc_sectors;
+uint32_t channel_count;
+uint32_t area_config;
+uint32_t sample_frequency_code;
+uint32_t frame_format;
+uint32_t max_byte_rate;
+uint32_t playtime_frames;
+uint32_t audio_start_lsn;
+uint32_t audio_end_lsn;
+uint32_t track_count;
+} SbAreaInfo;
+typedef struct SbTrackInfo {
+uint32_t number;
+uint32_t start_lsn;
+uint32_t length_sectors;
+uint32_t start_frame;
+uint32_t duration_frames;
+uint8_t start_flags;
+uint8_t duration_flags;
+bool has_genre;
+uint8_t genre_category;
+uint8_t genre_index;
+} SbTrackInfo;
+typedef struct SbWarning {
+const char *code;
+int32_t slot;
+uint32_t track;
+int64_t lsn;
+} SbWarning;
+typedef struct SbFrameInfo {
+uint32_t number;
+uint32_t status;
+uint32_t dst_rule;
+size_t size;
+} SbFrameInfo;
+#ifdef __cplusplus
+extern " C " {
+#endif
+uint32_t sb_abi_version(void);
+const char *sb_version(void);
+const char *sb_last_error_message(void);
+const char *sb_status_name(int32_t status);
+enum SbStatus sb_disc_open_file(const char *path, struct SbDisc **out);
+enum SbStatus sb_disc_open_memory(const uint8_t *data, size_t len, struct SbDisc **out);
+enum SbStatus sb_disc_open_callbacks(SbReadFn read, SbSeekFn seek, void *user, struct SbDisc **out);
+void sb_disc_free(struct SbDisc *disc);
+enum SbStatus sb_disc_info(const struct SbDisc *disc, struct SbDiscInfo *out);
+enum SbStatus sb_disc_string(const struct SbDisc *disc, uint32_t field, char *buf, size_t cap, size_t *len);
+enum SbStatus sb_disc_area(const struct SbDisc *disc, uint32_t index, struct SbAreaInfo *out);
+enum SbStatus sb_area_string(const struct SbDisc *disc, uint32_t slot, uint32_t field, char *buf, size_t cap, size_t *len);
+enum SbStatus sb_track_info(const struct SbDisc *disc, uint32_t slot, uint32_t number, struct SbTrackInfo *out);
+enum SbStatus sb_track_string(const struct SbDisc *disc, uint32_t slot, uint32_t number, uint32_t field, char *buf, size_t cap, size_t *len);
+enum SbStatus sb_disc_warning(const struct SbDisc *disc, uint32_t index, struct SbWarning *out);
+enum SbStatus sb_track_check(const struct SbDisc *disc, uint32_t slot, uint32_t number);
+enum SbStatus sb_track_audio_open(const struct SbDisc *disc, uint32_t slot, uint32_t number, struct SbTrackAudio **out);
+enum SbStatus sb_track_audio_open_next(const struct SbDisc *disc, struct SbTrackAudio *prev, uint32_t slot, uint32_t number, struct SbTrackAudio **out);
+uint32_t sb_track_audio_channels(const struct SbTrackAudio *audio);
+enum SbStatus sb_track_audio_read(const struct SbTrackAudio *audio, const struct SbDisc *disc, uint8_t *buf, size_t cap, struct SbFrameInfo *info);
+enum SbStatus sb_track_audio_counts(const struct SbTrackAudio *audio, uint64_t *missing, uint64_t *invalid);
+enum SbStatus sb_track_audio_malformed_sectors(const struct SbTrackAudio *audio, uint64_t *count);
+enum SbStatus sb_track_audio_warning(const struct SbTrackAudio *audio, uint32_t index, struct SbWarning *out);
+void sb_track_audio_free(struct SbTrackAudio *audio);
+enum SbStatus sb_dst_decode(const uint8_t *frame, size_t len, uint32_t channels, uint8_t *out, size_t out_len, uint32_t *rule);
+#ifdef __cplusplus
+}
+#endif
+#endif

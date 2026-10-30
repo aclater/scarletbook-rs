@@ -83,6 +83,20 @@ jobs:
         run: |
           cargo install cbindgen --locked --version 0.29.4
           cbindgen --config cbindgen.toml --crate scarletbook-ffi --output include/scarletbook.h --verify
+      # A changed ABI needs a new SB_ABI_VERSION and snapshot (README, "ABI compatibility");
+      # the snapshots of earlier versions are history and are never edited.
+      - name: The ABI did not change without an SB_ABI_VERSION bump
+        if: runner.os == 'Linux'
+        run: |
+          python3 .github/scripts/abi-check.py
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            git fetch --quiet --depth=1 origin "$GITHUB_BASE_REF"
+            edited=$(git diff --name-only --diff-filter=MD FETCH_HEAD HEAD -- crates/scarletbook-ffi/abi)
+            if [[ -n "$edited" ]]; then
+              echo "::error::existing ABI snapshots edited or removed: $edited"
+              exit 1
+            fi
+          fi
       - run: cargo build -p scarletbook-ffi --release --locked
       - name: Build and run the C smoke test
         run: |

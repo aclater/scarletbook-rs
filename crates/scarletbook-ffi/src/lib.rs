@@ -515,9 +515,10 @@ unsafe fn open_reader(reader: Reader, out: *mut *mut SbDisc) -> Result<SbStatus,
     Ok(SbStatus::Ok)
 }
 
-/// The version of this C ABI. It is incremented on every incompatible change to a
-/// function signature or to the layout of a struct or enum in this header. 1 is the
-/// first released ABI.
+/// The version of this C ABI. It is incremented on every change to the ABI: a function,
+/// struct, enum or macro of this header added, removed or changed, or a documented
+/// behaviour changed incompatibly. 1 is the first released ABI. The compatibility policy
+/// is in the repository's README ("ABI compatibility").
 pub const SB_ABI_VERSION: u32 = 1;
 
 /// The ABI version the library was built with; compare it with `SB_ABI_VERSION` from the
