@@ -62,7 +62,7 @@ fn hash_sink_matches_the_manifest() {
             let out = bench(&["decode", &img, "--area", "2ch", "--threads", "1", "--sink", "hash"]);
             assert!(!out.status.success(), "{}: rejected image exited 0", case["id"]);
             let stderr = String::from_utf8_lossy(&out.stderr);
-            assert!(stderr.starts_with(expected["error"].as_str().unwrap()), "{}: {stderr}", case["id"]);
+            assert_eq!(stderr.lines().next(), expected["error"].as_str(), "{}: {stderr}", case["id"]);
             continue;
         }
         for area in expected["audio"].as_array().unwrap() {
@@ -87,7 +87,7 @@ fn hash_sink_matches_the_manifest() {
         if !slots.contains(&"multichannel") {
             let out = bench(&["decode", &img, "--area", "mc", "--threads", "1", "--sink", "null"]);
             assert!(!out.status.success());
-            assert!(String::from_utf8_lossy(&out.stderr).starts_with("no-such-area"));
+            assert_eq!(String::from_utf8_lossy(&out.stderr).lines().next(), Some("no-such-area"));
         }
     }
     assert!(checked > 200, "only {checked} area runs checked");
@@ -123,6 +123,11 @@ fn raw_and_null_sinks() {
     std::fs::remove_dir_all(&dir).unwrap();
     let out = bench(&["decode", &image(&case), "--area", flag, "--threads", "1", "--sink", "null"]);
     assert!(out.status.success() && out.stdout.is_empty());
+    let bad = bench(&["decode", "x.iso", "--area", "5ch", "--threads", "1", "--sink", "null"]);
+    assert!(!bad.status.success());
+    assert_eq!(String::from_utf8_lossy(&bad.stderr).lines().next(), Some("usage-error"));
+    let missing = bench(&["decode", "/nonexistent.iso", "--area", "2ch", "--threads", "1", "--sink", "null"]);
+    assert_eq!(String::from_utf8_lossy(&missing.stderr).lines().next(), Some("io-error"));
     let v = bench(&["--version"]);
     assert!(v.status.success() && String::from_utf8_lossy(&v.stdout).starts_with("scarletbook "));
 }

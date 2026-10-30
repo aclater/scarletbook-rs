@@ -11,6 +11,10 @@
 //! (continuing one decoding cursor from track to track). With `--threads N` all decoding
 //! runs on a pool of `N` threads (`0`: one per logical CPU); with `N = 1` it runs on a
 //! single thread.
+//!
+//! Errors: the first line on stderr is one error code: a code of specification 7, 7.7.1
+//! for a rejected image, `no-such-area` when the slot yields no area, and `io-error`,
+//! `usage-error` or `internal-error` otherwise. A message follows on the next line.
 
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
@@ -50,8 +54,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Args>, String>
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{flag} needs a value\n{USAGE}"));
         match flag.as_str() {
-            // TODO(aclater/sacd-spec#9): `--area` selects by master TOC slot (2ch / mc);
-            // the benchmark document does not say slot or kind.
+            // `--area` selects by master TOC slot, not by area kind.
             "--area" => {
                 slot = Some(match value()?.as_str() {
                     "2ch" => Slot::TwoChannel,
@@ -169,8 +172,7 @@ impl<W: Write> Output for HashOut<W> {
         Ok(())
     }
     fn no_audio(&mut self, number: u32, code: &str) -> Result<(), Failure> {
-        // TODO(aclater/sacd-spec#9): the benchmark document does not define the line for a
-        // track without audio; this prints the track number and the outcome code.
+        // A track without audio: its number and its outcome code (7.7.4); not an error.
         writeln!(self.out, "{number}\t{code}")?;
         Ok(())
     }
@@ -184,8 +186,7 @@ struct RawOut {
 
 impl Output for RawOut {
     fn start_track(&mut self, number: u32, channels: u8) -> Result<(), Failure> {
-        // TODO(aclater/sacd-spec#9): "TT" is the two-digit track number; track numbers of
-        // 100 or more are written with three digits.
+        // TT: the track number zero-padded to at least two digits (01 to 99, 100 to 255).
         self.files = (0..channels)
             .map(|c| File::create(self.dir.join(format!("{number:02}-{c}.dsd"))).map(BufWriter::new))
             .collect::<Result<_, _>>()?;
@@ -272,14 +273,16 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         Err(usage) => {
-            eprintln!("{usage}");
+            // The first stderr line is the error code alone (benchmarks/README.md, Errors).
+            eprintln!("usage-error\n{usage}");
             return ExitCode::from(2);
         }
     };
     match run(args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(f) => {
-            eprintln!("{}: {}", f.class, f.message);
+            // The first stderr line is the error code alone; a message follows.
+            eprintln!("{}\n{}", f.class, f.message);
             ExitCode::FAILURE
         }
     }
