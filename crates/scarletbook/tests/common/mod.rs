@@ -118,3 +118,82 @@ impl Spec {
         img
     }
 }
+
+/// A frame to pack into audio sectors.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PFrame {
+    pub number: u32,
+    pub dst: bool,
+    pub data: Vec<u8>,
+}
+
+#[derive(Default)]
+struct PSector {
+    dst: Option<bool>,
+    starts: Vec<usize>,
+    packets: Vec<(bool, usize, usize, usize)>,
+    used: usize,
+}
+
+/// Packs frames into audio sectors following specification 4, 4.3, with one audio
+/// packet per frame piece and each DST frame's sector count equal to its packet count.
+pub fn pack(frames: &[PFrame]) -> Vec<[u8; S]> {
+    let mut plan: Vec<PSector> = vec![PSector::default()];
+    for (i, f) in frames.iter().enumerate() {
+        let mut off = 0;
+        while off < f.data.len() {
+            let starting = off == 0;
+            let cur = plan.last_mut().unwrap();
+            let flag = cur.dst.unwrap_or(f.dst);
+            let r = if flag { 4 } else { 3 };
+            let need_new = cur.packets.len() == 7 || (starting && (cur.starts.len() == 7 || flag != f.dst));
+            let h = 1 + 2 * (cur.packets.len() + 1) + (cur.starts.len() + usize::from(starting)) * r;
+            if need_new || h + cur.used >= S {
+                plan.push(PSector::default());
+                continue;
+            }
+            let n = (f.data.len() - off).min(S - h - cur.used).min(2047);
+            cur.dst = Some(flag);
+            if starting {
+                cur.starts.push(i);
+            }
+            cur.packets.push((starting, i, off, n));
+            cur.used += n;
+            off += n;
+        }
+    }
+    let mut pieces = vec![0u8; frames.len()];
+    for s in &plan {
+        for p in &s.packets {
+            pieces[p.1] += 1;
+        }
+    }
+    plan.iter()
+        .filter(|s| !s.packets.is_empty())
+        .map(|s| {
+            let mut out = [0u8; S];
+            let dst = s.dst.unwrap_or(false);
+            out[0] = u8::from(dst) | ((s.starts.len() as u8) << 2) | ((s.packets.len() as u8) << 5);
+            let mut at = 1;
+            for &(start, _, _, len) in &s.packets {
+                let w = (u16::from(start) << 15) | (2 << 11) | len as u16;
+                put16(&mut out, at, w);
+                at += 2;
+            }
+            for &i in &s.starts {
+                put(&mut out, at, &tc(frames[i].number));
+                at += 3;
+                if dst {
+                    assert!(pieces[i] <= 31, "test frame spans too many packets");
+                    out[at] = pieces[i] << 2;
+                    at += 1;
+                }
+            }
+            for &(_, i, off, len) in &s.packets {
+                put(&mut out, at, &frames[i].data[off..off + len]);
+                at += len;
+            }
+            out
+        })
+        .collect()
+}

@@ -9,7 +9,8 @@ use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 
-use scarletbook::{Disc, WarningCode};
+use scarletbook::audio::{self, FRAME_BYTES_PER_CHANNEL};
+use scarletbook::{Disc, FrameContent, Slot, WarningCode};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -52,8 +53,156 @@ fn warning_key(v: &Value) -> (String, String, String) {
     (s("code"), s("area"), s("track"))
 }
 
+/// What checking one case found.
+#[derive(Debug, Default)]
+pub struct CaseReport {
+    /// Mismatches; empty when the case passes.
+    pub failures: Vec<String>,
+    /// Tracks whose audio was not compared because they contain DST frames, which this
+    /// stage does not decode yet.
+    pub dst_pending: usize,
+    /// Tracks whose audio was compared.
+    pub tracks_compared: usize,
+}
+
+/// The decoded audio of one track: per-channel SHA-256 and the frame counts.
+#[derive(Debug, PartialEq, Eq)]
+pub struct TrackAudio {
+    /// One hash per channel.
+    pub sha256: Vec<String>,
+    /// Frames filled with 0x69.
+    pub missing_frames: u64,
+    /// DST frames filled with 0x55.
+    pub invalid_dst_frames: u64,
+}
+
+/// Hashes a track's audio per channel, or returns `Ok(None)` if it has DST frames.
+pub fn track_audio<R: std::io::Read + std::io::Seek>(
+    disc: &mut Disc<R>,
+    slot: Slot,
+    number: u32,
+) -> Result<Option<TrackAudio>, scarletbook::Error> {
+    let mut frames = disc.track_frames(slot, number)?;
+    let channels = frames.channels();
+    let mut hashers: Vec<Sha256> = (0..channels).map(|_| Sha256::new()).collect();
+    let mut chan = vec![0u8; FRAME_BYTES_PER_CHANNEL];
+    let missing_fill = audio::fill_frame(channels, audio::MISSING_FILL);
+    let mut missing = 0;
+    for frame in frames.by_ref() {
+        let frame = frame?;
+        let data = match &frame.content {
+            FrameContent::Dsd(d) => d,
+            FrameContent::Dst(_) => return Ok(None),
+            FrameContent::Missing => {
+                missing += 1;
+                &missing_fill
+            }
+        };
+        for (c, h) in hashers.iter_mut().enumerate() {
+            audio::deinterleave(data, channels, c as u8, &mut chan)?;
+            h.update(&chan);
+        }
+    }
+    Ok(Some(TrackAudio {
+        sha256: hashers.into_iter().map(|h| hex(&h.finalize())).collect(),
+        missing_frames: missing,
+        invalid_dst_frames: 0,
+    }))
+}
+
+fn slot_from(name: &str) -> Option<Slot> {
+    Slot::ALL.into_iter().find(|s| s.name() == name)
+}
+
+fn check_audio<R: std::io::Read + std::io::Seek>(
+    disc: &mut Disc<R>,
+    expected: &Value,
+    report: &mut CaseReport,
+) {
+    let fails = &mut report.failures;
+    let exp_areas: Vec<&Value> = expected.as_array().map(|a| a.iter().collect()).unwrap_or_default();
+    let got_slots: Vec<&str> = disc.toc().areas.iter().map(|a| a.slot.name()).collect();
+    let exp_slots: Vec<&str> = exp_areas.iter().filter_map(|a| a["area"].as_str()).collect();
+    if got_slots != exp_slots {
+        fails.push(format!("audio areas {got_slots:?}, expected {exp_slots:?}"));
+        return;
+    }
+    for ea in exp_areas {
+        let Some(slot) = ea["area"].as_str().and_then(slot_from) else { continue };
+        let Some(area) = disc.toc().area(slot).cloned() else { continue };
+        let exp_tracks = ea["tracks"].as_array().cloned().unwrap_or_default();
+        let exp_numbers: Vec<u64> = exp_tracks.iter().filter_map(|t| t["number"].as_u64()).collect();
+        let got_numbers: Vec<u64> = area.tracks.iter().map(|t| u64::from(t.number)).collect();
+        if exp_numbers != got_numbers {
+            fails.push(format!("{slot}: tracks {got_numbers:?}, expected {exp_numbers:?}"));
+            continue;
+        }
+        for (et, track) in exp_tracks.iter().zip(&area.tracks) {
+            let n = u32::from(track.number);
+            let what = format!("{slot} track {n}");
+            let range = (u64::from(track.start_frame), u64::from(track.end_frame()));
+            if (et["first_frame"].as_u64(), et["end_frame"].as_u64()) != (Some(range.0), Some(range.1)) {
+                fails.push(format!(
+                    "{what}: frame range {range:?}, expected [{}, {})",
+                    et["first_frame"], et["end_frame"]
+                ));
+            }
+            let outcome = et["outcome"].as_str().unwrap_or_default();
+            match (outcome, disc.check_track(slot, n)) {
+                ("ok", Ok(())) => {}
+                ("ok", Err(e)) => {
+                    fails.push(format!("{what}: no audio ({e}), expected audio"));
+                    continue;
+                }
+                (_, Ok(())) => {
+                    fails.push(format!("{what}: audio produced, expected {}", et["error"]));
+                    continue;
+                }
+                (_, Err(e)) => {
+                    if e.code() != et["error"].as_str() {
+                        fails.push(format!("{what}: {:?}, expected {}", e.code(), et["error"]));
+                    }
+                    continue;
+                }
+            }
+            match track_audio(disc, slot, n) {
+                Err(e) => fails.push(format!("{what}: {e}")),
+                Ok(None) => report.dst_pending += 1,
+                Ok(Some(got)) => {
+                    report.tracks_compared += 1;
+                    let exp_sha: Vec<String> = et["sha256"]
+                        .as_array()
+                        .map(|a| a.iter().filter_map(|h| h.as_str().map(str::to_owned)).collect())
+                        .unwrap_or_default();
+                    if got.sha256 != exp_sha {
+                        fails.push(format!("{what}: audio hashes differ"));
+                    }
+                    let counts = (et["missing_frames"].as_u64(), et["invalid_dst_frames"].as_u64());
+                    if counts != (Some(got.missing_frames), Some(got.invalid_dst_frames)) {
+                        fails.push(format!(
+                            "{what}: missing/invalid frames ({}, {}), expected {counts:?}",
+                            got.missing_frames, got.invalid_dst_frames
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Checks one case and returns the list of mismatches (empty when it passes).
 pub fn check_case(corpus: &Path, case: &Value) -> Vec<String> {
+    check_case_report(corpus, case).failures
+}
+
+/// Checks one case, TOC, warnings and audio.
+pub fn check_case_report(corpus: &Path, case: &Value) -> CaseReport {
+    let mut report = CaseReport::default();
+    report.failures = check_case_inner(corpus, case, &mut report);
+    report
+}
+
+fn check_case_inner(corpus: &Path, case: &Value, report: &mut CaseReport) -> Vec<String> {
     let mut fails = Vec::new();
     let path = image_path(corpus, case);
     let mut bytes = Vec::new();
@@ -78,7 +227,7 @@ pub fn check_case(corpus: &Path, case: &Value) -> Vec<String> {
         }
         (Some("reject"), Ok(_)) => fails.push(format!("accepted, expected rejection {}", expected["error"])),
         (_, Err(e)) => fails.push(format!("rejected with {e}, expected acceptance")),
-        (_, Ok(disc)) => {
+        (_, Ok(mut disc)) => {
             let got = json::toc(disc.toc());
             if got != expected["toc"] {
                 fails.push(format!("TOC differs:\n  got      {got}\n  expected {}", expected["toc"]));
@@ -96,6 +245,8 @@ pub fn check_case(corpus: &Path, case: &Value) -> Vec<String> {
             if got_w != exp_w {
                 fails.push(format!("warnings differ: got {got_w:?}, expected {exp_w:?}"));
             }
+            check_audio(&mut disc, &expected["audio"], report);
+            fails.append(&mut report.failures);
         }
     }
     fails

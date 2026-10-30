@@ -7,7 +7,8 @@
 
 use std::io::{self, Read, Seek, SeekFrom};
 
-use scarletbook::Disc;
+use scarletbook::audio::{FRAME_BYTES_PER_CHANNEL, MAX_FRAME_BYTES};
+use scarletbook::{Demuxer, Disc, FrameKind};
 
 /// Bytes of 510 empty plain sectors, prepended to fuzz input so that the input starts at
 /// the master TOC.
@@ -94,4 +95,30 @@ where
             assert!(t.isrc.as_ref().is_none_or(|s| !s.is_empty() && s.chars().count() <= 12));
         }
     }
+}
+
+/// Frame demultiplexing: byte 0 is the area's channel count (any value), the rest is a
+/// run of 2048-byte audio sectors (a trailing partial sector is ignored).
+pub fn demux(data: &[u8]) {
+    let Some((&channels, sectors)) = data.split_first() else { return };
+    let mut d = Demuxer::new(channels);
+    let mut last: Option<u32> = None;
+    let mut check = |d: &mut Demuxer| {
+        while let Some(f) = d.pop() {
+            assert!(last.is_none_or(|l| f.number > l), "timeline not increasing");
+            last = Some(f.number);
+            assert!(!f.data.is_empty() && f.data.len() <= MAX_FRAME_BYTES);
+            if f.kind == FrameKind::Dsd {
+                assert_eq!(f.data.len(), usize::from(channels) * FRAME_BYTES_PER_CHANNEL);
+            }
+        }
+    };
+    for s in sectors.chunks_exact(2048) {
+        let mut sector = [0u8; 2048];
+        sector.copy_from_slice(s);
+        d.push_sector(&sector);
+        check(&mut d);
+    }
+    d.finish();
+    check(&mut d);
 }
