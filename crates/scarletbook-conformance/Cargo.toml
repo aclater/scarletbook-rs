@@ -16,3 +16,7 @@ sha2 = "0.10"
 [[bin]]
 name = "scarletbook-toc"
 path = "src/bin/scarletbook-toc.rs"
+
+[[bin]]
+name = "scarletbook-synth"
+path = "src/bin/scarletbook-synth.rs"

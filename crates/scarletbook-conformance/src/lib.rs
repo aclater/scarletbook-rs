@@ -3,6 +3,7 @@
 //! Runs scarletbook against the sacd-spec conformance corpus (`corpus/README.md`).
 
 pub mod json;
+pub mod synth;
 
 use std::collections::BTreeSet;
 use std::fs::File;
