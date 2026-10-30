@@ -56,7 +56,7 @@ fn pieces(disc: &Image, slot: Slot) -> Vec<Piece> {
 fn whole_area_is_tracks_plus_gaps() {
     let dir = corpus_dir();
     let cases = load_cases(&dir).unwrap_or_else(|e| panic!("manifest: {e}"));
-    let (mut areas, mut with_gaps) = (0, 0);
+    let (mut areas, mut with_gaps, mut with_pause) = (0, 0, 0);
     for case in &cases {
         let id = case["id"].as_str().unwrap_or("?");
         let file = File::open(dir.join("images").join(format!("{id}.iso"))).unwrap();
@@ -67,7 +67,7 @@ fn whole_area_is_tracks_plus_gaps() {
             let channels = area.channel_count;
             let whole = match disc.range_audio_cursor(slot, 0, playtime) {
                 Ok(c) => c,
-                Err(Error::FrameRangeInvalid { .. }) => {
+                Err(Error::TrackEmpty) => {
                     assert_eq!(playtime, 0, "{id} {slot}");
                     continue;
                 }
@@ -86,6 +86,22 @@ fn whole_area_is_tracks_plus_gaps() {
             let (all, _) = read(&mut disc, whole);
             assert_eq!(all.len() as u32, playtime, "{id} {slot}");
             assert!(all.iter().zip(0..).all(|(f, n)| f.number == n), "{id} {slot}");
+
+            // Tracks with pauses (4.7.1 item 5) are slices of the play range too.
+            let count = disc.toc().area(slot).map_or(0, |a| a.tracks.len()) as u32;
+            for n in 1..=count {
+                let (a, b) = disc.track_range_with_pause(slot, n).unwrap();
+                match disc.range_audio(slot, a, b) {
+                    Ok(audio) => {
+                        let got: Vec<AudioFrame> =
+                            audio.map(|f| f.unwrap_or_else(|e| panic!("{e}"))).collect();
+                        assert_eq!(got, all[a as usize..b as usize], "{id} {slot} track {n} [{a}, {b})");
+                        with_pause += 1;
+                    }
+                    Err(Error::TrackEmpty) => assert_eq!(a, b, "{id} {slot} track {n}"),
+                    Err(e) => panic!("{id} {slot} track {n} [{a}, {b}): {e}"),
+                }
+            }
 
             // Fresh cursors per piece, and one cursor continued through all of them.
             let pieces = pieces(&disc, slot);
@@ -120,6 +136,8 @@ fn whole_area_is_tracks_plus_gaps() {
             areas += 1;
         }
     }
-    eprintln!("areas compared: {areas}, with frames outside tracks: {with_gaps}");
-    assert!(areas > 100 && with_gaps > 0, "{areas} {with_gaps}");
+    eprintln!(
+        "areas compared: {areas}, with frames outside tracks: {with_gaps}, tracks with pauses: {with_pause}"
+    );
+    assert!(areas > 100 && with_gaps > 0 && with_pause > 300, "{areas} {with_gaps} {with_pause}");
 }

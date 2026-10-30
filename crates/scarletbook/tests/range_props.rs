@@ -102,10 +102,17 @@ fn whole_area_is_tracks_plus_pauses() {
 fn range_bounds_and_errors() {
     let mut d = disc(&[], &[(0, 4)]);
     let invalid = |e| matches!(e, Error::FrameRangeInvalid { playtime: PLAYTIME, .. });
-    for (first, end) in [(0, 0), (7, 7), (8, 3), (0, PLAYTIME + 1), (PLAYTIME, PLAYTIME + 1), (0, u32::MAX)] {
+    for (first, end) in
+        [(8, 3), (0, PLAYTIME + 1), (PLAYTIME, PLAYTIME + 1), (0, u32::MAX), (u32::MAX, u32::MAX)]
+    {
         let e = d.check_range(Slot::TwoChannel, first, end).unwrap_err();
         assert!(invalid(e), "[{first}, {end})");
         assert!(d.range_audio_cursor(Slot::TwoChannel, first, end).is_err());
+    }
+    // An empty range in the play range is skipped as an empty track is (4.7.1 item 4).
+    for (first, end) in [(0, 0), (7, 7), (PLAYTIME, PLAYTIME)] {
+        let e = d.check_range(Slot::TwoChannel, first, end).unwrap_err();
+        assert!(matches!(e, Error::TrackEmpty), "[{first}, {end}): {e:?}");
     }
     let e = d.check_range(Slot::TwoChannel, 3, 1).unwrap_err();
     assert_eq!(e.class(), scarletbook::ErrorClass::Usage);
@@ -180,7 +187,7 @@ proptest! {
         for (a, b, stop) in ranges {
             let (first, end) = (a.min(b), a.max(b));
             if first == end {
-                prop_assert!(d.check_range(Slot::TwoChannel, first, end).is_err());
+                prop_assert!(matches!(d.check_range(Slot::TwoChannel, first, end), Err(Error::TrackEmpty)));
                 continue;
             }
             let fresh = range(&mut d, first, end);
@@ -198,5 +205,132 @@ proptest! {
             prop_assert_eq!((audio.missing_frames(), audio.invalid_dst_frames()), (missing, invalid));
             cursor = Some(audio.into_cursor());
         }
+    }
+}
+
+/// Specification 4, 4.7.1 item 5, including tracks out of order, overlapping and of
+/// duration 0.
+#[test]
+fn tracks_with_pauses() {
+    type Ranges = &'static [(u32, u32)];
+    let cases: [(Ranges, Ranges); 4] = [
+        (&[(2, 8), (12, 8), (25, 10)], &[(0, 12), (12, 25), (25, PLAYTIME)]),
+        (&[(10, 5), (0, 4), (20, 3)], &[(0, 15), (0, 20), (20, PLAYTIME)]),
+        (&[(0, 10), (5, 3)], &[(0, 10), (5, PLAYTIME)]),
+        (&[(0, 4), (4, 0), (4, 6)], &[(0, 4), (4, 4), (4, PLAYTIME)]),
+    ];
+    for (tracks, expected) in cases {
+        let mut d = disc(&[], tracks);
+        for (i, &want) in expected.iter().enumerate() {
+            let n = i as u32 + 1;
+            assert_eq!(d.track_range_with_pause(Slot::TwoChannel, n).unwrap(), want, "{tracks:?} track {n}");
+            let (first, end) = want;
+            if first == end {
+                assert!(matches!(d.range_audio(Slot::TwoChannel, first, end), Err(Error::TrackEmpty)));
+            } else {
+                assert_eq!(range(&mut d, first, end).len() as u32, end - first);
+            }
+        }
+        let n = expected.len() as u32 + 1;
+        assert!(matches!(d.track_range_with_pause(Slot::TwoChannel, n), Err(Error::NoSuchTrack { .. })));
+        assert!(matches!(d.track_range_with_pause(Slot::Multichannel, 1), Err(Error::NoSuchArea(_))));
+    }
+}
+
+/// DST frames of several sectors each: every range, whatever sector its edges fall in, is
+/// that slice of the whole area.
+#[test]
+#[cfg_attr(miri, ignore = "decodes many ranges")]
+fn dst_frames_spanning_sectors_at_range_edges() {
+    let fs: Vec<PFrame> = (0..10u32)
+        .filter(|&n| n != 4)
+        .map(|n| {
+            let len = 2500 + 300 * n as usize;
+            PFrame { number: n, dst: true, data: (0..len).map(|i| (i as u8) ^ (n as u8 * 17)).collect() }
+        })
+        .collect();
+    let sectors = pack(&fs);
+    assert!(sectors.len() > fs.len(), "frames span sectors");
+    let mut d = disc(&fs, &[(0, 10)]);
+    let whole = range(&mut d, 0, PLAYTIME);
+    assert_eq!(whole[4].status, FrameStatus::Missing);
+    for first in 0..12 {
+        for end in first + 1..=12 {
+            assert_eq!(range(&mut d, first, end), whole[first as usize..end as usize], "[{first}, {end})");
+        }
+    }
+}
+
+/// A sector whose single packet runs past its end (specification 4, 4.4.3 item 1).
+fn overrun_sector() -> [u8; 2048] {
+    let mut s = [0u8; 2048];
+    s[0] = 1 << 5;
+    s[1..3].copy_from_slice(&((2u16 << 11) | 2047).to_be_bytes());
+    s
+}
+
+/// A malformed sector just before the sector where frame 3 starts: ranges that end before
+/// frame 2 is complete do not reach it; ranges that need frame 2 or later report it.
+#[test]
+#[cfg_attr(miri, ignore = "decodes several ranges")]
+fn malformed_sector_at_a_range_edge() {
+    let plain = |n: u32| PFrame { number: n, dst: false, data: vec![n as u8; 2 * FRAME_BYTES_PER_CHANNEL] };
+    let head: Vec<PFrame> = (0..3).map(plain).collect();
+    let tail: Vec<PFrame> = (3..6).map(plain).collect();
+    let mut audio = pack(&head);
+    let lsn = (common::AUDIO_LSN + audio.len()) as u32;
+    audio.push(overrun_sector());
+    audio.extend(pack(&tail));
+    let spec = Spec { channels: 2, playtime: 6, tracks: vec![TrackSpec { start: 0, duration: 6 }], audio };
+    let mut d = Disc::open(Cursor::new(spec.build())).unwrap();
+    let whole: Vec<AudioFrame> = range(&mut d, 0, 6);
+    assert!(whole.iter().all(|f| f.status == FrameStatus::Dsd));
+    for (first, end, malformed) in [(0, 2, 0), (1, 2, 0), (2, 3, 1), (3, 4, 1), (3, 6, 1), (0, 6, 1)] {
+        let mut audio = d.range_audio(Slot::TwoChannel, first, end).unwrap();
+        let got: Vec<AudioFrame> = audio.by_ref().map(Result::unwrap).collect();
+        assert_eq!(got, whole[first as usize..end as usize], "[{first}, {end})");
+        assert_eq!(audio.malformed_sectors(), malformed, "[{first}, {end})");
+        let lsns: Vec<Option<u32>> = audio.warnings().iter().map(|w| w.lsn).collect();
+        assert_eq!(lsns, vec![Some(lsn); malformed as usize], "[{first}, {end})");
+    }
+}
+
+/// Both master TOC slots point at the same area TOC: continuing a range cursor into the
+/// other slot (even at a later frame) rescans, with the frames of a fresh cursor.
+#[test]
+#[cfg_attr(miri, ignore = "decodes several ranges")]
+fn continuing_across_slots() {
+    let fs: Vec<PFrame> = (0..12u32)
+        .map(|n| PFrame { number: n, dst: n % 3 == 0, data: vec![n as u8; 2 * FRAME_BYTES_PER_CHANNEL] })
+        .collect();
+    let mut audio = pack(&fs);
+    audio.resize(audio.len().max(6), [0u8; 2048]);
+    let spec =
+        Spec { channels: 2, playtime: PLAYTIME, tracks: vec![TrackSpec { start: 0, duration: 12 }], audio };
+    let mut img = spec.build();
+    for lsn in [510usize, 520, 530] {
+        img[lsn * 2048 + 72..lsn * 2048 + 76].copy_from_slice(&540u32.to_be_bytes());
+        img[lsn * 2048 + 86..lsn * 2048 + 88].copy_from_slice(&6u16.to_be_bytes());
+    }
+    let mut d = Disc::open(Cursor::new(img)).unwrap();
+    assert_eq!(d.toc().areas.len(), 2);
+    let steps = [
+        (Slot::TwoChannel, 2, 5),
+        (Slot::Multichannel, 6, 9),
+        (Slot::TwoChannel, 9, 12),
+        (Slot::Multichannel, 0, 3),
+    ];
+    let mut cursor: Option<TrackAudioCursor> = None;
+    for (slot, first, end) in steps {
+        let fresh = d.range_audio_cursor(slot, first, end).unwrap();
+        let (expected, _) = read_all(&mut d, fresh);
+        let next = match cursor.take() {
+            Some(prev) => d.continue_range_audio(prev, slot, first, end).unwrap(),
+            None => d.range_audio_cursor(slot, first, end).unwrap(),
+        };
+        let (got, back) = read_all(&mut d, next);
+        assert_eq!(got, expected, "{slot} [{first}, {end})");
+        assert_eq!(got.len() as u32, end - first);
+        cursor = Some(back);
     }
 }

@@ -128,7 +128,7 @@ typedef enum SbStatus {
    */
   SB_STATUS_PANIC = -14,
   /*
-   A frame range is empty or extends past the area's play time.
+   A frame range is reversed or extends past the area's play time (a caller error).
    */
   SB_STATUS_FRAME_RANGE_INVALID = -15,
 } SbStatus;
@@ -778,11 +778,30 @@ enum SbStatus sb_track_audio_open_next(const struct SbDisc *disc,
                                        struct SbTrackAudio **out);
 
 /*
+ Track `number`'s track with pause (specification 4, 4.7.1 item 5): `[a, b)` with
+ `a = 0` for track 1 and the track's own start otherwise, and `b` the larger of the
+ track's own end and the start of the track with the next number (the play time for
+ the last track). With tracks out of order or overlapping these ranges may overlap.
+ Pass `*first` and `*end` to `sb_range_audio_open`. Both pointers are required.
+ Fails with `SB_STATUS_NO_SUCH_AREA` or `SB_STATUS_NO_SUCH_TRACK`.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `first` and `end` NULL or valid for writes.
+ */
+enum SbStatus sb_track_range_with_pause(const struct SbDisc *disc,
+                                        uint32_t slot,
+                                        uint32_t number,
+                                        uint32_t *first,
+                                        uint32_t *end);
+
+/*
  Whether the frame range `[first, end)` of the area from `slot` produces audio:
- `SB_STATUS_OK`, or `SB_STATUS_FRAME_RANGE_INVALID` unless `first < end <= P` (`P` the
- area's play time, `SbAreaInfo.playtime_frames`), or the per-track outcomes
- `SB_STATUS_CHANNEL_COUNT_UNSUPPORTED` and `SB_STATUS_TRACK_EXCEEDS_CAPACITY`, which
- apply to a range as to a track.
+ `SB_STATUS_OK`, or `SB_STATUS_FRAME_RANGE_INVALID` unless `first <= end <= P` (`P`
+ the area's play time, `SbAreaInfo.playtime_frames`; a caller error), or the outcomes
+ of specification 4, 4.8 applied to the range as to a track (4.7.1 item 4):
+ `SB_STATUS_CHANNEL_COUNT_UNSUPPORTED`, `SB_STATUS_TRACK_EMPTY` when `first == end`,
+ `SB_STATUS_TRACK_EXCEEDS_CAPACITY`.
 
  # Safety
 

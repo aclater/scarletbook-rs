@@ -391,28 +391,29 @@ pub fn check_track(area: &Area, track: &Track, image_sectors: u64) -> Result<(),
     check_capacity(area, track.end_frame(), image_sectors)
 }
 
-/// Checks whether the frame range `[first, end)` of an area produces audio: the checks of
-/// specification 4, 4.8 that a track's frame range `[s_i, s_i + d_i)` passes, for any
-/// range of the area's timeline.
+/// Checks whether the frame range `[first, end)` of an area produces audio
+/// (specification 4, 4.7.1 items 3 and 4).
 ///
-/// The range must be non-empty and lie on the area's timeline, `first < end <= P` with
-/// `P` the area's play time ([`Area::playtime_frames`]): the whole area is `[0, P)`. Like
-/// a track's, its end must be within the area's capacity (4.8 item 3).
+/// A range must lie in the area's play range `[0, P)`, `first <= end <= P` with `P` the
+/// area's play time ([`Area::playtime_frames`]); anything else is a caller error. The
+/// checks of 4.8 then apply as to a track, with `end - first` as the duration and `end`
+/// as the end frame.
 ///
 /// # Errors
 ///
-/// [`Error::ChannelCountUnsupported`], [`Error::FrameRangeInvalid`] or
-/// [`Error::TrackExceedsCapacity`], in that order of precedence.
-// TODO(sacd-spec#16): specification 4 defines the audio of tracks only (4.7) and gives
-// the area's timeline no normative end. A range is produced the same way, position by
-// position; its end is bounded by the play time as tracks are (3.9.2 item 2), the 4.8
-// checks (capacity included) and the 4.5 item 5 memory bound are applied to it as to a
-// track.
+/// [`Error::ChannelCountUnsupported`], [`Error::FrameRangeInvalid`] (the caller error),
+/// [`Error::TrackEmpty`] (`first == end`) or [`Error::TrackExceedsCapacity`], in that
+/// order of precedence. The 4.8 outcomes keep their track codes (specification 7, 7.7.4
+/// reports them per track or per frame range).
+// TODO(sacd-spec#20): follows the proposed 4.7.1 text (frame ranges, 4.8 applied to them).
 pub fn check_range(area: &Area, first: u32, end: u32, image_sectors: u64) -> Result<(), Error> {
     check_channels(area)?;
     let playtime = area.playtime_frames();
-    if first >= end || end > playtime {
+    if first > end || end > playtime {
         return Err(Error::FrameRangeInvalid { first, end, playtime });
+    }
+    if first == end {
+        return Err(Error::TrackEmpty);
     }
     check_capacity(area, end, image_sectors)
 }
@@ -433,6 +434,64 @@ fn check_capacity(area: &Area, end_frame: u32, image_sectors: u64) -> Result<(),
         return Err(Error::TrackExceedsCapacity { end_frame, capacity });
     }
     Ok(())
+}
+
+/// Track `number`'s **track with pause** (specification 4, 4.7.1 item 5): `[a, b)` with
+/// `a = 0` for track 1 and its own start `s_i` for every other track, and
+/// `b = max(s_i + d_i, s_j)` when the track numbered `j = i + 1` exists, `max(s_i + d_i, P)`
+/// for the last track. With tracks out of order or overlapping these ranges may overlap,
+/// and are used as they are. `None` if the area has no such track.
+///
+/// Check the range with [`check_range`] as for any range: it may be empty (a track of
+/// duration 0 whose successor starts where it does), which is `track-empty`.
+// TODO(sacd-spec#20): follows the proposed 4.7.1 text (tracks with pauses).
+pub fn track_range_with_pause(area: &Area, number: u32) -> Option<(u32, u32)> {
+    let track = area.track(number)?;
+    let first = if number == 1 { 0 } else { track.start_frame };
+    let next =
+        number.checked_add(1).and_then(|n| area.track(n)).map_or(area.playtime_frames(), |t| t.start_frame);
+    Some((first, next.max(track.end_frame())))
+}
+
+/// A track or frame range of an area, checked ([`check_track`] or [`check_range`]), that
+/// a cursor can continue into without failing: see [`crate::Disc::track_continuation`]
+/// and [`crate::Disc::range_continuation`].
+#[derive(Clone, Copy, Debug)]
+pub struct Continuation<'a> {
+    area: &'a Area,
+    first: u32,
+    end: u32,
+    image_sectors: u64,
+    image_id: Option<u64>,
+}
+
+impl<'a> Continuation<'a> {
+    pub(crate) fn new(
+        area: &'a Area,
+        first: u32,
+        end: u32,
+        image_sectors: u64,
+        image_id: Option<u64>,
+    ) -> Self {
+        Continuation { area, first, end, image_sectors, image_id }
+    }
+
+    /// The frame range, `[first, end)`.
+    pub fn range(&self) -> (u32, u32) {
+        (self.first, self.end)
+    }
+
+    /// `prev` continued into this range (see [`TrackAudioCursor::continue_to_range`]),
+    /// or a fresh cursor when its state cannot be reused.
+    pub fn audio(self, prev: TrackAudioCursor) -> TrackAudioCursor {
+        prev.continue_in(self.area, self.first, self.end, self.image_sectors, self.image_id)
+    }
+
+    /// `prev` continued into this range (see [`TrackCursor::continue_to_range`]), or a
+    /// fresh cursor when its state cannot be reused.
+    pub fn frames(self, prev: TrackCursor) -> TrackCursor {
+        prev.continue_in(self.area, self.first, self.end, self.image_sectors, self.image_id)
+    }
 }
 
 /// What a timeline position holds (specification 4, 4.6), before DST decoding.
@@ -590,8 +649,8 @@ impl TrackCursor {
             || self.area_key != AreaKey::new(area, image_sectors)
             || first < self.next
         {
-            // TODO(sacd-spec#18): 7.1 item 3 describes one pass over the area's sectors; a
-            // range (or track) before this cursor's position, or in another area, rescans.
+            // A range (or track) before this cursor's position, or in another area, scans
+            // the area again: specification 4, 4.2 item 6 allows a pass per track or range.
             return Self::start(area, first, end, image_sectors);
         }
         TrackCursor { next: first, end, ..self }
@@ -867,8 +926,8 @@ impl TrackAudioCursor {
     ///
     /// As [`check_range`].
     pub fn for_range(area: &Area, first: u32, end: u32, image_sectors: u64) -> Result<Self, Error> {
-        // TODO(sacd-spec#16): missing and invalid frames are counted per range, as 4.8
-        // counts them per track.
+        // Missing and invalid frames are counted per range (4.7.1 item 6).
+        // TODO(sacd-spec#20): follows the proposed 4.7.1 text.
         Ok(Self::from_frames(TrackCursor::for_range(area, first, end, image_sectors)?))
     }
 

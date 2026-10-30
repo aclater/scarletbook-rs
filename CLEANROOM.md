@@ -386,10 +386,14 @@ sacd-spec specifications at the commit above, checked against its corpus.
 | [aclater/sacd-spec#4](https://github.com/aclater/sacd-spec/issues/4) | 1.5.1 / 7.7.3 did not define what is compared between master TOC copies; 0.2 item 6 named only the area TOC comparison | answered in `07adda2` (1.5.1 item 3): one 10-sector read per copy, all 20 480 bytes compared, unreadable copies skipped, reported at most once | the code waited with a `TODO` until then; implemented as specified (#8) |
 | [aclater/sacd-spec#5](https://github.com/aclater/sacd-spec/issues/5) | per-sector `audio-sector-malformed` warnings (4.4.5) versus the allocation bound of 7.1 item 2; capping, early stop and repeated scans unspecified | answered in `07adda2` (4.4.5 items 1 to 3, 7.1 item 2) | the code kept only a count, with a `TODO`, until then; implemented as specified (#11) |
 | [aclater/sacd-spec#9](https://github.com/aclater/sacd-spec/issues/9) | `benchmarks/README.md` did not define the `bench` output for tracks without audio, a missing area, or track numbers of 100 or more | answered in `af3c3dd` (the `bench` interface and its error codes) | interim behaviour marked with `TODO`s; it already matched the answer, which `bench` now follows exactly (#14) |
+| [aclater/sacd-spec#16](https://github.com/aclater/sacd-spec/issues/16) | frame ranges other than tracks (#35): no normative end of the area timeline, the 4.8 checks and per-track counts defined for tracks only, "tracks with pauses" informative | proposed in sacd-spec PR #20 (head `0953d420be87ed9acd60414c73a23d910d290ea3`, not yet merged): 4.7.1 | implemented as the proposed 4.7.1 says, marked `TODO(sacd-spec#20)` until it merges (#44) |
+| [aclater/sacd-spec#18](https://github.com/aclater/sacd-spec/issues/18) | 7.1 item 3 described one pass over an area's sectors; range and out-of-order reads rescan | answered in `34f78a3` (4.2 item 6, 7.1 item 3): one pass per track or range is allowed | conformant as written; the code cites 4.2 item 6 (#44) |
 
 Stages 1 to 4 met no gap that required a guess. Both issues concern optional warnings
 that the corpus does not compare, found while working through the review follow-ups.
 Neither was resolved by guessing; no spec-gap `TODO` remains in the code.
+Frame ranges (#44) follow text proposed in sacd-spec PR #20 and not yet merged; the code
+marks each such place `TODO(sacd-spec#20)` until it is.
 
 ## Crate name
 
@@ -410,3 +414,4 @@ on 2026-10-30: the name `scarletbook` is not taken on crates.io. Nothing was pub
 | 2026-10-30 | round 2 | the round 1 results (sacd-spec `775f4ab`, numbers and conditions only) turned into issues #21 to #25; parallel decoding, decoder and release-provenance work, see "Round 2"; version 0.2.0. No new sources consulted beyond sacd-spec. |
 | 2026-10-30 | round 3 | interleaved DST decoding (#31), performance tooling (#30) and build configuration (#32), see "Round 3"; general references under the owner's round 3 allowance and decision B, see "General references consulted"; patent-hygiene table with every flag cleared on full texts read (#40). |
 | 2026-10-30 | specification `34f78a3`, `fa602f9` and `e52a42b` | answers to sacd-spec#14 and #18 applied (the x86-64-v3 `bench` asset renamed outside the benchmark asset patterns); corpus of `fa602f9` vendored (136 cases, all passing); see "Specification version". No new sources consulted beyond sacd-spec. |
+| 2026-10-30 | #35 frame ranges (#44) | decoded audio of any frame range, tracks with pauses. Specification 4, 4.7 item 4, 4.7.1 (as proposed in sacd-spec PR #20 at `0953d420be87ed9acd60414c73a23d910d290ea3`, not yet merged) and 4.8; 4.2 item 6 and 7.1 item 3 at sacd-spec `34f78a3`. No new sources consulted. |

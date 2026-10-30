@@ -4,7 +4,7 @@
 
 use std::io::{Read, Seek};
 
-use crate::audio::{self, AreaFrames, TrackAudio, TrackAudioCursor, TrackCursor, TrackFrames};
+use crate::audio::{self, AreaFrames, Continuation, TrackAudio, TrackAudioCursor, TrackCursor, TrackFrames};
 use crate::error::{Error, Slot, Warning};
 use crate::image::{Image, SectorFormat};
 use crate::toc::{self, Toc};
@@ -110,14 +110,14 @@ impl<R: Read + Seek> Disc<R> {
     }
 
     /// Whether the frame range `[first, end)` of the area from `slot` produces audio: it
-    /// must lie on the area's timeline, `first < end <= P` with `P` the area's play time
-    /// ([`crate::Area::playtime_frames`]), and pass the per-track checks of specification
-    /// 4, 4.8 (see [`audio::check_range`]).
+    /// must lie in the area's play range, `first <= end <= P` with `P` the area's play
+    /// time ([`crate::Area::playtime_frames`]), and pass the checks of specification 4,
+    /// 4.8 as a track would (4.7.1; see [`audio::check_range`]).
     ///
     /// # Errors
     ///
-    /// [`Error::ChannelCountUnsupported`], [`Error::FrameRangeInvalid`] and
-    /// [`Error::TrackExceedsCapacity`], or [`Error::NoSuchArea`].
+    /// [`Error::ChannelCountUnsupported`], [`Error::FrameRangeInvalid`],
+    /// [`Error::TrackEmpty`] and [`Error::TrackExceedsCapacity`], or [`Error::NoSuchArea`].
     pub fn check_range(&self, slot: Slot, first: u32, end: u32) -> Result<(), Error> {
         let area = self.toc.area(slot).ok_or(Error::NoSuchArea(slot))?;
         audio::check_range(area, first, end, self.image.sector_count())
@@ -126,7 +126,11 @@ impl<R: Read + Seek> Disc<R> {
     /// The decoded audio of the frame range `[first, end)` of the area from `slot`: every
     /// timeline position from `first` to `end - 1`, exactly as [`Disc::track_audio`] gives
     /// a track's. The whole area, pauses included, is `[0, P)` with `P` the area's play
-    /// time; a track with the pause after it is its start to the next track's start.
+    /// time. For a track with pause (specification 4, 4.7.1 item 5: track 1 from frame 0,
+    /// every other track from its own start; every track to the larger of its own end and
+    /// the next-numbered track's start, the last to the play time; used as they are when
+    /// tracks overlap or are out of order), use the range from
+    /// [`Disc::track_range_with_pause`].
     ///
     /// # Errors
     ///
@@ -162,11 +166,7 @@ impl<R: Read + Seek> Disc<R> {
         first: u32,
         end: u32,
     ) -> Result<TrackAudioCursor, Error> {
-        let area = self.toc.area(slot).ok_or(Error::NoSuchArea(slot))?;
-        let n = self.image.sector_count();
-        audio::check_range(area, first, end, n)?;
-        // A cursor from another disc is never continued, whatever its layout.
-        Ok(prev.continue_in(area, first, end, n, Some(self.image.id())))
+        Ok(self.range_continuation(slot, first, end)?.audio(prev))
     }
 
     /// The decoding state of a track, for callers that cannot hold the borrow that
@@ -220,11 +220,51 @@ impl<R: Read + Seek> Disc<R> {
         slot: Slot,
         number: u32,
     ) -> Result<TrackAudioCursor, Error> {
+        Ok(self.track_continuation(slot, number)?.audio(prev))
+    }
+
+    /// Track `number` of the area from `slot`, checked ([`Disc::check_track`]), for a
+    /// cursor to continue into without failing: [`Continuation::audio`] does what
+    /// [`Disc::continue_track_audio`] does once the checks have passed. A caller that must
+    /// not give up `prev` unless the continuation succeeds checks first, then hands it
+    /// over.
+    ///
+    /// # Errors
+    ///
+    /// As [`Disc::check_track`].
+    pub fn track_continuation(&self, slot: Slot, number: u32) -> Result<Continuation<'_>, Error> {
         let (area, track) = audio::find_track(&self.toc.areas, slot, number)?;
         let n = self.image.sector_count();
         audio::check_track(area, track, n)?;
         // A cursor from another disc is never continued, whatever its layout.
-        Ok(prev.continue_in(area, track.start_frame, track.end_frame(), n, Some(self.image.id())))
+        Ok(Continuation::new(area, track.start_frame, track.end_frame(), n, Some(self.image.id())))
+    }
+
+    /// The frame range `[first, end)` of the area from `slot`, checked
+    /// ([`Disc::check_range`]), for a cursor to continue into without failing (see
+    /// [`Disc::track_continuation`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Disc::check_range`].
+    pub fn range_continuation(&self, slot: Slot, first: u32, end: u32) -> Result<Continuation<'_>, Error> {
+        let area = self.toc.area(slot).ok_or(Error::NoSuchArea(slot))?;
+        let n = self.image.sector_count();
+        audio::check_range(area, first, end, n)?;
+        // A cursor from another disc is never continued, whatever its layout.
+        Ok(Continuation::new(area, first, end, n, Some(self.image.id())))
+    }
+
+    /// Track `number`'s track with pause (specification 4, 4.7.1 item 5): see
+    /// [`audio::track_range_with_pause`].
+    /// Pass it to [`Disc::range_audio`].
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NoSuchArea`] or [`Error::NoSuchTrack`].
+    pub fn track_range_with_pause(&self, slot: Slot, number: u32) -> Result<(u32, u32), Error> {
+        let (area, _) = audio::find_track(&self.toc.areas, slot, number)?;
+        audio::track_range_with_pause(area, number).ok_or(Error::NoSuchTrack { slot, track: number })
     }
 
     /// The borrowing iterator over a track (or range) decoding state of this disc.

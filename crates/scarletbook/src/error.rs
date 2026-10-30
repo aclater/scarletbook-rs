@@ -63,7 +63,7 @@ pub enum Error {
         /// The area's stored channel count.
         channels: u8,
     },
-    /// The track's duration is 0 (`track-empty`).
+    /// The track's duration is 0, or the frame range is empty (`track-empty`).
     #[error("track skipped: its duration is 0 frames")]
     TrackEmpty,
     /// The track (or frame range) ends beyond 7 frames per existing audio sector
@@ -86,8 +86,9 @@ pub enum Error {
         /// The requested track number.
         track: u32,
     },
-    /// A requested frame range `[first, end)` is empty or extends past the area's play
-    /// time: it must satisfy `first < end <= playtime`.
+    /// A requested frame range `[first, end)` is reversed or extends past the area's play
+    /// time: it must satisfy `first <= end <= playtime` (specification 4, 4.7.1 item 3, a
+    /// caller error). An empty range is [`Error::TrackEmpty`].
     #[error("frame range [{first}, {end}) is not within the area's timeline [0, {playtime})")]
     FrameRangeInvalid {
         /// The range's first frame number.
