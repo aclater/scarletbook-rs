@@ -179,8 +179,8 @@ pub enum WarningCode {
     TrackLsnOutsideArea,
     /// A malformed audio sector (optional).
     AudioSectorMalformed,
-    /// A master TOC copy at LSN 520 or 530 differs from LSN 510 (optional; not emitted
-    /// yet, see aclater/sacd-spec#4).
+    /// A master TOC copy at LSN 520 or 530 differs from LSN 510 (optional; reported at
+    /// most once, specification 1, 1.5.1 item 3).
     MasterTocCopiesDiffer,
     /// A sample frequency code other than 4 (optional).
     SampleFrequencyUnknown,

@@ -75,6 +75,11 @@ impl Spec {
         put16(&mut img, t + 16, 48);
         put(&mut img, t + 48, b"Synthetic\0");
         put(&mut img, m + 9 * S, b"SACD_Man");
+        // The copies at LSN 520 and 530 (specification 1, 1.5), identical as on real discs.
+        let master = img[m..m + 10 * S].to_vec();
+        for copy in [520, 530] {
+            put(&mut img, copy * S, &master);
+        }
         // Area TOC.
         let a = AREA_TOC_LSN * S;
         put(&mut img, a, b"TWOCHTOC");

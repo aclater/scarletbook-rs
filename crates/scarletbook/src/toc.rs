@@ -519,9 +519,6 @@ fn read_master<R: Read + Seek>(img: &mut Image<R>, warnings: &mut Vec<Warning>) 
     if img.read_into(u64::from(MASTER_TOC_LSN), &mut buf)? == ReadOutcome::OutOfRange {
         return Err(Error::MasterTocTruncated);
     }
-    // TODO(aclater/sacd-spec#4): the optional `master-toc-copies-differ` warning (spec
-    // 1.5.1, 7.7.3) is not implemented: the specification does not say whether the copies
-    // at LSN 520 and 530 are compared over all 10 sectors or only over the reported values.
     let s0 = sub(&buf, 0, SECTOR_SIZE);
     if sub(s0, 0, 8) != b"SACDMTOC" {
         return Err(Error::NotScarletbook);
@@ -529,6 +526,10 @@ fn read_master<R: Read + Seek>(img: &mut Image<R>, warnings: &mut Vec<Warning>) 
     let version = Version { major: byte(s0, 8), minor: byte(s0, 9) };
     if version.major > 1 {
         return Err(Error::MasterTocVersionUnsupported { major: version.major, minor: version.minor });
+    }
+    // LSN 510 is accepted: compare the copies (specification 1, 1.5.1 item 3).
+    if master_copies_differ(img, &buf)? {
+        warnings.push(Warning::disc(WarningCode::MasterTocCopiesDiffer));
     }
     let text_channel_count = byte(s0, 128);
     let locales =
@@ -581,6 +582,21 @@ fn read_master<R: Read + Seek>(img: &mut Image<R>, warnings: &mut Vec<Warning>) 
         text: disc_text,
         manufacturer,
     })
+}
+
+/// LSNs of the master TOC copies (specification 1, 1.5).
+const MASTER_TOC_COPIES: [u32; 2] = [520, 530];
+
+/// Whether a master TOC copy that can be read differs from LSN 510 to 519 in any of its
+/// 20 480 bytes (specification 1, 1.5.1 item 3). A copy whose read fails is not compared.
+fn master_copies_differ<R: Read + Seek>(img: &mut Image<R>, master: &[u8]) -> Result<bool, Error> {
+    let mut copy = vec![0u8; master.len()];
+    for lsn in MASTER_TOC_COPIES {
+        if img.read_into(u64::from(lsn), &mut copy)? == ReadOutcome::Ok && copy != master {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Reads one area TOC copy; `None` if any sector is missing.
