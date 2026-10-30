@@ -1,15 +1,22 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
-"""Checks that the C ABI did not change without an SB_ABI_VERSION bump.
+"""Checks the C ABI against its baseline, so that a breaking change bumps SB_ABI_VERSION.
 
 Usage: abi-check.py [--write]
 
-crates/scarletbook-ffi/abi/ holds one snapshot per ABI version, abi-N.txt: the
+crates/scarletbook-ffi/abi/ holds one baseline per ABI version, abi-N.txt: the
 declarations of include/scarletbook.h with comments and layout removed, so that only a
 change to the ABI itself (a function, a struct field, an enum value, a macro) shows. The
-check fails unless the snapshot of the header's SB_ABI_VERSION exists, is the newest one
-and matches the header. A changed ABI therefore needs a new SB_ABI_VERSION and a new
-snapshot; --write creates that snapshot, and refuses to overwrite an existing one
-(snapshots of earlier versions are the ABI history and are never edited).
+baseline of the header's SB_ABI_VERSION must exist, be the newest, and match the header
+(README, "ABI compatibility"):
+
+- an addition (new functions, types, enum values or macros; no existing declaration
+  removed or changed, no struct field added) keeps SB_ABI_VERSION: the same change
+  regenerates abi-N.txt with --write;
+- any other change (a declaration removed or changed, a struct field added, an enum
+  value changed) is breaking: it bumps SB_ABI_VERSION, and --write adds abi-(N+1).txt.
+
+--write writes the baseline of the header's SB_ABI_VERSION. It overwrites an existing
+baseline only for an addition; baselines of earlier versions are history.
 """
 import difflib
 import pathlib
@@ -49,6 +56,33 @@ def normalise(text):
     return "\n".join(line for line in out if line) + "\n"
 
 
+def classify(old, new):
+    """None if `new` equals `old`, "additive" if it only adds to it, else "breaking"."""
+    old, new = old.splitlines(), new.splitlines()
+    if old == new:
+        return None
+    # The kind of block each baseline line sits in, to place insertions.
+    context, stack = [], []
+    for line in old:
+        # context[i]: the block holding the gap before line i.
+        context.append(stack[-1] if stack else "top")
+        if line.startswith("}"):
+            stack.pop()
+        if line.endswith("{"):
+            stack.append("struct" if re.search(r"\bstruct\b", line) else "enum" if "enum" in line else "top")
+    context.append("top")
+    for op, i1, _, _, _ in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
+        # Inserted lines are new declarations, or new enumerators; a new struct field
+        # changes the struct's layout.
+        if op in ("replace", "delete") or (op == "insert" and context[i1] == "struct"):
+            return "breaking"
+    return "additive"
+
+
+def diff(old, new, name):
+    return "".join(difflib.unified_diff(old.splitlines(True), new.splitlines(True), name, "include/scarletbook.h"))
+
+
 def main():
     write = sys.argv[1:] == ["--write"]
     if sys.argv[1:] not in ([], ["--write"]):
@@ -58,37 +92,41 @@ def main():
     if not found:
         sys.exit(f"{HEADER}: no #define SB_ABI_VERSION")
     version = int(found.group(1))
-    snapshot = SNAPSHOTS / f"abi-{version}.txt"
+    baseline = SNAPSHOTS / f"abi-{version}.txt"
     versions = sorted(int(p.stem[4:]) for p in SNAPSHOTS.glob("abi-*.txt"))
-    if write:
-        if snapshot.exists():
-            sys.exit(f"{snapshot.name} exists; snapshots are never rewritten. Bump SB_ABI_VERSION.")
-        snapshot.write_text(abi, encoding="utf-8", newline="\n")
-        print(f"wrote {snapshot.relative_to(FFI)}")
-        return
-    if not snapshot.exists():
+    newest = versions[-1] if versions else None
+    name = baseline.relative_to(FFI)
+    if not baseline.exists():
+        if write and (newest is None or version == newest + 1):
+            baseline.write_text(abi, encoding="utf-8", newline="\n")
+            print(f"wrote {name}")
+            return
         sys.exit(
-            f"no snapshot for SB_ABI_VERSION {version}: run `python3 .github/scripts/abi-check.py --write` "
-            "after bumping SB_ABI_VERSION for an ABI change"
+            f"no baseline for SB_ABI_VERSION {version}"
+            + (f" (the newest is abi-{newest}.txt; SB_ABI_VERSION goes up by one)" if newest else "")
+            + ": after a breaking change, bump SB_ABI_VERSION by one and run "
+            "`python3 .github/scripts/abi-check.py --write`"
         )
-    if versions[-1] != version:
-        sys.exit(f"SB_ABI_VERSION is {version} but the newest snapshot is abi-{versions[-1]}.txt")
-    if snapshot.read_text(encoding="utf-8") != abi:
+    if version != newest:
+        sys.exit(f"SB_ABI_VERSION is {version} but the newest baseline is abi-{newest}.txt")
+    old = baseline.read_text(encoding="utf-8")
+    change = classify(old, abi)
+    if change is None:
+        print(f"ABI matches {name} (SB_ABI_VERSION {version})")
+    elif change == "additive" and write:
+        baseline.write_text(abi, encoding="utf-8", newline="\n")
+        print(f"additive change: rewrote {name}")
+    elif change == "additive":
         sys.exit(
-            f"the ABI in include/scarletbook.h differs from {snapshot.relative_to(FFI)}, but SB_ABI_VERSION "
-            f"is still {version}. Every ABI change increments SB_ABI_VERSION (README, \"ABI "
-            "compatibility\"): bump it in src/lib.rs, regenerate the header and run "
-            "`python3 .github/scripts/abi-check.py --write`.\n"
-            + "".join(
-                difflib.unified_diff(
-                    snapshot.read_text(encoding="utf-8").splitlines(True),
-                    abi.splitlines(True),
-                    snapshot.name,
-                    "include/scarletbook.h",
-                )
-            )
+            f"additive change: regenerate the baseline with --write "
+            f"(`python3 .github/scripts/abi-check.py --write`) in the same commit\n{diff(old, abi, baseline.name)}"
         )
-    print(f"ABI matches {snapshot.relative_to(FFI)} (SB_ABI_VERSION {version})")
+    else:
+        sys.exit(
+            f"breaking change: bump SB_ABI_VERSION and add abi-{version + 1}.txt (bump it in "
+            "crates/scarletbook-ffi/src/lib.rs, regenerate the header with cbindgen, then run "
+            f"`python3 .github/scripts/abi-check.py --write`)\n{diff(old, abi, baseline.name)}"
+        )
 
 
 main()

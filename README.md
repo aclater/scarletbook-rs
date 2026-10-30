@@ -142,36 +142,50 @@ assert lib.sb_abi_version() == 1   # the SB_ABI_VERSION you wrote your bindings 
 
 The ABI is everything `scarletbook.h` declares (functions and their signatures, struct
 layouts, enum names and values, macros) and the behaviour the header documents.
-`SB_ABI_VERSION` in the header, and `sb_abi_version()` in the library, identify it:
+`SB_ABI_VERSION` in the header, and `sb_abi_version()` in the library, number its breaking
+changes:
 
-- **Every change to the ABI increments `SB_ABI_VERSION` by one**, in the same change,
-  whether or not it is compatible. Comments and documentation fixes that do not change
-  behaviour are not ABI changes.
-- A **patch** release (`x.y.Z`) does not change the ABI.
-- A **minor** release (`x.Y.0`) may only extend it compatibly: add functions, add values to
-  enums the caller passes in, add macros. It does not remove or rename anything, change a
-  signature, change an existing struct (callers allocate them, so structs never grow),
-  renumber an enum, or change documented behaviour incompatibly. A program built against
-  the older header keeps working with the newer library. New status codes count as
-  incompatible unless a function's documentation already allows unknown codes.
-- Incompatible changes happen only in a **major** release (`X.0.0`). While the version is
-  `0.y.z`, as in Cargo, the `y` step is the major one and the `z` step the minor one, so
-  there are no patch releases before 1.0.
-- A program should check `sb_abi_version() == SB_ABI_VERSION` (or, if it accepts newer
-  libraries, compare against the table below) before using the library.
+- **Additions keep `SB_ABI_VERSION`**: new functions, new types, new enum values (status
+  codes included: treat a status you do not know as a failure) and new macros. A program
+  built against an older header keeps working with the newer library.
+- **Breaking changes increment `SB_ABI_VERSION` by one**: removing or renaming a
+  declaration, changing a signature, changing a struct's layout (adding a field included:
+  callers allocate the structs), changing an enum value, or changing documented behaviour
+  incompatibly.
+- Comments and documentation fixes that do not change behaviour are not ABI changes.
 
-| `SB_ABI_VERSION` | First release | Compatible with |
-|---|---|---|
-| 1 | 0.1.0 | (first released ABI; unchanged in 0.2.0) |
+Releases follow this:
 
-CI enforces the first rule: `crates/scarletbook-ffi/abi/abi-N.txt` is a snapshot of the
-declarations of ABI version N (comments and layout removed), and
-`.github/scripts/abi-check.py` fails when the header differs from the snapshot of its
-`SB_ABI_VERSION`. After an ABI change, increment `SB_ABI_VERSION` in
-`crates/scarletbook-ffi/src/lib.rs`, regenerate the header, run
-`python3 .github/scripts/abi-check.py --write` to add the new snapshot, and add a row to
-the table. Snapshots of earlier versions are never edited. Behaviour changes that leave the
-declarations alone are not visible to the check and are caught in review.
+- a **patch** release (`x.y.Z`) does not change the ABI;
+- a **minor** release (`x.Y.0`) may add to it, never break it;
+- only a **major** release (`X.0.0`) may break it, and then increments `SB_ABI_VERSION`.
+
+While the version is `0.y.z`, as in Cargo, the `y` step is the major one and the `z` step
+the minor one, so there are no patch releases before 1.0.
+
+A program checks `sb_abi_version() == SB_ABI_VERSION` before using the library. A function
+added after the release whose header it was built with needs a library at least that new
+(`sb_version()`); a program that loads the library at run time can look the symbol up
+instead.
+
+| `SB_ABI_VERSION` | First release |
+|---|---|
+| 1 | 0.1.0 (unchanged in 0.2.0) |
+
+CI enforces this. `crates/scarletbook-ffi/abi/abi-N.txt` is the baseline of ABI version N:
+the header's declarations without comments or layout. `.github/scripts/abi-check.py`
+compares the header with the baseline of its `SB_ABI_VERSION` and says which case applies:
+
+- a pure addition fails with "additive change: regenerate the baseline with --write". Run
+  `python3 .github/scripts/abi-check.py --write` in the same commit, so the baseline always
+  matches the header on `main`;
+- anything else fails with "breaking change: bump SB_ABI_VERSION and add abi-(N+1).txt".
+  Increment `SB_ABI_VERSION` in `crates/scarletbook-ffi/src/lib.rs`, regenerate the header,
+  run `--write` to add the new baseline, and add a row to the table.
+
+Baselines of earlier versions are never edited. A behaviour change that leaves the
+declarations alone is invisible to the check: bump `SB_ABI_VERSION` by hand (the header
+then differs only in that line) and run `--write`.
 
 ## Benchmarks
 
