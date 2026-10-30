@@ -83,7 +83,7 @@ and widened, by name only, across every file system except `/proc` and `/sys`:
 ```
 $ find / \( -path /proc -o -path /sys \) -prune -o \( -iname '*sacd*' -o -iname '*dsdiff*' \
     -o -iname '*dst*dec*' -o -iname '*ffmpeg*' -o -iname 'libavcodec*' \) -print
-/home/dev/src/sacd-spec
+/home/<user>/src/sacd-spec
 ```
 
 The only match is the sacd-spec clone. No SACD or DST implementation code was found on the
