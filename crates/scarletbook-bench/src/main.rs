@@ -30,6 +30,9 @@ use sha2::{Digest, Sha256};
 const USAGE: &str =
     "usage: bench --version\n       bench decode IMAGE --area 2ch|mc --threads N --sink hash|null|raw DIR";
 
+/// Bytes buffered per output file of the raw sink.
+const OUT_BUFFER: usize = 1 << 20;
+
 #[derive(Debug)]
 enum Sink {
     Hash,
@@ -137,9 +140,60 @@ impl Output for NullOut {
 
 /// Splits an interleaved frame into its channels' 4704-byte runs.
 fn split(data: &[u8], channels: usize, chan: &mut [Vec<u8>]) {
-    for (c, out) in chan.iter_mut().enumerate().take(channels) {
+    // A constant channel count lets the compiler vectorise the strided copy; a generic
+    // iterator chain over `step_by` was most of the time of the raw sink.
+    match channels {
+        1 => split_n::<1>(data, chan),
+        2 => split_2(data, chan),
+        3 => split_n::<3>(data, chan),
+        4 => split_n::<4>(data, chan),
+        5 => split_n::<5>(data, chan),
+        6 => split_n::<6>(data, chan),
+        _ => {
+            for (c, out) in chan.iter_mut().enumerate().take(channels) {
+                out.clear();
+                out.extend(data.iter().skip(c).step_by(channels));
+            }
+        }
+    }
+}
+
+fn split_2(data: &[u8], chan: &mut [Vec<u8>]) {
+    let [l, r] = chan else { return split_n::<2>(data, chan) };
+    let n = data.len() / 2;
+    l.clear();
+    l.resize(n, 0);
+    r.clear();
+    r.resize(n, 0);
+    // Eight interleaved bytes at a time: the even bytes go left, the odd ones right.
+    fn pack(v: u64) -> [u8; 4] {
+        let v = (v | (v >> 8)) & 0x0000_FFFF_0000_FFFF;
+        (((v | (v >> 16)) & 0xFFFF_FFFF) as u32).to_le_bytes()
+    }
+    let words = data.chunks_exact(8);
+    let tail = words.remainder();
+    for ((l, r), w) in l.chunks_exact_mut(4).zip(r.chunks_exact_mut(4)).zip(words) {
+        let mut b = [0u8; 8];
+        b.copy_from_slice(w);
+        let x = u64::from_le_bytes(b);
+        l.copy_from_slice(&pack(x & 0x00FF_00FF_00FF_00FF));
+        r.copy_from_slice(&pack((x >> 8) & 0x00FF_00FF_00FF_00FF));
+    }
+    let done = (n / 4) * 4;
+    for (i, f) in tail.chunks_exact(2).enumerate() {
+        l[done + i] = f[0];
+        r[done + i] = f[1];
+    }
+}
+
+fn split_n<const C: usize>(data: &[u8], chan: &mut [Vec<u8>]) {
+    let n = data.len() / C;
+    for (c, out) in chan.iter_mut().enumerate().take(C) {
         out.clear();
-        out.extend(data.iter().skip(c).step_by(channels));
+        out.resize(n, 0);
+        for (o, f) in out.iter_mut().zip(data.chunks_exact(C)) {
+            *o = f[c];
+        }
     }
 }
 
@@ -190,7 +244,11 @@ impl Output for RawOut {
     fn start_track(&mut self, number: u32, channels: u8) -> Result<(), Failure> {
         // TT: the track number zero-padded to at least two digits (01 to 99, 100 to 255).
         self.files = (0..channels)
-            .map(|c| File::create(self.dir.join(format!("{number:02}-{c}.dsd"))).map(BufWriter::new))
+            .map(|c| {
+                // Large buffers: one write call per 256 frames of a channel, not one per frame.
+                File::create(self.dir.join(format!("{number:02}-{c}.dsd")))
+                    .map(|f| BufWriter::with_capacity(OUT_BUFFER, f))
+            })
             .collect::<Result<_, _>>()?;
         self.chan = vec![Vec::with_capacity(FRAME_BYTES_PER_CHANNEL); usize::from(channels)];
         Ok(())
@@ -321,5 +379,15 @@ mod tests {
         let mut chan = vec![Vec::new(); 2];
         split(&[1, 2, 1, 2, 1, 2], 2, &mut chan);
         assert_eq!(chan, vec![vec![1, 1, 1], vec![2, 2, 2]]);
+        let data: Vec<u8> = (0..60).collect();
+        for c in 1..=7usize {
+            let mut chan = vec![Vec::new(); c];
+            let used = &data[..data.len() / c * c];
+            split(used, c, &mut chan);
+            for (k, out) in chan.iter().enumerate() {
+                let want: Vec<u8> = used.iter().copied().skip(k).step_by(c).collect();
+                assert_eq!(out, &want);
+            }
+        }
     }
 }
