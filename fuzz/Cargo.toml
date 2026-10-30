@@ -1,0 +1,23 @@
+[package]
+name = "scarletbook-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+scarletbook = { path = "../crates/scarletbook" }
+
+[[bin]]
+name = "toc"
+path = "fuzz_targets/toc.rs"
+test = false
+doc = false
+bench = false
+
+# Not part of the main workspace: cargo-fuzz needs nightly and its own profile.
+[workspace]

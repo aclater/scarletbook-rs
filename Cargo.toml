@@ -1,0 +1,32 @@
+[workspace]
+resolver = "3"
+members = ["crates/scarletbook", "crates/scarletbook-conformance"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/aclater/scarletbook-rs"
+
+[workspace.lints.rust]
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+# Panics on hostile input are bugs; these catch the common sources.
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+
+# The conformance suite decodes full DST frames; unoptimised builds make it slow.
+[profile.test]
+opt-level = 2
+
+[profile.dev.package.scarletbook]
+opt-level = 2
+
+# Arithmetic on image values is bounded by construction; keep the checks on so that a
+# mistake shows up as a test or fuzz failure rather than as silent wrapping.
+[profile.release]
+overflow-checks = true

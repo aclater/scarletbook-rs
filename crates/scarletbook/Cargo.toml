@@ -1,0 +1,20 @@
+[package]
+name = "scarletbook"
+description = "Clean-room reader for Super Audio CD (Scarletbook) disc images"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["sacd", "dsd", "dst", "audio", "scarletbook"]
+categories = ["multimedia::audio", "parser-implementations"]
+include = ["src/**", "data/**", "Cargo.toml", "LICENSE-*", "README.md"]
+
+[dependencies]
+thiserror = "2"
+
+[dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true
