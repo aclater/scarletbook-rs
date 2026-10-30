@@ -3,6 +3,7 @@
 //! Stored sector formats, format detection and LSN addressing (specification 1).
 
 use std::io::{self, Read, Seek, SeekFrom};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error::Error;
 
@@ -54,6 +55,7 @@ impl SectorFormat {
 #[derive(Debug)]
 pub struct Image<R> {
     reader: R,
+    id: u64,
     format: SectorFormat,
     len: u64,
     sectors: u64,
@@ -107,7 +109,22 @@ impl<R: Read + Seek> Image<R> {
     }
 
     fn new(reader: R, format: SectorFormat, len: u64) -> Self {
-        Image { reader, format, len, sectors: len / format.stored_size(), pos: None, scratch: Vec::new() }
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+        Image {
+            reader,
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            format,
+            len,
+            sectors: len / format.stored_size(),
+            pos: None,
+            scratch: Vec::new(),
+        }
+    }
+
+    /// An identifier of this image, unique within the process. Audio cursors bind to the
+    /// image they first read and refuse any other.
+    pub fn id(&self) -> u64 {
+        self.id
     }
 
     /// The sector format.

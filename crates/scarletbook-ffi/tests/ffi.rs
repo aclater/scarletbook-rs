@@ -347,6 +347,7 @@ unsafe extern "C" fn cb_read(user: *mut c_void, buf: *mut u8, len: usize) -> i64
         // Re-entrant calls with handles that are in use must fail cleanly.
         u.probes.push(info(u.disc).0);
         u.probes.push(audio_read(u.audio, u.disc, &mut [0u8; 2 * 4704]).0);
+        u.probes.push(audio_open_next(u.disc, u.audio, 0, 1).map_or_else(|s| s, |_| SbStatus::Ok));
         free(u.disc); // must be a no-op
         audio_free(u.audio); // must be a no-op
     }
@@ -559,4 +560,41 @@ fn malformed_sector_warnings() {
     assert_eq!(unsafe { sb_track_audio_warning(a, u32::MAX, &mut w) }, SbStatus::InvalidArgument);
     audio_free(a);
     free(disc);
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "reads whole corpus images")]
+fn open_next_refusals_leave_prev_usable() {
+    let bytes = image("hostile-base");
+    let disc = open(&bytes).unwrap();
+    let other = open(&bytes).unwrap();
+    let a = audio_open(disc, 0, 1).unwrap();
+    // `prev` from another disc.
+    assert_eq!(audio_open_next(other, a, 0, 2).unwrap_err(), SbStatus::InvalidArgument);
+    // A bad slot, a missing track and a track without audio are refused before `prev`
+    // is taken.
+    assert_eq!(audio_open_next(disc, a, 9, 2).unwrap_err(), SbStatus::InvalidArgument);
+    assert_eq!(audio_open_next(disc, a, 0, 99).unwrap_err(), SbStatus::NoSuchTrack);
+    // `prev` is still the caller's after every refusal: it reads and continues normally.
+    let mut frame = vec![0u8; 2 * 4704];
+    assert_eq!(audio_read(a, disc, &mut frame).0, SbStatus::Ok);
+    let b = audio_open_next(disc, a, 0, 2).unwrap();
+    assert_eq!(audio_read(b, disc, &mut frame).0, SbStatus::Ok);
+    audio_free(b);
+    free(disc);
+    free(other);
+}
+
+/// The ABI version and the layouts it covers: a change to a struct must come with a new
+/// SB_ABI_VERSION, and with this test.
+#[test]
+fn abi_version_and_layouts() {
+    assert_eq!(sb_abi_version(), SB_ABI_VERSION);
+    assert_eq!(SB_ABI_VERSION, 1);
+    #[cfg(target_pointer_width = "64")]
+    {
+        assert_eq!(std::mem::size_of::<SbWarning>(), 24);
+        assert_eq!(std::mem::size_of::<SbFrameInfo>(), 24);
+    }
+    assert_eq!(std::mem::size_of::<SbStatus>(), 4);
 }

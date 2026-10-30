@@ -160,7 +160,8 @@ impl<R: Read + Seek> Disc<R> {
         number: u32,
     ) -> Result<TrackAudioCursor, Error> {
         let (area, track) = audio::find_track(&self.toc.areas, slot, number)?;
-        prev.continue_to(area, track, self.image.sector_count())
+        // A cursor from another disc is never continued, whatever its layout.
+        prev.continue_in(area, track, self.image.sector_count(), Some(self.image.id()))
     }
 
     /// The borrowing iterator over a track decoding state of this disc.

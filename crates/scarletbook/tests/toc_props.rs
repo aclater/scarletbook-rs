@@ -154,3 +154,34 @@ fn unreadable_master_toc_copy_is_not_compared() {
     img[520 * S + 12] ^= 1;
     assert_eq!(copies_warning(img), 1);
 }
+
+/// A reader that fails with an I/O error on any read touching LSN 520 to 539.
+struct FailingCopies(Cursor<Vec<u8>>);
+
+impl std::io::Read for FailingCopies {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let pos = self.0.position();
+        let end = pos + buf.len() as u64;
+        if pos < 540 * 2048 && end > 520 * 2048 {
+            return Err(std::io::Error::other("injected failure"));
+        }
+        self.0.read(buf)
+    }
+}
+
+impl std::io::Seek for FailingCopies {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.0.seek(pos)
+    }
+}
+
+/// Specification 1, 1.5.1 items 2 and 3: an I/O error on a copy is a failed read of an
+/// optional comparison; it neither rejects the image nor warns.
+#[test]
+fn io_error_on_a_master_toc_copy_changes_nothing() {
+    let mut img = common::Spec::simple().build();
+    img[520 * 2048 + 12] ^= 1; // would differ, if it could be read
+    let disc = Disc::open(FailingCopies(Cursor::new(img))).expect("LSN 510 to 519 decide the outcome");
+    assert!(disc.warnings().iter().all(|w| w.code != scarletbook::WarningCode::MasterTocCopiesDiffer));
+    assert_eq!(disc.toc().areas.len(), 1);
+}

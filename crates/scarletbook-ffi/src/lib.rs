@@ -512,6 +512,18 @@ unsafe fn open_reader(reader: Reader, out: *mut *mut SbDisc) -> Result<SbStatus,
     Ok(SbStatus::Ok)
 }
 
+/// The version of this C ABI. It is incremented on every incompatible change to a
+/// function signature or to the layout of a struct or enum in this header. 1 is the
+/// first released ABI.
+pub const SB_ABI_VERSION: u32 = 1;
+
+/// The ABI version the library was built with; compare it with `SB_ABI_VERSION` from the
+/// header you compiled against.
+#[unsafe(no_mangle)]
+pub extern "C" fn sb_abi_version() -> u32 {
+    SB_ABI_VERSION
+}
+
 /// The library version, a static NUL-terminated string.
 #[unsafe(no_mangle)]
 pub extern "C" fn sb_version() -> *const c_char {
@@ -991,8 +1003,15 @@ pub unsafe extern "C" fn sb_track_audio_open(
 /// audio sector once. With `prev` NULL this is `sb_track_audio_open`.
 ///
 /// On success `prev` is consumed (freed) and `*out` receives the new handle. On failure
-/// `prev` is left untouched (still to be freed by the caller) and `*out` is set to NULL.
-/// Check a track with `sb_track_check` first to keep `prev` across tracks without audio.
+/// `prev` is left untouched (still to be freed by the caller) and `*out` is set to NULL,
+/// with one exception: after `SB_STATUS_PANIC`, treat `prev` as consumed and neither use
+/// nor free it (an internal error after ownership was taken would otherwise risk a double
+/// free; the handle may leak). Check a track with `sb_track_check` first to keep `prev`
+/// across tracks without audio.
+///
+/// Do not pass the address of the variable holding `prev` as `out`
+/// (`sb_track_audio_open_next(d, h, slot, n, &h)`): `*out` is set to NULL before anything
+/// else, so on failure the only pointer to `prev` would be lost. Use a second variable.
 ///
 /// # Safety
 ///
@@ -1139,7 +1158,9 @@ pub unsafe extern "C" fn sb_track_audio_counts(
     })
 }
 
-/// The number of malformed audio sectors processed so far for this track.
+/// The number of malformed audio sectors processed so far by this handle's scan of its
+/// area. The scan starts at the area's first audio sector, not at the track; a handle from
+/// `sb_track_audio_open_next` keeps counting from where the earlier tracks left off.
 ///
 /// # Safety
 ///
@@ -1159,10 +1180,11 @@ pub unsafe extern "C" fn sb_track_audio_malformed_sectors(
     })
 }
 
-/// `audio-sector-malformed` warning `index` of the sectors processed so far for this
-/// track, with its slot and LSN (specification 4, 4.4.5). At most 4096 are kept per
-/// handle; `sb_track_audio_malformed_sectors` counts them all. Returns
-/// `SB_STATUS_INVALID_ARGUMENT` past the last one.
+/// `audio-sector-malformed` warning `index` of this handle's scan of its area so far, with
+/// its slot and LSN (specification 4, 4.4.5): per area, not per track, and each sector
+/// once (sectors of earlier tracks of a continued handle are not reported again). At
+/// most 4096 are kept per scan; `sb_track_audio_malformed_sectors` counts them all.
+/// Returns `SB_STATUS_INVALID_ARGUMENT` past the last one.
 ///
 /// # Safety
 ///
