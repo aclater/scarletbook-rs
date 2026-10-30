@@ -111,3 +111,24 @@ proptest! {
         }
     }
 }
+
+/// The missing-frame count follows the frames returned, with or without `parallel`
+/// (whose batches decode ahead of the caller).
+#[test]
+fn counts_follow_returned_frames() {
+    let spec = Spec {
+        channels: 2,
+        playtime: 12,
+        tracks: vec![TrackSpec { start: 0, duration: 12 }],
+        audio: vec![[0u8; 2048]; 2],
+    };
+    let mut disc = Disc::open(Cursor::new(spec.build())).unwrap();
+    let mut audio = disc.track_audio(Slot::TwoChannel, 1).unwrap();
+    for returned in 1..=12u64 {
+        let frame = audio.next().unwrap().unwrap();
+        assert_eq!(frame.status, scarletbook::FrameStatus::Missing);
+        assert_eq!(audio.missing_frames(), returned);
+    }
+    assert!(audio.next().is_none());
+    assert_eq!(audio.missing_frames(), 12);
+}

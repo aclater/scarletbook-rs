@@ -25,6 +25,9 @@ pub const INVALID_FILL: u8 = 0x55;
 /// Largest channel count for which audio is produced (specification 4, 4.8).
 pub const MAX_CHANNELS: u8 = 6;
 
+/// Most frames decoded together with the `parallel` feature.
+pub const MAX_PARALLEL_BATCH: usize = 64;
+
 /// Most frames that can start in one sector (specification 4, 4.8 item 3).
 pub const FRAMES_PER_SECTOR: u64 = 7;
 
@@ -482,6 +485,13 @@ pub fn decode_frame(decoder: &mut DstDecoder, frame: TrackFrame, channels: u8) -
             match decoder.decode(&bytes, channels, &mut out) {
                 Ok(()) => (FrameStatus::Decoded, out),
                 Err(e) => {
+                    // The channel count was checked (4.8) and the buffer sized from it, so
+                    // only frame rules can fail here.
+                    debug_assert_ne!(
+                        e,
+                        DstError::InvalidArguments,
+                        "decoder arguments checked by check_track"
+                    );
                     out.fill(INVALID_FILL);
                     (FrameStatus::Invalid(e), out)
                 }
@@ -534,12 +544,12 @@ impl TrackAudioCursor {
         self.frames.channels()
     }
 
-    /// Frames so far that were missing (filled with 0x69).
+    /// Frames returned so far that were missing (filled with 0x69).
     pub fn missing_frames(&self) -> u64 {
         self.missing
     }
 
-    /// Frames so far that were invalid DST frames (filled with 0x55).
+    /// Frames returned so far that were invalid DST frames (filled with 0x55).
     pub fn invalid_dst_frames(&self) -> u64 {
         self.invalid
     }
@@ -547,7 +557,9 @@ impl TrackAudioCursor {
     fn batch_size() -> usize {
         #[cfg(feature = "parallel")]
         {
-            4 * rayon::current_num_threads()
+            // A constant cap keeps the memory held independent of the host: at most
+            // MAX_PARALLEL_BATCH x (65 536 + 6 x 4704) bytes, about 6 MB.
+            (4 * rayon::current_num_threads()).clamp(1, MAX_PARALLEL_BATCH)
         }
         #[cfg(not(feature = "parallel"))]
         {
@@ -576,13 +588,6 @@ impl TrackAudioCursor {
         #[cfg(not(feature = "parallel"))]
         let decoded: Vec<AudioFrame> =
             batch.into_iter().map(|f| decode_frame(&mut self.decoder, f, channels)).collect();
-        for f in &decoded {
-            match f.status {
-                FrameStatus::Missing => self.missing += 1,
-                FrameStatus::Invalid(_) => self.invalid += 1,
-                FrameStatus::Dsd | FrameStatus::Decoded => {}
-            }
-        }
         self.ready.extend(decoded);
     }
 
@@ -592,7 +597,16 @@ impl TrackAudioCursor {
             self.refill(image);
         }
         match self.ready.pop_front() {
-            Some(f) => Some(Ok(f)),
+            Some(f) => {
+                // Counted as frames are returned, so the counts never run ahead of the
+                // caller, whatever the batch size.
+                match f.status {
+                    FrameStatus::Missing => self.missing += 1,
+                    FrameStatus::Invalid(_) => self.invalid += 1,
+                    FrameStatus::Dsd | FrameStatus::Decoded => {}
+                }
+                Some(Ok(f))
+            }
             None => self.pending_error.take().map(Err),
         }
     }
@@ -616,12 +630,12 @@ impl<'a, R: Read + Seek> TrackAudio<'a, R> {
         self.cursor.channels()
     }
 
-    /// Frames so far that were missing (filled with 0x69).
+    /// Frames returned so far that were missing (filled with 0x69).
     pub fn missing_frames(&self) -> u64 {
         self.cursor.missing_frames()
     }
 
-    /// Frames so far that were invalid DST frames (filled with 0x55).
+    /// Frames returned so far that were invalid DST frames (filled with 0x55).
     pub fn invalid_dst_frames(&self) -> u64 {
         self.cursor.invalid_dst_frames()
     }
