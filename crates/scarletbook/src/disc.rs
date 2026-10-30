@@ -4,7 +4,7 @@
 
 use std::io::{Read, Seek};
 
-use crate::audio::{self, AreaFrames, TrackAudio, TrackFrames};
+use crate::audio::{self, AreaFrames, TrackAudio, TrackAudioCursor, TrackFrames};
 use crate::error::{Error, Slot, Warning};
 use crate::image::{Image, SectorFormat};
 use crate::toc::{self, Toc};
@@ -104,7 +104,20 @@ impl<R: Read + Seek> Disc<R> {
     ///
     /// As [`Disc::check_track`].
     pub fn track_audio(&mut self, slot: Slot, number: u32) -> Result<TrackAudio<'_, R>, Error> {
-        Ok(TrackAudio::new(self.track_frames(slot, number)?))
+        let (area, track) = audio::find_track(&self.toc.areas, slot, number)?;
+        TrackAudio::new(&mut self.image, area, track)
+    }
+
+    /// The decoding state of a track, for callers that cannot hold the borrow that
+    /// [`Disc::track_audio`] needs (for example across an FFI boundary). Advance it with
+    /// [`TrackAudioCursor::next_frame`], passing this disc's [`Disc::image_mut`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Disc::check_track`].
+    pub fn track_audio_cursor(&self, slot: Slot, number: u32) -> Result<TrackAudioCursor, Error> {
+        let (area, track) = audio::find_track(&self.toc.areas, slot, number)?;
+        TrackAudioCursor::new(area, track, self.image.sector_count())
     }
 
     /// The underlying image.

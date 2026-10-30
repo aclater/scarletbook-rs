@@ -48,14 +48,39 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install "$RUST_MSRV" --profile minimal
-      - run: cargo +"$RUST_MSRV" check -p scarletbook --all-features --locked
+      - run: cargo +"$RUST_MSRV" check -p scarletbook -p scarletbook-ffi --all-features --locked
 
   miri:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install "$RUST_NIGHTLY" --profile minimal -c miri,rust-src
-      - run: cargo +"$RUST_NIGHTLY" miri test -p scarletbook --locked
+      - run: cargo +"$RUST_NIGHTLY" miri test -p scarletbook -p scarletbook-ffi --locked
+
+  ffi:
+    name: ffi (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup toolchain install "$RUST_STABLE" --profile minimal && rustup default "$RUST_STABLE"
+      - name: The committed header is what cbindgen generates
+        if: runner.os == 'Linux'
+        working-directory: crates/scarletbook-ffi
+        run: |
+          cargo install cbindgen --locked --version 0.29.4
+          cbindgen --config cbindgen.toml --crate scarletbook-ffi --output include/scarletbook.h --verify
+      - run: cargo build -p scarletbook-ffi --release --locked
+      - name: Build and run the C smoke test
+        run: |
+          cc -std=c99 -Wall -Wextra -Werror -pedantic -Icrates/scarletbook-ffi/include \
+            crates/scarletbook-ffi/examples/smoke.c target/release/libscarletbook_ffi.a -lpthread -ldl -lm -o smoke
+          for id in hostile-base dst-features-2ch-6ch dst-invalid-frames-6ch layout-2054 master-version-99 truncated-in-audio; do
+            ./smoke "corpus/images/$id.iso"
+          done
 
   deny:
     runs-on: ubuntu-latest
