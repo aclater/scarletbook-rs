@@ -1,0 +1,18 @@
+[package]
+name = "scarletbook-conformance"
+description = "Conformance runner and TOC-to-JSON tool for scarletbook, against the sacd-spec corpus"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+scarletbook = { path = "../scarletbook" }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+
+[[bin]]
+name = "scarletbook-toc"
+path = "src/bin/scarletbook-toc.rs"

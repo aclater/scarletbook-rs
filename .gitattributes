@@ -1,0 +1,4 @@
+* text=auto eol=lf
+*.iso binary
+corpus/** -text
+crates/scarletbook/data/** text eol=lf
