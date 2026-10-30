@@ -125,17 +125,21 @@ pub fn demux(data: &[u8]) {
 }
 
 /// Single-frame DST decoding: byte 0 picks the channel count (`byte % 6 + 1`), the rest
-/// is the frame. Decoding the same frame twice with one decoder gives the same result.
+/// is the frame. For one input in eight (chosen by the frame's last byte, so runs stay
+/// reproducible) the frame is decoded a second time with the same decoder and the results
+/// must agree; decoding every input twice halved the fuzzer's throughput.
 pub fn dst(data: &[u8]) {
     let Some((&c, frame)) = data.split_first() else { return };
     let channels = c % 6 + 1;
     let mut decoder = DstDecoder::new();
     let mut a = vec![0u8; usize::from(channels) * FL];
-    let mut b = vec![1u8; usize::from(channels) * FL];
     let ra = decoder.decode(frame, channels, &mut a);
-    let rb = decoder.decode(frame, channels, &mut b);
-    assert_eq!(ra, rb, "decoding is not deterministic");
-    if ra.is_ok() {
-        assert!(a == b, "decoded output is not deterministic");
+    if frame.last().is_some_and(|&b| b % 8 == 0) {
+        let mut b = vec![1u8; usize::from(channels) * FL];
+        let rb = decoder.decode(frame, channels, &mut b);
+        assert_eq!(ra, rb, "decoding is not deterministic");
+        if ra.is_ok() {
+            assert!(a == b, "decoded output is not deterministic");
+        }
     }
 }
