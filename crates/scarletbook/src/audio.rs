@@ -405,7 +405,6 @@ pub fn check_track(area: &Area, track: &Track, image_sectors: u64) -> Result<(),
 /// [`Error::TrackEmpty`] (`first == end`) or [`Error::TrackExceedsCapacity`], in that
 /// order of precedence. The 4.8 outcomes keep their track codes (specification 7, 7.7.4
 /// reports them per track or per frame range).
-// TODO(sacd-spec#20): follows the proposed 4.7.1 text (frame ranges, 4.8 applied to them).
 pub fn check_range(area: &Area, first: u32, end: u32, image_sectors: u64) -> Result<(), Error> {
     check_channels(area)?;
     let playtime = area.playtime_frames();
@@ -444,7 +443,6 @@ fn check_capacity(area: &Area, end_frame: u32, image_sectors: u64) -> Result<(),
 ///
 /// Check the range with [`check_range`] as for any range: it may be empty (a track of
 /// duration 0 whose successor starts where it does), which is `track-empty`.
-// TODO(sacd-spec#20): follows the proposed 4.7.1 text (tracks with pauses).
 pub fn track_range_with_pause(area: &Area, number: u32) -> Option<(u32, u32)> {
     let track = area.track(number)?;
     let first = if number == 1 { 0 } else { track.start_frame };
@@ -927,7 +925,6 @@ impl TrackAudioCursor {
     /// As [`check_range`].
     pub fn for_range(area: &Area, first: u32, end: u32, image_sectors: u64) -> Result<Self, Error> {
         // Missing and invalid frames are counted per range (4.7.1 item 6).
-        // TODO(sacd-spec#20): follows the proposed 4.7.1 text.
         Ok(Self::from_frames(TrackCursor::for_range(area, first, end, image_sectors)?))
     }
 
