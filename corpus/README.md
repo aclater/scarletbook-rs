@@ -166,7 +166,7 @@ positions ([specification 4](../spec/04-audio-multiplexing.md), 4.6.1 and 4.7.1)
 |---|---|
 | `play_range` | a range object for the area's play range `[0, P)` (4.7.1 item 1) |
 | `tracks_with_pauses` | one range object per track, in track order, with its `number`, for its track with pause (4.7.1 item 5) |
-| `stored_frames` | left out when the area's channel count is not 1 to 6; otherwise one object per accepted frame (4.6.1 item 1), in frame number order, including frames numbered `P` or more. A position with no object is missing. |
+| `stored_frames` | left out when the area's channel count is not 1 to 6; otherwise the area's stored frame list (4.6.1 item 2): one object per accepted frame, in frame number order, including frames numbered `P` or more. A position with no object is missing. |
 
 A range object has the keys of a track audio object other than `number`, with the same
 meanings, for the range `[first_frame, end_frame)`, checked as 4.7.1 item 4 says.
@@ -206,9 +206,11 @@ For each case:
    must report these values.
 6. A reader that offers frame ranges (4.7.1) compares `play_range` and `tracks_with_pauses`
    the same way as tracks in item 5.
-7. A reader that offers stored content (4.6.1) compares, for each area, the list of positions
-   it has a frame for, with their kind, length and hash, with `stored_frames`. Every position
-   not listed must be missing.
+7. A reader that offers the stored frame list (4.6.1 item 2) compares, for each area, its list
+   (frame numbers, kinds, lengths and hashes) with `stored_frames`. A reader that offers only
+   the stored content of tracks or ranges compares the positions inside each track's range
+   with the entries of `stored_frames` in that range (every other position of the range must
+   be missing), for the tracks and ranges whose outcome is `ok`.
 
 ## How the corpus was made
 

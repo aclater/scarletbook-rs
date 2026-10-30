@@ -73,6 +73,12 @@ against another engine; that check happened on the specification side and nothin
 crosses to this side beyond the published expected values. The new keys are checked by the
 range and stored-frame work (#35, #37).
 
+**Update to `e52a42b`** ("Merge pull request #21", a follow-up to #20). It defines the two
+forms of stored content (4.6.1 item 2: an area's stored frame list, and the stored content of
+a track or range, which the checks of 4.8 govern), bounds the memory and passes for them
+(4.5 item 5, 7.1 item 3), and restates 4.2 items 2 and 6. Its corpus differs from `fa602f9`
+only in `corpus/README.md`, copied again unchanged; the images and manifest are the same.
+
 ## Environment
 
 Work was done on 2026-10-30 in an isolated VM (hostname `scarletbook-cleanroom`, Fedora 44,
@@ -403,4 +409,4 @@ on 2026-10-30: the name `scarletbook` is not taken on crates.io. Nothing was pub
 | 2026-10-30 | benchmarking | `bench` program and release workflow (#14, #15); a third specification gap filed (sacd-spec#9, answered in `af3c3dd`); DST and parallel performance work (#16, #17) and large-image measurements (#18), see "Performance work". No new sources consulted beyond sacd-spec. |
 | 2026-10-30 | round 2 | the round 1 results (sacd-spec `775f4ab`, numbers and conditions only) turned into issues #21 to #25; parallel decoding, decoder and release-provenance work, see "Round 2"; version 0.2.0. No new sources consulted beyond sacd-spec. |
 | 2026-10-30 | round 3 | interleaved DST decoding (#31), performance tooling (#30) and build configuration (#32), see "Round 3"; general references under the owner's round 3 allowance and decision B, see "General references consulted"; patent-hygiene table with every flag cleared on full texts read (#40). |
-| 2026-10-30 | specification `34f78a3` and `fa602f9` | answers to sacd-spec#14 and #18 applied (the x86-64-v3 `bench` asset renamed outside the benchmark asset patterns); corpus of `fa602f9` vendored (136 cases, all passing); see "Specification version". No new sources consulted beyond sacd-spec. |
+| 2026-10-30 | specification `34f78a3`, `fa602f9` and `e52a42b` | answers to sacd-spec#14 and #18 applied (the x86-64-v3 `bench` asset renamed outside the benchmark asset patterns); corpus of `fa602f9` vendored (136 cases, all passing); see "Specification version". No new sources consulted beyond sacd-spec. |
