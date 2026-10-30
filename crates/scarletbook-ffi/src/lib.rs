@@ -55,6 +55,8 @@ pub enum SbStatus {
     InvalidDstFrame = -13,
     /// An internal error (a bug in this library). Free the handles involved.
     Panic = -14,
+    /// A frame range is empty or extends past the area's play time.
+    FrameRangeInvalid = -15,
 }
 
 /// Area slots, as passed in `slot` arguments.
@@ -311,7 +313,7 @@ impl std::fmt::Debug for SbDisc {
     }
 }
 
-/// The decoding state of one track. Each `sb_track_audio_read` call reads through the
+/// The decoding state of one track or frame range. Each `sb_track_audio_read` call reads through the
 /// disc it was opened from; the disc must be live for those calls (it may be freed
 /// before the track handle, which can then only be freed).
 #[derive(Debug)]
@@ -358,6 +360,7 @@ impl From<Error> for Failure {
             Error::TrackExceedsCapacity { .. } => SbStatus::TrackExceedsCapacity,
             Error::NoSuchArea(_) => SbStatus::NoSuchArea,
             Error::NoSuchTrack { .. } => SbStatus::NoSuchTrack,
+            Error::FrameRangeInvalid { .. } => SbStatus::FrameRangeInvalid,
             Error::InvalidArgument(_) => SbStatus::InvalidArgument,
             Error::Io(_) => SbStatus::Io,
             _ => SbStatus::Panic,
@@ -564,6 +567,7 @@ pub extern "C" fn sb_status_name(status: i32) -> *const c_char {
         -12 => c"io-error",
         -13 => c"invalid-dst-frame",
         -14 => c"internal-error",
+        -15 => c"frame-range-invalid",
         _ => c"unknown",
     };
     name.as_ptr()
@@ -1004,9 +1008,9 @@ pub unsafe extern "C" fn sb_track_audio_open(
 }
 
 /// Opens the decoded audio of track `number` of the area from `slot`, continuing `prev`
-/// (an earlier track's handle from the same disc) without rescanning the area where the
-/// result is the same. Reading an area's tracks in increasing order this way reads each
-/// audio sector once. With `prev` NULL this is `sb_track_audio_open`.
+/// (an earlier track's or range's handle from the same disc) without rescanning the area
+/// where the result is the same. Reading an area's tracks in increasing order this way
+/// reads each audio sector once. With `prev` NULL this is `sb_track_audio_open`.
 ///
 /// On success `prev` is consumed (freed) and `*out` receives the new handle. On failure
 /// `prev` is left untouched (still to be freed by the caller) and `*out` is set to NULL,
@@ -1032,6 +1036,35 @@ pub unsafe extern "C" fn sb_track_audio_open_next(
     out: *mut *mut SbTrackAudio,
 ) -> SbStatus {
     // SAFETY: forwarded contract.
+    unsafe {
+        open_next(
+            disc,
+            prev,
+            slot,
+            out,
+            |d, slot| d.check_track(slot, number),
+            |d, slot| d.track_audio_cursor(slot, number),
+            |d, prev, slot| d.continue_track_audio(prev, slot, number),
+        )
+    }
+}
+
+/// The shared body of `sb_track_audio_open_next` and `sb_range_audio_open_next`: `check`
+/// runs before `prev` is taken, `fresh` opens without `prev` and `cont` continues it.
+///
+/// # Safety
+///
+/// As `sb_track_audio_open_next`.
+unsafe fn open_next(
+    disc: *const SbDisc,
+    prev: *mut SbTrackAudio,
+    slot: u32,
+    out: *mut *mut SbTrackAudio,
+    check: impl FnOnce(&Disc<Reader>, Slot) -> Result<(), Error>,
+    fresh: impl FnOnce(&Disc<Reader>, Slot) -> Result<TrackAudioCursor, Error>,
+    cont: impl FnOnce(&Disc<Reader>, TrackAudioCursor, Slot) -> Result<TrackAudioCursor, Error>,
+) -> SbStatus {
+    // SAFETY: forwarded contract.
     unsafe { clear_out(out) };
     guard(|| {
         // SAFETY: forwarded contract.
@@ -1041,7 +1074,7 @@ pub unsafe extern "C" fn sb_track_audio_open_next(
         }
         let slot = slot_from(slot)?;
         if prev.is_null() {
-            let cursor = handle.get()?.track_audio_cursor(slot, number)?;
+            let cursor = fresh(&*handle.get()?, slot)?;
             let audio = Box::new(SbTrackAudio { inner: RefCell::new(cursor), disc_id: handle.id });
             // SAFETY: non-NULL and valid for a write by this function's contract.
             unsafe { out.write(Box::into_raw(audio)) };
@@ -1058,18 +1091,89 @@ pub unsafe extern "C" fn sb_track_audio_open_next(
             return Err(Failure::arg(REENTRANT));
         }
         let d = handle.get()?;
-        d.check_track(slot, number)?;
+        check(&d, slot)?;
         // SAFETY: a live handle created by Box::into_raw and not in use; the caller does
         // not use it again after this successful call.
         let prev_box = unsafe { Box::from_raw(prev) };
-        // The track exists and passed check_track, which is the only way continuing can
-        // fail.
-        let cursor = d.continue_track_audio(prev_box.inner.into_inner(), slot, number)?;
+        // The track or range exists and passed its check, which is the only way
+        // continuing can fail.
+        let cursor = cont(&d, prev_box.inner.into_inner(), slot)?;
         let audio = Box::new(SbTrackAudio { inner: RefCell::new(cursor), disc_id: handle.id });
         // SAFETY: non-NULL and valid for a write by this function's contract.
         unsafe { out.write(Box::into_raw(audio)) };
         Ok(SbStatus::Ok)
     })
+}
+
+/// Whether the frame range `[first, end)` of the area from `slot` produces audio:
+/// `SB_STATUS_OK`, or `SB_STATUS_FRAME_RANGE_INVALID` unless `first < end <= P` (`P` the
+/// area's play time, `SbAreaInfo.playtime_frames`), or the per-track outcomes
+/// `SB_STATUS_CHANNEL_COUNT_UNSUPPORTED` and `SB_STATUS_TRACK_EXCEEDS_CAPACITY`, which
+/// apply to a range as to a track.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_range_check(disc: *const SbDisc, slot: u32, first: u32, end: u32) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?.get()?;
+        d.check_range(slot_from(slot)?, first, end)?;
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// Opens the decoded audio of the frame range `[first, end)` of the area from `slot`:
+/// the timeline positions `first` to `end - 1`, numbered, filled and counted exactly as a
+/// track's. `[0, P)`, with `P` the area's play time, is the whole area with its pauses.
+/// The handle is read, queried and freed with the `sb_track_audio_*` functions. Fails as
+/// `sb_range_check` does; on failure `*out` is set to NULL.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle; `out` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_range_audio_open(
+    disc: *const SbDisc,
+    slot: u32,
+    first: u32,
+    end: u32,
+    out: *mut *mut SbTrackAudio,
+) -> SbStatus {
+    // SAFETY: forwarded contract (a NULL `prev` opens afresh).
+    unsafe { sb_range_audio_open_next(disc, std::ptr::null_mut(), slot, first, end, out) }
+}
+
+/// Opens the decoded audio of the frame range `[first, end)` of the area from `slot`,
+/// continuing `prev` (an earlier track's or range's handle from the same disc) as
+/// `sb_track_audio_open_next` does, with the same ownership rules. With `prev` NULL this
+/// is `sb_range_audio_open`.
+///
+/// # Safety
+///
+/// As `sb_track_audio_open_next`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_range_audio_open_next(
+    disc: *const SbDisc,
+    prev: *mut SbTrackAudio,
+    slot: u32,
+    first: u32,
+    end: u32,
+    out: *mut *mut SbTrackAudio,
+) -> SbStatus {
+    // SAFETY: forwarded contract.
+    unsafe {
+        open_next(
+            disc,
+            prev,
+            slot,
+            out,
+            |d, slot| d.check_range(slot, first, end),
+            |d, slot| d.range_audio_cursor(slot, first, end),
+            |d, prev, slot| d.continue_range_audio(prev, slot, first, end),
+        )
+    }
 }
 
 /// The channel count of a track's audio (1 to 6), or 0 for NULL or a handle in use.

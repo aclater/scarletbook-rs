@@ -34,6 +34,11 @@ let mut disc = Disc::open(BufReader::new(File::open("disc.iso")?))?;
 for frame in disc.track_audio(Slot::TwoChannel, 1)? {
     let frame = frame?; // C x 4704 bytes of interleaved DSD, DST already decoded
 }
+// Any frame range [first, end) of an area's timeline, pauses included: here the whole area.
+let playtime = disc.toc().area(Slot::TwoChannel).map_or(0, |a| a.playtime_frames());
+for frame in disc.range_audio(Slot::TwoChannel, 0, playtime)? {
+    let frame = frame?;
+}
 ```
 
 Features: `parallel` decodes DST frames on rayon's thread pool, ahead of the caller.

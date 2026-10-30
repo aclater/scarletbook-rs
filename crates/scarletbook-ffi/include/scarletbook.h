@@ -127,6 +127,10 @@ typedef enum SbStatus {
    An internal error (a bug in this library). Free the handles involved.
    */
   SB_STATUS_PANIC = -14,
+  /*
+   A frame range is empty or extends past the area's play time.
+   */
+  SB_STATUS_FRAME_RANGE_INVALID = -15,
 } SbStatus;
 
 /*
@@ -343,7 +347,7 @@ typedef enum SbTrackString {
 typedef struct SbDisc SbDisc;
 
 /*
- The decoding state of one track. Each `sb_track_audio_read` call reads through the
+ The decoding state of one track or frame range. Each `sb_track_audio_read` call reads through the
  disc it was opened from; the disc must be live for those calls (it may be freed
  before the track handle, which can then only be freed).
  */
@@ -747,9 +751,9 @@ enum SbStatus sb_track_audio_open(const struct SbDisc *disc,
 
 /*
  Opens the decoded audio of track `number` of the area from `slot`, continuing `prev`
- (an earlier track's handle from the same disc) without rescanning the area where the
- result is the same. Reading an area's tracks in increasing order this way reads each
- audio sector once. With `prev` NULL this is `sb_track_audio_open`.
+ (an earlier track's or range's handle from the same disc) without rescanning the area
+ where the result is the same. Reading an area's tracks in increasing order this way
+ reads each audio sector once. With `prev` NULL this is `sb_track_audio_open`.
 
  On success `prev` is consumed (freed) and `*out` receives the new handle. On failure
  `prev` is left untouched (still to be freed by the caller) and `*out` is set to NULL,
@@ -771,6 +775,56 @@ enum SbStatus sb_track_audio_open_next(const struct SbDisc *disc,
                                        struct SbTrackAudio *prev,
                                        uint32_t slot,
                                        uint32_t number,
+                                       struct SbTrackAudio **out);
+
+/*
+ Whether the frame range `[first, end)` of the area from `slot` produces audio:
+ `SB_STATUS_OK`, or `SB_STATUS_FRAME_RANGE_INVALID` unless `first < end <= P` (`P` the
+ area's play time, `SbAreaInfo.playtime_frames`), or the per-track outcomes
+ `SB_STATUS_CHANNEL_COUNT_UNSUPPORTED` and `SB_STATUS_TRACK_EXCEEDS_CAPACITY`, which
+ apply to a range as to a track.
+
+ # Safety
+
+ `disc` must be NULL or a live handle.
+ */
+enum SbStatus sb_range_check(const struct SbDisc *disc,
+                             uint32_t slot,
+                             uint32_t first,
+                             uint32_t end);
+
+/*
+ Opens the decoded audio of the frame range `[first, end)` of the area from `slot`:
+ the timeline positions `first` to `end - 1`, numbered, filled and counted exactly as a
+ track's. `[0, P)`, with `P` the area's play time, is the whole area with its pauses.
+ The handle is read, queried and freed with the `sb_track_audio_*` functions. Fails as
+ `sb_range_check` does; on failure `*out` is set to NULL.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `out` NULL or valid for a write.
+ */
+enum SbStatus sb_range_audio_open(const struct SbDisc *disc,
+                                  uint32_t slot,
+                                  uint32_t first,
+                                  uint32_t end,
+                                  struct SbTrackAudio **out);
+
+/*
+ Opens the decoded audio of the frame range `[first, end)` of the area from `slot`,
+ continuing `prev` (an earlier track's or range's handle from the same disc) as
+ `sb_track_audio_open_next` does, with the same ownership rules. With `prev` NULL this
+ is `sb_range_audio_open`.
+
+ # Safety
+
+ As `sb_track_audio_open_next`.
+ */
+enum SbStatus sb_range_audio_open_next(const struct SbDisc *disc,
+                                       struct SbTrackAudio *prev,
+                                       uint32_t slot,
+                                       uint32_t first,
+                                       uint32_t end,
                                        struct SbTrackAudio **out);
 
 /*
