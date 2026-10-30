@@ -5,6 +5,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;
+#[path = "common/dst_enc.rs"]
+mod dst_enc;
 mod harness;
 
 use std::io::Cursor;
@@ -459,8 +461,8 @@ fn a_cursor_never_reads_another_image() {
 
 /// With `parallel`, a pool of `threads` threads, whose windows (16 positions per thread)
 /// are shorter than the tracks below, so that positions are demultiplexed ahead and DST
-/// frames decoded on the pool ahead of the caller (a one-thread pool decodes on the
-/// calling thread, without reading ahead).
+/// frames decoded on the pool ahead of the caller (a one-thread pool decodes one group of
+/// frames at a time on the calling thread).
 #[cfg(feature = "parallel")]
 fn small_pool(threads: usize) -> rayon::ThreadPool {
     rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap()
@@ -595,4 +597,68 @@ fn read_error_after_batches_follows_its_frames() {
             assert_eq!((audio.missing_frames(), audio.invalid_dst_frames()), (missing, invalid));
         });
     }
+}
+
+/// Valid DST frames mixed with plain DSD and missing positions, decoded on the calling
+/// thread (one `lanes()` group at a time): each DST frame decodes to the encoder's signal,
+/// plain frames pass through, and missing positions are filled, in timeline order, for a
+/// track over all positions and for tracks starting and ending inside a group.
+#[test]
+#[cfg_attr(miri, ignore = "decodes full frames")]
+fn calling_thread_groups_mix_dst_dsd_and_missing() {
+    let fl = FRAME_BYTES_PER_CHANNEL;
+    let mut x = 0x2545_F491_4F6C_DD1Du64;
+    let mut next = move || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    // Position n: missing if n % 5 == 3, plain if n % 4 == 1, otherwise DST.
+    let mut fs = Vec::new();
+    let mut want: Vec<(scarletbook::FrameStatus, Vec<u8>)> = Vec::new();
+    for n in 0..30u32 {
+        if n % 5 == 3 {
+            want.push((scarletbook::FrameStatus::Missing, vec![0x69; 2 * fl]));
+        } else if n % 4 == 1 {
+            let data: Vec<u8> = (0..2 * fl).map(|_| next() as u8).collect();
+            fs.push(PFrame { number: n, dst: false, data: data.clone() });
+            want.push((scarletbook::FrameStatus::Dsd, data));
+        } else {
+            let signal: Vec<Vec<u8>> = (0..2).map(|_| (0..fl).map(|_| next() as u8).collect()).collect();
+            let coefs: Vec<i32> =
+                (0..1 + next() as usize % 64).map(|_| (next() % 512) as i32 - 256).collect();
+            let frame = dst_enc::encode_simple(&signal, &coefs, &[7, 90, 128], &[false, false]);
+            fs.push(PFrame { number: n, dst: true, data: frame });
+            want.push((scarletbook::FrameStatus::Decoded, dst_enc::interleave(&signal)));
+        }
+    }
+    let tracks = [(0u32, 30u32), (1, 6), (7, 3), (11, 13)];
+    let mut audio = pack(&fs);
+    audio.resize(audio.len().max(6), [0u8; 2048]);
+    let image = Spec {
+        channels: 2,
+        playtime: 30,
+        tracks: tracks.iter().map(|&(start, duration)| TrackSpec { start, duration }).collect(),
+        audio,
+    }
+    .build();
+    let run = || {
+        let mut disc = Disc::open(Cursor::new(image.clone())).unwrap();
+        for (t, &(start, duration)) in tracks.iter().enumerate() {
+            let got: Vec<_> =
+                disc.track_audio(Slot::TwoChannel, t as u32 + 1).unwrap().map(Result::unwrap).collect();
+            assert_eq!(got.len(), duration as usize, "track {}", t + 1);
+            for (i, f) in got.iter().enumerate() {
+                let n = start as usize + i;
+                assert_eq!(f.number, n as u32);
+                assert_eq!(f.status, want[n].0, "track {}, position {n}", t + 1);
+                assert!(f.data == want[n].1, "track {}, position {n}: audio differs", t + 1);
+            }
+        }
+    };
+    #[cfg(feature = "parallel")]
+    small_pool(1).install(run);
+    #[cfg(not(feature = "parallel"))]
+    run();
 }

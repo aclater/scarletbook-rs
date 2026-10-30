@@ -59,19 +59,34 @@ if [[ $training == all ]]; then
     --dst-frames stress --track-minutes 0.1 2> /dev/null
 fi
 
-# Instrumented build and training.
+# Instrumented build and training. RUSTFLAGS is split on spaces, so the profile directory
+# must not contain any.
+if [[ $work =~ [[:space:]] ]]; then
+  echo "pgo.sh: the target directory ($work) must not contain spaces" >&2
+  exit 1
+fi
 (cd "$ROOT" && RUSTFLAGS="${RUSTFLAGS:-} -Cprofile-generate=$work/raw" CARGO_TARGET_DIR=$work/target-gen \
   cargo build --profile "$PROFILE" --locked -q -p scarletbook-bench "${target_args[@]}")
 gen_dir=$work/target-gen/$profile_dir
 [[ -n ${TARGET:-} ]] && gen_dir=$work/target-gen/$TARGET/$profile_dir
+# Corpus images include rejection cases and images without one of the areas, on which
+# `bench` exits with an error by design; at least one run must succeed.
+ok=0
 for img in "$ROOT"/corpus/images/*.iso; do
   for area in 2ch mc; do
-    "$gen_dir/bench" decode "$img" --area "$area" --threads 1 --sink hash > /dev/null 2>&1 || true
+    "$gen_dir/bench" decode "$img" --area "$area" --threads 1 --sink hash > /dev/null 2>&1 && ok=1
   done
 done
+if (( ok == 0 )); then
+  echo "pgo.sh: no corpus training run succeeded" >&2
+  exit 1
+fi
+# The synthetic images hold the areas they were made with, so a failure here is a real one.
 for img in "$work"/images/*.iso; do
-  for area in 2ch mc; do
-    "$gen_dir/bench" decode "$img" --area "$area" --threads 1 --sink null > /dev/null 2>&1 || true
+  areas=(2ch mc)
+  [[ $(basename "$img") == dst-5ch.iso ]] && areas=(mc)
+  for area in "${areas[@]}"; do
+    "$gen_dir/bench" decode "$img" --area "$area" --threads 1 --sink null > /dev/null
   done
 done
 "$profdata" merge -o "$work/merged.profdata" "$work"/raw/*.profraw

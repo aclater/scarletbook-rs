@@ -33,7 +33,7 @@ pub const MAX_MALFORMED_WARNINGS: usize = 4096;
 ///
 /// With `parallel`, a track's positions are demultiplexed on the calling thread up to
 /// [`PARALLEL_FRAMES_PER_THREAD`] per thread of the current rayon pool ahead of the frame
-/// returned last, at most this many (none ahead on a pool of one thread). Each DST frame
+/// returned last, at most this many (on a pool of one thread, one group, as below). Each DST frame
 /// becomes one job on the pool as soon as it is demultiplexed, so that the pool decodes
 /// while the caller consumes the frames before it; every call tops the window up again.
 /// Plain DSD and missing positions are filled in on the calling thread when they are
@@ -52,6 +52,11 @@ pub const MAX_MALFORMED_WARNINGS: usize = 4096;
 /// at 2 channels and 10 MB at 6. The cap is a constant so that the memory held does not
 /// grow with the host's thread count; 256 positions still keep 8 frames per thread in
 /// flight at 32 threads.
+///
+/// Besides the window, each decoder holds its tables: per lane of
+/// [`DstDecoder::decode_many`], at most 12 filters' byte tables (64 KiB each) and 12
+/// ptables' probability tables (8 KiB each), about 0.85 MB. A cursor's own decoder, and
+/// each pool thread's, holds up to [`crate::dst::lanes`] lanes of them.
 pub const MAX_PARALLEL_BATCH: usize = 256;
 
 /// Positions held ahead per pool thread with the `parallel` feature (see
@@ -243,6 +248,9 @@ impl AreaCursor {
     /// Number of malformed sectors processed so far by this cursor's scan of its area. The
     /// scan starts at the area's first audio sector, not at the track, and a continued
     /// cursor keeps counting from where the earlier tracks left off.
+    /// Track cursors read ahead of the frames they return (a group of
+    /// [`crate::dst::lanes`] frames, or with `parallel` up to [`MAX_PARALLEL_BATCH`]
+    /// positions), so this may count sectors of frames not yet returned.
     pub fn malformed_sectors(&self) -> u64 {
         self.demux.malformed_sectors()
     }
@@ -250,7 +258,7 @@ impl AreaCursor {
     /// The `audio-sector-malformed` warnings of the sectors processed so far, with slot
     /// and LSN, in processing order (specification 4, 4.4.5). At most
     /// [`MAX_MALFORMED_WARNINGS`] are kept; [`AreaCursor::malformed_sectors`] counts them
-    /// all.
+    /// all. Like that count, they may include sectors of frames not yet returned.
     pub fn warnings(&self) -> &[Warning] {
         &self.warnings
     }
@@ -339,6 +347,9 @@ impl<'a, R: Read + Seek> AreaFrames<'a, R> {
     /// Number of malformed sectors processed so far by this cursor's scan of its area. The
     /// scan starts at the area's first audio sector, not at the track, and a continued
     /// cursor keeps counting from where the earlier tracks left off.
+    /// Track cursors read ahead of the frames they return (a group of
+    /// [`crate::dst::lanes`] frames, or with `parallel` up to [`MAX_PARALLEL_BATCH`]
+    /// positions), so this may count sectors of frames not yet returned.
     pub fn malformed_sectors(&self) -> u64 {
         self.cursor.malformed_sectors()
     }
@@ -520,6 +531,9 @@ impl TrackCursor {
     /// Number of malformed sectors processed so far by this cursor's scan of its area. The
     /// scan starts at the area's first audio sector, not at the track, and a continued
     /// cursor keeps counting from where the earlier tracks left off.
+    /// Track cursors read ahead of the frames they return (a group of
+    /// [`crate::dst::lanes`] frames, or with `parallel` up to [`MAX_PARALLEL_BATCH`]
+    /// positions), so this may count sectors of frames not yet returned.
     pub fn malformed_sectors(&self) -> u64 {
         self.area.malformed_sectors()
     }
@@ -590,6 +604,9 @@ impl<'a, R: Read + Seek> TrackFrames<'a, R> {
     /// Number of malformed sectors processed so far by this cursor's scan of its area. The
     /// scan starts at the area's first audio sector, not at the track, and a continued
     /// cursor keeps counting from where the earlier tracks left off.
+    /// Track cursors read ahead of the frames they return (a group of
+    /// [`crate::dst::lanes`] frames, or with `parallel` up to [`MAX_PARALLEL_BATCH`]
+    /// positions), so this may count sectors of frames not yet returned.
     pub fn malformed_sectors(&self) -> u64 {
         self.cursor.malformed_sectors()
     }
@@ -822,6 +839,9 @@ impl TrackAudioCursor {
     /// Number of malformed sectors processed so far by this cursor's scan of its area. The
     /// scan starts at the area's first audio sector, not at the track, and a continued
     /// cursor keeps counting from where the earlier tracks left off.
+    /// Track cursors read ahead of the frames they return (a group of
+    /// [`crate::dst::lanes`] frames, or with `parallel` up to [`MAX_PARALLEL_BATCH`]
+    /// positions), so this may count sectors of frames not yet returned.
     pub fn malformed_sectors(&self) -> u64 {
         self.frames.malformed_sectors()
     }
@@ -1103,6 +1123,9 @@ impl<'a, R: Read + Seek> TrackAudio<'a, R> {
     /// Number of malformed sectors processed so far by this cursor's scan of its area. The
     /// scan starts at the area's first audio sector, not at the track, and a continued
     /// cursor keeps counting from where the earlier tracks left off.
+    /// Track cursors read ahead of the frames they return (a group of
+    /// [`crate::dst::lanes`] frames, or with `parallel` up to [`MAX_PARALLEL_BATCH`]
+    /// positions), so this may count sectors of frames not yet returned.
     pub fn malformed_sectors(&self) -> u64 {
         self.cursor.malformed_sectors()
     }

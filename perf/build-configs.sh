@@ -34,7 +34,7 @@ LEVELS=${LEVELS:-generic x86-64-v3 znver5}
 
 work=$ROOT/target/build-configs
 mkdir -p "$work/bin" "$work/images"
-frames=$(python3 -c "print(round($MINUTES * 60 * 75))")
+frames=$(python3 -I -c 'import sys; print(round(float(sys.argv[1]) * 60 * 75))' "$MINUTES")
 
 (cd "$ROOT" && cargo build --release --locked -q -p scarletbook-conformance --bin scarletbook-synth)
 synth=$ROOT/target/release/scarletbook-synth

@@ -20,8 +20,11 @@ proceeds; each stage adds to the log at the end.
   general references that are neither SACD nor DST material may also be consulted for
   performance work: algorithm books and papers, Rust performance and SIMD guides,
   profilers and their documentation, CPU optimisation manuals, and general techniques of
-  unrelated projects. Every such source is recorded under "General references consulted"
-  below. The prohibition on SACD and DST implementations, and on searching for them,
+  unrelated projects. Every such source that survives in the record is listed under
+  "General references consulted" below. One gap: the first agent session on #31 failed
+  before reporting, and its own list of sources was lost with its run (noted on #31). Its
+  work-in-progress commit was kept; the agent that finished #31 read no external source
+  beyond those already recorded (Giesen 2014, below), and the code was reviewed here. The prohibition on SACD and DST implementations, and on searching for them,
   is unchanged; agents doing this work were instructed not to use search terms that name
   SACD, DSD or DST, and to report any such result they came across without opening it.
 
@@ -187,6 +190,26 @@ corpus's own DST frames, which it repacks. Figures measured on its images are no
 measurements of the benchmark discs of `benchmarks/README.md`: its DST frames are the
 corpus's feature-test frames, and its plain DSD is pseudo-random.
 
+### Round 3 (#30 to #32)
+
+Round 3 again measured only this repository's code, on the corpus frames, the encoder's
+stress set and `scarletbook-synth` images, and drew general techniques from the references
+listed under "General references consulted" and dated under "Patent hygiene". What it merged:
+
+- `DstDecoder::decode_many` (#31): two to four independent DST frames decoded in lockstep
+  on one thread, so their arithmetic-decoder chains overlap; the lane count per channel
+  count was chosen by measurement. `TrackAudioCursor` decodes groups of consecutive frames
+  with it, on the pool and on the calling thread.
+- Build configuration (#32): a `dist` profile (`codegen-units = 1`) for the generic `bench`
+  asset and a labelled x86-64-v3 asset. Fat LTO and PGO were measured and not adopted.
+- Tooling (#30): criterion benchmarks, `perf` scripts, and the tools listed under
+  "Environment".
+
+Two agent sessions worked on #31 under the same rules; the first failed before reporting
+(see "Rules followed" for its lost source list), the second finished from its
+work-in-progress commit. Their commits were reviewed, re-tested (corpus, property tests
+at 1000 cases, Miri) and re-measured here before being merged.
+
 ## Patent hygiene (record-keeping rule, not a legal opinion)
 
 By the owner's instruction (2026-10-30): no patent, live or expired, is read. Every source in
@@ -203,7 +226,7 @@ table below, for review before 1.0. The research survey (#33) opened no patent p
 | Reading zero bits past the end of the code | code-bit reader | A. Said, "Introduction to Arithmetic Coding – Theory and Practice", HP Labs HPL-2004-76, 2004 | yes | |
 | Bit buffer with amortised refill (several bytes at a time) | code-bit reader | Full text read: A. Moffat, A. Turpin, "On the Implementation of Minimum Redundancy Prefix Codes", IEEE Trans. Communications 45(10), October 1997: p. 1203, a value "maintained as a w-bit window into the compressed bit stream", shifted left by a codeword's length with "the next length bits from the input stream" inserted into the vacated low bits (Algorithm ONE-SHIFT); p. 1204, w "chosen either as the next multiple of eight ... or as the machine word size"; p. 1206, footnote 1, decoding is faster "because of the use of a 32-bit input token in the compressed bit stream rather than an 8-bit input token". Also I. H. Witten, R. M. Neal, J. G. Cleary, CACM 30(6), June 1987, pp. 527-528 (byte buffer, reading past end-of-file) | yes | cleared (#40) |
 | Precomputed tables of coefficient partial sums indexed by input bits | prediction (`dst.rs`) | Full text read: S. A. White, "Applications of Distributed Arithmetic to Digital Signal Processing: A Tutorial Review", IEEE ASSP Magazine 6(3), July 1989, pp. 4-19: p. 5, because each input bit "may take on values of 0 and 1 only", the sum of the coefficients it selects "may have only 2^K possible values. Rather than compute these values on line, we may precompute the values and store them in a ROM. The input data can be used to directly address the memory"; p. 7, a table indexed by several bits per input at once ("word capacity becomes 2^KL"). White dates the technique to Peled & Liu, 1974 (p. 4). Also NTU lecture slides on White 1989, PDF dated October 2002, slide pp. 5-8. L. B. Jackson, J. F. Kaiser, H. S. McDonald, IEEE Trans. Audio Electroacoustics AU-16(3), September 1968, pp. 413-421, read in full: does not state it | yes | cleared (#40) |
-| Interleaving independent work in one thread to hide latency | #31 (in progress) | Full text read: M. Lam, "Software Pipelining: An Effective Scheduling Technique for VLIW Machines", Proceedings of SIGPLAN '88, Atlanta, June 22-24, 1988, pp. 318-320: "multiple iterations, in different stages of their computations, are in progress simultaneously"; four in flight give "four times the speed". (University seminar copy, a scan read by OCR.) Applied here to independent decoders rather than loop iterations; F. Giesen, "Interleaved entropy coders", 2014, for that form | yes | cleared (the general technique) |
+| Interleaving independent work in one thread to hide latency | `DstDecoder::decode_many` (`dst.rs`) and grouped decoding in `TrackAudioCursor` (`audio.rs`), #31 | Full text read: M. Lam, "Software Pipelining: An Effective Scheduling Technique for VLIW Machines", Proceedings of SIGPLAN '88, Atlanta, June 22-24, 1988, pp. 318-320: "multiple iterations, in different stages of their computations, are in progress simultaneously"; four in flight give "four times the speed". (University seminar copy, a scan read by OCR.) Applied here to independent decoders rather than loop iterations; F. Giesen, "Interleaved entropy coders", 2014, for that form | yes | cleared (the general technique) |
 | Profile-guided and link-time optimisation | #32: measured, **not adopted** (fat LTO slower everywhere, PGO no consistent gain); only `codegen-units = 1` for the generic asset, plus an `x86-64-v3` asset | D. W. Wall, "Global Register Allocation at Link Time", SIGPLAN '86 Symposium on Compiler Construction, 1986 (link-time optimisation guided by profile data); DEC WRL Research Report 86/3 | yes | cleared |
 
 Texts the owner obtained for #40 (in `~/papers`, read in full; none is a patent):
@@ -228,6 +251,27 @@ Texts the owner obtained for #40 (in `~/papers`, read in full; none is a patent)
 The dated search opened no patent; about twenty patent results (USPTO, Google Patents,
 Justia) were skipped unopened. Sources it could only see as citations or bibliographic
 records are marked as such above and do not clear a flag.
+
+Where the rows above without a "Full text read" note were read: the dated search
+(2026-10-30, an agent session under the same rules) opened each of these and extracted its
+text locally, treating the file as data:
+
+- Schmookler & Nowka, ARITH-15, 2001: author copy at
+  https://userpages.cs.umbc.edu/phatak/645/supl/lza/lza-survey-arith01.pdf. Abstract: the
+  leading-zero anticipator or detector "is pivotal to the normalization of results"; the
+  introduction: the leading-digit position is found "so as to enable the normalization
+  shift to start as soon as the addition completes".
+- Alpha Architecture Reference Manual, 4th ed., Compaq, January 2002:
+  https://csclub.uwaterloo.ca/~pbarfuss/alpha_arch_ref.pdf. CTLZ "Count leading zero"
+  (CIX extension); CMOVxx, documented as usable to avoid branching.
+- Mahlke et al., MICRO-25, December 1992, pp. 45-54: author copy at
+  https://web.eecs.umich.edu/~mahlke/courses/583f18/reading/mahlke_micro92.pdf. If-conversion
+  "replaces conditional branches with comparison instructions which set a predicate", so
+  "control dependences are converted to data dependences".
+- Wall, "Global Register Allocation at Link Time", SIGPLAN '86, as DEC WRL Research Report
+  86/3: https://ftp.mirrorservice.org/sites/www.bitsavers.org/pdf/dec/tech_reports/WRL-86-3.pdf.
+  Abstract: allocation "can be nearly that large if we use previously collected profile
+  information to guide the allocation"; a link-time allocator rewrites the object code.
 
 Techniques the specification itself prescribes (the decoding process of specification 5) are
 not choices of this project and are not listed.
@@ -335,3 +379,4 @@ on 2026-10-30: the name `scarletbook` is not taken on crates.io. Nothing was pub
 | 2026-10-30 | follow-ups | review fixes and issues #5 to #12; two specification gaps filed (sacd-spec#4, #5), answered upstream in `07adda2` and then implemented as specified. No new sources consulted beyond sacd-spec. |
 | 2026-10-30 | benchmarking | `bench` program and release workflow (#14, #15); a third specification gap filed (sacd-spec#9, answered in `af3c3dd`); DST and parallel performance work (#16, #17) and large-image measurements (#18), see "Performance work". No new sources consulted beyond sacd-spec. |
 | 2026-10-30 | round 2 | the round 1 results (sacd-spec `775f4ab`, numbers and conditions only) turned into issues #21 to #25; parallel decoding, decoder and release-provenance work, see "Round 2"; version 0.2.0. No new sources consulted beyond sacd-spec. |
+| 2026-10-30 | round 3 | interleaved DST decoding (#31), performance tooling (#30) and build configuration (#32), see "Round 3"; general references under the owner's round 3 allowance and decision B, see "General references consulted"; patent-hygiene table with every flag cleared on full texts read (#40). |

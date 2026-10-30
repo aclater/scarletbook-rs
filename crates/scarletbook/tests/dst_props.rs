@@ -233,6 +233,38 @@ fn header_overrun_is_invalid() {
     assert_eq!(dst::decode(&frame[..4], 1, &mut out), Err(DstError::ArithmeticCode));
 }
 
+/// Lockstep groups of stress frames whose layouts differ (segmented, per-channel, coded
+/// filters and ptables of different orders), so that the frames' segment ends and table
+/// counts differ within a group: every group decodes to the encoder's signal, in every
+/// rotation of the frames.
+#[test]
+#[cfg_attr(miri, ignore = "decodes full frames")]
+fn decode_many_on_stress_frames() {
+    let set = dst_enc::stress_set(2);
+    for nch in [2u8, 6] {
+        let frames: Vec<&dst_enc::StressFrame> = set.iter().filter(|f| f.channels == nch).collect();
+        let mut dec = DstDecoder::new();
+        for k in 1..=(2 * MAX_LANES).min(frames.len()) {
+            for start in 0..frames.len() {
+                let group: Vec<&dst_enc::StressFrame> =
+                    (0..k).map(|i| frames[(start + i) % frames.len()]).collect();
+                let refs: Vec<&[u8]> = group.iter().map(|f| f.frame.as_slice()).collect();
+                let mut bufs = vec![vec![0u8; FL * usize::from(nch)]; k];
+                let mut outs: Vec<&mut [u8]> = bufs.iter_mut().map(Vec::as_mut_slice).collect();
+                let results = dec.decode_many(&refs, nch, &mut outs);
+                for (i, (r, f)) in results.iter().zip(&group).enumerate() {
+                    assert_eq!(r, &Ok(()), "{nch} channels, group of {k}, frame {i} ({})", f.layout);
+                    assert!(
+                        bufs[i] == f.audio,
+                        "{nch} channels, group of {k}, frame {i} ({}): audio differs",
+                        f.layout
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// The generated stress set (as used by the benchmarks) decodes to its signal, in every
 /// layout: segmented, per-channel and coded filters and ptables.
 #[test]

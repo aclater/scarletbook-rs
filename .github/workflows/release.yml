@@ -59,11 +59,12 @@ jobs:
           RUSTFLAGS: -C target-cpu=x86-64-v3
           CARGO_TARGET_DIR: target-v3
         run: |
-          if grep -qw avx2 /proc/cpuinfo && grep -qw bmi2 /proc/cpuinfo && grep -qw fma /proc/cpuinfo && grep -qw movbe /proc/cpuinfo; then
-            cargo test --release --locked -p scarletbook-bench --target x86_64-unknown-linux-gnu
-          else
-            echo "::warning::runner CPU is not x86-64-v3; the v3 build is not gated"
+          # The v3 asset is published only if it passed the gate on this runner.
+          if ! { grep -qw avx2 /proc/cpuinfo && grep -qw bmi2 /proc/cpuinfo && grep -qw fma /proc/cpuinfo && grep -qw movbe /proc/cpuinfo; }; then
+            echo "::error::runner CPU is not x86-64-v3; the v3 build cannot be gated, so the release stops"
+            exit 1
           fi
+          cargo test --release --locked -p scarletbook-bench --target x86_64-unknown-linux-gnu
       - name: Build (AMD Zen 5)
         env:
           RUSTFLAGS: -C target-cpu=znver5
@@ -114,9 +115,8 @@ jobs:
             done
           }
           smoke "bench-$VERSION-x86_64-linux"
-          if grep -qw avx2 /proc/cpuinfo && grep -qw bmi2 /proc/cpuinfo && grep -qw fma /proc/cpuinfo && grep -qw movbe /proc/cpuinfo; then
-            smoke "bench-$VERSION-x86_64-linux-v3"
-          fi
+          # The gate above already stopped the release on a runner that is not x86-64-v3.
+          smoke "bench-$VERSION-x86_64-linux-v3"
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -124,7 +124,7 @@ jobs:
           gh release create "$GITHUB_REF_NAME" --title "scarletbook $VERSION" --verify-tag \
             --notes "Benchmark program \`bench\` for sacd-spec benchmarks/README.md, built from $GITHUB_SHA.
           - \`bench-$VERSION-x86_64-linux.tar.gz\`: generic x86-64 (the required asset).
-          - \`bench-$VERSION-x86_64-linux-v3.tar.gz\`: built for x86-64-v3 (AVX2 and later CPUs; labelled; MAY asset).
-          - \`bench-$VERSION-x86_64-linux-znver5.tar.gz\`: built for AMD Zen 5 only (labelled; MAY asset).
-          Each has a \`.sha256\` checksum and, for a public repository, a signed build provenance attestation: \`gh attestation verify <asset> -R $GITHUB_REPOSITORY\`. The correctness gate (every corpus case, 1 and all threads) passed on the generic build and, where the runner supports it, the x86-64-v3 build." \
+          - \`bench-$VERSION-x86_64-linux-znver5.tar.gz\`: built for AMD Zen 5, the measuring machine's CPU (the optional labelled asset of benchmarks/README.md).
+          - \`bench-$VERSION-x86_64-linux-v3.tar.gz\`: built for x86-64-v3 (AVX2 and later CPUs), labelled; an extra build for users, not one of the benchmark assets.
+          Each has a \`.sha256\` checksum and, for a public repository, a signed build provenance attestation: \`gh attestation verify <asset> -R $GITHUB_REPOSITORY\`. The correctness gate (every corpus case, 1 and all threads) passed on the generic and x86-64-v3 builds." \
             dist/*.tar.gz dist/*.sha256

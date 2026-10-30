@@ -44,6 +44,17 @@ printf '%-24s %10s %10s %6s %12s\n' benchmark cycles/sym instr/sym IPC ms/frame
 for name in "${names[@]}"; do
   read -r c0 i0 t0 _ < <(counts "$name" 0)
   read -r c1 i1 t1 s1 < <(counts "$name" "$FRAMES")
+  # perf prints `<not counted>` or `<not supported>` for an event it could not count.
+  for v in "$c0" "$i0" "$c1" "$i1" "$s1"; do
+    if ! [[ $v =~ ^[0-9]+$ ]]; then
+      echo "cycles-per-symbol.sh: perf did not count every event for $name (got '$v'); check perf_event_paranoid or run on bare metal" >&2
+      exit 1
+    fi
+  done
+  if (( c1 <= c0 || s1 == 0 )); then
+    echo "cycles-per-symbol.sh: no cycles or symbols counted for $name" >&2
+    exit 1
+  fi
   awk -v n="$name" -v c="$((c1 - c0))" -v i="$((i1 - i0))" -v t0="$t0" -v t1="$t1" -v s="$s1" -v f="$FRAMES" \
     'BEGIN { printf "%-24s %10.2f %10.2f %6.2f %12.4f\n", n, c / s, i / s, i / c, (t1 - t0) / f }'
 done
