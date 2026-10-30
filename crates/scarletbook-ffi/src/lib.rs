@@ -527,7 +527,13 @@ pub extern "C" fn sb_abi_version() -> u32 {
 /// The library version, a static NUL-terminated string.
 #[unsafe(no_mangle)]
 pub extern "C" fn sb_version() -> *const c_char {
-    c"0.1.0".as_ptr()
+    // The crate version, so that it cannot drift from the release.
+    const VERSION: &CStr =
+        match CStr::from_bytes_with_nul(concat!(env!("CARGO_PKG_VERSION"), "\0").as_bytes()) {
+            Ok(v) => v,
+            Err(_) => c"unknown",
+        };
+    VERSION.as_ptr()
 }
 
 /// The message of the calling thread's last failed call (empty if the last call

@@ -36,7 +36,7 @@ for frame in disc.track_audio(Slot::TwoChannel, 1)? {
 }
 ```
 
-Features: `parallel` decodes DST frames in parallel batches with rayon.
+Features: `parallel` decodes DST frames on rayon's thread pool, ahead of the caller.
 
 ## C
 
@@ -64,7 +64,12 @@ target/release/bench decode disc.iso --area 2ch --threads 0 --sink hash   # or n
 Pushing a version tag (`v0.1.0`, matching the crate version) runs the release workflow:
 it re-runs the correctness gate on the corpus and publishes
 `bench-<version>-x86_64-linux.tar.gz` (generic x86-64) and a labelled Zen 5 build
-(`-znver5`), each with a SHA-256 checksum.
+(`-znver5`), each with a SHA-256 checksum and, once the repository is public, a signed
+build provenance attestation:
+
+```sh
+gh attestation verify bench-<version>-x86_64-linux.tar.gz -R aclater/scarletbook-rs
+```
 
 Minimum supported Rust version: 1.85.
 

@@ -598,3 +598,10 @@ fn abi_version_and_layouts() {
     }
     assert_eq!(std::mem::size_of::<SbStatus>(), 4);
 }
+
+#[test]
+fn version_is_the_crate_version() {
+    // SAFETY: sb_version returns a static NUL-terminated string.
+    let v = unsafe { CStr::from_ptr(sb_version()) };
+    assert_eq!(v.to_str().unwrap(), env!("CARGO_PKG_VERSION"));
+}

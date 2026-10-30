@@ -23,7 +23,7 @@ proceeds; each stage adds to the log at the end.
 |---|---|
 | Repository | https://github.com/aclater/sacd-spec |
 | Branch | `main` (the specifications and the corpus were both merged there) |
-| Commit | `37a16a37511e721eac8f119073d56702a1c591da` ("Merge pull request #2 from aclater/corpus", 2026-10-30) for stages 1 to 4; `07adda25b2c342883d5d5ed1500b30923e9fbe5b` ("Merge pull request #6 from aclater/fix/issues-4-5") for the follow-ups; `af3c3dd5` ("Merge pull request #10 from aclater/bench-output") for the benchmark program |
+| Commit | `37a16a37511e721eac8f119073d56702a1c591da` ("Merge pull request #2 from aclater/corpus", 2026-10-30) for stages 1 to 4; `07adda25b2c342883d5d5ed1500b30923e9fbe5b` ("Merge pull request #6 from aclater/fix/issues-4-5") for the follow-ups; `af3c3dd5` ("Merge pull request #10 from aclater/bench-output") for the benchmark program; `775f4ab` ("Merge pull request #11 from aclater/results-round1") for round 2, whose only change is the round 1 results in `benchmarks/README.md` and their `PROVENANCE.md` entry |
 | Corpus | `corpus/` of that commit, copied unchanged into this repository's `corpus/` (CC0-1.0); manifest `format_version` 1, `spec_version` `1.0-draft`, 129 cases |
 | Charset tables | `spec/charsets/*.txt` of that commit, copied unchanged into `crates/scarletbook/data/charsets/` (CC0-1.0) |
 
@@ -145,6 +145,30 @@ instruction to stop and report on finding any SACD or DST implementation (none w
 Their commits were reviewed, re-tested (corpus, property tests, Miri) and re-measured here
 before being merged into this branch.
 
+### Round 2 (#21 to #25)
+
+Benchmark round 1 (sacd-spec `775f4ab`, `benchmarks/README.md`, Results) was run by the
+measuring side on real discs this project has never had. What was used from it is exactly
+what it publishes: the machine and conditions, the figures of `bench` and of the other
+readers, the targets met and missed, and the notes. Each missed target and each note became
+an issue (#21 to #25). Nothing else crossed the wall: no profile, disc content or technique.
+
+The work on those issues again used only our own measurements: profiling the corpus DST
+frames grouped by the features that vary (filter order, segments, ptable lengths, channels),
+a stress set of frames encoded with this repository's own annex 5.A test encoder (written
+from specification 5), and synthetic images from `scarletbook-synth`. The finding that
+long prediction filters drive the per-frame cost comes from that profiling; that real discs
+probably use them is an inference from comparing our order-128 figures with the published
+real-disc figure, not information about the discs. The resulting prediction change speeds up
+order-128 frames (about 22% at 2 channels, 36% at 6) and slows order-32 frames by up to 10%,
+a trade-off accepted on that inference; round 2 tests it.
+
+The parallel decoding change (#21, #23, #24) and the decoder change (#22) were done by two
+agent sessions under the same rules as before, with sacd-spec at `775f4ab` as the only
+SACD/DST source; their commits were reviewed, re-tested and re-measured here before being
+merged. The build provenance attestation (#25) uses GitHub's
+`actions/attest-build-provenance` (pinned), which is not SACD-related.
+
 `scarletbook-synth`, the generator of large test images used for these measurements, is
 built only from specifications 1 to 4 (layout, TOCs, audio sector packing) and from the
 corpus's own DST frames, which it repacks. Figures measured on its images are not
@@ -185,3 +209,4 @@ on 2026-10-30: the name `scarletbook` is not taken on crates.io. Nothing was pub
 | 2026-10-30 | 4: C FFI | no specification content; cbindgen 0.29.4 (MPL-2.0, a build tool, not linked) installed from crates.io to generate the header. No new sources consulted. |
 | 2026-10-30 | follow-ups | review fixes and issues #5 to #12; two specification gaps filed (sacd-spec#4, #5), answered upstream in `07adda2` and then implemented as specified. No new sources consulted beyond sacd-spec. |
 | 2026-10-30 | benchmarking | `bench` program and release workflow (#14, #15); a third specification gap filed (sacd-spec#9, answered in `af3c3dd`); DST and parallel performance work (#16, #17) and large-image measurements (#18), see "Performance work". No new sources consulted beyond sacd-spec. |
+| 2026-10-30 | round 2 | the round 1 results (sacd-spec `775f4ab`, numbers and conditions only) turned into issues #21 to #25; parallel decoding, decoder and release-provenance work, see "Round 2"; version 0.2.0. No new sources consulted beyond sacd-spec. |
