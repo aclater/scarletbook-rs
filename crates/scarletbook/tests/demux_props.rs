@@ -132,3 +132,102 @@ fn counts_follow_returned_frames() {
     assert!(audio.next().is_none());
     assert_eq!(audio.missing_frames(), 12);
 }
+
+/// A reader that counts the bytes read through it.
+struct Counting<R> {
+    inner: R,
+    read: std::rc::Rc<std::cell::Cell<u64>>,
+}
+
+impl<R: std::io::Read> std::io::Read for Counting<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.read.set(self.read.get() + n as u64);
+        Ok(n)
+    }
+}
+
+impl<R: std::io::Seek> std::io::Seek for Counting<R> {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.inner.seek(pos)
+    }
+}
+
+/// Three consecutive tracks over 12 plain frames.
+fn three_track_disc() -> (Vec<u8>, usize) {
+    let frames: Vec<PFrame> = (0..12u32)
+        .map(|n| PFrame { number: n, dst: false, data: vec![n as u8; 2 * FRAME_BYTES_PER_CHANNEL] })
+        .collect();
+    let audio = pack(&frames);
+    let sectors = audio.len();
+    let spec = Spec {
+        channels: 2,
+        playtime: 12,
+        tracks: vec![
+            TrackSpec { start: 0, duration: 4 },
+            TrackSpec { start: 4, duration: 4 },
+            TrackSpec { start: 8, duration: 4 },
+        ],
+        audio,
+    };
+    (spec.build(), sectors)
+}
+
+fn decode_all<R: std::io::Read + std::io::Seek>(
+    disc: &mut Disc<R>,
+    cursor: scarletbook::TrackAudioCursor,
+) -> (Vec<scarletbook::AudioFrame>, scarletbook::TrackAudioCursor) {
+    let mut audio = disc.read_track_audio(cursor);
+    let frames = audio.by_ref().map(Result::unwrap).collect();
+    (frames, audio.into_cursor())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "decodes several tracks")]
+fn continuing_reads_each_audio_sector_once() {
+    let (img, audio_sectors) = three_track_disc();
+    let read = std::rc::Rc::new(std::cell::Cell::new(0));
+    let mut disc = Disc::open(Counting { inner: Cursor::new(img.clone()), read: read.clone() }).unwrap();
+
+    // Fresh cursors: each track rescans from the area's first sector.
+    let start = read.get();
+    let mut fresh = Vec::new();
+    for n in 1..=3 {
+        let c = disc.track_audio_cursor(Slot::TwoChannel, n).unwrap();
+        fresh.push(decode_all(&mut disc, c).0);
+    }
+    let fresh_bytes = read.get() - start;
+
+    // One cursor continued from track to track.
+    let start = read.get();
+    let mut continued = Vec::new();
+    let mut cursor = disc.track_audio_cursor(Slot::TwoChannel, 1).unwrap();
+    for n in 1..=3 {
+        if n > 1 {
+            cursor = disc.continue_track_audio(cursor, Slot::TwoChannel, n).unwrap();
+        }
+        let (frames, back) = decode_all(&mut disc, cursor);
+        continued.push(frames);
+        cursor = back;
+    }
+    let continued_bytes = read.get() - start;
+
+    assert_eq!(continued, fresh);
+    assert!(continued.iter().flatten().all(|f| f.status == scarletbook::FrameStatus::Dsd));
+    assert_eq!(continued_bytes, (audio_sectors * 2048) as u64, "each audio sector read exactly once");
+    assert!(fresh_bytes > continued_bytes);
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "decodes several tracks")]
+fn continuing_backwards_rescans_with_the_same_result() {
+    let (img, _) = three_track_disc();
+    let mut disc = Disc::open(Cursor::new(img)).unwrap();
+    let c3 = disc.track_audio_cursor(Slot::TwoChannel, 3).unwrap();
+    let (_, after3) = decode_all(&mut disc, c3);
+    // Track 1 starts before the cursor's position: a fresh scan, same frames.
+    let c1 = disc.continue_track_audio(after3, Slot::TwoChannel, 1).unwrap();
+    let (back, _) = decode_all(&mut disc, c1);
+    let fresh1 = disc.track_audio_cursor(Slot::TwoChannel, 1).unwrap();
+    assert_eq!(back, decode_all(&mut disc, fresh1).0);
+}

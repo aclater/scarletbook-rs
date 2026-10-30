@@ -729,6 +729,27 @@ enum SbStatus sb_track_audio_open(const struct SbDisc *disc,
                                   struct SbTrackAudio **out);
 
 /*
+ Opens the decoded audio of track `number` of the area from `slot`, continuing `prev`
+ (an earlier track's handle from the same disc) without rescanning the area where the
+ result is the same. Reading an area's tracks in increasing order this way reads each
+ audio sector once. With `prev` NULL this is `sb_track_audio_open`.
+
+ On success `prev` is consumed (freed) and `*out` receives the new handle. On failure
+ `prev` is left untouched (still to be freed by the caller) and `*out` is set to NULL.
+ Check a track with `sb_track_check` first to keep `prev` across tracks without audio.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `prev` NULL or a live handle, not used again
+ after a successful call; `out` NULL or valid for a write.
+ */
+enum SbStatus sb_track_audio_open_next(const struct SbDisc *disc,
+                                       struct SbTrackAudio *prev,
+                                       uint32_t slot,
+                                       uint32_t number,
+                                       struct SbTrackAudio **out);
+
+/*
  The channel count of a track's audio (1 to 6), or 0 for NULL or a handle in use.
 
  # Safety

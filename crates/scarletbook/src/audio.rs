@@ -341,11 +341,36 @@ pub struct TrackFrame {
 #[derive(Debug)]
 pub struct TrackCursor {
     area: AreaCursor,
+    /// Which area, and in which image, the area cursor reads: continuing into a track of
+    /// another area (or the same area of another image) needs a fresh scan.
+    area_key: AreaKey,
     next: u32,
     end: u32,
     channels: u8,
     peeked: Option<AreaFrame>,
     exhausted: bool,
+    failed: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AreaKey {
+    slot: Slot,
+    start: u32,
+    end: u32,
+    channels: u8,
+    image_sectors: u64,
+}
+
+impl AreaKey {
+    fn new(area: &Area, image_sectors: u64) -> Self {
+        AreaKey {
+            slot: area.slot,
+            start: area.audio_start_lsn,
+            end: area.audio_end_lsn,
+            channels: area.channel_count,
+            image_sectors,
+        }
+    }
 }
 
 impl TrackCursor {
@@ -358,12 +383,36 @@ impl TrackCursor {
         check_track(area, track, image_sectors)?;
         Ok(TrackCursor {
             area: AreaCursor::new(area, image_sectors),
+            area_key: AreaKey::new(area, image_sectors),
             next: track.start_frame,
             end: track.end_frame(),
             channels: area.channel_count,
             peeked: None,
             exhausted: false,
+            failed: false,
         })
+    }
+
+    /// A cursor at the start of `track`, reusing this cursor's reading state when that
+    /// gives the same result as a fresh scan, so that reading an area's tracks in order
+    /// reads each audio sector once.
+    ///
+    /// A cursor only ever discards accepted frames numbered below its current position.
+    /// The state is therefore reused when `track` is in the same area of the same image
+    /// and starts at or after that position, and no read has failed. Otherwise this is
+    /// [`TrackCursor::new`]. Either way the frames are exactly those of a fresh scan
+    /// (specification 4, 4.2 item 5).
+    ///
+    /// # Errors
+    ///
+    /// As [`check_track`].
+    pub fn continue_to(self, area: &Area, track: &Track, image_sectors: u64) -> Result<Self, Error> {
+        check_track(area, track, image_sectors)?;
+        if self.failed || self.area_key != AreaKey::new(area, image_sectors) || track.start_frame < self.next
+        {
+            return Self::new(area, track, image_sectors);
+        }
+        Ok(TrackCursor { next: track.start_frame, end: track.end_frame(), ..self })
     }
 
     /// The area's channel count `C` (1 to 6).
@@ -394,6 +443,7 @@ impl TrackCursor {
                 Some(Ok(f)) => self.peeked = Some(f),
                 Some(Err(e)) => {
                     self.next = self.end;
+                    self.failed = true;
                     return Some(Err(e));
                 }
                 None => {
@@ -527,6 +577,23 @@ impl TrackAudioCursor {
         Ok(Self::from_frames(TrackCursor::new(area, track, image_sectors)?))
     }
 
+    /// A cursor at the start of `track`, continuing this one's reading state where that
+    /// gives the same result (see [`TrackCursor::continue_to`]). Frames of this cursor
+    /// not yet returned are dropped; the counts start again at 0.
+    ///
+    /// # Errors
+    ///
+    /// As [`check_track`].
+    pub fn continue_to(self, area: &Area, track: &Track, image_sectors: u64) -> Result<Self, Error> {
+        // Frames decoded ahead of the caller came from the track cursor already, so it
+        // stands after them; an error ends the reuse.
+        let mut frames = self.frames;
+        if self.pending_error.is_some() {
+            frames.failed = true;
+        }
+        Ok(Self::from_frames(frames.continue_to(area, track, image_sectors)?))
+    }
+
     fn from_frames(frames: TrackCursor) -> Self {
         TrackAudioCursor {
             frames,
@@ -623,6 +690,16 @@ impl<'a, R: Read + Seek> TrackAudio<'a, R> {
     pub(crate) fn new(image: &'a mut Image<R>, area: &Area, track: &Track) -> Result<Self, Error> {
         let cursor = TrackAudioCursor::new(area, track, image.sector_count())?;
         Ok(TrackAudio { image, cursor })
+    }
+
+    pub(crate) fn with_cursor(image: &'a mut Image<R>, cursor: TrackAudioCursor) -> Self {
+        TrackAudio { image, cursor }
+    }
+
+    /// The decoding state, to continue into a later track with
+    /// [`crate::Disc::continue_track_audio`].
+    pub fn into_cursor(self) -> TrackAudioCursor {
+        self.cursor
     }
 
     /// The area's channel count `C` (1 to 6).

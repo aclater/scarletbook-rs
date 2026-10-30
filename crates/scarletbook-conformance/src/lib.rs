@@ -68,7 +68,7 @@ pub struct CaseReport {
 }
 
 /// The decoded audio of one track: per-channel SHA-256 and the frame counts.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrackAudio {
     /// One hash per channel.
     pub sha256: Vec<String>,
@@ -84,7 +84,16 @@ pub fn track_audio<R: std::io::Read + std::io::Seek>(
     slot: Slot,
     number: u32,
 ) -> Result<TrackAudio, scarletbook::Error> {
-    let mut audio = disc.track_audio(slot, number)?;
+    let cursor = disc.track_audio_cursor(slot, number)?;
+    Ok(hash_cursor(disc, cursor)?.0)
+}
+
+/// Hashes the audio a decoding cursor produces; returns the cursor for continuation.
+fn hash_cursor<R: std::io::Read + std::io::Seek>(
+    disc: &mut Disc<R>,
+    cursor: scarletbook::TrackAudioCursor,
+) -> Result<(TrackAudio, scarletbook::TrackAudioCursor), scarletbook::Error> {
+    let mut audio = disc.read_track_audio(cursor);
     let channels = audio.channels();
     let mut hashers: Vec<Sha256> = (0..channels).map(|_| Sha256::new()).collect();
     let mut chan = vec![0u8; FRAME_BYTES_PER_CHANNEL];
@@ -95,11 +104,36 @@ pub fn track_audio<R: std::io::Read + std::io::Seek>(
             h.update(&chan);
         }
     }
-    Ok(TrackAudio {
+    let result = TrackAudio {
         sha256: hashers.into_iter().map(|h| hex(&h.finalize())).collect(),
         missing_frames: audio.missing_frames(),
         invalid_dst_frames: audio.invalid_dst_frames(),
-    })
+    };
+    Ok((result, audio.into_cursor()))
+}
+
+/// Decodes every track of an area that has audio, in order, continuing one cursor from
+/// track to track. Returns each track's result by number.
+pub fn area_audio_sequential<R: std::io::Read + std::io::Seek>(
+    disc: &mut Disc<R>,
+    slot: Slot,
+) -> Result<Vec<(u32, TrackAudio)>, scarletbook::Error> {
+    let count = disc.toc().area(slot).map_or(0, |a| a.tracks.len() as u32);
+    let mut out = Vec::new();
+    let mut cursor = None;
+    for n in 1..=count {
+        if disc.check_track(slot, n).is_err() {
+            continue;
+        }
+        let next = match cursor.take() {
+            Some(prev) => disc.continue_track_audio(prev, slot, n)?,
+            None => disc.track_audio_cursor(slot, n)?,
+        };
+        let (result, back) = hash_cursor(disc, next)?;
+        out.push((n, result));
+        cursor = Some(back);
+    }
+    Ok(out)
 }
 
 fn slot_from(name: &str) -> Option<Slot> {
@@ -135,6 +169,7 @@ fn check_audio<R: std::io::Read + std::io::Seek>(
             fails.push(format!("{slot}: tracks {got_numbers:?}, expected {exp_numbers:?}"));
             continue;
         }
+        let mut fresh: Vec<(u32, TrackAudio)> = Vec::new();
         for (et, track) in exp_tracks.iter().zip(&area.tracks) {
             let n = u32::from(track.number);
             let what = format!("{slot} track {n}");
@@ -176,6 +211,7 @@ fn check_audio<R: std::io::Read + std::io::Seek>(
                 Err(e) => fails.push(format!("{what}: {e}")),
                 Ok(got) => {
                     report.tracks_compared += 1;
+                    fresh.push((n, got.clone()));
                     let exp_sha: Vec<String> = et["sha256"]
                         .as_array()
                         .map(|a| a.iter().filter_map(|h| h.as_str().map(str::to_owned)).collect())
@@ -192,6 +228,13 @@ fn check_audio<R: std::io::Read + std::io::Seek>(
                     }
                 }
             }
+        }
+        // Continuing one cursor across the area's tracks must give the same audio as
+        // decoding each track afresh (specification 4, 4.2 item 5).
+        match area_audio_sequential(disc, slot) {
+            Ok(seq) if seq == fresh => {}
+            Ok(_) => fails.push(format!("{slot}: sequential decoding differs from per-track decoding")),
+            Err(e) => fails.push(format!("{slot}: sequential decoding failed: {e}")),
         }
     }
 }

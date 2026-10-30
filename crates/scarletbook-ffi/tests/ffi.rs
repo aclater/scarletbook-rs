@@ -476,3 +476,61 @@ fn tiny_image_handles_and_strings() {
     free(disc);
     audio_free(a);
 }
+
+fn audio_open_next(
+    disc: *const SbDisc,
+    prev: *mut SbTrackAudio,
+    slot: u32,
+    number: u32,
+) -> Result<*mut SbTrackAudio, SbStatus> {
+    let mut a: *mut SbTrackAudio = ptr::dangling_mut();
+    // SAFETY: `disc` is a live handle; `prev` is NULL or a live handle that the caller does
+    // not use again if the call succeeds; `&mut a` is a valid out-pointer.
+    match unsafe { sb_track_audio_open_next(disc, prev, slot, number, &mut a) } {
+        SbStatus::Ok => Ok(a),
+        s => {
+            assert!(a.is_null(), "*out not cleared on failure");
+            Err(s)
+        }
+    }
+}
+
+/// Hashes the rest of a track handle's audio per channel.
+fn hash_handle(a: *mut SbTrackAudio, disc: *const SbDisc) -> Vec<String> {
+    let ch = audio_channels(a) as usize;
+    let mut hashers: Vec<Sha256> = (0..ch).map(|_| Sha256::new()).collect();
+    let mut buf = vec![0u8; ch * 4704];
+    while audio_read(a, disc, &mut buf).0 == SbStatus::Ok {
+        for (c, h) in hashers.iter_mut().enumerate() {
+            h.update(buf.iter().skip(c).step_by(ch).copied().collect::<Vec<u8>>());
+        }
+    }
+    hashers.into_iter().map(|h| format!("{:x}", h.finalize())).collect()
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "reads whole corpus images")]
+fn open_next_continues_across_tracks() {
+    let id = "dst-features-2ch-6ch";
+    let disc = open(&image(id)).unwrap();
+    let exp = expected(id);
+    for (slot, area) in exp["audio"].as_array().unwrap().iter().enumerate() {
+        let slot = slot as u32;
+        let mut prev: *mut SbTrackAudio = ptr::null_mut();
+        for t in area["tracks"].as_array().unwrap() {
+            let n = t["number"].as_u64().unwrap() as u32;
+            if check(disc, slot, n) != SbStatus::Ok {
+                continue;
+            }
+            let a = audio_open_next(disc, prev, slot, n).unwrap();
+            let exp_sha: Vec<String> =
+                t["sha256"].as_array().unwrap().iter().map(|h| h.as_str().unwrap().to_owned()).collect();
+            assert_eq!(hash_handle(a, disc), exp_sha, "{id} {slot} {n}");
+            prev = a;
+        }
+        // A failing call leaves `prev` untouched: it can still be freed.
+        assert_eq!(audio_open_next(disc, prev, slot, 999).unwrap_err(), SbStatus::NoSuchTrack);
+        audio_free(prev);
+    }
+    free(disc);
+}

@@ -978,6 +978,68 @@ pub unsafe extern "C" fn sb_track_audio_open(
     })
 }
 
+/// Opens the decoded audio of track `number` of the area from `slot`, continuing `prev`
+/// (an earlier track's handle from the same disc) without rescanning the area where the
+/// result is the same. Reading an area's tracks in increasing order this way reads each
+/// audio sector once. With `prev` NULL this is `sb_track_audio_open`.
+///
+/// On success `prev` is consumed (freed) and `*out` receives the new handle. On failure
+/// `prev` is left untouched (still to be freed by the caller) and `*out` is set to NULL.
+/// Check a track with `sb_track_check` first to keep `prev` across tracks without audio.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle; `prev` NULL or a live handle, not used again
+/// after a successful call; `out` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_track_audio_open_next(
+    disc: *const SbDisc,
+    prev: *mut SbTrackAudio,
+    slot: u32,
+    number: u32,
+    out: *mut *mut SbTrackAudio,
+) -> SbStatus {
+    // SAFETY: forwarded contract.
+    unsafe { clear_out(out) };
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let handle = unsafe { disc_handle(disc) }?;
+        if out.is_null() {
+            return Err(Failure::arg("NULL output pointer"));
+        }
+        let slot = slot_from(slot)?;
+        if prev.is_null() {
+            let cursor = handle.get()?.track_audio_cursor(slot, number)?;
+            let audio = Box::new(SbTrackAudio { inner: RefCell::new(cursor), disc_id: handle.id });
+            // SAFETY: non-NULL and valid for a write by this function's contract.
+            unsafe { out.write(Box::into_raw(audio)) };
+            return Ok(SbStatus::Ok);
+        }
+        // Every check that can fail comes before `prev` is taken, so a failure leaves it
+        // untouched.
+        // SAFETY: forwarded contract.
+        let p = unsafe { audio_handle(prev) }?;
+        if p.disc_id != handle.id {
+            return Err(Failure::arg("the previous track audio handle belongs to another disc"));
+        }
+        if p.inner.try_borrow_mut().is_err() {
+            return Err(Failure::arg(REENTRANT));
+        }
+        let d = handle.get()?;
+        d.check_track(slot, number)?;
+        // SAFETY: a live handle created by Box::into_raw and not in use; the caller does
+        // not use it again after this successful call.
+        let prev_box = unsafe { Box::from_raw(prev) };
+        // The track exists and passed check_track, which is the only way continuing can
+        // fail.
+        let cursor = d.continue_track_audio(prev_box.inner.into_inner(), slot, number)?;
+        let audio = Box::new(SbTrackAudio { inner: RefCell::new(cursor), disc_id: handle.id });
+        // SAFETY: non-NULL and valid for a write by this function's contract.
+        unsafe { out.write(Box::into_raw(audio)) };
+        Ok(SbStatus::Ok)
+    })
+}
+
 /// The channel count of a track's audio (1 to 6), or 0 for NULL or a handle in use.
 ///
 /// # Safety
