@@ -188,7 +188,23 @@ corpus's feature-test frames, and its plain DSD is pseudo-random.
 Performance round 3 (#30, #31, #32). Each entry: the source, and what was taken from it.
 None is an SACD or DST implementation or describes one.
 
-(Filled in as the work proceeds.)
+**Third-party source code read during the survey, and the owner's decision.** The survey
+read two source files of unrelated video codecs: FFmpeg's `libavcodec/cabac_functions.h`
+(the H.264 arithmetic decoder, LGPL) and dav1d's `src/msac.c` (the AV1 entropy decoder,
+BSD-2-Clause). Neither is SACD or DST code, and the round 3 allowance covers general
+techniques of unrelated projects. But FFmpeg is the tree that also contains a forbidden DST
+decoder, and its code is LGPL. On 2026-10-30 the owner decided (option "B"):
+
+- the reading is recorded here, as consulted for general techniques only;
+- **no code is copied** from either file;
+- **no technique is adopted on the strength of those two files alone**: every technique this
+  project uses must also be supported by a paper, article, book or documentation recorded
+  in this section;
+- from that point on, no source file is opened from any repository that also contains an
+  SACD or DST implementation (so nothing more from FFmpeg), and papers, articles and
+  documentation are preferred to code.
+
+The full source list of the survey follows when it reports (issue #33).
 
 ## Statement
 
