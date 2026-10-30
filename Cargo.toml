@@ -8,6 +8,7 @@ edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/aclater/scarletbook-rs"
+readme = "README.md"
 
 [workspace.lints.rust]
 missing_debug_implementations = "warn"

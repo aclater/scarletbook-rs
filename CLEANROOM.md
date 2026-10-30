@@ -113,6 +113,26 @@ machine.
 | criterion 0.7.0 (published 2025-07-25) | crates.io dev-dependency, no default features | the benchmark suite (#30); only its `--help` output and result files were used |
 | inferno 0.12.8 (published 2026-07-18) | crates.io (`cargo install --locked`) | flame graphs (#30) |
 | `llvm-tools-preview` for rustc 1.99.1 (LLVM 23.1.1) | rustup component | `llvm-profdata` for the PGO measurements (#32) |
+| zizmor 1.31.1 (published 2026-10-15) | crates.io (`cargo install --locked`), 2026-10-31 | linting the workflows locally before pushing (#46) |
+
+### Repository services and CI tools (#46)
+
+Added on 2026-10-31 for repository hygiene (issue #46). None is SACD- or DST-related; they
+analyse this repository's own code and workflows, and nothing from them enters the library.
+
+| Tool or service | Version (pinned) | Used for | Read to set it up (2026-10-31) |
+|---|---|---|---|
+| OpenSSF Scorecard (`ossf/scorecard-action`) | v2.5.0 | repository security score, SARIF to code scanning, published badge | the action's `README.md` at the pinned commit |
+| CodeQL (`github/codeql-action`) | v4.39.1 | static analysis of the Rust code and the workflows | GitHub's code scanning documentation (from memory of its inputs; `init`/`analyze`/`upload-sarif`) |
+| zizmor (`zizmorcore/zizmor-action`, zizmor 1.31.1 locally) | v0.8.0 | security lint of the workflows, SARIF to code scanning | the action's `README.md` at the pinned commit |
+| Dependency review (`actions/dependency-review-action`) | v5.0.0 | vulnerable dependencies added by a pull request | the action's `README.md` at the pinned commit |
+| cargo-llvm-cov (installed by `taiki-e/install-action`) | 0.9.1 (published 2026-09-06) | line coverage of the workspace tests | its `--help` output and the crates.io version list |
+| Codecov (`codecov/codecov-action`, codecov.io) | v7.1.1 | coverage reports and badge, uploaded with the workflow's OIDC token | the action's `README.md` at the pinned commit |
+| Dependabot | GitHub service | weekly grouped updates of crates and actions, 14-day cooldown | GitHub's Dependabot configuration documentation (from memory) |
+
+The action SHAs were resolved with `gh api repos/<owner>/<action>/git/ref/tags/<tag>`
+(annotated tags dereferenced). The badge images come from shields.io, slsa.dev,
+codecov.io and api.scorecard.dev; each URL was checked to return an SVG.
 
 ## Sources consulted
 
@@ -380,3 +400,4 @@ on 2026-10-30: the name `scarletbook` is not taken on crates.io. Nothing was pub
 | 2026-10-30 | benchmarking | `bench` program and release workflow (#14, #15); a third specification gap filed (sacd-spec#9, answered in `af3c3dd`); DST and parallel performance work (#16, #17) and large-image measurements (#18), see "Performance work". No new sources consulted beyond sacd-spec. |
 | 2026-10-30 | round 2 | the round 1 results (sacd-spec `775f4ab`, numbers and conditions only) turned into issues #21 to #25; parallel decoding, decoder and release-provenance work, see "Round 2"; version 0.2.0. No new sources consulted beyond sacd-spec. |
 | 2026-10-30 | round 3 | interleaved DST decoding (#31), performance tooling (#30) and build configuration (#32), see "Round 3"; general references under the owner's round 3 allowance and decision B, see "General references consulted"; patent-hygiene table with every flag cleared on full texts read (#40). |
+| 2026-10-31 | repository hygiene (#46) | Dependabot, Scorecard, CodeQL, zizmor, dependency review and coverage (cargo-llvm-cov, Codecov) workflows; `SECURITY.md`, `CONTRIBUTING.md` (the clean-room rule for contributors, from "Rules followed"), `CHANGELOG.md`; README badges. Repository infrastructure only; tools and the action READMEs read are under "Repository services and CI tools". No SACD or DST source consulted. |
