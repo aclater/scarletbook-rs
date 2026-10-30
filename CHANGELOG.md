@@ -27,6 +27,10 @@ assets. Nothing is published on crates.io yet.
 - `TrackAudioCursor` decodes groups of consecutive DST frames together, on the thread pool
   and on the calling thread: `bench decode` is 1.13 to 1.43 times faster on one thread,
   depending on build and channel count (#31, #41).
+- The x86-64-v3 `bench` asset is renamed `bench-<version>-x86-64-v3-linux`, outside the
+  benchmark asset patterns reserved by sacd-spec `34f78a3` (#45).
+- The vendored conformance corpus is that of sacd-spec `fa602f9` (136 cases, all passing)
+  (#45).
 - CLEANROOM.md records the round 3 allowance for general references, the owner's
   decision B, the survey sources and a dated patent-hygiene table (#33, #40, #41).
 

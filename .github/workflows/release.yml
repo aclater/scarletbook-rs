@@ -4,7 +4,9 @@ name: Release
 # (sacd-spec benchmarks/README.md, "Release binaries"), run the correctness gate against
 # that build, and publish it with a SHA-256 checksum. Two more labelled assets are built:
 # for x86-64-v3 (AVX2, BMI2, FMA: most x86-64 CPUs since 2013-2015), and for AMD Zen 5
-# (the measuring machine's CPU; it runs only on Zen 5).
+# (the measuring machine's CPU; it runs only on Zen 5). Asset names follow sacd-spec
+# benchmarks/README.md, "Release binaries": the v3 build is not a benchmark asset, so its name
+# matches neither `bench-<version>-x86_64-linux.tar.gz` nor `...-x86_64-linux-<cpu>.tar.gz`.
 #
 # The generic asset uses the `dist` profile (release with one codegen unit), the others
 # the release profile; see Cargo.toml and issue #32 for the measurements.
@@ -85,7 +87,7 @@ jobs:
           package "bench-$VERSION-x86_64-linux" \
             target/x86_64-unknown-linux-gnu/dist/bench \
             "Generic x86-64 build (no target-cpu; profile dist: release with one codegen unit)."
-          package "bench-$VERSION-x86_64-linux-v3" \
+          package "bench-$VERSION-x86-64-v3-linux" \
             target-v3/x86_64-unknown-linux-gnu/release/bench \
             "Built with -C target-cpu=x86-64-v3 (AVX2, BMI1/2, FMA, MOVBE); runs on x86-64-v3 CPUs only."
           package "bench-$VERSION-x86_64-linux-znver5" \
@@ -116,7 +118,7 @@ jobs:
           }
           smoke "bench-$VERSION-x86_64-linux"
           # The gate above already stopped the release on a runner that is not x86-64-v3.
-          smoke "bench-$VERSION-x86_64-linux-v3"
+          smoke "bench-$VERSION-x86-64-v3-linux"
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -125,6 +127,6 @@ jobs:
             --notes "Benchmark program \`bench\` for sacd-spec benchmarks/README.md, built from $GITHUB_SHA.
           - \`bench-$VERSION-x86_64-linux.tar.gz\`: generic x86-64 (the required asset).
           - \`bench-$VERSION-x86_64-linux-znver5.tar.gz\`: built for AMD Zen 5, the measuring machine's CPU (the optional labelled asset of benchmarks/README.md).
-          - \`bench-$VERSION-x86_64-linux-v3.tar.gz\`: built for x86-64-v3 (AVX2 and later CPUs), labelled; an extra build for users, not one of the benchmark assets.
+          - \`bench-$VERSION-x86-64-v3-linux.tar.gz\`: built for x86-64-v3 (AVX2 and later CPUs), labelled; an extra build for users, not one of the benchmark assets.
           Each has a \`.sha256\` checksum and, for a public repository, a signed build provenance attestation: \`gh attestation verify <asset> -R $GITHUB_REPOSITORY\`. The correctness gate (every corpus case, 1 and all threads) passed on the generic and x86-64-v3 builds." \
             dist/*.tar.gz dist/*.sha256
