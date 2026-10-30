@@ -76,7 +76,7 @@ target/release/bench decode disc.iso --area 2ch --threads 0 --sink hash   # or n
 Pushing a version tag (`v0.1.0`, matching the crate version) runs the release workflow:
 it publishes `bench-<version>-x86_64-linux.tar.gz` (generic x86-64, cargo profile `dist`),
 after the correctness gate has passed on that very build, and two labelled builds,
-`-v3` (`-C target-cpu=x86-64-v3`) and `-znver5` (AMD Zen 5), each with a SHA-256 checksum and, once the repository is public, a signed
+`-v3` (`-C target-cpu=x86-64-v3`) and `-znver5` (AMD Zen 5), each with a SHA-256 checksum and, from 0.2.0, a signed
 build provenance attestation:
 
 ```sh

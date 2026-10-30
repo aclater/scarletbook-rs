@@ -27,8 +27,8 @@ you prefer otherwise.
 
 ## Release assets
 
-Release binaries carry a SHA-256 checksum and a signed build provenance attestation
-(SLSA Build Level 2), which can be checked with:
+Release binaries carry a SHA-256 checksum and, from 0.2.0, a signed build provenance
+attestation (SLSA Build Level 2), which can be checked with:
 
 ```sh
 gh attestation verify bench-<version>-x86_64-linux.tar.gz -R aclater/scarletbook-rs

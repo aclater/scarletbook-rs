@@ -12,24 +12,39 @@ DST. [CLEANROOM.md](CLEANROOM.md) is the record of how it was written. A contrib
 breaks the rule cannot be accepted, however good it is, so please read this section before
 you start.
 
-By opening a pull request you confirm that, for the work in it:
+By opening a pull request you confirm that, for the work in it, you followed these rules.
+They summarise CLEANROOM.md ("Rules followed", "General references consulted" with the
+owner's decision B, and "Patent hygiene"); if the two ever disagree, CLEANROOM.md governs.
 
-- The only SACD/DST material you consulted is `aclater/sacd-spec`: its specifications, the
-  charset tables, the conformance corpus and its README, and its `PROVENANCE.md`.
-- You did not read, search for, fetch or install the source of any SACD or DST
-  implementation, including pysacd, sacd-ripper, `sacd_extract`, FFmpeg's DST decoder,
-  sacd-rs, the dst-decoder crate and the Philips/ISO reference decoder, and you made no web
-  search for SACD or DST implementations. If you have studied such code in the past, say so
-  in the pull request; the owner decides whether the contribution can be taken.
-- You did not read patents, live or expired.
-- You copied no code from any other project into this repository. Ordinary dependencies
-  from crates.io are fine; cargo-deny checks their licences.
+- **SACD/DST sources.** The only SACD/DST material you consulted is `aclater/sacd-spec`:
+  its specifications, the charset tables, the conformance corpus and its README, and its
+  `PROVENANCE.md`.
+- **No implementations.** You did not read, search for, fetch or install the source of any
+  SACD or DST implementation, including pysacd, sacd-ripper, `sacd_extract`, FFmpeg's DST
+  decoder, sacd-rs, the dst-decoder crate and the Philips/ISO reference decoder. If you
+  have studied such code in the past, say so in the pull request; the owner decides whether
+  the contribution can be taken.
+- **No code from repositories that contain one (decision B).** You opened no source file,
+  of any kind, from a repository that also contains an SACD or DST implementation. FFmpeg
+  is one: nothing from it may be read, not even code unrelated to SACD, nor its commit
+  pages or mailing-list threads.
+- **No SACD, DSD or DST search terms.** You made no search, for any purpose, with terms
+  that name SACD, DSD or DST. If a search on another subject returns such a result, report
+  it in the pull request without opening it.
+- **No patents.** You read no patent, live or expired, and opened no patent page.
+- **No copied code.** You copied no code from any other project into this repository.
+  Ordinary dependencies from crates.io are fine; cargo-deny checks their licences.
 
-General references that are not SACD or DST material (Rust documentation, compiler and
-CPU manuals, algorithm books and papers, GitHub documentation) may be used. List each one
-you consulted in the pull request, with its URL or citation and the date, so that it can be
-recorded in CLEANROOM.md. For a technique adopted for performance, prefer sources published
-before 2006 (see "Patent hygiene" in CLEANROOM.md).
+General references that are neither SACD nor DST material may be used: Rust
+documentation, compiler and CPU manuals, profilers, algorithm books and papers, GitHub
+documentation, and general techniques of unrelated projects. Papers, articles, books and
+documentation are preferred to code. **No technique may be adopted on the strength of code
+alone**: every technique you adopt must also be supported by a paper, article, book or
+documentation. List every source you consulted in the pull request, with its URL or
+citation and the date you read it, so that it can be recorded in CLEANROOM.md. For each
+technique adopted for performance, give the earliest dated non-code source you found and
+read that describes it; sources published before 2006 are preferred, and a technique whose
+earliest source is from 2006 or later is flagged in "Patent hygiene" for review.
 
 If the specification is ambiguous or incomplete, do not guess and do not look at how
 another reader does it. Open an issue on `aclater/sacd-spec`, mark the affected code with

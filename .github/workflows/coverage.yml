@@ -39,7 +39,9 @@ jobs:
         with:
           tool: cargo-llvm-cov@0.9.1
       - run: cargo llvm-cov --workspace --all-features --locked --lcov --output-path lcov.info
-      - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+      # A pull request from a fork gets no OIDC token, so its upload is skipped.
+      - if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           files: lcov.info
           use_oidc: true
