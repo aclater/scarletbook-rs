@@ -183,6 +183,27 @@ corpus's own DST frames, which it repacks. Figures measured on its images are no
 measurements of the benchmark discs of `benchmarks/README.md`: its DST frames are the
 corpus's feature-test frames, and its plain DSD is pseudo-random.
 
+## Patent hygiene (record-keeping rule, not a legal opinion)
+
+By the owner's instruction (2026-10-30): no patent, live or expired, is read. Every source in
+the corroboration record carries its publication date; techniques documented in
+publications more than 20 years old (before 2006) are preferred; and every technique this
+project adopts whose earliest non-code source found is from 2006 or later is flagged in the
+table below, for review before 1.0. The research survey (#33) opened no patent page.
+
+| Technique | Where used | Earliest non-code source found (date) | Before 2006 | Flag |
+|---|---|---|---|---|
+| Multi-bit renormalisation from a wider code register | arithmetic decoder (`dst.rs`) | Moffat, Neal, Witten, ACM TOIS 1998 | yes | |
+| Renormalisation by count-leading-zeros instead of a loop | arithmetic decoder | Marpe, Kirchhoffer, Marten, EUSIPCO 2006 | no | **review**; older source being sought |
+| Branch-free selection of the decoded symbol (conditional moves) | arithmetic decoder | Acta Cybernetica 2013; Giesen 2014 | no | **review**; older source being sought |
+| Wide code window, amortised refill, zero bits past the end | code-bit reader | Said, HP Labs 2004 (zero bits past the end); Giesen 2018 (amortised refill) | partly | **review** (refill); older source being sought |
+| Precomputed tables of coefficient partial sums indexed by input bits | prediction (`dst.rs`) | none recorded yet (derived here) | — | **review**; source being sought |
+| Interleaving independent decoders in one thread | #31 (in progress) | Giesen 2014 | no | **review**; older source being sought |
+| Profile-guided optimisation, link-time optimisation | #32 (build, in progress) | none recorded yet | — | **review**; source being sought |
+
+Techniques the specification itself prescribes (the decoding process of specification 5) are
+not choices of this project and are not listed.
+
 ## General references consulted
 
 Performance round 3 (#30, #31, #32). Each entry: the source, and what was taken from it.
