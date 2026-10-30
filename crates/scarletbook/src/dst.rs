@@ -501,7 +501,8 @@ impl DstDecoder {
     }
 
     fn build_tables(&mut self, filters: &[Filter]) {
-        self.tables.clear();
+        // Only the tables a filter uses are written and read; the others keep whatever
+        // they hold.
         self.tables.resize(filters.len() * HISTORY_BYTES, [0; 256]);
         for (f, filter) in filters.iter().enumerate() {
             let used = filter.order.div_ceil(8);
@@ -524,15 +525,15 @@ impl DstDecoder {
     }
 
     fn build_luts(&mut self, ptables: &[Vec<u32>]) {
-        self.luts.clear();
-        for p in ptables {
-            let mut lut = [0u8; LUT_LEN];
-            let last = p.len().saturating_sub(1);
-            for (j, slot) in lut.iter_mut().enumerate() {
-                // Entries are 1 to 128 (5.3.6).
-                *slot = p.get(j.min(last)).copied().unwrap_or(128) as u8;
+        // In place; entries past 4096 are never read and keep whatever they hold.
+        self.luts.resize(ptables.len(), [0; LUT_LEN]);
+        for (lut, p) in self.luts.iter_mut().zip(ptables) {
+            let used = &mut lut[..=4096];
+            // Entries are 1 to 128 (5.3.6); a ptable has at least one.
+            used.fill(p.last().copied().unwrap_or(128) as u8);
+            for (slot, &v) in used.iter_mut().zip(p) {
+                *slot = v as u8;
             }
-            self.luts.push(lut);
         }
     }
 }
@@ -805,12 +806,16 @@ impl<'a> CodeBits<'a> {
         let shift = (start % 8) as u32;
         let first = start / 8;
         let nbytes = len.div_ceil(8);
-        for i in 0..nbytes {
-            let hi = frame.get(first + i).copied().unwrap_or(0);
-            let lo = frame.get(first + i + 1).copied().unwrap_or(0);
-            let v = (u16::from(hi) << 8 | u16::from(lo)) << shift;
-            buf.push((v >> 8) as u8);
+        let src = frame.get(first..).unwrap_or(&[]);
+        let realign = |hi: u8, lo: u8| (((u16::from(hi) << 8 | u16::from(lo)) << shift) >> 8) as u8;
+        buf.extend(src.windows(2).take(nbytes).map(|w| realign(w[0], w[1])));
+        // The last byte of the frame, if it is needed, has no byte after it.
+        if buf.len() < nbytes {
+            if let Some(&b) = src.get(buf.len()) {
+                buf.push(realign(b, 0));
+            }
         }
+        buf.resize(nbytes, 0);
         if len % 8 != 0 {
             if let Some(last) = buf.last_mut() {
                 *last &= 0xFF << (8 - len % 8);
