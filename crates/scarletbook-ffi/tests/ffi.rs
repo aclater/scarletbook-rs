@@ -232,7 +232,7 @@ fn warnings_and_rejections() {
     let exp = expected("track-start-past-playtime");
     let mut got = Vec::new();
     for idx in 0..i.warning_count {
-        let mut w = SbWarning { code: ptr::null(), slot: 0, track: 0 };
+        let mut w = SbWarning { code: ptr::null(), slot: 0, track: 0, lsn: 0 };
         // SAFETY: `disc` is a live handle; `&mut w` is a valid out-pointer.
         assert_eq!(unsafe { sb_disc_warning(disc, idx, &mut w) }, SbStatus::Ok);
         // SAFETY: `w.code` is a static NUL-terminated string.
@@ -532,5 +532,31 @@ fn open_next_continues_across_tracks() {
         assert_eq!(audio_open_next(disc, prev, slot, 999).unwrap_err(), SbStatus::NoSuchTrack);
         audio_free(prev);
     }
+    free(disc);
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "reads whole corpus images")]
+fn malformed_sector_warnings() {
+    // audio-random: an area of random audio sectors, many of them malformed.
+    let disc = open(&image("audio-random")).unwrap();
+    let a = audio_open(disc, 0, 1).unwrap();
+    let ch = audio_channels(a) as usize;
+    let mut buf = vec![0u8; ch * 4704];
+    while audio_read(a, disc, &mut buf).0 == SbStatus::Ok {}
+    let mut count = 0u64;
+    // SAFETY: `a` is a live handle; `&mut count` is a valid out-pointer.
+    assert_eq!(unsafe { sb_track_audio_malformed_sectors(a, &mut count) }, SbStatus::Ok);
+    assert!(count > 0, "random audio sectors include malformed ones");
+    let mut w = SbWarning { code: ptr::null(), slot: 0, track: 0, lsn: 0 };
+    // SAFETY: as above.
+    assert_eq!(unsafe { sb_track_audio_warning(a, 0, &mut w) }, SbStatus::Ok);
+    // SAFETY: `w.code` is a static NUL-terminated string.
+    assert_eq!(unsafe { CStr::from_ptr(w.code) }.to_str().unwrap(), "audio-sector-malformed");
+    assert_eq!(w.slot, 0);
+    assert!(w.lsn >= 0);
+    // SAFETY: as above; the index is past the end.
+    assert_eq!(unsafe { sb_track_audio_warning(a, u32::MAX, &mut w) }, SbStatus::InvalidArgument);
+    audio_free(a);
     free(disc);
 }

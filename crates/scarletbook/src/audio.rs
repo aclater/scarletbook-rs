@@ -6,7 +6,7 @@ use std::collections::VecDeque;
 use std::io::{Read, Seek};
 
 use crate::dst::{DstDecoder, DstError};
-use crate::error::{Error, Slot};
+use crate::error::{Error, Slot, Warning, WarningCode};
 use crate::image::{Image, ReadOutcome, SECTOR_SIZE};
 use crate::toc::{Area, Track};
 
@@ -24,6 +24,10 @@ pub const INVALID_FILL: u8 = 0x55;
 
 /// Largest channel count for which audio is produced (specification 4, 4.8).
 pub const MAX_CHANNELS: u8 = 6;
+
+/// Most `audio-sector-malformed` warnings kept per area cursor (specification 4, 4.4.5
+/// item 3); the count of malformed sectors is kept in full.
+pub const MAX_MALFORMED_WARNINGS: usize = 4096;
 
 /// Most frames decoded together with the `parallel` feature.
 pub const MAX_PARALLEL_BATCH: usize = 64;
@@ -143,10 +147,7 @@ impl Demuxer {
             pos += len;
         }
         if malformed {
-            // TODO(aclater/sacd-spec#5): spec 4.4.5 says a reader SHOULD warn
-            // `audio-sector-malformed` with the LSN, but whether one warning per sector is
-            // allowed under the allocation bound of 7.1 item 2, or how to cap or aggregate
-            // them, is not specified. Until then only a count is kept.
+            // The demuxer does not know LSNs; AreaCursor turns this into warnings.
             self.malformed += 1;
         }
         malformed
@@ -179,6 +180,8 @@ impl Demuxer {
 #[derive(Debug)]
 pub struct AreaCursor {
     demux: Demuxer,
+    slot: Slot,
+    warnings: Vec<Warning>,
     next_lsn: u64,
     end_lsn: u64,
     buf: Vec<u8>,
@@ -196,6 +199,8 @@ impl AreaCursor {
         let (start, end) = audio_sector_range(area, image_sectors);
         AreaCursor {
             demux: Demuxer::new(area.channel_count),
+            slot: area.slot,
+            warnings: Vec::new(),
             next_lsn: start,
             end_lsn: end,
             buf: Vec::new(),
@@ -205,9 +210,17 @@ impl AreaCursor {
         }
     }
 
-    /// Number of malformed sectors seen so far.
+    /// Number of malformed sectors processed so far.
     pub fn malformed_sectors(&self) -> u64 {
         self.demux.malformed_sectors()
+    }
+
+    /// The `audio-sector-malformed` warnings of the sectors processed so far, with slot
+    /// and LSN, in processing order (specification 4, 4.4.5). At most
+    /// [`MAX_MALFORMED_WARNINGS`] are kept; [`AreaCursor::malformed_sectors`] counts them
+    /// all.
+    pub fn warnings(&self) -> &[Warning] {
+        &self.warnings
     }
 
     fn sector<R: Read + Seek>(&mut self, image: &mut Image<R>, lsn: u64) -> Result<[u8; SECTOR_SIZE], Error> {
@@ -244,7 +257,16 @@ impl AreaCursor {
                 self.next_lsn += 1;
                 match self.sector(image, lsn) {
                     Ok(s) => {
-                        self.demux.push_sector(&s);
+                        if self.demux.push_sector(&s) && self.warnings.len() < MAX_MALFORMED_WARNINGS {
+                            // LSNs of audio sectors come from u32 fields.
+                            let lsn = u32::try_from(lsn).ok();
+                            self.warnings.push(Warning {
+                                code: WarningCode::AudioSectorMalformed,
+                                slot: Some(self.slot),
+                                track: None,
+                                lsn,
+                            });
+                        }
                     }
                     Err(e) => {
                         self.finished = true;
@@ -275,6 +297,11 @@ impl<'a, R: Read + Seek> AreaFrames<'a, R> {
     /// Number of malformed sectors seen so far.
     pub fn malformed_sectors(&self) -> u64 {
         self.cursor.malformed_sectors()
+    }
+
+    /// The `audio-sector-malformed` warnings so far (see [`AreaCursor::warnings`]).
+    pub fn warnings(&self) -> &[Warning] {
+        self.cursor.warnings()
     }
 }
 
@@ -430,6 +457,11 @@ impl TrackCursor {
         self.area.malformed_sectors()
     }
 
+    /// The `audio-sector-malformed` warnings so far (see [`AreaCursor::warnings`]).
+    pub fn warnings(&self) -> &[Warning] {
+        self.area.warnings()
+    }
+
     /// The next timeline position, `None` after the track's last frame.
     pub fn next_frame<R: Read + Seek>(&mut self, image: &mut Image<R>) -> Option<Result<TrackFrame, Error>> {
         if self.next >= self.end {
@@ -490,6 +522,11 @@ impl<'a, R: Read + Seek> TrackFrames<'a, R> {
     /// Number of malformed sectors seen so far.
     pub fn malformed_sectors(&self) -> u64 {
         self.cursor.malformed_sectors()
+    }
+
+    /// The `audio-sector-malformed` warnings so far (see [`AreaCursor::warnings`]).
+    pub fn warnings(&self) -> &[Warning] {
+        self.cursor.warnings()
     }
 }
 
@@ -621,6 +658,16 @@ impl TrackAudioCursor {
         self.invalid
     }
 
+    /// Number of malformed sectors processed so far.
+    pub fn malformed_sectors(&self) -> u64 {
+        self.frames.malformed_sectors()
+    }
+
+    /// The `audio-sector-malformed` warnings so far (see [`AreaCursor::warnings`]).
+    pub fn warnings(&self) -> &[Warning] {
+        self.frames.warnings()
+    }
+
     fn batch_size() -> usize {
         #[cfg(feature = "parallel")]
         {
@@ -715,6 +762,16 @@ impl<'a, R: Read + Seek> TrackAudio<'a, R> {
     /// Frames returned so far that were invalid DST frames (filled with 0x55).
     pub fn invalid_dst_frames(&self) -> u64 {
         self.cursor.invalid_dst_frames()
+    }
+
+    /// Number of malformed sectors processed so far.
+    pub fn malformed_sectors(&self) -> u64 {
+        self.cursor.malformed_sectors()
+    }
+
+    /// The `audio-sector-malformed` warnings so far (see [`AreaCursor::warnings`]).
+    pub fn warnings(&self) -> &[Warning] {
+        self.cursor.warnings()
     }
 }
 

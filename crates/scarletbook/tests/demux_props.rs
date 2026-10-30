@@ -231,3 +231,69 @@ fn continuing_backwards_rescans_with_the_same_result() {
     let fresh1 = disc.track_audio_cursor(Slot::TwoChannel, 1).unwrap();
     assert_eq!(back, decode_all(&mut disc, fresh1).0);
 }
+
+/// A sector whose single packet runs past its end (specification 4, 4.4.3 item 1).
+fn overrun_sector() -> [u8; 2048] {
+    let mut s = [0u8; 2048];
+    s[0] = 1 << 5; // one packet record, no frame records
+    s[1..3].copy_from_slice(&((2u16 << 11) | 2047).to_be_bytes()); // audio, 2047 bytes from offset 3
+    s
+}
+
+#[test]
+fn malformed_sector_is_reported_with_its_lsn() {
+    let mut audio = vec![[0u8; 2048]; 3];
+    audio[1] = overrun_sector();
+    let spec = Spec { channels: 2, playtime: 1, tracks: vec![TrackSpec { start: 0, duration: 1 }], audio };
+    let mut disc = Disc::open(Cursor::new(spec.build())).unwrap();
+    let mut frames = disc.area_frames(Slot::TwoChannel).unwrap();
+    assert!(frames.by_ref().all(|f| f.is_ok()));
+    assert_eq!(frames.malformed_sectors(), 1);
+    let w = frames.warnings();
+    assert_eq!(w.len(), 1);
+    assert_eq!(w[0].code, scarletbook::WarningCode::AudioSectorMalformed);
+    assert_eq!(w[0].slot, Some(Slot::TwoChannel));
+    assert_eq!(w[0].lsn, Some(common::AUDIO_LSN as u32 + 1));
+    assert_eq!(w[0].track, None);
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "processes thousands of sectors")]
+fn malformed_warnings_are_capped_with_a_full_count() {
+    let n = scarletbook::audio::MAX_MALFORMED_WARNINGS + 4;
+    let spec = Spec {
+        channels: 2,
+        playtime: 1,
+        tracks: vec![TrackSpec { start: 0, duration: 1 }],
+        audio: vec![overrun_sector(); n],
+    };
+    let mut disc = Disc::open(Cursor::new(spec.build())).unwrap();
+    let mut frames = disc.area_frames(Slot::TwoChannel).unwrap();
+    frames.by_ref().for_each(drop);
+    assert_eq!(frames.malformed_sectors(), n as u64);
+    assert_eq!(frames.warnings().len(), scarletbook::audio::MAX_MALFORMED_WARNINGS);
+    // The kept warnings are the first ones, in processing order.
+    assert_eq!(frames.warnings()[0].lsn, Some(common::AUDIO_LSN as u32));
+}
+
+/// Specification 4, 4.4.5 item 1: a reader that stops early does not warn for sectors it
+/// did not process.
+#[test]
+#[cfg_attr(miri, ignore = "decodes several frames")]
+fn early_stop_does_not_report_unprocessed_sectors() {
+    let frames: Vec<PFrame> = (0..3u32)
+        .map(|n| PFrame { number: n, dst: false, data: vec![7; 2 * FRAME_BYTES_PER_CHANNEL] })
+        .collect();
+    let mut audio = pack(&frames);
+    audio.push(overrun_sector());
+    let spec = Spec { channels: 2, playtime: 3, tracks: vec![TrackSpec { start: 0, duration: 1 }], audio };
+    let mut disc = Disc::open(Cursor::new(spec.build())).unwrap();
+    let mut track = disc.track_audio(Slot::TwoChannel, 1).unwrap();
+    assert_eq!(track.by_ref().count(), 1);
+    assert_eq!(track.malformed_sectors(), 0);
+    assert!(track.warnings().is_empty());
+    // A whole-area scan does reach it.
+    let mut all = disc.area_frames(Slot::TwoChannel).unwrap();
+    all.by_ref().for_each(drop);
+    assert_eq!(all.warnings().len(), 1);
+}

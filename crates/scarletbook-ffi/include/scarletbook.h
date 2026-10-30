@@ -531,6 +531,10 @@ typedef struct SbWarning {
    Track number, or 0 if the warning concerns no track.
    */
   uint32_t track;
+  /*
+   The LSN the warning concerns (`audio-sector-malformed`), or -1.
+   */
+  int64_t lsn;
 } SbWarning;
 
 /*
@@ -785,6 +789,29 @@ enum SbStatus sb_track_audio_read(const struct SbTrackAudio *audio,
 enum SbStatus sb_track_audio_counts(const struct SbTrackAudio *audio,
                                     uint64_t *missing,
                                     uint64_t *invalid);
+
+/*
+ The number of malformed audio sectors processed so far for this track.
+
+ # Safety
+
+ `audio` must be NULL or a live handle; `count` NULL or valid for a write.
+ */
+enum SbStatus sb_track_audio_malformed_sectors(const struct SbTrackAudio *audio, uint64_t *count);
+
+/*
+ `audio-sector-malformed` warning `index` of the sectors processed so far for this
+ track, with its slot and LSN (specification 4, 4.4.5). At most 4096 are kept per
+ handle; `sb_track_audio_malformed_sectors` counts them all. Returns
+ `SB_STATUS_INVALID_ARGUMENT` past the last one.
+
+ # Safety
+
+ `audio` must be NULL or a live handle; `out` NULL or valid for a write.
+ */
+enum SbStatus sb_track_audio_warning(const struct SbTrackAudio *audio,
+                                     uint32_t index,
+                                     struct SbWarning *out);
 
 /*
  Frees a track audio handle. NULL is ignored, and so is a handle whose read is running

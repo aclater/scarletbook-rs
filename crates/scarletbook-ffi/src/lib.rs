@@ -275,6 +275,8 @@ pub struct SbWarning {
     pub slot: i32,
     /// Track number, or 0 if the warning concerns no track.
     pub track: u32,
+    /// The LSN the warning concerns (`audio-sector-malformed`), or -1.
+    pub lsn: i64,
 }
 
 /// Information about one decoded frame.
@@ -910,6 +912,15 @@ fn warning_code(code: WarningCode) -> &'static CStr {
     }
 }
 
+fn sb_warning(w: &scarletbook::Warning) -> SbWarning {
+    SbWarning {
+        code: warning_code(w.code).as_ptr(),
+        slot: w.slot.map_or(-1, |s| slot_index(s) as i32),
+        track: w.track.map_or(0, u32::from),
+        lsn: w.lsn.map_or(-1, i64::from),
+    }
+}
+
 /// Warning `index` (0 to `warning_count - 1`) emitted while reading the TOC.
 ///
 /// # Safety
@@ -921,11 +932,7 @@ pub unsafe extern "C" fn sb_disc_warning(disc: *const SbDisc, index: u32, out: *
         // SAFETY: forwarded contract.
         let d = unsafe { disc_handle(disc) }?.get()?;
         let w = d.warnings().get(index as usize).ok_or_else(|| Failure::arg("warning index out of range"))?;
-        let info = SbWarning {
-            code: warning_code(w.code).as_ptr(),
-            slot: w.slot.map_or(-1, |s| slot_index(s) as i32),
-            track: w.track.map_or(0, u32::from),
-        };
+        let info = sb_warning(w);
         // SAFETY: forwarded contract.
         unsafe { write_out(out, info) }?;
         Ok(SbStatus::Ok)
@@ -1128,6 +1135,54 @@ pub unsafe extern "C" fn sb_track_audio_counts(
         unsafe { write_out(missing, cursor.missing_frames()) }?;
         // SAFETY: forwarded contract (checked non-NULL above).
         unsafe { write_out(invalid, cursor.invalid_dst_frames()) }?;
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// The number of malformed audio sectors processed so far for this track.
+///
+/// # Safety
+///
+/// `audio` must be NULL or a live handle; `count` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_track_audio_malformed_sectors(
+    audio: *const SbTrackAudio,
+    count: *mut u64,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let a = unsafe { audio_handle(audio) }?;
+        let cursor = a.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
+        // SAFETY: forwarded contract.
+        unsafe { write_out(count, cursor.malformed_sectors()) }?;
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// `audio-sector-malformed` warning `index` of the sectors processed so far for this
+/// track, with its slot and LSN (specification 4, 4.4.5). At most 4096 are kept per
+/// handle; `sb_track_audio_malformed_sectors` counts them all. Returns
+/// `SB_STATUS_INVALID_ARGUMENT` past the last one.
+///
+/// # Safety
+///
+/// `audio` must be NULL or a live handle; `out` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_track_audio_warning(
+    audio: *const SbTrackAudio,
+    index: u32,
+    out: *mut SbWarning,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let a = unsafe { audio_handle(audio) }?;
+        let cursor = a.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
+        let w = cursor
+            .warnings()
+            .get(index as usize)
+            .ok_or_else(|| Failure::arg("warning index out of range"))?;
+        // SAFETY: forwarded contract.
+        unsafe { write_out(out, sb_warning(w)) }?;
         Ok(SbStatus::Ok)
     })
 }
