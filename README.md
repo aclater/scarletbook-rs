@@ -62,9 +62,9 @@ target/release/bench decode disc.iso --area 2ch --threads 0 --sink hash   # or n
 ```
 
 Pushing a version tag (`v0.1.0`, matching the crate version) runs the release workflow:
-it re-runs the correctness gate on the corpus and publishes
-`bench-<version>-x86_64-linux.tar.gz` (generic x86-64) and a labelled Zen 5 build
-(`-znver5`), each with a SHA-256 checksum and, once the repository is public, a signed
+it publishes `bench-<version>-x86_64-linux.tar.gz` (generic x86-64, cargo profile `dist`),
+after the correctness gate has passed on that very build, and two labelled builds,
+`-v3` (`-C target-cpu=x86-64-v3`) and `-znver5` (AMD Zen 5), each with a SHA-256 checksum and, once the repository is public, a signed
 build provenance attestation:
 
 ```sh
@@ -97,6 +97,8 @@ The scripts in `perf/` need Linux and `perf`:
 | `perf/cycles-per-symbol.sh [NAME...]` | cycles, instructions, IPC per decoded symbol and ms per frame for `dst_frames` benchmarks, from `perf stat` |
 | `perf/flamegraph.sh NAME [OUT.svg]` | `perf record` and inferno (`cargo install --locked inferno --version 0.12.8`) flame graph of `DstDecoder::decode` |
 | `perf/compare.sh REV_A REV_B [FILTER]` | builds two revisions (`.` is the working tree) into separate target directories, runs `dst_frames` alternately, pinned, and prints per-benchmark and per-group changes |
+| `perf/build-configs.sh` | builds `bench` in several release configurations (LTO, codegen units, PGO) for generic x86-64, x86-64-v3 and znver5, and times single-thread decoding on synthetic images, alternately, pinned, best of several rounds |
+| `perf/pgo.sh TARGET_DIR` | a deterministic profile-guided build of `bench` (needs `rustup component add llvm-tools-preview`) |
 
 Pinning: run on an otherwise idle machine and pin to one CPU (the scripts use `taskset`,
 CPU 2 by default; set `CPU=`). Turbo and frequency scaling still move results by a few

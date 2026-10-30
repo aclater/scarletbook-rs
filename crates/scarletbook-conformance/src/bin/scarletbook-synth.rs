@@ -5,11 +5,15 @@
 //! ```text
 //! scarletbook-synth OUT --minutes M --area 2ch|mc|both --kind dsd|dst
 //!     [--sector-size 2048|2064|2054] [--mc-channels 5|6] [--track-minutes T] [--corpus DIR]
+//!     [--dst-frames corpus|stress]
 //! ```
 //!
 //! `M` and `T` may be fractional; each area lasts `M` minutes, with one track per `T`
 //! minutes (default 5). DST frames are taken from the conformance corpus (default: this
-//! repository's `corpus/`). See `scarletbook_conformance::synth` for the layout.
+//! repository's `corpus/`) or, with `--dst-frames stress`, from the generated stress set of
+//! the `dst_frames` benchmark (2 and 6 channels only; `scarletbook/tests/common/dst_enc.rs`),
+//! which is used to train and check profile-guided builds on frames that are not in the
+//! corpus. See `scarletbook_conformance::synth` for the layout.
 
 use std::fs::File;
 use std::io::BufWriter;
@@ -20,8 +24,15 @@ use scarletbook::SectorFormat;
 use scarletbook_conformance::corpus_dir;
 use scarletbook_conformance::synth::{Config, DstSource, Kind, write_image};
 
+#[path = "../../../scarletbook/tests/common/dst_enc.rs"]
+mod dst_enc;
+
+/// Frames per layout of the stress set (3 layouts, so 3 x this many distinct frames).
+const STRESS_FRAMES: usize = 4;
+
 const USAGE: &str = "usage: scarletbook-synth OUT --minutes M --area 2ch|mc|both --kind dsd|dst \
-                     [--sector-size 2048|2064|2054] [--mc-channels 5|6] [--track-minutes T] [--corpus DIR]";
+                     [--sector-size 2048|2064|2054] [--mc-channels 5|6] [--track-minutes T] [--corpus DIR] \
+                     [--dst-frames corpus|stress]";
 
 fn frames(minutes: &str) -> Result<u32, String> {
     let m: f64 = minutes.parse().map_err(|_| format!("not a number of minutes: {minutes}"))?;
@@ -32,7 +43,13 @@ fn frames(minutes: &str) -> Result<u32, String> {
     Ok(f as u32)
 }
 
-fn parse(mut args: impl Iterator<Item = String>) -> Result<(PathBuf, Config, PathBuf), String> {
+/// Where DST frames come from.
+enum Frames {
+    Corpus(PathBuf),
+    Stress,
+}
+
+fn parse(mut args: impl Iterator<Item = String>) -> Result<(PathBuf, Config, Frames), String> {
     let out = PathBuf::from(args.next().ok_or(USAGE)?);
     let mut cfg = Config {
         frames: 0,
@@ -45,6 +62,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<(PathBuf, Config, Pat
     };
     let (mut area, mut kind) = (false, false);
     let mut corpus = corpus_dir();
+    let mut stress = false;
     while let Some(flag) = args.next() {
         let v = args.next().ok_or_else(|| format!("{flag} needs a value\n{USAGE}"))?;
         match flag.as_str() {
@@ -77,6 +95,13 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<(PathBuf, Config, Pat
             }
             "--mc-channels" => cfg.mc_channels = v.parse().map_err(|_| format!("bad --mc-channels {v}"))?,
             "--corpus" => corpus = PathBuf::from(v),
+            "--dst-frames" => {
+                stress = match v.as_str() {
+                    "corpus" => false,
+                    "stress" => true,
+                    _ => return Err(format!("--dst-frames must be corpus or stress, not {v}")),
+                }
+            }
             _ => return Err(format!("unknown argument {flag}\n{USAGE}")),
         }
     }
@@ -84,11 +109,29 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<(PathBuf, Config, Pat
         return Err(format!("--minutes, --area and --kind are required\n{USAGE}"));
     }
     scarletbook_conformance::synth::check(&cfg)?;
-    Ok((out, cfg, corpus))
+    if stress && cfg.multichannel && cfg.mc_channels != 6 {
+        return Err("the stress set has no 5-channel frames: use --mc-channels 6".into());
+    }
+    Ok((out, cfg, if stress { Frames::Stress } else { Frames::Corpus(corpus) }))
 }
 
-fn run(out: PathBuf, cfg: &Config, corpus: PathBuf) -> Result<(), String> {
-    let src = if cfg.kind == Kind::Dst { DstSource::from_corpus(&corpus)? } else { DstSource::default() };
+fn stress_source() -> DstSource {
+    let mut src = DstSource::default();
+    for f in dst_enc::stress_set(STRESS_FRAMES) {
+        match f.channels {
+            2 => src.two.push(f.frame),
+            _ => src.six.push(f.frame),
+        }
+    }
+    src
+}
+
+fn run(out: PathBuf, cfg: &Config, frames: Frames) -> Result<(), String> {
+    let src = match (cfg.kind, frames) {
+        (Kind::Dsd, _) => DstSource::default(),
+        (Kind::Dst, Frames::Corpus(corpus)) => DstSource::from_corpus(&corpus)?,
+        (Kind::Dst, Frames::Stress) => stress_source(),
+    };
     let file = File::create(&out).map_err(|e| format!("{}: {e}", out.display()))?;
     let layout = write_image(BufWriter::with_capacity(1 << 22, file), cfg, &src)
         .map_err(|e| format!("{}: {e}", out.display()))?;
@@ -110,7 +153,7 @@ fn run(out: PathBuf, cfg: &Config, corpus: PathBuf) -> Result<(), String> {
 }
 
 fn main() -> ExitCode {
-    match parse(std::env::args().skip(1)).and_then(|(out, cfg, corpus)| run(out, &cfg, corpus)) {
+    match parse(std::env::args().skip(1)).and_then(|(out, cfg, frames)| run(out, &cfg, frames)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("{e}");
