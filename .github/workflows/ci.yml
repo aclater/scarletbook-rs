@@ -79,7 +79,8 @@ jobs:
         run: |
           for target in $(cargo +"$RUST_NIGHTLY" fuzz list); do
             echo "::group::$target"
-            cargo +"$RUST_NIGHTLY" fuzz run "$target" "corpus/$target" -- \
+            # The prebuilt cargo-fuzz is a musl binary and would default to a musl target.
+            cargo +"$RUST_NIGHTLY" fuzz run --target x86_64-unknown-linux-gnu "$target" "corpus/$target" -- \
               -max_total_time=60 -max_len=327680 -timeout=10
             echo "::endgroup::"
           done
