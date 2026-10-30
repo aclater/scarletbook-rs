@@ -709,7 +709,8 @@ mod tests {
         let over =
             sector(1 | (1 << 2) | (2 << 5), &[(true, 2, 2000), (false, 2, 100)], &[[0, 0, 1, 1 << 2]], true);
         assert!(d.push_sector(&over));
-        // The first packet was appended; the frame is incomplete (remaining 0 though).
+        // The first packet was appended before the overrun stopped the sector; its
+        // remaining count reached 0, so the frame is complete and is delivered at the end.
         d.finish();
         assert_eq!(d.pop().map(|f| f.number), Some(1));
         let mut d = Demuxer::new(2);

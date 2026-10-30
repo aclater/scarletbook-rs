@@ -10,7 +10,7 @@ use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 
 use scarletbook::audio::{self, FRAME_BYTES_PER_CHANNEL};
-use scarletbook::{Disc, Slot, WarningCode};
+use scarletbook::{Disc, ErrorClass, Slot, WarningCode};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -120,8 +120,14 @@ fn check_audio<R: std::io::Read + std::io::Seek>(
         return;
     }
     for ea in exp_areas {
-        let Some(slot) = ea["area"].as_str().and_then(slot_from) else { continue };
-        let Some(area) = disc.toc().area(slot).cloned() else { continue };
+        let Some(slot) = ea["area"].as_str().and_then(slot_from) else {
+            fails.push(format!("manifest names an unknown area {}", ea["area"]));
+            continue;
+        };
+        let Some(area) = disc.toc().area(slot).cloned() else {
+            fails.push(format!("expected an area from slot {slot}, the reader has none"));
+            continue;
+        };
         let exp_tracks = ea["tracks"].as_array().cloned().unwrap_or_default();
         let exp_numbers: Vec<u64> = exp_tracks.iter().filter_map(|t| t["number"].as_u64()).collect();
         let got_numbers: Vec<u64> = area.tracks.iter().map(|t| u64::from(t.number)).collect();
@@ -153,6 +159,15 @@ fn check_audio<R: std::io::Read + std::io::Seek>(
                 (_, Err(e)) => {
                     if e.code() != et["error"].as_str() {
                         fails.push(format!("{what}: {:?}, expected {}", e.code(), et["error"]));
+                    }
+                    // The outcome follows from the code's class (spec 7, 7.7.4).
+                    let class = match e.class() {
+                        ErrorClass::TrackSkipped => "skip",
+                        ErrorClass::TrackRefused => "error",
+                        _ => "not a per-track outcome",
+                    };
+                    if class != outcome {
+                        fails.push(format!("{what}: outcome {class}, expected {outcome}"));
                     }
                     continue;
                 }
