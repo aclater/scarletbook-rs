@@ -456,3 +456,142 @@ fn a_cursor_never_reads_another_image() {
     let mut audio = y.read_track_audio(raw);
     assert!(matches!(audio.next(), Some(Err(scarletbook::Error::InvalidArgument(_)))));
 }
+
+/// With `parallel`, a pool of `threads` threads, whose batches (16 frames per thread) are
+/// shorter than the tracks below, so that batches with DST frames are demultiplexed ahead
+/// of decoding (a one-thread pool decodes on the calling thread, without reading ahead).
+#[cfg(feature = "parallel")]
+fn small_pool(threads: usize) -> rayon::ThreadPool {
+    rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap()
+}
+
+/// Up to 80 frames, mostly DST, at positions below 200: enough DST frames per batch for
+/// batches to go to the pool.
+#[cfg(feature = "parallel")]
+fn dense_frames() -> impl Strategy<Value = Vec<PFrame>> {
+    proptest::collection::btree_map(0u32..200, (0u8..4, 1usize..3000, any::<u8>()), 0..80).prop_map(|m| {
+        m.into_iter()
+            .map(|(number, (kind, len, seed))| {
+                let dst = kind != 0;
+                let len = if dst { len } else { 2 * FRAME_BYTES_PER_CHANNEL };
+                let data = (0..len).map(|i| (i as u8).wrapping_mul(31).wrapping_add(seed)).collect();
+                PFrame { number, dst, data }
+            })
+            .collect()
+    })
+}
+
+#[cfg(feature = "parallel")]
+proptest! {
+    #![proptest_config(config())]
+
+    /// As `continuation_equals_fresh_scans`, with tracks of several batches each, stopped
+    /// anywhere: whatever was demultiplexed ahead and not returned, continuing gives the
+    /// frames of a fresh cursor.
+    #[test]
+    #[cfg_attr(miri, ignore = "decodes many frames")]
+    fn continuation_across_batches_equals_fresh_scans(
+        threads in 1usize..=3,
+        fs in dense_frames(),
+        tracks in proptest::collection::vec((0u32..120, 0u32..80), 1..6),
+        stops in proptest::collection::vec(proptest::option::of(0usize..80), 6),
+    ) {
+        let mut audio = pack(&fs);
+        // Capacity (7 frames per sector) for every track.
+        audio.resize(audio.len().max(30), [0u8; 2048]);
+        let spec = Spec {
+            channels: 2,
+            playtime: 200,
+            tracks: tracks.iter().map(|&(start, duration)| TrackSpec { start, duration }).collect(),
+            audio,
+        };
+        let mut disc = Disc::open(Cursor::new(spec.build())).unwrap();
+        small_pool(threads).install(|| {
+            let mut cursor: Option<scarletbook::TrackAudioCursor> = None;
+            for (i, stop) in (1..=tracks.len() as u32).zip(stops) {
+                if disc.check_track(Slot::TwoChannel, i).is_err() {
+                    continue;
+                }
+                let fresh_cursor = disc.track_audio_cursor(Slot::TwoChannel, i).unwrap();
+                let (fresh, _) = take_frames(&mut disc, fresh_cursor, stop);
+                let next = match cursor.take() {
+                    Some(prev) => disc.continue_track_audio(prev, Slot::TwoChannel, i).unwrap(),
+                    None => disc.track_audio_cursor(Slot::TwoChannel, i).unwrap(),
+                };
+                let (continued, back) = take_frames(&mut disc, next, stop);
+                prop_assert_eq!(continued, fresh, "track {}", i);
+                cursor = Some(back);
+            }
+            Ok(())
+        })?;
+    }
+}
+
+/// A reader that fails every read reaching past `limit` bytes.
+#[cfg(feature = "parallel")]
+struct FailsPast {
+    inner: Cursor<Vec<u8>>,
+    limit: u64,
+}
+
+#[cfg(feature = "parallel")]
+impl std::io::Read for FailsPast {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.inner.position() + buf.len() as u64 > self.limit {
+            return Err(std::io::Error::other("injected failure"));
+        }
+        self.inner.read(buf)
+    }
+}
+
+#[cfg(feature = "parallel")]
+impl std::io::Seek for FailsPast {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.inner.seek(pos)
+    }
+}
+
+/// With batches demultiplexed ahead of decoding, a read error is still reported after
+/// exactly the frames before it, the counts follow the frames returned, and the cursor
+/// then ends.
+#[cfg(feature = "parallel")]
+#[test]
+#[cfg_attr(miri, ignore = "decodes many frames")]
+fn read_error_after_batches_follows_its_frames() {
+    // 200 positions: every third one a DST frame (of arbitrary bytes, decoded or found
+    // invalid), the others missing; then a read error in the middle of the area.
+    let fs: Vec<PFrame> = (0..200u32)
+        .filter(|n| n % 3 == 0)
+        .map(|n| PFrame { number: n, dst: true, data: vec![n as u8 | 0x80; 3000] })
+        .collect();
+    let spec = Spec {
+        channels: 2,
+        playtime: 220,
+        tracks: vec![TrackSpec { start: 0, duration: 200 }, TrackSpec { start: 200, duration: 20 }],
+        audio: pack(&fs),
+    };
+    let img = spec.build();
+    let limit = ((common::AUDIO_LSN + spec.audio.len() / 2) * 2048) as u64;
+    let open = || Disc::open(FailsPast { inner: Cursor::new(img.clone()), limit }).unwrap();
+    // The positions before the error, without decoding.
+    let mut disc = open();
+    let before = disc.track_frames(Slot::TwoChannel, 1).unwrap().take_while(Result::is_ok).count();
+    assert!((50..180).contains(&before), "{before}");
+    for threads in [1, 2, 4] {
+        let mut disc = open();
+        small_pool(threads).install(|| {
+            let mut audio = disc.track_audio(Slot::TwoChannel, 1).unwrap();
+            let (mut missing, mut invalid) = (0, 0);
+            for n in 0..before {
+                let f = audio.next().unwrap().unwrap();
+                assert_eq!(f.number, n as u32);
+                missing += u64::from(f.status == scarletbook::FrameStatus::Missing);
+                invalid += u64::from(matches!(f.status, scarletbook::FrameStatus::Invalid(_)));
+                assert_eq!((audio.missing_frames(), audio.invalid_dst_frames()), (missing, invalid));
+            }
+            assert!(matches!(audio.next(), Some(Err(scarletbook::Error::Io(_)))));
+            assert!(audio.next().is_none());
+            assert_eq!((audio.missing_frames(), audio.invalid_dst_frames()), (missing, invalid));
+        });
+    }
+}

@@ -20,6 +20,8 @@ thiserror = "2"
 
 [dev-dependencies]
 proptest = { version = "1", default-features = false, features = ["std"] }
+# Small thread pools in the tests of the `parallel` feature.
+rayon = "1.10"
 
 [lints]
 workspace = true
