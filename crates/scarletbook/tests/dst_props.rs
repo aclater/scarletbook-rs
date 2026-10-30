@@ -11,7 +11,7 @@ mod harness;
 
 use dst_enc::{encode_simple as encode, interleave};
 use proptest::prelude::*;
-use scarletbook::dst::{self, DstError, FL};
+use scarletbook::dst::{self, DstDecoder, DstError, FL, MAX_LANES};
 
 fn config() -> ProptestConfig {
     if cfg!(miri) {
@@ -82,6 +82,118 @@ proptest! {
         prop_assert_eq!(&out[..payload.len()], &payload[..]);
         prop_assert!(out[payload.len()..].iter().all(|&b| b == 0));
     }
+}
+
+/// A frame for the lockstep tests, of one of several kinds: an encoder frame (random
+/// signal, filter of one of the two `orders`, ptable and half-probability flags), a plain
+/// frame, a truncated or damaged encoder frame, or random bytes.
+fn mixed_frame(nch: usize, kind: u8, seed: u64, orders: (usize, usize)) -> Vec<u8> {
+    let mut x = seed | 1;
+    let mut next = move || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    match kind % 6 {
+        0..=2 => {
+            let signal: Vec<Vec<u8>> = (0..nch)
+                .map(|c| {
+                    let smooth = (seed >> c) & 1 == 1;
+                    (0..FL)
+                        .map(|i| if smooth { [0xAA, 0x55, 0x69, 0x96][i / 600 % 4] } else { next() as u8 })
+                        .collect()
+                })
+                .collect();
+            let order = if kind % 6 == 0 { orders.0 } else { orders.1 };
+            let coefs: Vec<i32> = (0..order).map(|_| (next() % 512) as i32 - 256).collect();
+            let ptable: Vec<u32> =
+                (0..1 + (next() % 64) as usize).map(|_| 1 + (next() % 128) as u32).collect();
+            let half: Vec<bool> = (0..nch).map(|_| next() % 3 == 0).collect();
+            encode(&signal, &coefs, &ptable, &half)
+        }
+        3 => {
+            let mut f = vec![0x40];
+            f.extend((0..1 + next() % 64).map(|_| next() as u8));
+            f
+        }
+        4 => {
+            // A damaged or truncated encoder frame.
+            let signal: Vec<Vec<u8>> = (0..nch).map(|_| (0..FL).map(|_| next() as u8).collect()).collect();
+            let coefs: Vec<i32> = (0..orders.0).map(|_| (next() % 512) as i32 - 256).collect();
+            let mut f = encode(&signal, &coefs, &[7, 90, 128], &vec![false; nch]);
+            match next() % 3 {
+                0 => f.truncate((next() as usize) % f.len()),
+                1 => {
+                    let i = (next() as usize) % f.len().min(64);
+                    f[i] ^= 1 << (next() % 8);
+                }
+                _ => f.truncate(f.len() - 1 - (next() as usize) % 4),
+            }
+            f
+        }
+        _ => (0..(next() % 3000) as usize).map(|_| next() as u8).collect(),
+    }
+}
+
+/// `decode_many` against independent `decode` calls: the same results, and the same
+/// output for every frame that decodes.
+fn assert_lockstep(frames: &[Vec<u8>], nch: u8) -> Result<(), TestCaseError> {
+    let refs: Vec<&[u8]> = frames.iter().map(Vec::as_slice).collect();
+    let mut singles = DstDecoder::new();
+    let want: Vec<(Result<(), DstError>, Vec<u8>)> = refs
+        .iter()
+        .map(|f| {
+            let mut out = vec![0u8; FL * usize::from(nch)];
+            (singles.decode(f, nch, &mut out), out)
+        })
+        .collect();
+    let mut bufs = vec![vec![0u8; FL * usize::from(nch)]; refs.len()];
+    let mut outs: Vec<&mut [u8]> = bufs.iter_mut().map(Vec::as_mut_slice).collect();
+    let mut dec = DstDecoder::new();
+    let results = dec.decode_many(&refs, nch, &mut outs);
+    prop_assert_eq!(results.len(), refs.len());
+    for (i, (r, (wr, wout))) in results.iter().zip(&want).enumerate() {
+        prop_assert_eq!(r, wr, "frame {} result", i);
+        if wr.is_ok() {
+            prop_assert!(&bufs[i] == wout, "frame {} output (channels {})", i, nch);
+        }
+    }
+    Ok(())
+}
+
+proptest! {
+    #![proptest_config(config())]
+
+    /// Frames decoded together equal frames decoded one by one, for every channel count and
+    /// every number of frames up to twice `MAX_LANES` (more than one group), mixing encoder
+    /// frames of different orders (so different table counts), plain, damaged and random frames.
+    #[test]
+    #[cfg_attr(miri, ignore = "decodes full frames")]
+    fn decode_many_equals_decode(
+        nch in 1u8..=6,
+        specs in proptest::collection::vec((any::<u8>(), any::<u64>()), 1..=2 * MAX_LANES),
+        orders in (1usize..=128, 1usize..=128),
+    ) {
+        let frames: Vec<Vec<u8>> =
+            specs.iter().map(|&(kind, seed)| mixed_frame(usize::from(nch), kind, seed, orders)).collect();
+        for k in 1..=frames.len().min(2 * MAX_LANES) {
+            assert_lockstep(&frames[..k], nch)?;
+        }
+    }
+}
+
+/// A shorter output buffer list than frames is an error for the frames without one, and
+/// the others still decode.
+#[test]
+fn decode_many_without_enough_outputs() {
+    let frame = vec![0x40, 1, 2, 3];
+    let mut dec = DstDecoder::new();
+    let mut a = vec![0u8; FL];
+    let mut outs: Vec<&mut [u8]> = vec![a.as_mut_slice()];
+    let results = dec.decode_many(&[&frame, &frame], 1, &mut outs);
+    assert_eq!(results, vec![Ok(()), Err(DstError::InvalidArguments)]);
+    assert_eq!(&a[..3], &[1, 2, 3]);
 }
 
 /// Found by the round trip in CI: a one-entry ptable whose generated value was not 128.
