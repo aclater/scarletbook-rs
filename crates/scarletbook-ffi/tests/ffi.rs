@@ -232,7 +232,7 @@ fn warnings_and_rejections() {
     let exp = expected("track-start-past-playtime");
     let mut got = Vec::new();
     for idx in 0..i.warning_count {
-        let mut w = SbWarning { code: ptr::null(), slot: 0, track: 0 };
+        let mut w = SbWarning { code: ptr::null(), slot: 0, track: 0, lsn: 0 };
         // SAFETY: `disc` is a live handle; `&mut w` is a valid out-pointer.
         assert_eq!(unsafe { sb_disc_warning(disc, idx, &mut w) }, SbStatus::Ok);
         // SAFETY: `w.code` is a static NUL-terminated string.
@@ -347,6 +347,7 @@ unsafe extern "C" fn cb_read(user: *mut c_void, buf: *mut u8, len: usize) -> i64
         // Re-entrant calls with handles that are in use must fail cleanly.
         u.probes.push(info(u.disc).0);
         u.probes.push(audio_read(u.audio, u.disc, &mut [0u8; 2 * 4704]).0);
+        u.probes.push(audio_open_next(u.disc, u.audio, 0, 1).map_or_else(|s| s, |_| SbStatus::Ok));
         free(u.disc); // must be a no-op
         audio_free(u.audio); // must be a no-op
     }
@@ -475,4 +476,125 @@ fn tiny_image_handles_and_strings() {
     // The disc may be freed first; the track handle can then still be freed.
     free(disc);
     audio_free(a);
+}
+
+fn audio_open_next(
+    disc: *const SbDisc,
+    prev: *mut SbTrackAudio,
+    slot: u32,
+    number: u32,
+) -> Result<*mut SbTrackAudio, SbStatus> {
+    let mut a: *mut SbTrackAudio = ptr::dangling_mut();
+    // SAFETY: `disc` is a live handle; `prev` is NULL or a live handle that the caller does
+    // not use again if the call succeeds; `&mut a` is a valid out-pointer.
+    match unsafe { sb_track_audio_open_next(disc, prev, slot, number, &mut a) } {
+        SbStatus::Ok => Ok(a),
+        s => {
+            assert!(a.is_null(), "*out not cleared on failure");
+            Err(s)
+        }
+    }
+}
+
+/// Hashes the rest of a track handle's audio per channel.
+fn hash_handle(a: *mut SbTrackAudio, disc: *const SbDisc) -> Vec<String> {
+    let ch = audio_channels(a) as usize;
+    let mut hashers: Vec<Sha256> = (0..ch).map(|_| Sha256::new()).collect();
+    let mut buf = vec![0u8; ch * 4704];
+    while audio_read(a, disc, &mut buf).0 == SbStatus::Ok {
+        for (c, h) in hashers.iter_mut().enumerate() {
+            h.update(buf.iter().skip(c).step_by(ch).copied().collect::<Vec<u8>>());
+        }
+    }
+    hashers.into_iter().map(|h| format!("{:x}", h.finalize())).collect()
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "reads whole corpus images")]
+fn open_next_continues_across_tracks() {
+    let id = "dst-features-2ch-6ch";
+    let disc = open(&image(id)).unwrap();
+    let exp = expected(id);
+    for (slot, area) in exp["audio"].as_array().unwrap().iter().enumerate() {
+        let slot = slot as u32;
+        let mut prev: *mut SbTrackAudio = ptr::null_mut();
+        for t in area["tracks"].as_array().unwrap() {
+            let n = t["number"].as_u64().unwrap() as u32;
+            if check(disc, slot, n) != SbStatus::Ok {
+                continue;
+            }
+            let a = audio_open_next(disc, prev, slot, n).unwrap();
+            let exp_sha: Vec<String> =
+                t["sha256"].as_array().unwrap().iter().map(|h| h.as_str().unwrap().to_owned()).collect();
+            assert_eq!(hash_handle(a, disc), exp_sha, "{id} {slot} {n}");
+            prev = a;
+        }
+        // A failing call leaves `prev` untouched: it can still be freed.
+        assert_eq!(audio_open_next(disc, prev, slot, 999).unwrap_err(), SbStatus::NoSuchTrack);
+        audio_free(prev);
+    }
+    free(disc);
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "reads whole corpus images")]
+fn malformed_sector_warnings() {
+    // audio-random: an area of random audio sectors, many of them malformed.
+    let disc = open(&image("audio-random")).unwrap();
+    let a = audio_open(disc, 0, 1).unwrap();
+    let ch = audio_channels(a) as usize;
+    let mut buf = vec![0u8; ch * 4704];
+    while audio_read(a, disc, &mut buf).0 == SbStatus::Ok {}
+    let mut count = 0u64;
+    // SAFETY: `a` is a live handle; `&mut count` is a valid out-pointer.
+    assert_eq!(unsafe { sb_track_audio_malformed_sectors(a, &mut count) }, SbStatus::Ok);
+    assert!(count > 0, "random audio sectors include malformed ones");
+    let mut w = SbWarning { code: ptr::null(), slot: 0, track: 0, lsn: 0 };
+    // SAFETY: as above.
+    assert_eq!(unsafe { sb_track_audio_warning(a, 0, &mut w) }, SbStatus::Ok);
+    // SAFETY: `w.code` is a static NUL-terminated string.
+    assert_eq!(unsafe { CStr::from_ptr(w.code) }.to_str().unwrap(), "audio-sector-malformed");
+    assert_eq!(w.slot, 0);
+    assert!(w.lsn >= 0);
+    // SAFETY: as above; the index is past the end.
+    assert_eq!(unsafe { sb_track_audio_warning(a, u32::MAX, &mut w) }, SbStatus::InvalidArgument);
+    audio_free(a);
+    free(disc);
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "reads whole corpus images")]
+fn open_next_refusals_leave_prev_usable() {
+    let bytes = image("hostile-base");
+    let disc = open(&bytes).unwrap();
+    let other = open(&bytes).unwrap();
+    let a = audio_open(disc, 0, 1).unwrap();
+    // `prev` from another disc.
+    assert_eq!(audio_open_next(other, a, 0, 2).unwrap_err(), SbStatus::InvalidArgument);
+    // A bad slot, a missing track and a track without audio are refused before `prev`
+    // is taken.
+    assert_eq!(audio_open_next(disc, a, 9, 2).unwrap_err(), SbStatus::InvalidArgument);
+    assert_eq!(audio_open_next(disc, a, 0, 99).unwrap_err(), SbStatus::NoSuchTrack);
+    // `prev` is still the caller's after every refusal: it reads and continues normally.
+    let mut frame = vec![0u8; 2 * 4704];
+    assert_eq!(audio_read(a, disc, &mut frame).0, SbStatus::Ok);
+    let b = audio_open_next(disc, a, 0, 2).unwrap();
+    assert_eq!(audio_read(b, disc, &mut frame).0, SbStatus::Ok);
+    audio_free(b);
+    free(disc);
+    free(other);
+}
+
+/// The ABI version and the layouts it covers: a change to a struct must come with a new
+/// SB_ABI_VERSION, and with this test.
+#[test]
+fn abi_version_and_layouts() {
+    assert_eq!(sb_abi_version(), SB_ABI_VERSION);
+    assert_eq!(SB_ABI_VERSION, 1);
+    #[cfg(target_pointer_width = "64")]
+    {
+        assert_eq!(std::mem::size_of::<SbWarning>(), 24);
+        assert_eq!(std::mem::size_of::<SbFrameInfo>(), 24);
+    }
+    assert_eq!(std::mem::size_of::<SbStatus>(), 4);
 }

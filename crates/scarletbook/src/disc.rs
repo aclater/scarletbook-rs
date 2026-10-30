@@ -120,6 +120,55 @@ impl<R: Read + Seek> Disc<R> {
         TrackAudioCursor::new(area, track, self.image.sector_count())
     }
 
+    /// The decoding state of track `number` of the area from `slot`, continuing `prev`
+    /// (a cursor of an earlier track) without rescanning the area when the result is
+    /// the same. Reading an area's tracks in increasing order this way reads each audio
+    /// sector once. See [`TrackAudioCursor::continue_to`]. A track that fails
+    /// [`Disc::check_track`] consumes `prev` without reuse, so check first to keep it.
+    ///
+    /// ```no_run
+    /// # fn main() -> Result<(), scarletbook::Error> {
+    /// # let mut disc = scarletbook::Disc::open(std::io::Cursor::new(Vec::new()))?;
+    /// use scarletbook::Slot;
+    /// let count = disc.toc().area(Slot::TwoChannel).map_or(0, |a| a.tracks.len()) as u32;
+    /// let mut cursor = None;
+    /// for n in 1..=count {
+    ///     if disc.check_track(Slot::TwoChannel, n).is_err() {
+    ///         continue; // a track without audio; keep the cursor for the next one
+    ///     }
+    ///     let next = match cursor.take() {
+    ///         Some(prev) => disc.continue_track_audio(prev, Slot::TwoChannel, n)?,
+    ///         None => disc.track_audio_cursor(Slot::TwoChannel, n)?,
+    ///     };
+    ///     let mut audio = disc.read_track_audio(next);
+    ///     for frame in audio.by_ref() {
+    ///         let _frame = frame?;
+    ///     }
+    ///     cursor = Some(audio.into_cursor());
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// As [`Disc::check_track`].
+    pub fn continue_track_audio(
+        &self,
+        prev: TrackAudioCursor,
+        slot: Slot,
+        number: u32,
+    ) -> Result<TrackAudioCursor, Error> {
+        let (area, track) = audio::find_track(&self.toc.areas, slot, number)?;
+        // A cursor from another disc is never continued, whatever its layout.
+        prev.continue_in(area, track, self.image.sector_count(), Some(self.image.id()))
+    }
+
+    /// The borrowing iterator over a track decoding state of this disc.
+    pub fn read_track_audio(&mut self, cursor: TrackAudioCursor) -> TrackAudio<'_, R> {
+        TrackAudio::with_cursor(&mut self.image, cursor)
+    }
+
     /// The underlying image.
     pub fn image_mut(&mut self) -> &mut Image<R> {
         &mut self.image

@@ -527,6 +527,10 @@ fn read_master<R: Read + Seek>(img: &mut Image<R>, warnings: &mut Vec<Warning>) 
     if version.major > 1 {
         return Err(Error::MasterTocVersionUnsupported { major: version.major, minor: version.minor });
     }
+    // LSN 510 is accepted: compare the copies (specification 1, 1.5.1 item 3).
+    if master_copies_differ(img, &buf) {
+        warnings.push(Warning::disc(WarningCode::MasterTocCopiesDiffer));
+    }
     let text_channel_count = byte(s0, 128);
     let locales =
         (0..usize::from(text_channel_count.min(8))).map(|i| Locale::parse(sub(s0, 136 + 4 * i, 4))).collect();
@@ -578,6 +582,22 @@ fn read_master<R: Read + Seek>(img: &mut Image<R>, warnings: &mut Vec<Warning>) 
         text: disc_text,
         manufacturer,
     })
+}
+
+/// LSNs of the master TOC copies (specification 1, 1.5).
+const MASTER_TOC_COPIES: [u32; 2] = [520, 530];
+
+/// Whether a master TOC copy that can be read differs from LSN 510 to 519 in any of its
+/// 20 480 bytes (specification 1, 1.5.1 item 3).
+///
+/// A copy whose read fails, for any reason (missing sectors or an I/O error), is not
+/// compared and causes no warning: the outcome of the image is exactly what LSN 510 to
+/// 519 yield (1.5.1 item 2), so the optional comparison can never reject it.
+fn master_copies_differ<R: Read + Seek>(img: &mut Image<R>, master: &[u8]) -> bool {
+    let mut copy = vec![0u8; master.len()];
+    MASTER_TOC_COPIES
+        .iter()
+        .any(|&lsn| matches!(img.read_into(u64::from(lsn), &mut copy), Ok(ReadOutcome::Ok)) && copy != master)
 }
 
 /// Reads one area TOC copy; `None` if any sector is missing.

@@ -23,12 +23,21 @@ proceeds; each stage adds to the log at the end.
 |---|---|
 | Repository | https://github.com/aclater/sacd-spec |
 | Branch | `main` (the specifications and the corpus were both merged there) |
-| Commit | `37a16a37511e721eac8f119073d56702a1c591da` ("Merge pull request #2 from aclater/corpus", 2026-10-30) |
+| Commit | `37a16a37511e721eac8f119073d56702a1c591da` ("Merge pull request #2 from aclater/corpus", 2026-10-30) for stages 1 to 4; `07adda25b2c342883d5d5ed1500b30923e9fbe5b` ("Merge pull request #6 from aclater/fix/issues-4-5") for the follow-ups |
 | Corpus | `corpus/` of that commit, copied unchanged into this repository's `corpus/` (CC0-1.0); manifest `format_version` 1, `spec_version` `1.0-draft`, 129 cases |
 | Charset tables | `spec/charsets/*.txt` of that commit, copied unchanged into `crates/scarletbook/data/charsets/` (CC0-1.0) |
 
 The clone was first on the `corpus` branch (commit `8544f6b`); it was switched to `main`
-before any specification was read, and all work uses `main` at the commit above.
+before any specification was read, and all work uses `main` at the commits above.
+
+**Update to `07adda2`.** It changes specifications 0, 1, 4 and 7 (answering the two issues
+below), adds the informative `benchmarks/README.md`, and extends `PROVENANCE.md`. Its
+corpus and charset tables are byte-identical to `37a16a3`
+(`git diff --stat 37a16a3 07adda2 -- corpus/ spec/charsets/` is empty), so the vendored
+copies are unchanged. `benchmarks/README.md` was read: it defines a benchmark program
+interface and quotes speed figures of two other readers as numbers only; its provenance
+entry states that no implementation detail crosses the wall, and none was found in it.
+No benchmark program has been written.
 
 ## Environment
 
@@ -97,6 +106,7 @@ machine.
 | sacd-spec `spec/06-ps3-protocol.md` | not read (the network protocol is out of scope) |
 | sacd-spec `corpus/README.md`, `corpus/manifest.json`, `corpus/images/` | conformance tests |
 | sacd-spec `README.md`, `PROVENANCE.md`, `LICENSE` | process and licensing |
+| sacd-spec `benchmarks/README.md` (at `07adda2`) | read when the specification was updated; informative, not used by the code |
 | Rust standard library documentation (from memory of its API) | the implementation |
 | apache.org `LICENSE-2.0.txt` | licence text |
 | GitHub API (`gh api repos/<action>/releases`, `.../commits/<tag>`) | resolving action SHAs to pin |
@@ -125,10 +135,14 @@ sacd-spec specifications at the commit above, checked against its corpus.
 
 ## Specification issues filed
 
-None. Specifications 0 to 5 and 7 were implemented without meeting a gap or ambiguity
-that required a guess, so no issue was opened on `aclater/sacd-spec` and no code carries
-a spec-gap `TODO`. (Specification 6, the optional PS3 network protocol, was out of scope
-and not read.)
+| Issue | Gap | Resolution | scarletbook-rs |
+|---|---|---|---|
+| [aclater/sacd-spec#4](https://github.com/aclater/sacd-spec/issues/4) | 1.5.1 / 7.7.3 did not define what is compared between master TOC copies; 0.2 item 6 named only the area TOC comparison | answered in `07adda2` (1.5.1 item 3): one 10-sector read per copy, all 20 480 bytes compared, unreadable copies skipped, reported at most once | the code waited with a `TODO` until then; implemented as specified (#8) |
+| [aclater/sacd-spec#5](https://github.com/aclater/sacd-spec/issues/5) | per-sector `audio-sector-malformed` warnings (4.4.5) versus the allocation bound of 7.1 item 2; capping, early stop and repeated scans unspecified | answered in `07adda2` (4.4.5 items 1 to 3, 7.1 item 2) | the code kept only a count, with a `TODO`, until then; implemented as specified (#11) |
+
+Stages 1 to 4 met no gap that required a guess. Both issues concern optional warnings
+that the corpus does not compare, found while working through the review follow-ups.
+Neither was resolved by guessing; no spec-gap `TODO` remains in the code.
 
 ## Crate name
 
@@ -144,3 +158,4 @@ on 2026-10-30: the name `scarletbook` is not taken on crates.io. Nothing was pub
 | 2026-10-30 | 2: audio sector multiplexing | specification 4; every corpus track without DST frames (245 of 437) matches its per-channel SHA-256 and frame counts; the 192 tracks with DST frames await stage 3. No new sources consulted. |
 | 2026-10-30 | 3: DST decoding | specification 5 (including informative annex 5.A, used only to write a test encoder); all 129 corpus cases pass in full: TOC, warnings, rejections and every track's per-channel SHA-256 and frame counts (437 tracks). The prediction sum is evaluated with per-filter lookup tables over history bytes, a regrouping of the sum in 5.5.3 derived here, not taken from any decoder. No new sources consulted. |
 | 2026-10-30 | 4: C FFI | no specification content; cbindgen 0.29.4 (MPL-2.0, a build tool, not linked) installed from crates.io to generate the header. No new sources consulted. |
+| 2026-10-30 | follow-ups | review fixes and issues #5 to #12; two specification gaps filed (sacd-spec#4, #5), answered upstream in `07adda2` and then implemented as specified. No new sources consulted beyond sacd-spec. |

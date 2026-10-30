@@ -275,6 +275,8 @@ pub struct SbWarning {
     pub slot: i32,
     /// Track number, or 0 if the warning concerns no track.
     pub track: u32,
+    /// The LSN the warning concerns (`audio-sector-malformed`), or -1.
+    pub lsn: i64,
 }
 
 /// Information about one decoded frame.
@@ -508,6 +510,18 @@ unsafe fn open_reader(reader: Reader, out: *mut *mut SbDisc) -> Result<SbStatus,
     // SAFETY: `out` is non-NULL and valid for a write by this function's contract.
     unsafe { out.write(Box::into_raw(handle)) };
     Ok(SbStatus::Ok)
+}
+
+/// The version of this C ABI. It is incremented on every incompatible change to a
+/// function signature or to the layout of a struct or enum in this header. 1 is the
+/// first released ABI.
+pub const SB_ABI_VERSION: u32 = 1;
+
+/// The ABI version the library was built with; compare it with `SB_ABI_VERSION` from the
+/// header you compiled against.
+#[unsafe(no_mangle)]
+pub extern "C" fn sb_abi_version() -> u32 {
+    SB_ABI_VERSION
 }
 
 /// The library version, a static NUL-terminated string.
@@ -904,8 +918,18 @@ fn warning_code(code: WarningCode) -> &'static CStr {
         WarningCode::TrackPastPlaytime => c"track-past-playtime",
         WarningCode::TrackLsnOutsideArea => c"track-lsn-outside-area",
         WarningCode::AudioSectorMalformed => c"audio-sector-malformed",
+        WarningCode::MasterTocCopiesDiffer => c"master-toc-copies-differ",
         WarningCode::SampleFrequencyUnknown => c"sample-frequency-unknown",
         _ => c"unknown",
+    }
+}
+
+fn sb_warning(w: &scarletbook::Warning) -> SbWarning {
+    SbWarning {
+        code: warning_code(w.code).as_ptr(),
+        slot: w.slot.map_or(-1, |s| slot_index(s) as i32),
+        track: w.track.map_or(0, u32::from),
+        lsn: w.lsn.map_or(-1, i64::from),
     }
 }
 
@@ -920,11 +944,7 @@ pub unsafe extern "C" fn sb_disc_warning(disc: *const SbDisc, index: u32, out: *
         // SAFETY: forwarded contract.
         let d = unsafe { disc_handle(disc) }?.get()?;
         let w = d.warnings().get(index as usize).ok_or_else(|| Failure::arg("warning index out of range"))?;
-        let info = SbWarning {
-            code: warning_code(w.code).as_ptr(),
-            slot: w.slot.map_or(-1, |s| slot_index(s) as i32),
-            track: w.track.map_or(0, u32::from),
-        };
+        let info = sb_warning(w);
         // SAFETY: forwarded contract.
         unsafe { write_out(out, info) }?;
         Ok(SbStatus::Ok)
@@ -970,6 +990,75 @@ pub unsafe extern "C" fn sb_track_audio_open(
             return Err(Failure::arg("NULL output pointer"));
         }
         let cursor = handle.get()?.track_audio_cursor(slot_from(slot)?, number)?;
+        let audio = Box::new(SbTrackAudio { inner: RefCell::new(cursor), disc_id: handle.id });
+        // SAFETY: non-NULL and valid for a write by this function's contract.
+        unsafe { out.write(Box::into_raw(audio)) };
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// Opens the decoded audio of track `number` of the area from `slot`, continuing `prev`
+/// (an earlier track's handle from the same disc) without rescanning the area where the
+/// result is the same. Reading an area's tracks in increasing order this way reads each
+/// audio sector once. With `prev` NULL this is `sb_track_audio_open`.
+///
+/// On success `prev` is consumed (freed) and `*out` receives the new handle. On failure
+/// `prev` is left untouched (still to be freed by the caller) and `*out` is set to NULL,
+/// with one exception: after `SB_STATUS_PANIC`, treat `prev` as consumed and neither use
+/// nor free it (an internal error after ownership was taken would otherwise risk a double
+/// free; the handle may leak). Check a track with `sb_track_check` first to keep `prev`
+/// across tracks without audio.
+///
+/// Do not pass the address of the variable holding `prev` as `out`
+/// (`sb_track_audio_open_next(d, h, slot, n, &h)`): `*out` is set to NULL before anything
+/// else, so on failure the only pointer to `prev` would be lost. Use a second variable.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle; `prev` NULL or a live handle, not used again
+/// after a successful call; `out` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_track_audio_open_next(
+    disc: *const SbDisc,
+    prev: *mut SbTrackAudio,
+    slot: u32,
+    number: u32,
+    out: *mut *mut SbTrackAudio,
+) -> SbStatus {
+    // SAFETY: forwarded contract.
+    unsafe { clear_out(out) };
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let handle = unsafe { disc_handle(disc) }?;
+        if out.is_null() {
+            return Err(Failure::arg("NULL output pointer"));
+        }
+        let slot = slot_from(slot)?;
+        if prev.is_null() {
+            let cursor = handle.get()?.track_audio_cursor(slot, number)?;
+            let audio = Box::new(SbTrackAudio { inner: RefCell::new(cursor), disc_id: handle.id });
+            // SAFETY: non-NULL and valid for a write by this function's contract.
+            unsafe { out.write(Box::into_raw(audio)) };
+            return Ok(SbStatus::Ok);
+        }
+        // Every check that can fail comes before `prev` is taken, so a failure leaves it
+        // untouched.
+        // SAFETY: forwarded contract.
+        let p = unsafe { audio_handle(prev) }?;
+        if p.disc_id != handle.id {
+            return Err(Failure::arg("the previous track audio handle belongs to another disc"));
+        }
+        if p.inner.try_borrow_mut().is_err() {
+            return Err(Failure::arg(REENTRANT));
+        }
+        let d = handle.get()?;
+        d.check_track(slot, number)?;
+        // SAFETY: a live handle created by Box::into_raw and not in use; the caller does
+        // not use it again after this successful call.
+        let prev_box = unsafe { Box::from_raw(prev) };
+        // The track exists and passed check_track, which is the only way continuing can
+        // fail.
+        let cursor = d.continue_track_audio(prev_box.inner.into_inner(), slot, number)?;
         let audio = Box::new(SbTrackAudio { inner: RefCell::new(cursor), disc_id: handle.id });
         // SAFETY: non-NULL and valid for a write by this function's contract.
         unsafe { out.write(Box::into_raw(audio)) };
@@ -1065,6 +1154,57 @@ pub unsafe extern "C" fn sb_track_audio_counts(
         unsafe { write_out(missing, cursor.missing_frames()) }?;
         // SAFETY: forwarded contract (checked non-NULL above).
         unsafe { write_out(invalid, cursor.invalid_dst_frames()) }?;
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// The number of malformed audio sectors processed so far by this handle's scan of its
+/// area. The scan starts at the area's first audio sector, not at the track; a handle from
+/// `sb_track_audio_open_next` keeps counting from where the earlier tracks left off.
+///
+/// # Safety
+///
+/// `audio` must be NULL or a live handle; `count` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_track_audio_malformed_sectors(
+    audio: *const SbTrackAudio,
+    count: *mut u64,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let a = unsafe { audio_handle(audio) }?;
+        let cursor = a.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
+        // SAFETY: forwarded contract.
+        unsafe { write_out(count, cursor.malformed_sectors()) }?;
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// `audio-sector-malformed` warning `index` of this handle's scan of its area so far, with
+/// its slot and LSN (specification 4, 4.4.5): per area, not per track, and each sector
+/// once (sectors of earlier tracks of a continued handle are not reported again). At
+/// most 4096 are kept per scan; `sb_track_audio_malformed_sectors` counts them all.
+/// Returns `SB_STATUS_INVALID_ARGUMENT` past the last one.
+///
+/// # Safety
+///
+/// `audio` must be NULL or a live handle; `out` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_track_audio_warning(
+    audio: *const SbTrackAudio,
+    index: u32,
+    out: *mut SbWarning,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let a = unsafe { audio_handle(audio) }?;
+        let cursor = a.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
+        let w = cursor
+            .warnings()
+            .get(index as usize)
+            .ok_or_else(|| Failure::arg("warning index out of range"))?;
+        // SAFETY: forwarded contract.
+        unsafe { write_out(out, sb_warning(w)) }?;
         Ok(SbStatus::Ok)
     })
 }

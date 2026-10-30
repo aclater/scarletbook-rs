@@ -101,3 +101,87 @@ fn rejections_are_typed() {
     img.truncate(515 * 2048);
     assert!(matches!(Disc::open(Cursor::new(img)), Err(Error::MasterTocTruncated)));
 }
+
+fn copies_warning(img: Vec<u8>) -> usize {
+    let disc = Disc::open(Cursor::new(img)).unwrap();
+    disc.warnings().iter().filter(|w| w.code == scarletbook::WarningCode::MasterTocCopiesDiffer).count()
+}
+
+/// Specification 1, 1.5.1 item 3: every byte of a readable copy is compared, the warning
+/// is reported at most once, and an unreadable copy is not compared.
+#[test]
+fn master_toc_copies() {
+    let base = common::Spec::simple().build();
+    assert_eq!(copies_warning(base.clone()), 0);
+    // A reserved byte of copy 2, and a byte of an undecoded text channel of copy 3.
+    let mut one = base.clone();
+    one[520 * 2048 + 12] ^= 1;
+    assert_eq!(copies_warning(one.clone()), 1);
+    one[530 * 2048 + 4 * 2048 + 100] ^= 1;
+    assert_eq!(copies_warning(one), 1, "reported once even when both copies differ");
+    let mut manufacturer = base.clone();
+    manufacturer[529 * 2048 + 2047] ^= 0xFF;
+    assert_eq!(copies_warning(manufacturer), 1);
+    // LSN 510 itself is never replaced by a copy.
+    let mut master = base.clone();
+    master[510 * 2048 + 24..510 * 2048 + 29].copy_from_slice(b"OTHER");
+    let disc = Disc::open(Cursor::new(master)).unwrap();
+    assert_eq!(disc.toc().master.album_catalog_number, "OTHER");
+}
+
+/// A copy that cannot be read in full is not compared (specification 1, 1.5.1 item 3).
+#[test]
+fn unreadable_master_toc_copy_is_not_compared() {
+    const S: usize = 2048;
+    let mut img = common::Spec::simple().build();
+    // Move the area TOC below the master TOC (it may lie anywhere, 1.5.2 item 5), and
+    // point every master TOC copy at it.
+    let toc: Vec<u8> = img[540 * S..546 * S].to_vec();
+    img[100 * S..106 * S].copy_from_slice(&toc);
+    for copy in [510, 520, 530] {
+        img[copy * S + 64..copy * S + 68].copy_from_slice(&100u32.to_be_bytes());
+    }
+    // Copy 3 starts at LSN 530: make the part that survives differ, then end the image
+    // inside it, so that its 10-sector read fails.
+    img[530 * S + 12] ^= 1;
+    img.truncate(535 * S);
+    let disc = Disc::open(Cursor::new(img.clone())).unwrap();
+    assert_eq!(disc.toc().areas.len(), 1);
+    let w =
+        disc.warnings().iter().filter(|w| w.code == scarletbook::WarningCode::MasterTocCopiesDiffer).count();
+    assert_eq!(w, 0, "an unreadable copy is not compared");
+    // The same difference in copy 2, which is readable, is reported.
+    img[520 * S + 12] ^= 1;
+    assert_eq!(copies_warning(img), 1);
+}
+
+/// A reader that fails with an I/O error on any read touching LSN 520 to 539.
+struct FailingCopies(Cursor<Vec<u8>>);
+
+impl std::io::Read for FailingCopies {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let pos = self.0.position();
+        let end = pos + buf.len() as u64;
+        if pos < 540 * 2048 && end > 520 * 2048 {
+            return Err(std::io::Error::other("injected failure"));
+        }
+        self.0.read(buf)
+    }
+}
+
+impl std::io::Seek for FailingCopies {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.0.seek(pos)
+    }
+}
+
+/// Specification 1, 1.5.1 items 2 and 3: an I/O error on a copy is a failed read of an
+/// optional comparison; it neither rejects the image nor warns.
+#[test]
+fn io_error_on_a_master_toc_copy_changes_nothing() {
+    let mut img = common::Spec::simple().build();
+    img[520 * 2048 + 12] ^= 1; // would differ, if it could be read
+    let disc = Disc::open(FailingCopies(Cursor::new(img))).expect("LSN 510 to 519 decide the outcome");
+    assert!(disc.warnings().iter().all(|w| w.code != scarletbook::WarningCode::MasterTocCopiesDiffer));
+    assert_eq!(disc.toc().areas.len(), 1);
+}

@@ -6,7 +6,7 @@ use std::collections::VecDeque;
 use std::io::{Read, Seek};
 
 use crate::dst::{DstDecoder, DstError};
-use crate::error::{Error, Slot};
+use crate::error::{Error, Slot, Warning, WarningCode};
 use crate::image::{Image, ReadOutcome, SECTOR_SIZE};
 use crate::toc::{Area, Track};
 
@@ -24,6 +24,13 @@ pub const INVALID_FILL: u8 = 0x55;
 
 /// Largest channel count for which audio is produced (specification 4, 4.8).
 pub const MAX_CHANNELS: u8 = 6;
+
+/// Most `audio-sector-malformed` warnings kept per area cursor (specification 4, 4.4.5
+/// item 3); the count of malformed sectors is kept in full.
+pub const MAX_MALFORMED_WARNINGS: usize = 4096;
+
+/// Most frames decoded together with the `parallel` feature.
+pub const MAX_PARALLEL_BATCH: usize = 64;
 
 /// Most frames that can start in one sector (specification 4, 4.8 item 3).
 pub const FRAMES_PER_SECTOR: u64 = 7;
@@ -140,6 +147,7 @@ impl Demuxer {
             pos += len;
         }
         if malformed {
+            // The demuxer does not know LSNs; AreaCursor turns this into warnings.
             self.malformed += 1;
         }
         malformed
@@ -172,6 +180,11 @@ impl Demuxer {
 #[derive(Debug)]
 pub struct AreaCursor {
     demux: Demuxer,
+    /// The image this cursor reads, bound on first use: its read cache and frames belong
+    /// to that image.
+    image_id: Option<u64>,
+    slot: Slot,
+    warnings: Vec<Warning>,
     next_lsn: u64,
     end_lsn: u64,
     buf: Vec<u8>,
@@ -189,6 +202,9 @@ impl AreaCursor {
         let (start, end) = audio_sector_range(area, image_sectors);
         AreaCursor {
             demux: Demuxer::new(area.channel_count),
+            image_id: None,
+            slot: area.slot,
+            warnings: Vec::new(),
             next_lsn: start,
             end_lsn: end,
             buf: Vec::new(),
@@ -198,9 +214,19 @@ impl AreaCursor {
         }
     }
 
-    /// Number of malformed sectors seen so far.
+    /// Number of malformed sectors processed so far by this cursor's scan of its area. The
+    /// scan starts at the area's first audio sector, not at the track, and a continued
+    /// cursor keeps counting from where the earlier tracks left off.
     pub fn malformed_sectors(&self) -> u64 {
         self.demux.malformed_sectors()
+    }
+
+    /// The `audio-sector-malformed` warnings of the sectors processed so far, with slot
+    /// and LSN, in processing order (specification 4, 4.4.5). At most
+    /// [`MAX_MALFORMED_WARNINGS`] are kept; [`AreaCursor::malformed_sectors`] counts them
+    /// all.
+    pub fn warnings(&self) -> &[Warning] {
+        &self.warnings
     }
 
     fn sector<R: Read + Seek>(&mut self, image: &mut Image<R>, lsn: u64) -> Result<[u8; SECTOR_SIZE], Error> {
@@ -224,7 +250,17 @@ impl AreaCursor {
     }
 
     /// The next accepted frame, `None` at the end of the area.
+    ///
+    /// The cursor binds to the first image it reads; with any other image it returns
+    /// [`Error::InvalidArgument`] (and stays usable with its own image).
     pub fn next_frame<R: Read + Seek>(&mut self, image: &mut Image<R>) -> Option<Result<AreaFrame, Error>> {
+        match self.image_id {
+            None => self.image_id = Some(image.id()),
+            Some(id) if id != image.id() => {
+                return Some(Err(Error::InvalidArgument("audio cursor used with another image")));
+            }
+            Some(_) => {}
+        }
         loop {
             if let Some(f) = self.demux.pop() {
                 return Some(Ok(f));
@@ -237,7 +273,16 @@ impl AreaCursor {
                 self.next_lsn += 1;
                 match self.sector(image, lsn) {
                     Ok(s) => {
-                        self.demux.push_sector(&s);
+                        if self.demux.push_sector(&s) && self.warnings.len() < MAX_MALFORMED_WARNINGS {
+                            // LSNs of audio sectors come from u32 fields.
+                            let lsn = u32::try_from(lsn).ok();
+                            self.warnings.push(Warning {
+                                code: WarningCode::AudioSectorMalformed,
+                                slot: Some(self.slot),
+                                track: None,
+                                lsn,
+                            });
+                        }
                     }
                     Err(e) => {
                         self.finished = true;
@@ -265,9 +310,17 @@ impl<'a, R: Read + Seek> AreaFrames<'a, R> {
         AreaFrames { image, cursor }
     }
 
-    /// Number of malformed sectors seen so far.
+    /// Number of malformed sectors processed so far by this cursor's scan of its area. The
+    /// scan starts at the area's first audio sector, not at the track, and a continued
+    /// cursor keeps counting from where the earlier tracks left off.
     pub fn malformed_sectors(&self) -> u64 {
         self.cursor.malformed_sectors()
+    }
+
+    /// The `audio-sector-malformed` warnings of this cursor's scan of its area so far
+    /// (see [`AreaCursor::warnings`]): per area, not per track, and each sector once.
+    pub fn warnings(&self) -> &[Warning] {
+        self.cursor.warnings()
     }
 }
 
@@ -334,11 +387,36 @@ pub struct TrackFrame {
 #[derive(Debug)]
 pub struct TrackCursor {
     area: AreaCursor,
+    /// Which area, and in which image, the area cursor reads: continuing into a track of
+    /// another area (or the same area of another image) needs a fresh scan.
+    area_key: AreaKey,
     next: u32,
     end: u32,
     channels: u8,
     peeked: Option<AreaFrame>,
     exhausted: bool,
+    failed: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AreaKey {
+    slot: Slot,
+    start: u32,
+    end: u32,
+    channels: u8,
+    image_sectors: u64,
+}
+
+impl AreaKey {
+    fn new(area: &Area, image_sectors: u64) -> Self {
+        AreaKey {
+            slot: area.slot,
+            start: area.audio_start_lsn,
+            end: area.audio_end_lsn,
+            channels: area.channel_count,
+            image_sectors,
+        }
+    }
 }
 
 impl TrackCursor {
@@ -351,12 +429,56 @@ impl TrackCursor {
         check_track(area, track, image_sectors)?;
         Ok(TrackCursor {
             area: AreaCursor::new(area, image_sectors),
+            area_key: AreaKey::new(area, image_sectors),
             next: track.start_frame,
             end: track.end_frame(),
             channels: area.channel_count,
             peeked: None,
             exhausted: false,
+            failed: false,
         })
+    }
+
+    /// A cursor at the start of `track`, reusing this cursor's reading state when that
+    /// gives the same result as a fresh scan, so that reading an area's tracks in order
+    /// reads each audio sector once.
+    ///
+    /// A cursor only ever discards accepted frames numbered below its current position.
+    /// The state is therefore reused when `track` is in the same area (same slot, audio
+    /// range, channel count and image size) and starts at or after that position, and no
+    /// read has failed. Otherwise this is [`TrackCursor::new`]. Either way the frames are
+    /// exactly those of a fresh scan (specification 4, 4.2 item 5).
+    ///
+    /// This method cannot tell two images of the same size apart; a cursor continued
+    /// onto another image refuses to read it (see [`AreaCursor::next_frame`]). Use
+    /// [`crate::Disc::continue_track_audio`], which compares the images and scans afresh.
+    ///
+    /// # Errors
+    ///
+    /// As [`check_track`].
+    pub fn continue_to(self, area: &Area, track: &Track, image_sectors: u64) -> Result<Self, Error> {
+        self.continue_in(area, track, image_sectors, None)
+    }
+
+    /// As [`TrackCursor::continue_to`], also starting afresh when this cursor has read
+    /// an image other than `image_id`.
+    pub(crate) fn continue_in(
+        self,
+        area: &Area,
+        track: &Track,
+        image_sectors: u64,
+        image_id: Option<u64>,
+    ) -> Result<Self, Error> {
+        check_track(area, track, image_sectors)?;
+        let other_image = matches!((self.area.image_id, image_id), (Some(a), Some(b)) if a != b);
+        if self.failed
+            || other_image
+            || self.area_key != AreaKey::new(area, image_sectors)
+            || track.start_frame < self.next
+        {
+            return Self::new(area, track, image_sectors);
+        }
+        Ok(TrackCursor { next: track.start_frame, end: track.end_frame(), ..self })
     }
 
     /// The area's channel count `C` (1 to 6).
@@ -369,9 +491,17 @@ impl TrackCursor {
         (self.next, self.end)
     }
 
-    /// Number of malformed sectors seen so far.
+    /// Number of malformed sectors processed so far by this cursor's scan of its area. The
+    /// scan starts at the area's first audio sector, not at the track, and a continued
+    /// cursor keeps counting from where the earlier tracks left off.
     pub fn malformed_sectors(&self) -> u64 {
         self.area.malformed_sectors()
+    }
+
+    /// The `audio-sector-malformed` warnings of this cursor's scan of its area so far
+    /// (see [`AreaCursor::warnings`]): per area, not per track, and each sector once.
+    pub fn warnings(&self) -> &[Warning] {
+        self.area.warnings()
     }
 
     /// The next timeline position, `None` after the track's last frame.
@@ -387,6 +517,7 @@ impl TrackCursor {
                 Some(Ok(f)) => self.peeked = Some(f),
                 Some(Err(e)) => {
                     self.next = self.end;
+                    self.failed = true;
                     return Some(Err(e));
                 }
                 None => {
@@ -430,9 +561,17 @@ impl<'a, R: Read + Seek> TrackFrames<'a, R> {
         self.cursor.range()
     }
 
-    /// Number of malformed sectors seen so far.
+    /// Number of malformed sectors processed so far by this cursor's scan of its area. The
+    /// scan starts at the area's first audio sector, not at the track, and a continued
+    /// cursor keeps counting from where the earlier tracks left off.
     pub fn malformed_sectors(&self) -> u64 {
         self.cursor.malformed_sectors()
+    }
+
+    /// The `audio-sector-malformed` warnings of this cursor's scan of its area so far
+    /// (see [`AreaCursor::warnings`]): per area, not per track, and each sector once.
+    pub fn warnings(&self) -> &[Warning] {
+        self.cursor.warnings()
     }
 }
 
@@ -468,8 +607,28 @@ pub struct AudioFrame {
     pub data: Vec<u8>,
 }
 
-/// Decodes one timeline position (specification 4, 4.6).
-pub fn decode_frame(decoder: &mut DstDecoder, frame: TrackFrame, channels: u8) -> AudioFrame {
+/// Decodes one timeline position of an area of `channels` channels (specification 4,
+/// 4.6).
+///
+/// # Errors
+///
+/// [`Error::InvalidArgument`] if `channels` is not 1 to 6, or a plain DSD frame is not
+/// `channels x 4704` bytes.
+pub fn decode_frame(decoder: &mut DstDecoder, frame: TrackFrame, channels: u8) -> Result<AudioFrame, Error> {
+    if !(1..=MAX_CHANNELS).contains(&channels) {
+        return Err(Error::InvalidArgument("channel count must be 1 to 6"));
+    }
+    if let FrameContent::Dsd(data) = &frame.content {
+        if data.len() != usize::from(channels) * FRAME_BYTES_PER_CHANNEL {
+            return Err(Error::InvalidArgument("a plain DSD frame must be channels x 4704 bytes"));
+        }
+    }
+    Ok(decode_checked(decoder, frame, channels))
+}
+
+/// [`decode_frame`] for arguments already validated: `channels` is 1 to 6 (checked by
+/// [`check_track`]) and plain frames are complete (4.4.2).
+fn decode_checked(decoder: &mut DstDecoder, frame: TrackFrame, channels: u8) -> AudioFrame {
     let (status, data) = match frame.content {
         FrameContent::Dsd(data) => (FrameStatus::Dsd, data),
         FrameContent::Missing => (FrameStatus::Missing, fill_frame(channels, MISSING_FILL)),
@@ -478,6 +637,13 @@ pub fn decode_frame(decoder: &mut DstDecoder, frame: TrackFrame, channels: u8) -
             match decoder.decode(&bytes, channels, &mut out) {
                 Ok(()) => (FrameStatus::Decoded, out),
                 Err(e) => {
+                    // The channel count was checked (4.8) and the buffer sized from it, so
+                    // only frame rules can fail here.
+                    debug_assert_ne!(
+                        e,
+                        DstError::InvalidArguments,
+                        "decoder arguments checked by check_track"
+                    );
                     out.fill(INVALID_FILL);
                     (FrameStatus::Invalid(e), out)
                 }
@@ -513,6 +679,33 @@ impl TrackAudioCursor {
         Ok(Self::from_frames(TrackCursor::new(area, track, image_sectors)?))
     }
 
+    /// A cursor at the start of `track`, continuing this one's reading state where that
+    /// gives the same result (see [`TrackCursor::continue_to`]). Frames of this cursor
+    /// not yet returned are dropped; the counts start again at 0.
+    ///
+    /// # Errors
+    ///
+    /// As [`check_track`].
+    pub fn continue_to(self, area: &Area, track: &Track, image_sectors: u64) -> Result<Self, Error> {
+        self.continue_in(area, track, image_sectors, None)
+    }
+
+    pub(crate) fn continue_in(
+        self,
+        area: &Area,
+        track: &Track,
+        image_sectors: u64,
+        image_id: Option<u64>,
+    ) -> Result<Self, Error> {
+        // Frames decoded ahead of the caller came from the track cursor already, so it
+        // stands after them; an error ends the reuse.
+        let mut frames = self.frames;
+        if self.pending_error.is_some() {
+            frames.failed = true;
+        }
+        Ok(Self::from_frames(frames.continue_in(area, track, image_sectors, image_id)?))
+    }
+
     fn from_frames(frames: TrackCursor) -> Self {
         TrackAudioCursor {
             frames,
@@ -530,20 +723,35 @@ impl TrackAudioCursor {
         self.frames.channels()
     }
 
-    /// Frames so far that were missing (filled with 0x69).
+    /// Frames returned so far that were missing (filled with 0x69).
     pub fn missing_frames(&self) -> u64 {
         self.missing
     }
 
-    /// Frames so far that were invalid DST frames (filled with 0x55).
+    /// Frames returned so far that were invalid DST frames (filled with 0x55).
     pub fn invalid_dst_frames(&self) -> u64 {
         self.invalid
+    }
+
+    /// Number of malformed sectors processed so far by this cursor's scan of its area. The
+    /// scan starts at the area's first audio sector, not at the track, and a continued
+    /// cursor keeps counting from where the earlier tracks left off.
+    pub fn malformed_sectors(&self) -> u64 {
+        self.frames.malformed_sectors()
+    }
+
+    /// The `audio-sector-malformed` warnings of this cursor's scan of its area so far
+    /// (see [`AreaCursor::warnings`]): per area, not per track, and each sector once.
+    pub fn warnings(&self) -> &[Warning] {
+        self.frames.warnings()
     }
 
     fn batch_size() -> usize {
         #[cfg(feature = "parallel")]
         {
-            4 * rayon::current_num_threads()
+            // A constant cap keeps the memory held independent of the host: at most
+            // MAX_PARALLEL_BATCH x (65 536 + 6 x 4704) bytes, about 6 MB.
+            (4 * rayon::current_num_threads()).clamp(1, MAX_PARALLEL_BATCH)
         }
         #[cfg(not(feature = "parallel"))]
         {
@@ -567,18 +775,11 @@ impl TrackAudioCursor {
         #[cfg(feature = "parallel")]
         let decoded: Vec<AudioFrame> = {
             use rayon::prelude::*;
-            batch.into_par_iter().map_init(DstDecoder::new, |d, f| decode_frame(d, f, channels)).collect()
+            batch.into_par_iter().map_init(DstDecoder::new, |d, f| decode_checked(d, f, channels)).collect()
         };
         #[cfg(not(feature = "parallel"))]
         let decoded: Vec<AudioFrame> =
-            batch.into_iter().map(|f| decode_frame(&mut self.decoder, f, channels)).collect();
-        for f in &decoded {
-            match f.status {
-                FrameStatus::Missing => self.missing += 1,
-                FrameStatus::Invalid(_) => self.invalid += 1,
-                FrameStatus::Dsd | FrameStatus::Decoded => {}
-            }
-        }
+            batch.into_iter().map(|f| decode_checked(&mut self.decoder, f, channels)).collect();
         self.ready.extend(decoded);
     }
 
@@ -588,7 +789,16 @@ impl TrackAudioCursor {
             self.refill(image);
         }
         match self.ready.pop_front() {
-            Some(f) => Some(Ok(f)),
+            Some(f) => {
+                // Counted as frames are returned, so the counts never run ahead of the
+                // caller, whatever the batch size.
+                match f.status {
+                    FrameStatus::Missing => self.missing += 1,
+                    FrameStatus::Invalid(_) => self.invalid += 1,
+                    FrameStatus::Dsd | FrameStatus::Decoded => {}
+                }
+                Some(Ok(f))
+            }
             None => self.pending_error.take().map(Err),
         }
     }
@@ -607,19 +817,42 @@ impl<'a, R: Read + Seek> TrackAudio<'a, R> {
         Ok(TrackAudio { image, cursor })
     }
 
+    pub(crate) fn with_cursor(image: &'a mut Image<R>, cursor: TrackAudioCursor) -> Self {
+        TrackAudio { image, cursor }
+    }
+
+    /// The decoding state, to continue into a later track with
+    /// [`crate::Disc::continue_track_audio`].
+    pub fn into_cursor(self) -> TrackAudioCursor {
+        self.cursor
+    }
+
     /// The area's channel count `C` (1 to 6).
     pub fn channels(&self) -> u8 {
         self.cursor.channels()
     }
 
-    /// Frames so far that were missing (filled with 0x69).
+    /// Frames returned so far that were missing (filled with 0x69).
     pub fn missing_frames(&self) -> u64 {
         self.cursor.missing_frames()
     }
 
-    /// Frames so far that were invalid DST frames (filled with 0x55).
+    /// Frames returned so far that were invalid DST frames (filled with 0x55).
     pub fn invalid_dst_frames(&self) -> u64 {
         self.cursor.invalid_dst_frames()
+    }
+
+    /// Number of malformed sectors processed so far by this cursor's scan of its area. The
+    /// scan starts at the area's first audio sector, not at the track, and a continued
+    /// cursor keeps counting from where the earlier tracks left off.
+    pub fn malformed_sectors(&self) -> u64 {
+        self.cursor.malformed_sectors()
+    }
+
+    /// The `audio-sector-malformed` warnings of this cursor's scan of its area so far
+    /// (see [`AreaCursor::warnings`]): per area, not per track, and each sector once.
+    pub fn warnings(&self) -> &[Warning] {
+        self.cursor.warnings()
     }
 }
 
@@ -705,7 +938,8 @@ mod tests {
         let over =
             sector(1 | (1 << 2) | (2 << 5), &[(true, 2, 2000), (false, 2, 100)], &[[0, 0, 1, 1 << 2]], true);
         assert!(d.push_sector(&over));
-        // The first packet was appended; the frame is incomplete (remaining 0 though).
+        // The first packet was appended before the overrun stopped the sector; its
+        // remaining count reached 0, so the frame is complete and is delivered at the end.
         d.finish();
         assert_eq!(d.pop().map(|f| f.number), Some(1));
         let mut d = Demuxer::new(2);
@@ -725,6 +959,28 @@ mod tests {
         assert!(d.push_sector(&s));
         d.finish();
         assert!(d.pop().is_none());
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn parallel_batch_is_capped() {
+        let wide = rayon::ThreadPoolBuilder::new().num_threads(64).build().unwrap();
+        wide.install(|| assert_eq!(TrackAudioCursor::batch_size(), MAX_PARALLEL_BATCH));
+        let narrow = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
+        narrow.install(|| assert_eq!(TrackAudioCursor::batch_size(), 8));
+    }
+
+    #[test]
+    fn decode_frame_rejects_bad_arguments() {
+        let mut d = DstDecoder::new();
+        let missing = || TrackFrame { number: 0, content: FrameContent::Missing };
+        for channels in [0, 7, 255] {
+            assert!(matches!(decode_frame(&mut d, missing(), channels), Err(Error::InvalidArgument(_))));
+        }
+        let short = TrackFrame { number: 0, content: FrameContent::Dsd(vec![0; 10]) };
+        assert!(matches!(decode_frame(&mut d, short, 2), Err(Error::InvalidArgument(_))));
+        let ok = decode_frame(&mut d, missing(), 2).unwrap();
+        assert_eq!((ok.status, ok.data.len()), (FrameStatus::Missing, 2 * 4704));
     }
 
     #[test]

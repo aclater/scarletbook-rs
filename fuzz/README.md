@@ -16,3 +16,10 @@ cargo +nightly fuzz run toc fuzz/corpus/toc -- -max_total_time=60
 The harness lives in `crates/scarletbook/tests/harness/mod.rs` and is shared with the
 regression tests. A crash, once minimised (`cargo fuzz tmin`), goes into
 `crates/scarletbook/tests/regressions/<target>/` and is replayed by `cargo test`.
+
+## In CI
+
+Every pull request fuzzes each target for 60 seconds (`ci.yml`), a smoke test. The
+`Long fuzz` workflow (`fuzz-long.yml`) runs each target for 40 minutes on 4 workers, weekly
+and on demand (`gh workflow run "Long fuzz" -f minutes=90`), and uploads crashing inputs
+and the grown corpus as artifacts.

@@ -49,6 +49,13 @@
 #include <stdint.h>
 
 /*
+ The version of this C ABI. It is incremented on every incompatible change to a
+ function signature or to the layout of a struct or enum in this header. 1 is the
+ first released ABI.
+ */
+#define SB_ABI_VERSION 1
+
+/*
  Result of every call.
  */
 typedef enum SbStatus {
@@ -531,6 +538,10 @@ typedef struct SbWarning {
    Track number, or 0 if the warning concerns no track.
    */
   uint32_t track;
+  /*
+   The LSN the warning concerns (`audio-sector-malformed`), or -1.
+   */
+  int64_t lsn;
 } SbWarning;
 
 /*
@@ -558,6 +569,12 @@ typedef struct SbFrameInfo {
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
+
+/*
+ The ABI version the library was built with; compare it with `SB_ABI_VERSION` from the
+ header you compiled against.
+ */
+uint32_t sb_abi_version(void);
 
 /*
  The library version, a static NUL-terminated string.
@@ -729,6 +746,34 @@ enum SbStatus sb_track_audio_open(const struct SbDisc *disc,
                                   struct SbTrackAudio **out);
 
 /*
+ Opens the decoded audio of track `number` of the area from `slot`, continuing `prev`
+ (an earlier track's handle from the same disc) without rescanning the area where the
+ result is the same. Reading an area's tracks in increasing order this way reads each
+ audio sector once. With `prev` NULL this is `sb_track_audio_open`.
+
+ On success `prev` is consumed (freed) and `*out` receives the new handle. On failure
+ `prev` is left untouched (still to be freed by the caller) and `*out` is set to NULL,
+ with one exception: after `SB_STATUS_PANIC`, treat `prev` as consumed and neither use
+ nor free it (an internal error after ownership was taken would otherwise risk a double
+ free; the handle may leak). Check a track with `sb_track_check` first to keep `prev`
+ across tracks without audio.
+
+ Do not pass the address of the variable holding `prev` as `out`
+ (`sb_track_audio_open_next(d, h, slot, n, &h)`): `*out` is set to NULL before anything
+ else, so on failure the only pointer to `prev` would be lost. Use a second variable.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `prev` NULL or a live handle, not used again
+ after a successful call; `out` NULL or valid for a write.
+ */
+enum SbStatus sb_track_audio_open_next(const struct SbDisc *disc,
+                                       struct SbTrackAudio *prev,
+                                       uint32_t slot,
+                                       uint32_t number,
+                                       struct SbTrackAudio **out);
+
+/*
  The channel count of a track's audio (1 to 6), or 0 for NULL or a handle in use.
 
  # Safety
@@ -764,6 +809,32 @@ enum SbStatus sb_track_audio_read(const struct SbTrackAudio *audio,
 enum SbStatus sb_track_audio_counts(const struct SbTrackAudio *audio,
                                     uint64_t *missing,
                                     uint64_t *invalid);
+
+/*
+ The number of malformed audio sectors processed so far by this handle's scan of its
+ area. The scan starts at the area's first audio sector, not at the track; a handle from
+ `sb_track_audio_open_next` keeps counting from where the earlier tracks left off.
+
+ # Safety
+
+ `audio` must be NULL or a live handle; `count` NULL or valid for a write.
+ */
+enum SbStatus sb_track_audio_malformed_sectors(const struct SbTrackAudio *audio, uint64_t *count);
+
+/*
+ `audio-sector-malformed` warning `index` of this handle's scan of its area so far, with
+ its slot and LSN (specification 4, 4.4.5): per area, not per track, and each sector
+ once (sectors of earlier tracks of a continued handle are not reported again). At
+ most 4096 are kept per scan; `sb_track_audio_malformed_sectors` counts them all.
+ Returns `SB_STATUS_INVALID_ARGUMENT` past the last one.
+
+ # Safety
+
+ `audio` must be NULL or a live handle; `out` NULL or valid for a write.
+ */
+enum SbStatus sb_track_audio_warning(const struct SbTrackAudio *audio,
+                                     uint32_t index,
+                                     struct SbWarning *out);
 
 /*
  Frees a track audio handle. NULL is ignored, and so is a handle whose read is running
