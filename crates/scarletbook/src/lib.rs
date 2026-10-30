@@ -30,8 +30,8 @@ pub mod text;
 pub mod toc;
 
 pub use audio::{
-    AreaFrame, AreaFrames, AudioFrame, Demuxer, FrameContent, FrameKind, FrameStatus, TrackAudio, TrackFrame,
-    TrackFrames,
+    AreaCursor, AreaFrame, AreaFrames, AudioFrame, Demuxer, FrameContent, FrameKind, FrameStatus, TrackAudio,
+    TrackAudioCursor, TrackCursor, TrackFrame, TrackFrames,
 };
 pub use disc::Disc;
 pub use dst::{DstDecoder, DstError};

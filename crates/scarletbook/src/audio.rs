@@ -165,10 +165,12 @@ impl Demuxer {
     }
 }
 
-/// The accepted frames of an area, read from an image in increasing LSN order.
+/// The reading state of an area's accepted frames, independent of the image it reads
+/// from: pass the same image to every call of [`AreaCursor::next_frame`].
+///
+/// [`AreaFrames`] is the borrowing iterator over the same state.
 #[derive(Debug)]
-pub struct AreaFrames<'a, R> {
-    image: &'a mut Image<R>,
+pub struct AreaCursor {
     demux: Demuxer,
     next_lsn: u64,
     end_lsn: u64,
@@ -181,11 +183,11 @@ pub struct AreaFrames<'a, R> {
 /// Sectors read per call to the reader.
 const READ_CHUNK: u64 = 32;
 
-impl<'a, R: Read + Seek> AreaFrames<'a, R> {
-    pub(crate) fn new(image: &'a mut Image<R>, area: &Area) -> Self {
-        let (start, end) = audio_sector_range(area, image.sector_count());
-        AreaFrames {
-            image,
+impl AreaCursor {
+    /// A cursor at the start of `area`'s audio, in an image of `image_sectors` sectors.
+    pub fn new(area: &Area, image_sectors: u64) -> Self {
+        let (start, end) = audio_sector_range(area, image_sectors);
+        AreaCursor {
             demux: Demuxer::new(area.channel_count),
             next_lsn: start,
             end_lsn: end,
@@ -201,13 +203,14 @@ impl<'a, R: Read + Seek> AreaFrames<'a, R> {
         self.demux.malformed_sectors()
     }
 
-    fn sector(&mut self, lsn: u64) -> Result<[u8; SECTOR_SIZE], Error> {
+    fn sector<R: Read + Seek>(&mut self, image: &mut Image<R>, lsn: u64) -> Result<[u8; SECTOR_SIZE], Error> {
         if !(self.buf_lsn..self.buf_lsn + self.buf_sectors).contains(&lsn) {
             let n = READ_CHUNK.min(self.end_lsn - lsn);
             self.buf.resize(n as usize * SECTOR_SIZE, 0);
-            // The range lies below the image's sector count, so the read is in range.
-            if self.image.read_into(lsn, &mut self.buf)? == ReadOutcome::OutOfRange {
-                return Err(Error::Io(std::io::Error::other("audio sector vanished")));
+            // For the image the cursor was made for, the range lies below its sector
+            // count; another image may be shorter, which is reported, not assumed.
+            if image.read_into(lsn, &mut self.buf)? == ReadOutcome::OutOfRange {
+                return Err(Error::InvalidArgument("audio sectors outside the image"));
             }
             self.buf_lsn = lsn;
             self.buf_sectors = n;
@@ -219,12 +222,9 @@ impl<'a, R: Read + Seek> AreaFrames<'a, R> {
         }
         Ok(out)
     }
-}
 
-impl<R: Read + Seek> Iterator for AreaFrames<'_, R> {
-    type Item = Result<AreaFrame, Error>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+    /// The next accepted frame, `None` at the end of the area.
+    pub fn next_frame<R: Read + Seek>(&mut self, image: &mut Image<R>) -> Option<Result<AreaFrame, Error>> {
         loop {
             if let Some(f) = self.demux.pop() {
                 return Some(Ok(f));
@@ -235,7 +235,7 @@ impl<R: Read + Seek> Iterator for AreaFrames<'_, R> {
             if self.next_lsn < self.end_lsn {
                 let lsn = self.next_lsn;
                 self.next_lsn += 1;
-                match self.sector(lsn) {
+                match self.sector(image, lsn) {
                     Ok(s) => {
                         self.demux.push_sector(&s);
                     }
@@ -249,6 +249,33 @@ impl<R: Read + Seek> Iterator for AreaFrames<'_, R> {
                 self.finished = true;
             }
         }
+    }
+}
+
+/// The accepted frames of an area, read from an image in increasing LSN order.
+#[derive(Debug)]
+pub struct AreaFrames<'a, R> {
+    image: &'a mut Image<R>,
+    cursor: AreaCursor,
+}
+
+impl<'a, R: Read + Seek> AreaFrames<'a, R> {
+    pub(crate) fn new(image: &'a mut Image<R>, area: &Area) -> Self {
+        let cursor = AreaCursor::new(area, image.sector_count());
+        AreaFrames { image, cursor }
+    }
+
+    /// Number of malformed sectors seen so far.
+    pub fn malformed_sectors(&self) -> u64 {
+        self.cursor.malformed_sectors()
+    }
+}
+
+impl<R: Read + Seek> Iterator for AreaFrames<'_, R> {
+    type Item = Result<AreaFrame, Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.cursor.next_frame(self.image)
     }
 }
 
@@ -302,10 +329,11 @@ pub struct TrackFrame {
     pub content: FrameContent,
 }
 
-/// The timeline positions of one track, in order (specification 4, 4.7).
+/// The reading state of one track's timeline positions (specification 4, 4.7),
+/// independent of the image it reads from. [`TrackFrames`] is the borrowing iterator.
 #[derive(Debug)]
-pub struct TrackFrames<'a, R> {
-    frames: AreaFrames<'a, R>,
+pub struct TrackCursor {
+    area: AreaCursor,
     next: u32,
     end: u32,
     channels: u8,
@@ -313,11 +341,16 @@ pub struct TrackFrames<'a, R> {
     exhausted: bool,
 }
 
-impl<'a, R: Read + Seek> TrackFrames<'a, R> {
-    pub(crate) fn new(image: &'a mut Image<R>, area: &Area, track: &Track) -> Result<Self, Error> {
-        check_track(area, track, image.sector_count())?;
-        Ok(TrackFrames {
-            frames: AreaFrames::new(image, area),
+impl TrackCursor {
+    /// A cursor at the start of `track` of `area`, after the checks of 4.8.
+    ///
+    /// # Errors
+    ///
+    /// As [`check_track`].
+    pub fn new(area: &Area, track: &Track, image_sectors: u64) -> Result<Self, Error> {
+        check_track(area, track, image_sectors)?;
+        Ok(TrackCursor {
+            area: AreaCursor::new(area, image_sectors),
             next: track.start_frame,
             end: track.end_frame(),
             channels: area.channel_count,
@@ -331,21 +364,18 @@ impl<'a, R: Read + Seek> TrackFrames<'a, R> {
         self.channels
     }
 
-    /// The frame range `[first, end)`.
+    /// The frame range still to come, `[next, end)`.
     pub fn range(&self) -> (u32, u32) {
         (self.next, self.end)
     }
 
     /// Number of malformed sectors seen so far.
     pub fn malformed_sectors(&self) -> u64 {
-        self.frames.malformed_sectors()
+        self.area.malformed_sectors()
     }
-}
 
-impl<R: Read + Seek> Iterator for TrackFrames<'_, R> {
-    type Item = Result<TrackFrame, Error>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+    /// The next timeline position, `None` after the track's last frame.
+    pub fn next_frame<R: Read + Seek>(&mut self, image: &mut Image<R>) -> Option<Result<TrackFrame, Error>> {
         if self.next >= self.end {
             return None;
         }
@@ -353,7 +383,7 @@ impl<R: Read + Seek> Iterator for TrackFrames<'_, R> {
         // Accepted frames arrive in increasing order: skip those before t. Stops reading
         // as soon as a frame at or after t is seen (specification 4, 4.5 item 4).
         while !self.exhausted && self.peeked.as_ref().is_none_or(|f| f.number < t) {
-            match self.frames.next() {
+            match self.area.next_frame(image) {
                 Some(Ok(f)) => self.peeked = Some(f),
                 Some(Err(e)) => {
                     self.next = self.end;
@@ -374,6 +404,43 @@ impl<R: Read + Seek> Iterator for TrackFrames<'_, R> {
             None => FrameContent::Missing,
         };
         Some(Ok(TrackFrame { number: t, content }))
+    }
+}
+
+/// The timeline positions of one track, in order (specification 4, 4.7).
+#[derive(Debug)]
+pub struct TrackFrames<'a, R> {
+    image: &'a mut Image<R>,
+    cursor: TrackCursor,
+}
+
+impl<'a, R: Read + Seek> TrackFrames<'a, R> {
+    pub(crate) fn new(image: &'a mut Image<R>, area: &Area, track: &Track) -> Result<Self, Error> {
+        let cursor = TrackCursor::new(area, track, image.sector_count())?;
+        Ok(TrackFrames { image, cursor })
+    }
+
+    /// The area's channel count `C` (1 to 6).
+    pub fn channels(&self) -> u8 {
+        self.cursor.channels()
+    }
+
+    /// The frame range still to come, `[next, end)`.
+    pub fn range(&self) -> (u32, u32) {
+        self.cursor.range()
+    }
+
+    /// Number of malformed sectors seen so far.
+    pub fn malformed_sectors(&self) -> u64 {
+        self.cursor.malformed_sectors()
+    }
+}
+
+impl<R: Read + Seek> Iterator for TrackFrames<'_, R> {
+    type Item = Result<TrackFrame, Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.cursor.next_frame(self.image)
     }
 }
 
@@ -420,13 +487,14 @@ pub fn decode_frame(decoder: &mut DstDecoder, frame: TrackFrame, channels: u8) -
     AudioFrame { number: frame.number, status, data }
 }
 
-/// The decoded audio of one track, frame by frame (specification 4, 4.6 and 4.7).
+/// The decoding state of one track's audio (specification 4, 4.6 and 4.7), independent
+/// of the image it reads from. [`TrackAudio`] is the borrowing iterator.
 ///
 /// With the `parallel` feature, DST frames are decoded in batches on rayon's thread
 /// pool; memory stays bounded by the batch size.
 #[derive(Debug)]
-pub struct TrackAudio<'a, R> {
-    frames: TrackFrames<'a, R>,
+pub struct TrackAudioCursor {
+    frames: TrackCursor,
     #[cfg(not(feature = "parallel"))]
     decoder: DstDecoder,
     ready: VecDeque<AudioFrame>,
@@ -435,9 +503,18 @@ pub struct TrackAudio<'a, R> {
     invalid: u64,
 }
 
-impl<'a, R: Read + Seek> TrackAudio<'a, R> {
-    pub(crate) fn new(frames: TrackFrames<'a, R>) -> Self {
-        TrackAudio {
+impl TrackAudioCursor {
+    /// A cursor at the start of `track` of `area`, after the checks of 4.8.
+    ///
+    /// # Errors
+    ///
+    /// As [`check_track`].
+    pub fn new(area: &Area, track: &Track, image_sectors: u64) -> Result<Self, Error> {
+        Ok(Self::from_frames(TrackCursor::new(area, track, image_sectors)?))
+    }
+
+    fn from_frames(frames: TrackCursor) -> Self {
+        TrackAudioCursor {
             frames,
             #[cfg(not(feature = "parallel"))]
             decoder: DstDecoder::new(),
@@ -474,10 +551,10 @@ impl<'a, R: Read + Seek> TrackAudio<'a, R> {
         }
     }
 
-    fn refill(&mut self) {
+    fn refill<R: Read + Seek>(&mut self, image: &mut Image<R>) {
         let mut batch = Vec::new();
         while batch.len() < Self::batch_size() {
-            match self.frames.next() {
+            match self.frames.next_frame(image) {
                 Some(Ok(f)) => batch.push(f),
                 Some(Err(e)) => {
                     self.pending_error = Some(e);
@@ -504,19 +581,53 @@ impl<'a, R: Read + Seek> TrackAudio<'a, R> {
         }
         self.ready.extend(decoded);
     }
+
+    /// The next decoded frame, `None` after the track's last frame.
+    pub fn next_frame<R: Read + Seek>(&mut self, image: &mut Image<R>) -> Option<Result<AudioFrame, Error>> {
+        if self.ready.is_empty() && self.pending_error.is_none() {
+            self.refill(image);
+        }
+        match self.ready.pop_front() {
+            Some(f) => Some(Ok(f)),
+            None => self.pending_error.take().map(Err),
+        }
+    }
+}
+
+/// The decoded audio of one track, frame by frame (specification 4, 4.6 and 4.7).
+#[derive(Debug)]
+pub struct TrackAudio<'a, R> {
+    image: &'a mut Image<R>,
+    cursor: TrackAudioCursor,
+}
+
+impl<'a, R: Read + Seek> TrackAudio<'a, R> {
+    pub(crate) fn new(image: &'a mut Image<R>, area: &Area, track: &Track) -> Result<Self, Error> {
+        let cursor = TrackAudioCursor::new(area, track, image.sector_count())?;
+        Ok(TrackAudio { image, cursor })
+    }
+
+    /// The area's channel count `C` (1 to 6).
+    pub fn channels(&self) -> u8 {
+        self.cursor.channels()
+    }
+
+    /// Frames so far that were missing (filled with 0x69).
+    pub fn missing_frames(&self) -> u64 {
+        self.cursor.missing_frames()
+    }
+
+    /// Frames so far that were invalid DST frames (filled with 0x55).
+    pub fn invalid_dst_frames(&self) -> u64 {
+        self.cursor.invalid_dst_frames()
+    }
 }
 
 impl<R: Read + Seek> Iterator for TrackAudio<'_, R> {
     type Item = Result<AudioFrame, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.ready.is_empty() && self.pending_error.is_none() {
-            self.refill();
-        }
-        match self.ready.pop_front() {
-            Some(f) => Some(Ok(f)),
-            None => self.pending_error.take().map(Err),
-        }
+        self.cursor.next_frame(self.image)
     }
 }
 

@@ -1,0 +1,34 @@
+[package]
+name = "scarletbook-ffi"
+description = "C ABI for scarletbook, a clean-room Super Audio CD image reader"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "scarletbook_ffi"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[features]
+parallel = ["scarletbook/parallel"]
+
+[dependencies]
+scarletbook = { path = "../scarletbook" }
+
+[lints.rust]
+missing_debug_implementations = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+
+[dev-dependencies]
+serde_json = "1"
+sha2 = "0.10"
