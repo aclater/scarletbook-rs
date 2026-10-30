@@ -45,7 +45,12 @@ fn image_path(corpus: &Path, case: &Value) -> PathBuf {
 
 /// Warnings that the corpus does not compare (corpus README, step 4).
 fn optional(code: WarningCode) -> bool {
-    matches!(code, WarningCode::AudioSectorMalformed | WarningCode::SampleFrequencyUnknown)
+    matches!(
+        code,
+        WarningCode::AudioSectorMalformed
+            | WarningCode::MasterTocCopiesDiffer
+            | WarningCode::SampleFrequencyUnknown
+    )
 }
 
 fn warning_key(v: &Value) -> (String, String, String) {

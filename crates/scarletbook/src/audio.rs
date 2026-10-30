@@ -140,6 +140,10 @@ impl Demuxer {
             pos += len;
         }
         if malformed {
+            // TODO(aclater/sacd-spec#5): spec 4.4.5 says a reader SHOULD warn
+            // `audio-sector-malformed` with the LSN, but whether one warning per sector is
+            // allowed under the allocation bound of 7.1 item 2, or how to cap or aggregate
+            // them, is not specified. Until then only a count is kept.
             self.malformed += 1;
         }
         malformed

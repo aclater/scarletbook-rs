@@ -125,10 +125,15 @@ sacd-spec specifications at the commit above, checked against its corpus.
 
 ## Specification issues filed
 
-None. Specifications 0 to 5 and 7 were implemented without meeting a gap or ambiguity
-that required a guess, so no issue was opened on `aclater/sacd-spec` and no code carries
-a spec-gap `TODO`. (Specification 6, the optional PS3 network protocol, was out of scope
-and not read.)
+| Issue | Gap | Affected code | scarletbook-rs issue |
+|---|---|---|---|
+| [aclater/sacd-spec#4](https://github.com/aclater/sacd-spec/issues/4) | 1.5.1 / 7.7.3 do not define what is compared between master TOC copies; 0.2 item 6 names only the area TOC comparison | the optional `master-toc-copies-differ` warning is not implemented (`TODO` in `toc.rs`) | #8 |
+| [aclater/sacd-spec#5](https://github.com/aclater/sacd-spec/issues/5) | per-sector `audio-sector-malformed` warnings (4.4.5) versus the allocation bound of 7.1 item 2, which both permits image-proportional allocations and omits warnings from its list; capping, early stop and repeated scans unspecified | malformed sectors are counted but not reported as warnings (`TODO` in `audio.rs`) | #11 |
+
+Stages 1 to 4 met no gap that required a guess. Both issues concern optional warnings
+that the corpus does not compare, and were found while working through the review
+follow-ups. Neither was resolved by guessing: the affected behaviour is left out until
+the specification decides.
 
 ## Crate name
 

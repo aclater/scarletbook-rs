@@ -519,6 +519,9 @@ fn read_master<R: Read + Seek>(img: &mut Image<R>, warnings: &mut Vec<Warning>) 
     if img.read_into(u64::from(MASTER_TOC_LSN), &mut buf)? == ReadOutcome::OutOfRange {
         return Err(Error::MasterTocTruncated);
     }
+    // TODO(aclater/sacd-spec#4): the optional `master-toc-copies-differ` warning (spec
+    // 1.5.1, 7.7.3) is not implemented: the specification does not say whether the copies
+    // at LSN 520 and 530 are compared over all 10 sectors or only over the reported values.
     let s0 = sub(&buf, 0, SECTOR_SIZE);
     if sub(s0, 0, 8) != b"SACDMTOC" {
         return Err(Error::NotScarletbook);

@@ -904,6 +904,7 @@ fn warning_code(code: WarningCode) -> &'static CStr {
         WarningCode::TrackPastPlaytime => c"track-past-playtime",
         WarningCode::TrackLsnOutsideArea => c"track-lsn-outside-area",
         WarningCode::AudioSectorMalformed => c"audio-sector-malformed",
+        WarningCode::MasterTocCopiesDiffer => c"master-toc-copies-differ",
         WarningCode::SampleFrequencyUnknown => c"sample-frequency-unknown",
         _ => c"unknown",
     }
