@@ -191,15 +191,20 @@ publications more than 20 years old (before 2006) are preferred; and every techn
 project adopts whose earliest non-code source found is from 2006 or later is flagged in the
 table below, for review before 1.0. The research survey (#33) opened no patent page.
 
-| Technique | Where used | Earliest non-code source found (date) | Before 2006 | Flag |
+| Technique | Where used | Earliest non-code source found and read (date) | Before 2006 | Flag |
 |---|---|---|---|---|
-| Multi-bit renormalisation from a wider code register | arithmetic decoder (`dst.rs`) | Moffat, Neal, Witten, ACM TOIS 1998 | yes | |
-| Renormalisation by count-leading-zeros instead of a loop | arithmetic decoder | Marpe, Kirchhoffer, Marten, EUSIPCO 2006 | no | **review**; older source being sought |
-| Branch-free selection of the decoded symbol (conditional moves) | arithmetic decoder | Acta Cybernetica 2013; Giesen 2014 | no | **review**; older source being sought |
-| Wide code window, amortised refill, zero bits past the end | code-bit reader | Said, HP Labs 2004 (zero bits past the end); Giesen 2018 (amortised refill) | partly | **review** (refill); older source being sought |
-| Precomputed tables of coefficient partial sums indexed by input bits | prediction (`dst.rs`) | none recorded yet (derived here) | — | **review**; source being sought |
-| Interleaving independent decoders in one thread | #31 (in progress) | Giesen 2014 | no | **review**; older source being sought |
-| Profile-guided optimisation, link-time optimisation | #32 (build, in progress) | none recorded yet | — | **review**; source being sought |
+| Multi-bit renormalisation from a wider code register | arithmetic decoder (`dst.rs`) | A. Moffat, R. Neal, I. Witten, "Arithmetic Coding Revisited", ACM TOIS 16(3), 1998 | yes | |
+| Normalisation by count-leading-zeros and one shift, instead of a loop | arithmetic decoder | M. S. Schmookler, K. J. Nowka, "Leading Zero Anticipation and Detection – A Comparison of Methods", ARITH-15, 2001 (leading-zero count for single-shift normalisation in floating-point units); Alpha Architecture Reference Manual, 4th ed., Compaq, January 2002 (CTLZ instruction) | yes | cleared (the match is to floating-point normalisation, not arithmetic coding) |
+| Branch-free selection (if-conversion, conditional moves) | arithmetic decoder | S. A. Mahlke et al., "Effective Compiler Support for Predicated Execution Using the Hyperblock", MICRO-25, December 1992 (if-conversion); Alpha Architecture Reference Manual, 4th ed., January 2002 (CMOVxx "may be used to avoid branching") | yes | cleared |
+| Reading zero bits past the end of the code | code-bit reader | A. Said, "Introduction to Arithmetic Coding – Theory and Practice", HP Labs HPL-2004-76, 2004 | yes | |
+| Bit buffer with amortised refill (several bytes at a time) | code-bit reader | F. Giesen, "Reading bits in far too many ways", parts 1 and 2, 2018. No pre-2006 source verified: Moffat & Turpin (DCC 1996 / IEEE Trans. Commun. 1997) found, but its abstract does not show the technique | no | **review before 1.0** |
+| Precomputed tables of coefficient partial sums indexed by input bits | prediction (`dst.rs`) | A. Peled, B. Liu, "A new hardware realization of digital filters", IEEE Trans. ASSP, 1974, and S. A. White, distributed-arithmetic tutorial, IEEE ASSP Magazine, July 1989: dated, but the parts read (abstract, outline) do not state the technique | partly | **review before 1.0** |
+| Interleaving independent decoders in one thread to hide latency | #31 (in progress) | F. Giesen, "Interleaved entropy coders", arXiv 1402.3392, 2014. Older work found but not read: B. R. Rau, C. D. Glaeser, scheduling techniques, MICRO workshop, October 1981; M. Lam, "Software pipelining", PLDI, June 1988 | no | **review before 1.0** |
+| Profile-guided and link-time optimisation | #32 (build, in progress) | D. W. Wall, "Global Register Allocation at Link Time", SIGPLAN '86 Symposium on Compiler Construction, 1986 (link-time optimisation guided by profile data); DEC WRL Research Report 86/3 | yes | cleared |
+
+The dated search opened no patent; about twenty patent results (USPTO, Google Patents,
+Justia) were skipped unopened. Sources it could only see as citations or bibliographic
+records are marked as such above and do not clear a flag.
 
 Techniques the specification itself prescribes (the decoding process of specification 5) are
 not choices of this project and are not listed.
