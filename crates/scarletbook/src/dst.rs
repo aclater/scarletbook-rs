@@ -416,22 +416,20 @@ impl DstDecoder {
         let mut code = CodeBits::new(&mut self.code, frame, header + 1, fs.saturating_sub(1));
 
         // Decoder initialisation (5.5.7): C is cb[1] .. cb[12].
-        let c = code.take(12);
+        let c = code.take12();
         if c == 4095 {
             return Err(DstError::CodeOutOfRange);
         }
-        let mut arith = Arith { a: 4095, c, code };
+        let mut arith = Arith { a: 4095 << 52, x: u64::from(c) << 52, code };
 
         // Coded X bit (5.5.8), decoded and discarded.
         let a0 = filters.first().map_or(0, |f| f.coefs[0]);
         let px = u32::from(((a0 & 0x7F) as u8).reverse_bits() >> 1) + 1;
+        arith.refill();
         let _ = arith.decode(px);
 
         // Per-channel state (5.4, 5.5.2).
-        let mut state = Channels {
-            history: [0xAAAA_AAAA_AAAA_AAAA_AAAA_AAAA_AAAA_AAAAu128; MAX_CHANNELS],
-            acc: [0u8; MAX_CHANNELS],
-        };
+        let mut state = Channels { history: [0xAAAA_AAAA_AAAA_AAAA_AAAA_AAAA_AAAA_AAAAu128; MAX_CHANNELS] };
         let mut nh = [0usize; MAX_CHANNELS];
         for ch in 0..nch {
             if half[ch] {
@@ -461,28 +459,26 @@ impl DstDecoder {
                 let used = filters[f].order.div_ceil(8);
                 tabs[ch] = &self.tables[f * HISTORY_BYTES..f * HISTORY_BYTES + used];
             }
-            let chunk = Chunk { start: n, end, tabs: &tabs, luts: &luts };
+            let chunk = Chunk { start: n, end, luts: &luts };
             // The common filter orders (every channel using the same number of history
-            // bytes) get loops of constant length; others use the general loop (U = 0).
-            let used = tabs[0].len();
-            let uniform = tabs[..nch].iter().all(|t| t.len() == used);
+            // bytes) get loops of constant length; others use the general loop.
             macro_rules! dispatch {
-                ($u:literal) => {
-                    match nch {
-                        1 => chunk.run::<1, $u>(&mut state, &mut arith, out),
-                        2 => chunk.run::<2, $u>(&mut state, &mut arith, out),
-                        3 => chunk.run::<3, $u>(&mut state, &mut arith, out),
-                        4 => chunk.run::<4, $u>(&mut state, &mut arith, out),
-                        5 => chunk.run::<5, $u>(&mut state, &mut arith, out),
-                        _ => chunk.run::<6, $u>(&mut state, &mut arith, out),
+                ($n:literal) => {
+                    match tabs[0].len() {
+                        4 if chunk.run_fixed::<$n, 4>(&tabs, &mut state, &mut arith, out) => {}
+                        8 if chunk.run_fixed::<$n, 8>(&tabs, &mut state, &mut arith, out) => {}
+                        16 if chunk.run_fixed::<$n, 16>(&tabs, &mut state, &mut arith, out) => {}
+                        _ => chunk.run::<$n, _>(&tabs.map(Var::new), &mut state, &mut arith, out),
                     }
                 };
             }
-            match (uniform, used) {
-                (true, 4) => dispatch!(4),
-                (true, 8) => dispatch!(8),
-                (true, 16) => dispatch!(16),
-                _ => dispatch!(0),
+            match nch {
+                1 => dispatch!(1),
+                2 => dispatch!(2),
+                3 => dispatch!(3),
+                4 => dispatch!(4),
+                5 => dispatch!(5),
+                _ => dispatch!(6),
             }
             n = end;
             for ch in 0..nch {
@@ -542,127 +538,228 @@ impl DstDecoder {
 }
 
 /// The arithmetic decoder of 5.5.7.
+///
+/// A and C are kept x 2^52: A as `a`, and C as the top 12 bits of the 64-bit `x`; below it are the code bits that
+/// follow (from `code.pos` on), of which [`Arith::refill`] makes at least 52 valid. A
+/// symbol takes at most 8 bits, so up to 6 symbols can be decoded per refill: shifting
+/// `x` left by the renormalisation count then both doubles C and appends the next bits.
+#[derive(Clone, Copy)]
 struct Arith<'a> {
-    a: u32,
-    c: u32,
+    a: u64,
+    x: u64,
     code: CodeBits<'a>,
 }
 
 impl Arith<'_> {
+    /// Fills the 52 bits below C with the code bits from `code.pos` on. Bits already there
+    /// are the same code bits, and those shifted in are 0, so an OR does it.
+    #[inline(always)]
+    fn refill(&mut self) {
+        self.x |= self.code.peek() >> 12;
+    }
+
     /// Decodes one symbol with probability `p` (1 to 128) and renormalises by the whole
-    /// shift count at once (A < 2048 doubles until bit 11 is set).
+    /// shift count at once (A < 2048 doubles until bit 11 is set). At most 6 calls per
+    /// [`Arith::refill`].
     #[inline(always)]
     fn decode(&mut self, p: u32) -> u32 {
+        // A is 2048 to 4095 here (4095 at the start, then renormalised), so Q is 8 to 15
+        // and Q x p is at most A / 2 + 128 < A: nothing below wraps, and the wrapping
+        // forms only spare the hot loop the overflow checks. Everything is x 2^52, like C.
         let a = self.a;
-        let q = (a >> 8) | ((a >> 7) & 1);
-        let w0 = q * p;
-        let w1 = a - w0;
-        let zero = self.c >= w1;
-        let c = if zero { self.c - w1 } else { self.c };
+        let q = ((a >> 8) & (0xF << 52)) | ((a >> 7) & (1 << 52));
+        let w0 = q.wrapping_mul(u64::from(p));
+        let w1 = a.wrapping_sub(w0);
+        let zero = self.x >= w1;
+        let x = if zero { self.x - w1 } else { self.x };
         let a = if zero { w0 } else { w1 };
-        // A is at least 8 here (w0 >= 8, w1 >= 128), so the shift is 0 to 8.
-        let k = a.leading_zeros().saturating_sub(20);
-        self.a = a << k;
-        self.c = (c << k) | self.code.take(k);
+        // A is 8 to 4095 here (w0 >= 8, w1 >= 128), so the shift is 0 to 8; C stays
+        // below A, so nothing leaves the top of x.
+        let k = a.leading_zeros();
+        self.a = a.wrapping_shl(k);
+        self.x = x.wrapping_shl(k);
+        self.code.skip(k);
         u32::from(!zero)
     }
 }
 
-/// Per-channel history and the output byte under assembly.
+/// Per-channel history.
 struct Channels {
     history: [u128; MAX_CHANNELS],
-    acc: [u8; MAX_CHANNELS],
 }
 
-/// Bits `start..end` of every channel, with fixed tables per channel.
+/// The prediction of 5.5.3 from a channel's history, held as two 64-bit halves (bit i of
+/// the history is bit i of `lo` for i < 64, bit i - 64 of `hi` otherwise): one lookup per
+/// history byte in the filter's tables of partial sums.
+trait Predict: Copy {
+    /// Whether the prediction can read history bits 64 to 127 (`hi`).
+    const HI: bool;
+    fn predict(self, lo: u64, hi: u64) -> i32;
+}
+
+/// Exactly `U` tables (history bytes): a loop of constant length.
+#[derive(Clone, Copy)]
+struct Fixed<'t, const U: usize>(&'t [[i16; 256]; U]);
+
+impl<const U: usize> Predict for Fixed<'_, U> {
+    const HI: bool = U > 8;
+    #[inline(always)]
+    fn predict(self, lo: u64, hi: u64) -> i32 {
+        let mut s = 0i32;
+        for (k, table) in self.0.iter().enumerate() {
+            let byte = if k < 8 { lo >> (8 * k) } else { hi >> (8 * (k - 8)) };
+            s += i32::from(table[(byte & 0xFF) as usize]);
+        }
+        s
+    }
+}
+
+/// Any number of tables, split into those of history bytes 0 to 7 and 8 to 15.
+#[derive(Clone, Copy)]
+struct Var<'t> {
+    lo: &'t [[i16; 256]],
+    hi: &'t [[i16; 256]],
+}
+
+impl<'t> Var<'t> {
+    fn new(tables: &'t [[i16; 256]]) -> Self {
+        let (lo, hi) = tables.split_at(tables.len().min(8));
+        Var { lo, hi }
+    }
+}
+
+impl Predict for Var<'_> {
+    const HI: bool = true;
+    #[inline(always)]
+    fn predict(self, lo: u64, hi: u64) -> i32 {
+        let mut s = 0i32;
+        for (k, table) in self.lo.iter().enumerate() {
+            s += i32::from(table[((lo >> (8 * k)) & 0xFF) as usize]);
+        }
+        for (k, table) in self.hi.iter().enumerate() {
+            s += i32::from(table[((hi >> (8 * k)) & 0xFF) as usize]);
+        }
+        s
+    }
+}
+
+/// Bits `start..end` of every channel, with a fixed ptable per channel.
 struct Chunk<'t> {
     start: usize,
     end: usize,
-    tabs: &'t [&'t [[i16; 256]]; MAX_CHANNELS],
     luts: &'t [&'t [u8; LUT_LEN]; MAX_CHANNELS],
 }
 
 impl Chunk<'_> {
-    /// Decodes the chunk for `NCH` (1 to 6) channels, in the symbol order of 5.5.1.
-    ///
-    /// Each channel's 128-bit history is kept as two 64-bit halves in locals for the
-    /// whole chunk (bit i of the history is bit i of `lo` for i < 64, bit i - 64 of `hi`
-    /// otherwise), and history bytes are taken by shifting, not through memory.
-    #[inline(never)]
-    fn run<const NCH: usize, const U: usize>(
+    /// [`Chunk::run`] with exactly `U` tables for each of the `NCH` channels; false (and
+    /// nothing decoded) if a channel has another number.
+    #[inline(always)]
+    fn run_fixed<const NCH: usize, const U: usize>(
         &self,
+        tabs: &[&[[i16; 256]]; MAX_CHANNELS],
+        st: &mut Channels,
+        arith: &mut Arith<'_>,
+        out: &mut [u8],
+    ) -> bool {
+        let fixed = tabs.map(|t| t.first_chunk::<U>().filter(|_| t.len() == U).map(Fixed));
+        let Some(first) = fixed[0] else { return false };
+        if fixed[..NCH].iter().any(Option::is_none) {
+            return false;
+        }
+        // Channels from NCH on are not decoded.
+        self.run::<NCH, _>(&fixed.map(|f| f.unwrap_or(first)), st, arith, out);
+        true
+    }
+
+    /// Decodes the chunk for `NCH` (1 to 6) channels, in the symbol order of 5.5.1, with
+    /// the history of each channel and the decoder state in locals for the whole chunk.
+    #[inline(never)]
+    fn run<const NCH: usize, P: Predict>(
+        &self,
+        preds: &[P; MAX_CHANNELS],
         st: &mut Channels,
         arith: &mut Arith<'_>,
         out: &mut [u8],
     ) {
+        let mut ar = *arith;
         let mut lo = [0u64; NCH];
         let mut hi = [0u64; NCH];
-        let mut acc = [0u8; NCH];
         for ch in 0..NCH {
             lo[ch] = st.history[ch] as u64;
             hi[ch] = (st.history[ch] >> 64) as u64;
-            acc[ch] = st.acc[ch];
         }
-        // Split each channel's tables into those of history bytes 0 to 7 and 8 to 15.
-        let mut tlo: [&[[i16; 256]]; NCH] = [&[]; NCH];
-        let mut thi: [&[[i16; 256]]; NCH] = [&[]; NCH];
-        for ch in 0..NCH {
-            let t = self.tabs[ch];
-            let (l, h) = t.split_at(t.len().min(8));
-            tlo[ch] = l;
-            thi[ch] = h;
-        }
-        for i in self.start..self.end {
-            for ch in 0..NCH {
-                // Prediction (5.5.3): one table lookup per history byte.
-                let (l, h) = (lo[ch], hi[ch]);
-                let mut s: i32 = 0;
-                if U == 0 {
-                    for (k, table) in tlo[ch].iter().enumerate() {
-                        s += i32::from(table[((l >> (8 * k)) & 0xFF) as usize]);
-                    }
-                    for (k, table) in thi[ch].iter().enumerate() {
-                        s += i32::from(table[((h >> (8 * k)) & 0xFF) as usize]);
-                    }
-                } else {
-                    // U history bytes for every channel: constant-length loops.
-                    let t = self.tabs[ch];
-                    for k in 0..U.min(8) {
-                        if let Some(table) = t.get(k) {
-                            s += i32::from(table[((l >> (8 * k)) & 0xFF) as usize]);
-                        }
-                    }
-                    for k in 8..U {
-                        if let Some(table) = t.get(k) {
-                            s += i32::from(table[((h >> (8 * (k - 8))) & 0xFF) as usize]);
-                        }
-                    }
-                }
-                let spred = if s == 32768 { -32768 } else { s };
-                let sign = u32::from(spred < 0);
-                // Probability (5.5.4): |Spred| / 8 is at most 4096.
-                let p = u32::from(self.luts[ch][((spred.unsigned_abs() >> 3) as usize).min(LUT_LEN - 1)]);
-                let y = sign ^ arith.decode(p);
-                hi[ch] = (h << 1) | (l >> 63);
-                lo[ch] = (l << 1) | u64::from(y);
-                acc[ch] = (acc[ch] << 1) | y as u8;
+        if P::HI {
+            for i in self.start..self.end {
+                self.step::<NCH, true, P>(i, preds, &mut lo, &mut hi, &mut ar, out);
             }
-            if i % 8 == 7 {
-                let base = (i / 8) * NCH;
-                if let Some(dst) = out.get_mut(base..base + NCH) {
-                    dst.copy_from_slice(&acc);
-                }
+        } else {
+            // The prediction reads only history bits 0 to 63, so bits 64 to 127 are not
+            // shifted along every bit: at the end of the chunk they are what bits 0 to 63
+            // were 64 bits earlier (or, in a shorter chunk, partly the earlier bits).
+            let split = self.end.saturating_sub(64).max(self.start);
+            for i in self.start..split {
+                self.step::<NCH, false, P>(i, preds, &mut lo, &mut hi, &mut ar, out);
+            }
+            let mid = lo;
+            for i in split..self.end {
+                self.step::<NCH, false, P>(i, preds, &mut lo, &mut hi, &mut ar, out);
+            }
+            // 0 to 64 bits since `mid`; when there were 64, `hi` is shifted out entirely.
+            let n = (self.end - split) as u32;
+            for ch in 0..NCH {
+                let h = (u128::from(hi[ch]) << 64) | u128::from(mid[ch]);
+                hi[ch] = ((h << n) >> 64) as u64;
             }
         }
         for ch in 0..NCH {
             st.history[ch] = (u128::from(hi[ch]) << 64) | u128::from(lo[ch]);
-            st.acc[ch] = acc[ch];
+        }
+        *arith = ar;
+    }
+
+    /// Decodes bit `i` of every channel; with `HI` false, `hi` is left as it is.
+    #[inline(always)]
+    fn step<const NCH: usize, const HI: bool, P: Predict>(
+        &self,
+        i: usize,
+        preds: &[P; MAX_CHANNELS],
+        lo: &mut [u64; NCH],
+        hi: &mut [u64; NCH],
+        ar: &mut Arith<'_>,
+        out: &mut [u8],
+    ) {
+        // At most 6 symbols, one per channel, until the next refill.
+        ar.refill();
+        for ch in 0..NCH {
+            let (l, h) = (lo[ch], hi[ch]);
+            // The sum is within -32768 to 32768, and 5.5.3 maps 32768 to -32768,
+            // which is what the conversion to i16 does.
+            let spred = preds[ch].predict(l, h) as i16;
+            let sign = u32::from(spred < 0);
+            // Probability (5.5.4): |Spred| / 8 is at most 4096.
+            let p = u32::from(self.luts[ch][usize::from(spred.unsigned_abs() >> 3)]);
+            let y = sign ^ ar.decode(p);
+            if HI {
+                hi[ch] = (h << 1) | (l >> 63);
+            }
+            lo[ch] = (l << 1) | u64::from(y);
+        }
+        // The last 8 bits of the history are the output byte (5.4) once a whole byte
+        // of the frame has been decoded.
+        if i % 8 == 7 {
+            let base = (i / 8) * NCH;
+            if let Some(dst) = out.get_mut(base..base + NCH) {
+                for (d, &l) in dst.iter_mut().zip(lo.iter()) {
+                    *d = l as u8;
+                }
+            }
         }
     }
 }
 
-/// Probability lookup tables have one entry per value of |Spred| / 8 (0 to 4096).
-const LUT_LEN: usize = 4097;
+/// Probability lookup tables have one entry per value of |Spred| / 8 (0 to 4096), and
+/// are padded to 8192 so that any `u16 >> 3` indexes them without a check.
+const LUT_LEN: usize = 8192;
 
 /// The probability table of the half-probability region (5.5.5): always 128.
 static HALF_LUT: [u8; LUT_LEN] = [128; LUT_LEN];
@@ -670,6 +767,7 @@ static HALF_LUT: [u8; LUT_LEN] = [128; LUT_LEN];
 /// The code bits cb[1], cb[2], ... of a frame, read MSB first; bits at or after the end
 /// of the code read as 0 (5.3.7 item 3). Each read is one unaligned 8-byte load from a
 /// realigned copy padded with zero bytes.
+#[derive(Clone, Copy)]
 struct CodeBits<'a> {
     bytes: &'a [u8],
     pos: usize,
@@ -701,9 +799,9 @@ impl<'a> CodeBits<'a> {
         CodeBits { bytes: buf, pos: 0 }
     }
 
-    /// The next `k` bits (0 to 12) as an integer.
+    /// The next 57 or more bits, from the most significant bit on, without taking them.
     #[inline(always)]
-    fn take(&mut self, k: u32) -> u32 {
+    fn peek(&self) -> u64 {
         let byte = self.pos / 8;
         // Past the padded copy every bit is 0 (the code can be read beyond its end).
         let word = self.bytes.get(byte..byte + 8).map_or(0, |w| {
@@ -711,10 +809,21 @@ impl<'a> CodeBits<'a> {
             b.copy_from_slice(w);
             u64::from_be_bytes(b)
         });
-        let aligned = word << (self.pos % 8);
-        self.pos += k as usize;
-        // `>> (63 - k) >> 1` is 0 for k = 0 without an out-of-range shift.
-        ((aligned >> (63 - k)) >> 1) as u32
+        word << (self.pos % 8)
+    }
+
+    /// Takes `k` bits.
+    #[inline(always)]
+    fn skip(&mut self, k: u32) {
+        // At most 8 bits per symbol, a few million per frame: no wrap.
+        self.pos = self.pos.wrapping_add(k as usize);
+    }
+
+    /// The next 12 bits as an integer.
+    fn take12(&mut self) -> u32 {
+        let v = (self.peek() >> 52) as u32;
+        self.skip(12);
+        v
     }
 
     /// How many code bits (after cb[0]) have been taken.
@@ -843,6 +952,45 @@ mod tests {
         assert_eq!(decode(&[0x01, 7], 2, &mut out), Err(DstError::Stuffing));
         assert_eq!(decode(&[0x00], 2, &mut out), Err(DstError::FrameTooShort));
         assert_eq!(decode(&[0x00, 1], 7, &mut out), Err(DstError::InvalidArguments));
+    }
+
+    #[test]
+    fn history_without_hi() {
+        // A chunk whose filters read only history bits 0 to 63 rebuilds bits 64 to 127 at
+        // its end; check everything it leaves against the general loop, for chunks
+        // shorter than, as long as and longer than 64 bits.
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut rnd = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let code: Vec<u8> = (0..512).map(|_| rnd() as u8).collect();
+        let tables: Vec<[i16; 256]> =
+            (0..4).map(|_| core::array::from_fn(|_| (rnd() % 2001) as i16 - 1000)).collect();
+        let lut: [u8; LUT_LEN] = core::array::from_fn(|j| (j % 128 + 1) as u8);
+        let luts = [&lut; MAX_CHANNELS];
+        let tabs: [&[[i16; 256]]; MAX_CHANNELS] = [&tables; MAX_CHANNELS];
+        for (start, end) in [(0, 0), (8, 9), (3, 50), (16, 80), (5, 69), (0, 200)] {
+            let history = core::array::from_fn(|_| u128::from(rnd()) << 64 | u128::from(rnd()));
+            let chunk = Chunk { start, end, luts: &luts };
+            let mut results = Vec::new();
+            for general in [false, true] {
+                let mut buf = Vec::new();
+                let code = CodeBits::new(&mut buf, &code, 0, code.len() * 8);
+                let mut ar = Arith { a: 4095 << 52, x: 0, code };
+                let mut st = Channels { history };
+                let mut out = vec![0u8; 2 * FL];
+                if general {
+                    chunk.run::<2, _>(&tabs.map(Var::new), &mut st, &mut ar, &mut out);
+                } else {
+                    assert!(chunk.run_fixed::<2, 4>(&tabs, &mut st, &mut ar, &mut out));
+                }
+                results.push((st.history, out, ar.a, ar.x, ar.code.pos));
+            }
+            assert!(results[0] == results[1], "chunk {start}..{end}");
+        }
     }
 
     #[test]
