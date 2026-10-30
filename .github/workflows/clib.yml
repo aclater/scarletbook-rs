@@ -85,11 +85,17 @@ jobs:
           rustup toolchain install "$RUST_STABLE" --profile minimal --target "${{ matrix.target }}"
           rustup default "$RUST_STABLE"
           bash .github/scripts/clib-package.sh "${{ matrix.target }}" "${{ matrix.platform }}"
-      - name: Check the minimum macOS version and the install name
+      - name: Check the install name and the minimum macOS version
         if: runner.os == 'macOS'
         run: |
           lib=$(echo dist/*/lib/libscarletbook_ffi.dylib)
-          otool -D "$lib"
+          # A program linked against it looks for it on its rpath, not at the build path.
+          install_name=$(otool -D "$lib" | tail -n 1)
+          echo "install name: $install_name"
+          if [[ "$install_name" != @rpath/libscarletbook_ffi.dylib ]]; then
+            echo "::error::install name is $install_name"
+            exit 1
+          fi
           # LC_BUILD_VERSION (minos) from macOS 10.14 on, LC_VERSION_MIN_MACOSX (version) before.
           minos=$(otool -l "$lib" | awk '/LC_BUILD_VERSION/ { f = "minos" } /LC_VERSION_MIN_MACOSX/ { f = "version" }
             f && $1 == f { print $2; exit }')
@@ -108,7 +114,7 @@ jobs:
             echo "::error::the DLL depends on a non-system DLL"
             exit 1
           fi
-          objdump -p "$dll" | grep -c ' sb_' || true
+          echo "sb_* functions in the export table: $(objdump -p "$dll" | grep -c ' sb_')"
       - name: Test
         if: runner.os != 'Linux'
         env:

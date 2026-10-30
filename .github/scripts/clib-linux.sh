@@ -33,7 +33,11 @@ pkg="dist/scarletbook-ffi-$version-$target"
 so="$pkg/lib/libscarletbook_ffi.so"
 
 echo "Shared library dependencies:"
-readelf -d "$so" | grep -E 'NEEDED|SONAME' || true
+readelf -d "$so" | grep -E 'NEEDED|SONAME'
+if ! readelf -d "$so" | grep -q 'SONAME.*\[libscarletbook_ffi\.so\]'; then
+  echo "the shared library's SONAME is not libscarletbook_ffi.so" >&2
+  exit 1
+fi
 case "$target" in
   *-gnu)
     newest=$(objdump -T "$so" | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -n 1)

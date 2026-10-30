@@ -82,7 +82,7 @@ conformance manifest.
 | `x86_64-pc-windows-gnu` | Windows 10 or later; links with MinGW-w64 GCC | MinGW-w64 target |
 
 The glibc builds are linked against glibc 2.17 itself, inside the manylinux2014 image, and
-the release check fails if the shared library asks for a newer glibc symbol version. The
+the build fails if the shared library asks for a newer glibc symbol version. The
 macOS minimums are Rust's own for those targets. The Windows build uses Rust's MinGW-w64
 target because its static library (`libscarletbook_ffi.a`) and import library
 (`libscarletbook_ffi.dll.a`) are in the format MinGW-w64 GCC links; the DLL exports every
@@ -122,9 +122,12 @@ cc app.c -I$PKG/include $PKG/lib/libscarletbook_ffi.a $(cat $PKG/native-static-l
 cc app.c -I$PKG/include -L$PKG/lib -lscarletbook_ffi -Wl,-rpath,'$ORIGIN'
 ```
 
-With MinGW-w64 GCC, `-lscarletbook_ffi` picks the import library (`.dll.a`), so the program
-needs `scarletbook_ffi.dll` at run time; link the static library by its path instead to
-avoid that. From Python:
+The Linux shared library has the SONAME `libscarletbook_ffi.so` and the macOS one the
+install name `@rpath/libscarletbook_ffi.dylib`, so a program finds them through its rpath
+(`-Wl,-rpath,@loader_path` on macOS). With MinGW-w64 GCC, `-lscarletbook_ffi` picks the
+import library (`.dll.a`), so the program needs `scarletbook_ffi.dll` at run time; link the
+static library by its path instead to avoid that. The DLL uses the Universal C Runtime
+(`api-ms-win-crt-*.dll`), part of Windows 10 and later. From Python:
 
 ```python
 import ctypes

@@ -19,9 +19,16 @@ version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
 name="scarletbook-ffi-$version-$target"
 pkg="dist/$name"
 
+# The shared library's name as a program records it, instead of the build path (macOS)
+# or the path it was linked by (Linux).
+case "$target" in
+  *-apple-*) link=(-C link-arg=-Wl,-install_name,@rpath/libscarletbook_ffi.dylib) ;;
+  *-linux-*) link=(-C link-arg=-Wl,-soname,libscarletbook_ffi.so) ;;
+  *) link=() ;;
+esac
 # Profile dist: release with one codegen unit, as for the generic `bench` asset.
 CARGO_TERM_COLOR=never cargo rustc --profile dist --locked -p scarletbook-ffi --lib --target "$target" \
-  -- --print native-static-libs 2>&1 | tee build.log
+  -- --print native-static-libs "${link[@]}" 2>&1 | tee build.log
 native=$(sed -n 's/^.*native-static-libs: //p' build.log | tail -n 1)
 if [[ -z "$native" ]]; then
   echo "no native-static-libs line in the build output" >&2
