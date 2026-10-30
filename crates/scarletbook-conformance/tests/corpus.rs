@@ -8,7 +8,7 @@ use scarletbook_conformance::{check_case_report, corpus_dir, load_cases};
 fn corpus() {
     let dir = corpus_dir();
     let cases = load_cases(&dir).unwrap_or_else(|e| panic!("manifest: {e}"));
-    assert_eq!(cases.len(), 129, "unexpected case count");
+    assert_eq!(cases.len(), 136, "unexpected case count");
     let mut failed = Vec::new();
     let mut compared = 0;
     for case in &cases {
@@ -26,6 +26,6 @@ fn corpus() {
     }
     eprintln!("tracks with audio compared: {compared}");
     // Every track the manifest expects audio for.
-    assert_eq!(compared, 437);
+    assert_eq!(compared, 457);
     assert!(failed.is_empty(), "{} of {} cases failed: {failed:?}", failed.len(), cases.len());
 }

@@ -60,6 +60,19 @@ tables (`git diff --stat 775f4ab 34f78a3 -- corpus/ spec/charsets/` is empty), s
 vendored copies are unchanged. Following `34f78a3`, the x86-64-v3 `bench` asset was
 renamed to `bench-<version>-x86-64-v3-linux.tar.gz`, outside the patterns of benchmark assets.
 
+**Update to `fa602f9`** ("Merge pull request #20", answers to sacd-spec#15, #16 and #17).
+It adds 4.6.1 (stored content of a position and its DST equivalent) and 4.7.1 (frame ranges
+and tracks with pauses) to specification 4, mentions frame ranges in 7.1, 7.7.4 and 7.7.5,
+and adds seven corpus cases (1-, 3- and 4-channel DST and plain DSD areas, and an area whose
+channel count disagrees with its frames) and the per-area keys `play_range`,
+`tracks_with_pauses` and `stored_frames`. The corpus was copied again, unchanged, into this
+repository's `corpus/` (CC0-1.0): 136 cases, 457 tracks with audio, all passing on the
+generic, x86-64-v3 and znver5 builds with and without `parallel`. The charset tables are
+unchanged. Its PROVENANCE.md records that the spec side checked the new expected values
+against another engine; that check happened on the specification side and nothing of it
+crosses to this side beyond the published expected values. The new keys are checked by the
+range and stored-frame work (#35, #37).
+
 ## Environment
 
 Work was done on 2026-10-30 in an isolated VM (hostname `scarletbook-cleanroom`, Fedora 44,
@@ -390,4 +403,4 @@ on 2026-10-30: the name `scarletbook` is not taken on crates.io. Nothing was pub
 | 2026-10-30 | benchmarking | `bench` program and release workflow (#14, #15); a third specification gap filed (sacd-spec#9, answered in `af3c3dd`); DST and parallel performance work (#16, #17) and large-image measurements (#18), see "Performance work". No new sources consulted beyond sacd-spec. |
 | 2026-10-30 | round 2 | the round 1 results (sacd-spec `775f4ab`, numbers and conditions only) turned into issues #21 to #25; parallel decoding, decoder and release-provenance work, see "Round 2"; version 0.2.0. No new sources consulted beyond sacd-spec. |
 | 2026-10-30 | round 3 | interleaved DST decoding (#31), performance tooling (#30) and build configuration (#32), see "Round 3"; general references under the owner's round 3 allowance and decision B, see "General references consulted"; patent-hygiene table with every flag cleared on full texts read (#40). |
-| 2026-10-30 | specification `34f78a3` | answers to sacd-spec#14 and #18 applied: the x86-64-v3 `bench` asset renamed outside the benchmark asset patterns; see "Specification version". No new sources consulted beyond sacd-spec. |
+| 2026-10-30 | specification `34f78a3` and `fa602f9` | answers to sacd-spec#14 and #18 applied (the x86-64-v3 `bench` asset renamed outside the benchmark asset patterns); corpus of `fa602f9` vendored (136 cases, all passing); see "Specification version". No new sources consulted beyond sacd-spec. |
