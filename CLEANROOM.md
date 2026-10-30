@@ -16,6 +16,14 @@ proceeds; each stage adds to the log at the end.
 - Where the specification is ambiguous or incomplete, an issue is opened on
   `aclater/sacd-spec`, the affected code is marked with a `TODO` naming the issue, and work
   continues elsewhere. The issues are listed below.
+- From round 3 of the performance work (2026-10-30), by the owner's written instruction,
+  general references that are neither SACD nor DST material may also be consulted for
+  performance work: algorithm books and papers, Rust performance and SIMD guides,
+  profilers and their documentation, CPU optimisation manuals, and general techniques of
+  unrelated projects. Every such source is recorded under "General references consulted"
+  below. The prohibition on SACD and DST implementations, and on searching for them,
+  is unchanged; agents doing this work were instructed not to use search terms that name
+  SACD, DSD or DST, and to report any such result they came across without opening it.
 
 ## Specification version
 
@@ -174,6 +182,13 @@ built only from specifications 1 to 4 (layout, TOCs, audio sector packing) and f
 corpus's own DST frames, which it repacks. Figures measured on its images are not
 measurements of the benchmark discs of `benchmarks/README.md`: its DST frames are the
 corpus's feature-test frames, and its plain DSD is pseudo-random.
+
+## General references consulted
+
+Performance round 3 (#30, #31, #32). Each entry: the source, and what was taken from it.
+None is an SACD or DST implementation or describes one.
+
+(Filled in as the work proceeds.)
 
 ## Statement
 
