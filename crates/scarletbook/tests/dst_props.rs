@@ -94,6 +94,8 @@ impl ArithEncoder {
 /// channel, the simplest coded frame of annex 5.A.1.
 fn encode(signal: &[Vec<u8>], coefs: &[i32], ptable: &[u32], half: &[bool]) -> Vec<u8> {
     let nch = signal.len();
+    // A one-entry ptable sends only its length; its entry is 128 (specification 5, 5.3.6).
+    let ptable: &[u32] = if ptable.len() == 1 { &[128] } else { ptable };
     let mut w = BitWriter::default();
     w.put(1, 1); // DST_coded
     w.put(1, 1); // same_segmentation
@@ -207,6 +209,17 @@ proptest! {
         prop_assert_eq!(&out[..payload.len()], &payload[..]);
         prop_assert!(out[payload.len()..].iter().all(|&b| b == 0));
     }
+}
+
+/// Found by the round trip in CI: a one-entry ptable whose generated value was not 128.
+#[test]
+#[cfg_attr(miri, ignore = "decodes full frames")]
+fn one_entry_ptable_round_trip() {
+    let signal = vec![(0..FL).map(|i| (i * 37 % 251) as u8).collect::<Vec<u8>>()];
+    let frame = encode(&signal, &[0], &[1], &[false]);
+    let mut out = vec![0u8; FL];
+    dst::decode(&frame, 1, &mut out).unwrap();
+    assert!(out == interleave(&signal));
 }
 
 #[test]
