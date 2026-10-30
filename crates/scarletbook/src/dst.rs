@@ -689,21 +689,15 @@ impl Chunk<'_> {
             hi[ch] = (st.history[ch] >> 64) as u64;
         }
         if P::HI {
-            for i in self.start..self.end {
-                self.step::<NCH, true, P>(i, preds, &mut lo, &mut hi, &mut ar, out);
-            }
+            self.steps::<NCH, true, P>(self.start..self.end, preds, &mut lo, &mut hi, &mut ar, out);
         } else {
             // The prediction reads only history bits 0 to 63, so bits 64 to 127 are not
             // shifted along every bit: at the end of the chunk they are what bits 0 to 63
             // were 64 bits earlier (or, in a shorter chunk, partly the earlier bits).
             let split = self.end.saturating_sub(64).max(self.start);
-            for i in self.start..split {
-                self.step::<NCH, false, P>(i, preds, &mut lo, &mut hi, &mut ar, out);
-            }
+            self.steps::<NCH, false, P>(self.start..split, preds, &mut lo, &mut hi, &mut ar, out);
             let mid = lo;
-            for i in split..self.end {
-                self.step::<NCH, false, P>(i, preds, &mut lo, &mut hi, &mut ar, out);
-            }
+            self.steps::<NCH, false, P>(split..self.end, preds, &mut lo, &mut hi, &mut ar, out);
             // 0 to 64 bits since `mid`; when there were 64, `hi` is shifted out entirely.
             let n = (self.end - split) as u32;
             for ch in 0..NCH {
@@ -717,7 +711,36 @@ impl Chunk<'_> {
         *arith = ar;
     }
 
-    /// Decodes bit `i` of every channel; with `HI` false, `hi` is left as it is.
+    /// Decodes bits `range` of every channel; with `HI` false, `hi` is left as it is.
+    #[inline(always)]
+    fn steps<const NCH: usize, const HI: bool, P: Predict>(
+        &self,
+        range: core::ops::Range<usize>,
+        preds: &[P; MAX_CHANNELS],
+        lo: &mut [u64; NCH],
+        hi: &mut [u64; NCH],
+        ar: &mut Arith<'_>,
+        out: &mut [u8],
+    ) {
+        // A refill waits for the position after the previous symbol, so it is done as
+        // rarely as allowed: before every 6 / NCH bits (at most 6 symbols).
+        let per_refill = 6 / NCH;
+        let mut i = range.start;
+        while i + per_refill <= range.end {
+            ar.refill();
+            for j in 0..per_refill {
+                self.step::<NCH, HI, P>(i + j, preds, lo, hi, ar, out);
+            }
+            i += per_refill;
+        }
+        while i < range.end {
+            ar.refill();
+            self.step::<NCH, HI, P>(i, preds, lo, hi, ar, out);
+            i += 1;
+        }
+    }
+
+    /// Decodes bit `i` of every channel, without refilling.
     #[inline(always)]
     fn step<const NCH: usize, const HI: bool, P: Predict>(
         &self,
@@ -728,8 +751,6 @@ impl Chunk<'_> {
         ar: &mut Arith<'_>,
         out: &mut [u8],
     ) {
-        // At most 6 symbols, one per channel, until the next refill.
-        ar.refill();
         for ch in 0..NCH {
             let (l, h) = (lo[ch], hi[ch]);
             // The sum is within -32768 to 32768, and 5.5.3 maps 32768 to -32768,
