@@ -22,6 +22,10 @@ is shared by every crate of the workspace; releases carry the `bench` program an
   them; the library starts no global pool. `SB_MAX_POOL_THREADS` and
   `SB_STATUS_THREADS_UNAVAILABLE` are new. Additive: the ABI version stays 1. The C smoke
   test also decodes every track on a pool and compares.
+- README "Using from Python (ctypes)" (#39): the ABI version check at load, the six
+  structs and the `argtypes`/`restype` of the main functions, a decoding example, and the
+  rules for threads, error messages, freeing and callbacks. The ctypes smoke test of every
+  release package runs these bindings and checks them against the header.
 
 ### Changed
 
