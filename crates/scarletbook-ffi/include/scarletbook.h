@@ -247,6 +247,13 @@
 #define SB_SEEK_POLICY_SPECULATIVE 1
 
 /*
+ `sb_disc_seek_policy_set`: provisional reading allowed, but suspect areas and ranges
+ (`sb_track_audio_suspect`) are read exactly instead (specification 4, 4.2 item 8,
+ sacd-spec `eafaaba`).
+ */
+#define SB_SEEK_POLICY_SPECULATIVE_EXACT_WHEN_SUSPECT 2
+
+/*
  The default `min_gap_sectors` of `sb_disc_seek_policy_set` (4 MiB of sectors).
  */
 #define SB_SEEK_DEFAULT_MIN_GAP 2048
@@ -276,6 +283,29 @@
  `SbSpeculation.state`: provisional positions that will not be checked.
  */
 #define SB_SPECULATION_UNVERIFIED 4
+
+/*
+ `sb_track_audio_suspect`: not suspect (exact positions, or a provisional reading with no
+ reason to doubt it).
+ */
+#define SB_SUSPECT_NONE 0
+
+/*
+ `sb_track_audio_suspect`: the area's TOC places its audio sectors past the end of the
+ image or over the other area's TOC or audio sectors.
+ */
+#define SB_SUSPECT_AREA_LAYOUT 1
+
+/*
+ `sb_track_audio_suspect`: the first frame records of the sectors read while choosing the
+ provisional start decrease from one sector to a later one.
+ */
+#define SB_SUSPECT_FRAME_NUMBERS_DECREASE 2
+
+/*
+ `sb_track_audio_suspect`: a reason this interface does not know yet.
+ */
+#define SB_SUSPECT_OTHER 255
 
 /*
  The major version of the `sb_disc_toc` layout this library writes. A reader refuses a
@@ -2826,6 +2856,10 @@ SbStatus sb_raw_frames_absorb(const struct SbRawFrames *raw, struct SbSeekIndex 
  readings are checked as the index is built (`sb_disc_seek_verify`) and their verdicts
  returned by `sb_disc_seek_event_next`.
 
+ `SB_SEEK_POLICY_SPECULATIVE_EXACT_WHEN_SUSPECT` is `SB_SEEK_POLICY_SPECULATIVE`, except
+ that areas and ranges whose provisional reading would be suspect (`sb_track_audio_suspect`)
+ are read exactly.
+
  A provisional start is used when the exact start lies more than `min_gap_sectors`
  (`SB_SEEK_DEFAULT_MIN_GAP`) before the range's estimated position; 0 allows one whenever
  the exact start lies before it at all. `min_gap_sectors` is ignored with
@@ -2862,6 +2896,29 @@ SbStatus sb_track_audio_speculation(const struct SbTrackAudio *audio, struct SbS
  `raw` must be NULL or a live handle; `out` NULL or valid for a write.
  */
 SbStatus sb_raw_frames_speculation(const struct SbRawFrames *raw, struct SbSpeculation *out);
+
+/*
+ Writes to `*out` why `audio`'s provisional reading is **suspect** (specification 4, 4.2
+ item 8, sacd-spec `eafaaba`): `SB_SUSPECT_NONE`, or an `SB_SUSPECT_*` reason of the
+ library's own to doubt it. The mark is informative: the reading is provisional and is
+ settled (`sb_track_audio_speculation`) as any other. Query it after the handle's first
+ read, which is when it chooses its start.
+
+ # Safety
+
+ `audio` must be NULL or a live handle; `out` NULL or valid for a write.
+ */
+SbStatus sb_track_audio_suspect(const struct SbTrackAudio *audio, uint32_t *out);
+
+/*
+ As `sb_track_audio_suspect`, for a raw frames handle (a stored frame list's positions are
+ exact).
+
+ # Safety
+
+ `raw` must be NULL or a live handle; `out` NULL or valid for a write.
+ */
+SbStatus sb_raw_frames_suspect(const struct SbRawFrames *raw, uint32_t *out);
 
 /*
  Builds the seek index `disc` keeps for the area from `slot` by about `max_sectors` more
