@@ -2345,6 +2345,42 @@ fn decode_dst_run(
         .collect()
 }
 
+/// A position's stored content (specification 4, 4.6.1 item 2) next to its decoded audio
+/// ([`TrackAudioCursor::next_frame_with_stored`]): what [`TrackCursor::next_frame`] gives
+/// for it, without a second copy of a plain frame.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Stored {
+    /// A DST frame's bytes as stored (its decoding is the [`AudioFrame`]'s data).
+    Dst(Vec<u8>),
+    /// A plain DSD frame: its stored bytes are the [`AudioFrame`]'s data, unchanged
+    /// (status [`FrameStatus::Dsd`]).
+    Plain,
+    /// No accepted frame fills the position.
+    Missing,
+}
+
+impl Stored {
+    /// The position's [`FrameContent`], given its decoded `frame` (which a plain one's
+    /// bytes are copied from).
+    pub fn content(&self, frame: &AudioFrame) -> FrameContent {
+        match self {
+            Stored::Dst(bytes) => FrameContent::Dst(bytes.clone()),
+            Stored::Plain => FrameContent::Dsd(frame.data.clone()),
+            Stored::Missing => FrameContent::Missing,
+        }
+    }
+
+    /// The stored bytes, given the decoded `frame`: a DST frame's, a plain frame's (the
+    /// frame's data), none for a missing position.
+    pub fn bytes<'a>(&'a self, frame: &'a AudioFrame) -> &'a [u8] {
+        match self {
+            Stored::Dst(bytes) => bytes,
+            Stored::Plain => &frame.data,
+            Stored::Missing => &[],
+        }
+    }
+}
+
 /// The decoding state of one track's audio (specification 4, 4.6 and 4.7), or of any
 /// frame range of an area ([`TrackAudioCursor::for_range`]), independent of the image it
 /// reads from. [`TrackAudio`] is the borrowing iterator.
@@ -2370,6 +2406,10 @@ pub struct TrackAudioCursor {
     ready: VecDeque<AudioFrame>,
     /// An error met while demultiplexing, reported after every frame before it.
     pending_error: Option<Error>,
+    /// With [`TrackAudioCursor::keep_stored`], the stored content of each position
+    /// demultiplexed and not yet returned, in timeline order: one per position of
+    /// `ready` and `ahead`, in step with them.
+    stored: Option<VecDeque<Stored>>,
     missing: u64,
     invalid: u64,
     /// Lines written about missing frames.
@@ -2557,12 +2597,12 @@ impl TrackAudioCursor {
         if self.pending_error.is_some() {
             frames.failed = true;
         }
-        #[allow(unused_mut, reason = "set only with the parallel feature")]
         let mut next = Self::from_frames(frames.open_as(area, range, image, index, opening));
         #[cfg(feature = "parallel")]
         {
             next.decode_on = self.decode_on;
         }
+        next.stored = self.stored.map(|_| VecDeque::new());
         next
     }
 
@@ -2575,6 +2615,7 @@ impl TrackAudioCursor {
             ahead: VecDeque::new(),
             ready: VecDeque::new(),
             pending_error: None,
+            stored: None,
             missing: 0,
             invalid: 0,
             missing_lines: LineCap::default(),
@@ -2678,7 +2719,17 @@ impl TrackAudioCursor {
         let mut batch: Vec<TrackFrame> = Vec::with_capacity(group);
         let mut cancelled = false;
         while self.pending_error.is_none() && room > 0 {
-            match self.frames.next_frame(image) {
+            let next = self.frames.next_frame(image);
+            if let (Some(stored), Some(Ok(f))) = (self.stored.as_mut(), &next) {
+                stored.push_back(match &f.content {
+                    // A copy: the frame itself goes on to its decoding, wherever that runs.
+                    FrameContent::Dst(bytes) => Stored::Dst(bytes.clone()),
+                    // Returned unchanged as the decoded data: nothing to copy.
+                    FrameContent::Dsd(_) => Stored::Plain,
+                    FrameContent::Missing => Stored::Missing,
+                });
+            }
+            match next {
                 #[cfg(feature = "parallel")]
                 Some(Ok(f @ TrackFrame { content: FrameContent::Dst(_), .. })) if window > group => {
                     batch.push(f);
@@ -2734,7 +2785,79 @@ impl TrackAudioCursor {
     ///
     /// While cancellation is requested ([`crate::CancelToken`]) it returns
     /// [`Error::Cancelled`] and keeps every frame for later.
+    ///
+    /// With [`TrackAudioCursor::keep_stored`], the position's stored content is dropped;
+    /// [`TrackAudioCursor::next_frame_with_stored`] returns it too.
     pub fn next_frame<R: Read + Seek>(&mut self, image: &mut Image<R>) -> Option<Result<AudioFrame, Error>> {
+        let frame = self.next_decoded(image);
+        if let (Some(Ok(_)), Some(stored)) = (&frame, self.stored.as_mut()) {
+            stored.pop_front();
+        }
+        frame
+    }
+
+    /// Keeps, from now on, each position's stored content next to its decoding, for
+    /// [`TrackAudioCursor::next_frame_with_stored`]: from one read of the area's sectors,
+    /// both what [`TrackCursor::next_frame`] gives (as stored, DST frames undecoded) and
+    /// what [`TrackAudioCursor::next_frame`] gives, decoded where the cursor decodes
+    /// ([`TrackAudioCursor::set_decode_on`]) with the same positions held ahead. A DST
+    /// frame's bytes are copied (at most [`MAX_FRAME_BYTES`]) before it goes to its
+    /// decoding. Continuations keep the choice.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidArgument`] once positions are held ahead of the caller (after the
+    /// first read, until the cursor is continued): their content was not kept.
+    pub fn keep_stored(&mut self) -> Result<(), Error> {
+        if self.stored.is_some() {
+            return Ok(());
+        }
+        if !(self.ready.is_empty() && self.ahead.is_empty()) {
+            return Err(Error::InvalidArgument("stored content is kept only from before the first read"));
+        }
+        self.stored = Some(VecDeque::new());
+        Ok(())
+    }
+
+    /// Whether the cursor keeps stored content ([`TrackAudioCursor::keep_stored`]).
+    pub fn keeps_stored(&self) -> bool {
+        self.stored.is_some()
+    }
+
+    /// The next position, decoded as [`TrackAudioCursor::next_frame`] gives it, with its
+    /// stored content as [`TrackCursor::next_frame`] gives it (for the same frame number;
+    /// see [`Stored`]: a plain frame's bytes are the decoded data, not copied again).
+    /// [`Stored::content`] gives the [`FrameContent`], [`TrackAudioCursor::dst_equivalent`]
+    /// its DST equivalent. The two calls may be mixed.
+    ///
+    /// # Errors
+    ///
+    /// As [`TrackAudioCursor::next_frame`], and [`Error::InvalidArgument`] if the cursor
+    /// does not keep stored content ([`TrackAudioCursor::keep_stored`]).
+    pub fn next_frame_with_stored<R: Read + Seek>(
+        &mut self,
+        image: &mut Image<R>,
+    ) -> Option<Result<(AudioFrame, Stored), Error>> {
+        if self.stored.is_none() {
+            return Some(Err(Error::InvalidArgument("the cursor does not keep stored content")));
+        }
+        let frame = self.next_decoded(image)?;
+        Some(frame.map(|f| {
+            // One content per position returned, in the same order (see `fill`).
+            let stored = self.stored.as_mut().and_then(VecDeque::pop_front).unwrap_or(Stored::Missing);
+            (f, stored)
+        }))
+    }
+
+    /// The DST equivalent of a position of this cursor's area (specification 4, 4.6.1
+    /// item 3; see [`FrameContent::dst_equivalent`]), with the area's channel count.
+    pub fn dst_equivalent<'c>(&self, content: &'c FrameContent) -> std::borrow::Cow<'c, [u8]> {
+        self.frames.dst_equivalent(content)
+    }
+
+    /// [`TrackAudioCursor::next_frame`], leaving the stored content of the position (if
+    /// kept) to the caller.
+    fn next_decoded<R: Read + Seek>(&mut self, image: &mut Image<R>) -> Option<Result<AudioFrame, Error>> {
         if let Err(e) = image.check_cancel() {
             return Some(Err(e));
         }
@@ -3081,6 +3204,28 @@ impl<'a, R: Read + Seek> TrackAudio<'a, R> {
     /// The progress of the reading, readable from other threads (see [`Progress`]).
     pub fn progress(&mut self) -> Progress {
         self.cursor.progress()
+    }
+}
+
+impl<R: Read + Seek> TrackAudio<'_, R> {
+    /// Keeps each position's stored content from now on (see
+    /// [`TrackAudioCursor::keep_stored`]), for [`TrackAudio::next_with_stored`].
+    ///
+    /// # Errors
+    ///
+    /// As [`TrackAudioCursor::keep_stored`].
+    pub fn keep_stored(&mut self) -> Result<(), Error> {
+        self.cursor.keep_stored()
+    }
+
+    /// The next position decoded, with its stored content (see
+    /// [`TrackAudioCursor::next_frame_with_stored`]).
+    pub fn next_with_stored(&mut self) -> Option<Result<(AudioFrame, Stored), Error>> {
+        let frame = self.cursor.next_frame_with_stored(self.image);
+        if let Some(seek) = self.seek {
+            seek.absorb(&mut self.cursor.frames.area, self.image.id());
+        }
+        frame
     }
 }
 

@@ -5,7 +5,8 @@
 //! reading, demultiplexing, frame reassembly and, for DST, decoding on one thread.
 //!
 //! Each iteration reads one area of `FRAMES` frames; the throughput is in symbols
-//! (37 632 x channels per frame), as in `dst_frames`.
+//! (37 632 x channels per frame), as in `dst_frames`. The `/stored` cases read the same,
+//! also keeping each position's stored content (`TrackAudioCursor::keep_stored`, #107).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -50,6 +51,24 @@ fn read_area(img: &[u8], slot: Slot) -> u32 {
     frames
 }
 
+/// As `read_area`, keeping each position's stored content too.
+fn read_area_stored(img: &[u8], slot: Slot) -> u32 {
+    let mut disc = Disc::open(Cursor::new(img)).unwrap();
+    let tracks = disc.toc().area(slot).unwrap().tracks.len() as u32;
+    let mut frames = 0;
+    for t in 1..=tracks {
+        let mut audio = disc.track_audio(slot, t).unwrap();
+        audio.keep_stored().unwrap();
+        while let Some(f) = audio.next_with_stored() {
+            let (frame, stored) = f.unwrap();
+            black_box(stored.bytes(&frame));
+            black_box(frame.data);
+            frames += 1;
+        }
+    }
+    frames
+}
+
 fn main() {
     let src = DstSource::from_corpus(&corpus_dir()).unwrap();
     let images = [
@@ -65,6 +84,10 @@ fn main() {
             assert_eq!(read_area(img, slot), FRAMES, "{name} {area}");
             g.throughput(Throughput::Elements(u64::from(FRAMES) * NB as u64 * channels));
             g.bench_function(format!("{name}/{area}"), |b| b.iter(|| read_area(black_box(img), slot)));
+            assert_eq!(read_area_stored(img, slot), FRAMES, "{name} {area} stored");
+            g.bench_function(format!("{name}/{area}/stored"), |b| {
+                b.iter(|| read_area_stored(black_box(img), slot))
+            });
         }
     }
     g.finish();
