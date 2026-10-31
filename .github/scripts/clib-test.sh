@@ -3,7 +3,8 @@
 #
 # Tests a package made by clib-package.sh on the machine it runs on: links the C smoke
 # test (crates/scarletbook-ffi/examples/smoke.c) against the static library and against
-# the shared library, runs both on corpus images, and runs clib-smoke.py (ctypes).
+# the shared library, runs both on corpus images, and runs clib-smoke.py (ctypes) and
+# clib-seekcost.py (cold seeks through callbacks) on a corpus image.
 #
 # Usage: clib-test.sh PACKAGE_DIR   (run from the repository root)
 # CC (default cc) is the C compiler, PYTHON (default python3) the Python interpreter.
@@ -51,3 +52,4 @@ case "$(uname -s)" in
   *) nm -D --defined-only "$pkg/lib/libscarletbook_ffi.so" | awk '$2 == "T" { print $3 }' | grep '^sb_' ;;
 esac > exports.txt
 "$python" .github/scripts/clib-smoke.py "$pkg" exports.txt
+"$python" .github/scripts/clib-seekcost.py "$pkg" corpus/images/dst-features-2ch-6ch.iso --repeat 1 --min-gap 0
