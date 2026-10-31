@@ -120,7 +120,8 @@
 
 /*
  Most threads of a decoding pool (`sb_pool_new`). A handle keeps at most
- `16 x threads` frames ahead, and never more than 256, so more threads would stay idle.
+ `16 x threads` frames ahead, and never more than 512: fewer than 2 per thread beyond
+ this many threads, which would mostly stay idle.
  */
 #define SB_MAX_POOL_THREADS 256
 
@@ -1223,9 +1224,9 @@ void sb_pool_free(struct SbPool *pool);
  there). A pool of one thread decodes on the calling thread too.
 
  Memory stays bounded whatever the image: a handle holds at most `16 x threads` frame
- positions ahead of the caller, and never more than 256, each at most one stored frame
- (`SB_MAX_FRAME_BYTES`) and one decoded frame (channels x 4704 bytes): about 24 MB at
- most, about 3.4 MB for 2 channels and 10 MB for 6 with typical DST frames. Each of the
+ positions ahead of the caller, and never more than 512, each at most one stored frame
+ (`SB_MAX_FRAME_BYTES`) and one decoded frame (channels x 4704 bytes): about 48 MB at
+ most, about 6.8 MB for 2 channels and 20 MB for 6 with typical DST frames. Each of the
  pool's threads also keeps decoder tables of up to about 3.4 MB.
 
  Returns `SB_STATUS_INVALID_ARGUMENT` when the handle is in use by a callback.

@@ -17,7 +17,7 @@ is shared by every crate of the workspace; releases carry the `bench` program an
 - Parallel decoding through the C interface (#36): `sb_pool_new`, `sb_pool_threads`,
   `sb_pool_free` and `sb_track_audio_set_pool` decode a track or range handle's DST frames
   on a pool of the caller's own (N threads, 0 for one per CPU), with frames returned in
-  order on the calling thread, at most `min(16 x N, 256)` positions ahead, and output
+  order on the calling thread, at most `min(16 x N, 512)` positions ahead, and output
   identical to the calling thread's. Pools are reference-counted by the handles given
   them; the library starts no global pool. `SB_MAX_POOL_THREADS` and
   `SB_STATUS_THREADS_UNAVAILABLE` are new. Additive: the ABI version stays 1. The C smoke
@@ -43,6 +43,12 @@ is shared by every crate of the workspace; releases carry the `bench` program an
 
 - A cursor continued or dropped with DST frames still queued on the pool no longer has
   them decoded for nothing: the abandoned jobs skip decoding (#29).
+- With `parallel`, a cursor holds up to 512 positions ahead instead of 256
+  (`MAX_PARALLEL_BATCH`; still 16 per pool thread, so pools of up to 16 threads are
+  unchanged). Since 0.3.0 a job decodes 2 or 3 frames together, so at 32 threads a cap of
+  256 left under 3 jobs per thread and the pool ran short of work (#61). On a 16-vCPU
+  machine with 32 threads, synthetic 10-minute 2- plus 6-channel images decode 4-9 %
+  faster (generic and znver5 builds); the most held is about 48 MB instead of 24 MB.
 - The C library now always links rayon; its `parallel` feature only makes handles without
   a pool decode on rayon's global pool, as before. On x86_64 Linux (`dist` profile) the
   shared library grows from 2.01 MB to 2.17 MB (1.85 MB to 1.97 MB stripped) and the

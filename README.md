@@ -129,8 +129,8 @@ sb_track_audio_free(audio);
 
 The calling thread still reads the disc (read callbacks run there) and receives the frames
 in order, while the pool decodes DST frames ahead of it; the output is exactly that of the
-calling thread. A handle holds at most `16 x threads` frames ahead, never more than 256
-(about 24 MB at most). A pool may be shared by handles of several discs read on several
+calling thread. A handle holds at most `16 x threads` frames ahead, never more than 512
+(about 48 MB at most). A pool may be shared by handles of several discs read on several
 threads. The library creates no global pool; the log callback is also called from the
 pool's threads (see `sb_disc_set_log`).
 
