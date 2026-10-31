@@ -498,6 +498,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "scarletbook-pcm"
+version = "0.5.1"
+dependencies = [
+ "criterion",
+ "proptest",
+ "thiserror",
+]
+
+[[package]]
 name = "serde"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"

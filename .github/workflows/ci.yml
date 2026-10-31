@@ -96,13 +96,15 @@ jobs:
           RUSTDOCFLAGS: -D warnings
       # The licences must ship inside the published crate (issue #48); its copies must match
       # the repository's.
-      - name: The scarletbook package carries the licences and README
+      - name: The published packages carry the licences and README
         run: |
-          cmp LICENSE-MIT crates/scarletbook/LICENSE-MIT
-          cmp LICENSE-APACHE crates/scarletbook/LICENSE-APACHE
-          files=$(cargo package -p scarletbook --list --locked)
-          for f in LICENSE-MIT LICENSE-APACHE README.md; do
-            grep -qx "$f" <<< "$files" || { echo "::error::$f is missing from the scarletbook package"; exit 1; }
+          for pkg in scarletbook scarletbook-pcm; do
+            cmp LICENSE-MIT "crates/$pkg/LICENSE-MIT"
+            cmp LICENSE-APACHE "crates/$pkg/LICENSE-APACHE"
+            files=$(cargo package -p "$pkg" --list --locked)
+            for f in LICENSE-MIT LICENSE-APACHE README.md; do
+              grep -qx "$f" <<< "$files" || { echo "::error::$f is missing from the $pkg package"; exit 1; }
+            done
           done
       # Change records live in changelog.d/ and cleanroom.d/ until a release folds them in
       # (#76; CONTRIBUTING.md, "Change records"): their format, and on pull requests that a
@@ -159,7 +161,7 @@ jobs:
         with:
           # Only main writes the cache; pull requests read it.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo +"$RUST_MSRV" check -p scarletbook -p scarletbook-ffi --all-features --locked
+      - run: cargo +"$RUST_MSRV" check -p scarletbook -p scarletbook-pcm -p scarletbook-ffi --all-features --locked
 
   # Miri: the short slices here (#76); the long ones run in miri-full.yml, which queues
   # instead of cancelling so that they always complete (#84).

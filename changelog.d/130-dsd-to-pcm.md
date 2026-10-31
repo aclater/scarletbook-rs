@@ -1,0 +1,2 @@
+Added
+- `scarletbook-pcm`, a new crate: DSD64 to 24-bit PCM at 88.2, 176.4 and 352.8 kHz, with a 40 kHz (default), 30 kHz or 80 kHz (176.4 and 352.8 kHz only) linear-phase low-pass, stopband at least 105 dB and ripple within ±0.01 dB. Output is aligned to the DSD timeline, has an optional gain with clip counting and no dither, and is bit-exact per frame: converting a frame with its neighbours gives the bytes of a whole-area conversion. `Converter` (one per worker) converts frames or runs of frames (#130).

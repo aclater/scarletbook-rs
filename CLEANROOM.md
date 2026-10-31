@@ -217,6 +217,7 @@ codecov.io and api.scorecard.dev; each URL was checked to return an SVG.
 | GitHub API (`gh api repos/<action>/releases`, `.../commits/<tag>`) | resolving action SHAs to pin |
 | C library release (#34, #42), all 2026-10-30: the rustc book *Platform Support* (https://doc.rust-lang.org/nightly/rustc/platform-support.html: minimum glibc, musl, macOS and Windows versions per target); GitHub changelog *macOS 13 runner image is closing down* (https://github.blog/changelog/2025-09-19-github-actions-macos-13-runner-image-is-closing-down/: `macos-15-intel`) and a web search on that; actions/runner-images *Windows2025-Readme.md* (https://github.com/actions/runner-images/blob/main/images/windows/Windows2025-Readme.md: GCC and Python on `windows-latest`); the quay.io and Docker Hub registry APIs (image digests); https://static.rust-lang.org/rustup/release-stable.toml and `rustup/archive/1.29.2/<host>/rustup-init.sha256` | build targets, runners and pins of `clib.yml` |
 | crates.io (`cargo search`, `GET /api/v1/crates/scarletbook`) | dependency versions; the crate name check |
+| DSD-to-PCM conversion (#130), 2026-10-31: the papers and books listed under "General references consulted", "DSD-to-PCM conversion (#130)"; sacd-spec specification 0, 0.6 (bit and byte order of DSD bytes) | `scarletbook-pcm`; PCM conversion is outside the specifications |
 
 The crate name check used `cargo search scarletbook` and the crates.io API only.
 `cargo search` listed an unrelated crate, `sacd-rs`, by name and one-line description; it
@@ -318,6 +319,11 @@ table below, for review before 1.0. The research survey (#33) opened no patent p
 | Precomputed tables of coefficient partial sums indexed by input bits | prediction (`dst.rs`) | Full text read: S. A. White, "Applications of Distributed Arithmetic to Digital Signal Processing: A Tutorial Review", IEEE ASSP Magazine 6(3), July 1989, pp. 4-19: p. 5, because each input bit "may take on values of 0 and 1 only", the sum of the coefficients it selects "may have only 2^K possible values. Rather than compute these values on line, we may precompute the values and store them in a ROM. The input data can be used to directly address the memory"; p. 7, a table indexed by several bits per input at once ("word capacity becomes 2^KL"). White dates the technique to Peled & Liu, 1974 (p. 4). Also NTU lecture slides on White 1989, PDF dated October 2002, slide pp. 5-8. L. B. Jackson, J. F. Kaiser, H. S. McDonald, IEEE Trans. Audio Electroacoustics AU-16(3), September 1968, pp. 413-421, read in full: does not state it | yes | cleared (#40) |
 | Interleaving independent work in one thread to hide latency | `DstDecoder::decode_many` (`dst.rs`) and grouped decoding in `TrackAudioCursor` (`audio.rs`), #31 | Full text read: M. Lam, "Software Pipelining: An Effective Scheduling Technique for VLIW Machines", Proceedings of SIGPLAN '88, Atlanta, June 22-24, 1988, pp. 318-320: "multiple iterations, in different stages of their computations, are in progress simultaneously"; four in flight give "four times the speed". (University seminar copy, a scan read by OCR.) Applied here to independent decoders rather than loop iterations; F. Giesen, "Interleaved entropy coders", 2014, for that form | yes | cleared (the general technique) |
 | Profile-guided and link-time optimisation | #32: measured, **not adopted** (fat LTO slower everywhere, PGO no consistent gain); only `codegen-units = 1` for the generic asset, plus an `x86-64-v3` asset | D. W. Wall, "Global Register Allocation at Link Time", SIGPLAN '86 Symposium on Compiler Construction, 1986 (link-time optimisation guided by profile data); DEC WRL Research Report 86/3 | yes | cleared |
+| Multistage decimation, with each stage's stopband from its output rate minus the final stopband edge; polyphase evaluation of decimating FIRs | `scarletbook-pcm` (#130) | R. E. Crochiere, L. R. Rabiner, "Interpolation and decimation of digital signals — A tutorial review", Proc. IEEE 69(3), March 1981 (bibliographic record checked; full text not read in the #130 session) | yes | |
+| Equiripple linear-phase FIR design by the Remez exchange, barycentric form | `scarletbook-pcm` generator (`design.rs`, test-only) | T. W. Parks, J. H. McClellan, IEEE Trans. Circuit Theory 19(2), March 1972; L. R. Rabiner, J. H. McClellan, T. W. Parks, Proc. IEEE 63(4), April 1975 (bibliographic records checked; full texts not read in the #130 session) | yes | |
+| Halfband design from a one-band type II prototype (`H(z) = (z^-(2K-1) + G(z^2)) / 2`) | `scarletbook-pcm` generator | P. P. Vaidyanathan, T. Q. Nguyen, "A 'trick' for the design of FIR half-band filters", IEEE Trans. CAS 34(3), March 1987; F. Mintzer, IEEE Trans. ASSP 30(5), October 1982 (bibliographic records checked; full texts not read in the #130 session) | yes | |
+| Precomputed tables of coefficient partial sums indexed by input bits, one table per input byte | `scarletbook-pcm` first stage | White 1989, as for `dst.rs` above (full text read for #40) | yes | cleared (#40) |
+| Integer arithmetic carried exactly in IEEE-754 binary64 (operands and sums below 2^53), and rounding by adding and subtracting 1.5 x 2^52 | `scarletbook-pcm` kernels | D. Goldberg, "What every computer scientist should know about floating-point arithmetic", ACM Computing Surveys 23(1), March 1991 (bibliographic record checked; full text not read in the #130 session); IEEE Std 754-1985 (exact rounding of the basic operations) | yes | |
 
 Texts the owner obtained for #40 (in `~/papers`, read in full; none is a patent):
 
@@ -433,6 +439,30 @@ Deliberately not opened under the rules: FFmpeg commit pages and mailing-list th
 whole FFmpeg repository is excluded), xz's `range_decoder.h`, the turbo-range-coder page, and
 patent pages on CABAC renormalisation and branch-free arithmetic decoding. No search used
 SACD, DSD or DST terms, and no result opened was about them.
+
+### DSD-to-PCM conversion (#130)
+
+The converter in `crates/scarletbook-pcm` and its filter generator were designed from the
+general DSP literature below, from the author's knowledge of these well-known publications.
+On 2026-10-31 each publication's bibliographic record (title, authors, venue, date) was
+checked at `https://api.crossref.org/works/<DOI>` (metadata only). No full text was opened
+in that session, and no code of any kind was read. Not opened: any DSD-to-PCM converter or
+decimator (in any program or library), any file of a repository that also contains an SACD
+or DST reader, aclater/sacd and its DECISIONS.md, the consumers' code, and any patent. No
+web search was made. All sources are from before 2006.
+
+- [P1] T. W. Parks, J. H. McClellan, "Chebyshev Approximation for Nonrecursive Digital Filters with Linear Phase", IEEE Trans. Circuit Theory 19(2), 1972, https://doi.org/10.1109/TCT.1972.1083419 — equiripple design by the Remez exchange.
+- [P2] L. R. Rabiner, J. H. McClellan, T. W. Parks, "FIR digital filter design techniques using weighted Chebyshev approximation", Proc. IEEE 63(4), 1975, https://doi.org/10.1109/PROC.1975.9794 — weighting, the barycentric form, type II filters as a cosine polynomial times `cos(w/2)`. The 1973 program listing of the same authors was not used.
+- [P3] O. Herrmann, L. R. Rabiner, D. S. K. Chan, "Practical Design Rules for Optimum Finite Impulse Response Low-Pass Digital Filters", Bell Syst. Tech. J. 52(6), 1973, https://doi.org/10.1002/j.1538-7305.1973.tb01990.x — length estimates (design only).
+- [P4] J. F. Kaiser, "Nonrecursive digital filter design using the I0-sinh window function", Proc. IEEE ISCAS 1974, pp. 20-23 (citation only; no DOI record) — length estimates (design only).
+- [P5] R. E. Crochiere, L. R. Rabiner, "Interpolation and decimation of digital signals — A tutorial review", Proc. IEEE 69(3), 1981, https://doi.org/10.1109/PROC.1981.11969; and *Multirate Digital Signal Processing*, Prentice-Hall, 1983 (citation only) — multistage and polyphase decimation, stage stopband edges, noble identities.
+- [P6] F. Mintzer, "On half-band, third-band, and Nth-band FIR filters and their design", IEEE Trans. ASSP 30(5), 1982, https://doi.org/10.1109/TASSP.1982.1163950 — halfband properties.
+- [P7] P. P. Vaidyanathan, T. Q. Nguyen, "A 'trick' for the design of FIR half-band filters", IEEE Trans. CAS 34(3), 1987, https://doi.org/10.1109/TCS.1987.1086124 — halfband design.
+- [P8] A. Peled, B. Liu, "A new hardware realization of digital filters", IEEE Trans. ASSP 22(6), 1974, https://doi.org/10.1109/TASSP.1974.1162619; S. A. White, "Applications of distributed arithmetic to digital signal processing: a tutorial review", IEEE ASSP Magazine 6(3), 1989, https://doi.org/10.1109/53.29648 — tables of partial sums indexed by input bits (White read in full for #40, above).
+- [P9] E. B. Hogenauer, "An economical class of digital filters for decimation and interpolation", IEEE Trans. ASSP 29(2), 1981, https://doi.org/10.1109/TASSP.1981.1163535 — CIC filters, considered and not used.
+- [P10] D. Goldberg, "What every computer scientist should know about floating-point arithmetic", ACM Computing Surveys 23(1), 1991, https://doi.org/10.1145/103162.103163 — exact integer arithmetic in binary64.
+- [P11] K. C.-H. Chao, S. Nadeem, W. L. Lee, C. G. Sodini, "A higher order topology for interpolative modulators for oversampling A/D converters", IEEE Trans. CAS 37(3), 1990, https://doi.org/10.1109/31.52724; R. Schreier, G. C. Temes, *Understanding Delta-Sigma Data Converters*, Wiley-IEEE Press, 2005 (citation only) — the test-only sigma-delta modulator (largest NTF gain 1.5).
+- [P12] A. V. Oppenheim, R. W. Schafer, *Discrete-Time Signal Processing*, 2nd ed., Prentice-Hall, 1999 (citation only) — type I and II linear-phase FIRs, the bilinear transform, Butterworth poles (test modulator).
 
 ## Statement
 
