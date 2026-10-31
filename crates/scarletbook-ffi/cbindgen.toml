@@ -15,7 +15,8 @@ header = """/* SPDX-License-Identifier: MIT OR Apache-2.0 */
  *   failure, sb_last_error_message() describes the error. The message belongs to the
  *   calling thread and stays valid until that thread's next call into this library.
  *
- * - Handles. SbDisc, SbTrackAudio, SbRawFrames, SbPool and SbSeekIndex are opaque. Each is created by one
+ * - Handles. SbDisc, SbTrackAudio, SbRawFrames, SbPool, SbSeekIndex, SbCancel and
+ *   SbProgress are opaque. Each is created by one
  *   function and released by exactly one call to its _free function; passing NULL to a
  *   _free function does nothing. A function that creates a handle sets *out to NULL when it fails, so
  *   freeing that pointer afterwards is safe.
@@ -32,7 +33,9 @@ header = """/* SPDX-License-Identifier: MIT OR Apache-2.0 */
  *   (a language code can), so use *len rather than strlen.
  *
  * - Threads. A handle may be moved between threads, but must not be used by two threads
- *   at once; an SbPool, which only holds threads, may. To read one image on several
+ *   at once; an SbPool, which only holds threads, may, and so may an SbCancel and an
+ *   SbProgress, made to be used from another thread while the disc or handle they come
+ *   from reads (sb_disc_cancel_token, sb_track_audio_progress). To read one image on several
  *   threads at once, give each thread a clone of its disc (sb_disc_clone): a handle of
  *   its own over the same image. Read and seek callbacks
  *   (sb_disc_open_callbacks) and positional read callbacks (sb_disc_open_callbacks_at)

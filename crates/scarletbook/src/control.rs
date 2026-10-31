@@ -21,8 +21,12 @@ use crate::error::Error;
 /// holds ahead included (decoding jobs already sent to a pool finish), and once the
 /// request is [withdrawn](CancelToken::withdraw) it continues as if never interrupted (a
 /// provisional search, [`crate::SeekPolicy::Speculative`], cancelled before it chose its
-/// start, starts again). A cancelled cursor can also just be dropped. Opening a disc and reading its TOC are not
-/// cancelled, nor is [`crate::Image::read_sectors`].
+/// start, starts again). A cancelled cursor can also just be dropped. Opening a disc and
+/// reading its TOC are not cancelled, nor is [`crate::Image::read_sectors`].
+///
+/// The request stays until withdrawn: a caller that keeps the disc (or any disc of the
+/// image) withdraws it before reading again. A disc opened afresh, even of the same file,
+/// has a token of its own.
 ///
 /// ```no_run
 /// # fn main() -> Result<(), scarletbook::Error> {
@@ -78,9 +82,9 @@ impl CancelToken {
 
 /// How far a cursor has read, readable from any thread while the cursor reads: the
 /// sectors it has read through the image so far, and the sectors it expects to have read
-/// once it is done. Get it from the cursor (for example [`crate::TrackAudioCursor::progress`])
-/// before handing the cursor to the thread that reads; it stays valid after the cursor is
-/// dropped.
+/// once it is done. Get it from the cursor (for example
+/// [`crate::TrackAudioCursor::progress`]) before handing the cursor to the thread that
+/// reads; it stays valid after the cursor is dropped.
 ///
 /// The counts are updated with every read the cursor makes (at most 32 sectors at a
 /// time): the scan before a range's first frame, a provisional search, a seek index's

@@ -63,6 +63,7 @@ SB_STATUS_FRAME_RANGE_INVALID = -15,
 SB_STATUS_THREADS_UNAVAILABLE = -16,
 SB_STATUS_OUT_OF_MEMORY = -17,
 SB_STATUS_SECTOR_RANGE_INVALID = -18,
+SB_STATUS_CANCELLED = -19,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -195,8 +196,10 @@ typedef enum SbTrackString SbTrackString;
 typedef uint32_t SbTrackString;
 #endif
 #endif
+typedef struct SbCancel SbCancel;
 typedef struct SbDisc SbDisc;
 typedef struct SbPool SbPool;
+typedef struct SbProgress SbProgress;
 typedef struct SbRawFrames SbRawFrames;
 typedef struct SbSeekIndex SbSeekIndex;
 typedef struct SbTrackAudio SbTrackAudio;
@@ -386,6 +389,15 @@ SbStatus sb_disc_seek_verify(const struct SbDisc *disc, uint32_t slot, uint64_t 
 SbStatus sb_disc_seek_event_next(const struct SbDisc *disc, uint32_t slot, struct SbSpeculation *out);
 SbStatus sb_seek_index_verify(const struct SbDisc *disc, struct SbSeekIndex *index, uint32_t *settled);
 SbStatus sb_seek_index_event_next(const struct SbSeekIndex *index, struct SbSpeculation *out);
+SbStatus sb_disc_cancel_token(const struct SbDisc *disc, struct SbCancel **out);
+SbStatus sb_cancel_request(const struct SbCancel *token);
+SbStatus sb_cancel_withdraw(const struct SbCancel *token);
+SbStatus sb_cancel_requested(const struct SbCancel *token, uint8_t *requested);
+void sb_cancel_free(struct SbCancel *token);
+SbStatus sb_track_audio_progress(const struct SbTrackAudio *audio, struct SbProgress **out);
+SbStatus sb_raw_frames_progress(const struct SbRawFrames *raw, struct SbProgress **out);
+SbStatus sb_progress_get(const struct SbProgress *progress, uint64_t *sectors_read, uint64_t *sectors_expected);
+void sb_progress_free(struct SbProgress *progress);
 #ifdef __cplusplus
 }
 #endif

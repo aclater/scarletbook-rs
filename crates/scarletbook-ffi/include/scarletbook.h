@@ -10,7 +10,8 @@
  *   failure, sb_last_error_message() describes the error. The message belongs to the
  *   calling thread and stays valid until that thread's next call into this library.
  *
- * - Handles. SbDisc, SbTrackAudio, SbRawFrames, SbPool and SbSeekIndex are opaque. Each is created by one
+ * - Handles. SbDisc, SbTrackAudio, SbRawFrames, SbPool, SbSeekIndex, SbCancel and
+ *   SbProgress are opaque. Each is created by one
  *   function and released by exactly one call to its _free function; passing NULL to a
  *   _free function does nothing. A function that creates a handle sets *out to NULL when it fails, so
  *   freeing that pointer afterwards is safe.
@@ -27,7 +28,9 @@
  *   (a language code can), so use *len rather than strlen.
  *
  * - Threads. A handle may be moved between threads, but must not be used by two threads
- *   at once; an SbPool, which only holds threads, may. To read one image on several
+ *   at once; an SbPool, which only holds threads, may, and so may an SbCancel and an
+ *   SbProgress, made to be used from another thread while the disc or handle they come
+ *   from reads (sb_disc_cancel_token, sb_track_audio_progress). To read one image on several
  *   threads at once, give each thread a clone of its disc (sb_disc_clone): a handle of
  *   its own over the same image. Read and seek callbacks
  *   (sb_disc_open_callbacks) and positional read callbacks (sb_disc_open_callbacks_at)
@@ -369,6 +372,11 @@ enum SbStatus
    A sector range extends past the image's last sector (`sb_disc_read_sectors`).
    */
   SB_STATUS_SECTOR_RANGE_INVALID = -18,
+  /*
+   The call stopped because cancellation was requested (`sb_cancel_request`); the
+   handle stays where it was and continues once the request is withdrawn.
+   */
+  SB_STATUS_CANCELLED = -19,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -667,6 +675,13 @@ typedef uint32_t SbTrackString;
 #endif // __cplusplus
 
 /*
+ The cancellation request of a disc's reads (`sb_disc_cancel_token`): one per image,
+ shared by the disc, its clones and their track and raw frames handles. Unlike those
+ handles it may be used by several threads at once.
+ */
+typedef struct SbCancel SbCancel;
+
+/*
  An opened disc image.
 
  Its state sits in a `RefCell`: every call takes a shared reference to the handle and
@@ -681,6 +696,13 @@ typedef struct SbDisc SbDisc;
  used by several threads at once.
  */
 typedef struct SbPool SbPool;
+
+/*
+ How far a track audio or raw frames handle has read (`sb_track_audio_progress`,
+ `sb_raw_frames_progress`). Unlike those handles it may be used by several threads at
+ once, while the handle reads.
+ */
+typedef struct SbProgress SbProgress;
 
 /*
  The reading state of one frame range's stored content, or of an area's stored frame
@@ -2516,6 +2538,122 @@ SbStatus sb_seek_index_verify(const struct SbDisc *disc,
  `index` must be NULL or a live handle; `out` NULL or valid for a write.
  */
 SbStatus sb_seek_index_event_next(const struct SbSeekIndex *index, struct SbSpeculation *out);
+
+/*
+ Hands out the cancellation request of `disc`'s reads, in `*out`: a handle of its own,
+ for another thread to cancel them with `sb_cancel_request`. A disc and its clones
+ (`sb_disc_clone*`) have the same request, so cancelling stops the reads of all of
+ them. Call it on the disc's thread (it uses the disc), before handing the token to the
+ thread that cancels. On failure `*out` is set to NULL.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `out` NULL or valid for a write.
+ */
+SbStatus sb_disc_cancel_token(const struct SbDisc *disc, struct SbCancel **out);
+
+/*
+ Requests, from any thread, that the reads of the token's disc and its clones stop.
+ Until `sb_cancel_withdraw`, every call that reads audio sectors through them
+ (`sb_track_audio_read`, `sb_raw_frames_read`, the seek index extension and verification
+ calls) returns `SB_STATUS_CANCELLED`: a call that starts then at once, a call in
+ progress after at most 32 more sectors read, plus the decoding of one group of frames
+ already started for the frame it is returning. The handles keep their state, frames
+ read ahead included: once the request is withdrawn they continue exactly where they
+ were (a provisional search, `SB_SEEK_POLICY_SPECULATIVE`, cancelled before it chose its
+ start starts again). They can also be freed. Opening, cloning and the calls that read
+ no audio sectors are not cancelled.
+
+ The request is sticky: it stays, for the disc and every clone, until
+ `sb_cancel_withdraw`, so a caller that keeps the disc withdraws it before reading
+ again. A disc opened afresh (`sb_disc_open_*`), even of the same file, has a token of its
+ own and is not affected.
+
+ # Safety
+
+ `token` must be NULL or a live handle.
+ */
+SbStatus sb_cancel_request(const struct SbCancel *token);
+
+/*
+ Withdraws the request of `sb_cancel_request`, from any thread: reads go on again.
+
+ # Safety
+
+ `token` must be NULL or a live handle.
+ */
+SbStatus sb_cancel_withdraw(const struct SbCancel *token);
+
+/*
+ Whether cancellation is requested: `*requested` is 1 or 0.
+
+ # Safety
+
+ `token` must be NULL or a live handle; `requested` NULL or valid for a write.
+ */
+SbStatus sb_cancel_requested(const struct SbCancel *token, uint8_t *requested);
+
+/*
+ Frees a cancellation token. NULL is ignored. It may outlive its disc; freeing it
+ neither requests nor withdraws anything.
+
+ # Safety
+
+ `token` must be NULL or a live handle, freed only once, and not in use by another call.
+ */
+void sb_cancel_free(struct SbCancel *token);
+
+/*
+ Hands out how far a track or range audio handle has read, in `*out`: a handle of its
+ own, which `sb_progress_get` reads from any thread while `audio` reads. Call it on the
+ handle's thread, when the handle is not in use (it uses the handle). Every call for
+ one handle follows the same counts; a handle from `sb_track_audio_open_next` or
+ `sb_range_audio_open_next` counts afresh, and needs one of its own. On failure `*out`
+ is set to NULL.
+
+ # Safety
+
+ `audio` must be NULL or a live handle; `out` NULL or valid for a write.
+ */
+SbStatus sb_track_audio_progress(const struct SbTrackAudio *audio, struct SbProgress **out);
+
+/*
+ As `sb_track_audio_progress`, for a raw frames handle (of a range, or of an area's
+ stored frame list); a handle from `sb_raw_frames_open_next` counts afresh.
+
+ # Safety
+
+ `raw` must be NULL or a live handle; `out` NULL or valid for a write.
+ */
+SbStatus sb_raw_frames_progress(const struct SbRawFrames *raw, struct SbProgress **out);
+
+/*
+ How far the handle has read, from any thread: `*sectors_read`, the sectors it has read
+ through its disc so far (exact), and `*sectors_expected`, the sectors it expects to
+ have read once done (an estimate placing the range's end in proportion to the area's
+ play time, revised as it reads; at least `*sectors_read`, and equal to it once the
+ handle has read its range to the end). They count every read the handle makes, at most
+ 32 sectors at a time: the scan before a range's first frame, a provisional search, a
+ seek index's replay and the range itself. Both outputs are required.
+
+ # Safety
+
+ `progress` must be NULL or a live handle; `sectors_read` and `sectors_expected` NULL or
+ valid for writes.
+ */
+SbStatus sb_progress_get(const struct SbProgress *progress,
+                         uint64_t *sectors_read,
+                         uint64_t *sectors_expected);
+
+/*
+ Frees a progress handle. NULL is ignored. It may outlive the handle it follows.
+
+ # Safety
+
+ `progress` must be NULL or a live handle, freed only once, and not in use by another
+ call.
+ */
+void sb_progress_free(struct SbProgress *progress);
 
 #ifdef __cplusplus
 }  // extern "C"

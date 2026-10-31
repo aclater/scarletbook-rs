@@ -254,6 +254,35 @@ be cloned that way: open it with a positional read callback instead
 (`sb_disc_open_callbacks_at`, called with an offset, possibly from several threads at once),
 or give each clone read and seek callbacks of its own (`sb_disc_clone_callbacks`).
 
+### Cancelling and progress
+
+A conversion running on a worker thread can be stopped and followed from another thread,
+through two small handles made for that, which several threads may use at once:
+
+```c
+SbCancel *token = NULL;
+sb_disc_cancel_token(disc, &token);       /* on the disc's thread: shared by its clones */
+SbProgress *progress = NULL;
+sb_track_audio_progress(audio, &progress); /* on the handle's thread, before reading */
+/* worker thread: while (sb_track_audio_read(audio, disc, ...) == SB_STATUS_OK) {...} */
+/* other thread: */
+uint64_t read, expected;
+sb_progress_get(progress, &read, &expected); /* sectors read, sectors expected */
+sb_cancel_request(token);                  /* e.g. on Ctrl-C */
+```
+
+While cancellation is requested, every call that reads audio sectors through the disc or
+its clones returns `SB_STATUS_CANCELLED`, distinct from `SB_STATUS_IO`: at once for a call
+that starts then, after at most 32 more sectors for one in progress, the scan before a
+range's first frame included, whatever the disc reads through (a file, memory or
+callbacks). The request is sticky: it holds for the disc and its clones until
+`sb_cancel_withdraw` (a disc opened afresh has a token of its own). The handles keep their
+state: after `sb_cancel_withdraw` they continue exactly where they stopped; or free them. `sb_progress_get` gives the sectors a handle has read
+(exact, updated at least every 32 sectors, also during the scan before its first frame)
+and the sectors it expects to read (an estimate, equal to the count read once done), for
+track, range and raw frames handles. Neither handle borrows the disc or the handle it came
+from, so polling it never collides with the reading thread; free each with its `_free`.
+
 ### Release assets
 
 Each release carries the C library as `scarletbook-ffi-<version>-<target>.tar.gz`, with a
@@ -448,6 +477,15 @@ bind("sb_disc_seek_verify", S, H, U32, C.c_uint64, P(C.c_uint8))
 bind("sb_disc_seek_event_next", S, H, U32, P(SbSpeculation))
 bind("sb_seek_index_verify", S, H, H, P(U32))
 bind("sb_seek_index_event_next", S, H, P(SbSpeculation))
+bind("sb_disc_cancel_token", S, H, P(H))
+bind("sb_cancel_request", S, H)
+bind("sb_cancel_withdraw", S, H)
+bind("sb_cancel_requested", S, H, P(C.c_uint8))
+bind("sb_cancel_free", None, H)
+bind("sb_track_audio_progress", S, H, P(H))
+bind("sb_raw_frames_progress", S, H, P(H))
+bind("sb_progress_get", S, H, P(C.c_uint64), P(C.c_uint64))
+bind("sb_progress_free", None, H)
 ```
 
 The other functions bind the same way from their declarations in `scarletbook.h`. Then:
@@ -489,8 +527,8 @@ finally:
 
 ctypes releases the GIL for each call, so conversions on several Python threads run in
 parallel: give each thread its own disc (or a clone of one, `sb_disc_clone`) and handles
-(a handle may move between threads but not be used by two at once; an `SbPool` may be
-shared), and read `sb_last_error_message()`
+(a handle may move between threads but not be used by two at once; an `SbPool`,
+`SbCancel` or `SbProgress` may be shared), and read `sb_last_error_message()`
 on the thread whose call failed, before that thread's next call, as `check` does. Every
 handle has its `_free` function; nothing else needs freeing (the strings the library
 returns are static or copied into your buffers). Callbacks (`sb_disc_open_callbacks`,
