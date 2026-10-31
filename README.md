@@ -254,6 +254,29 @@ be cloned that way: open it with a positional read callback instead
 (`sb_disc_open_callbacks_at`, called with an offset, possibly from several threads at once),
 or give each clone read and seek callbacks of its own (`sb_disc_clone_callbacks`).
 
+### Stored and decoded frames in one pass
+
+A track or range audio handle can also give each position's stored content, as
+`sb_raw_frames_read` gives it, next to its decoded audio, from one read of the area's
+sectors (for example to write a file of the stored DST frames and decoded files at once):
+
+```c
+sb_range_audio_open(disc, slot, 0, playtime, &audio);
+sb_track_audio_set_pool(audio, pool);   /* optional, as for any handle */
+sb_track_audio_keep_stored(audio);      /* before the first read */
+uint8_t raw[SB_MAX_FRAME_BYTES];
+SbRawFrameInfo ri;
+while (sb_track_audio_read_with_stored(audio, disc, buf, cap, &fi, raw, sizeof raw, &ri, 0)
+       == SB_STATUS_OK) {
+  /* buf: as sb_track_audio_read; raw[0 .. ri.size): as sb_raw_frames_read (1 for the last
+     argument: as sb_raw_frames_read_dst_equivalent) */
+}
+```
+
+The decoding runs where the handle decodes, with the same frames held ahead; the frames,
+statuses, kinds and counts are those of the two separate handles, and each audio sector is
+read once.
+
 ### Cancelling and progress
 
 A conversion running on a worker thread can be stopped and followed from another thread,
@@ -486,6 +509,9 @@ bind("sb_track_audio_progress", S, H, P(H))
 bind("sb_raw_frames_progress", S, H, P(H))
 bind("sb_progress_get", S, H, P(C.c_uint64), P(C.c_uint64))
 bind("sb_progress_free", None, H)
+bind("sb_track_audio_keep_stored", S, H)
+bind("sb_track_audio_read_with_stored", S, H, H, C.c_char_p, SIZE, P(SbFrameInfo),
+     C.c_char_p, SIZE, P(SbRawFrameInfo), C.c_uint8)
 ```
 
 The other functions bind the same way from their declarations in `scarletbook.h`. Then:

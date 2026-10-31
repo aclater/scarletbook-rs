@@ -21,9 +21,9 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use scarletbook::log::{Level, Log};
 use scarletbook::toc::{AreaTextItem, DiscTextItem, TrackTextItem};
 use scarletbook::{
-    Area, AreaCursor, AreaIndex, CancelToken, DecodeOn, Disc, Error, FrameContent, FrameKind, FrameStatus,
-    IndexOptions, LoudspeakerLayout, Progress, ReadAt, ReadAtReader, SeekPolicy, Slot, Speaker, Speculation,
-    SpeculativeOptions, TrackAudioCursor, TrackCursor, TrackFrame, WarningCode,
+    Area, AreaCursor, AreaIndex, AudioFrame, CancelToken, DecodeOn, Disc, Error, FrameContent, FrameKind,
+    FrameStatus, IndexOptions, LoudspeakerLayout, Progress, ReadAt, ReadAtReader, SeekPolicy, Slot, Speaker,
+    Speculation, SpeculativeOptions, Stored, TrackAudioCursor, TrackCursor, TrackFrame, WarningCode,
 };
 
 /// Result of every call: an `int32_t`, whose values are the `SB_STATUS_*` constants. In C
@@ -471,6 +471,9 @@ impl std::fmt::Debug for SbDisc {
 pub struct SbTrackAudio {
     inner: RefCell<TrackAudioCursor>,
     disc_id: u64,
+    /// A position whose stored content the caller's buffer was too small for
+    /// (`sb_track_audio_read_with_stored`), returned by the next read.
+    held: RefCell<Option<(AudioFrame, Stored)>>,
 }
 
 impl SbTrackAudio {
@@ -478,7 +481,7 @@ impl SbTrackAudio {
     /// calling thread, or with the `parallel` feature on the current rayon pool.
     fn fresh(mut cursor: TrackAudioCursor, disc_id: u64) -> Box<Self> {
         cursor.set_decode_on(Self::default_decode_on());
-        Box::new(SbTrackAudio { inner: RefCell::new(cursor), disc_id })
+        Box::new(SbTrackAudio { inner: RefCell::new(cursor), disc_id, held: RefCell::new(None) })
     }
 
     /// Where handles decode without a pool of their own.
@@ -2470,7 +2473,11 @@ unsafe fn open_next(
             Some(i) => next.audio_indexed_as(prev_cursor, i, opening),
             None => next.audio_as(prev_cursor, opening),
         };
-        let audio = Box::new(SbTrackAudio { inner: RefCell::new(cursor), disc_id: handle.id });
+        let audio = Box::new(SbTrackAudio {
+            inner: RefCell::new(cursor),
+            disc_id: handle.id,
+            held: RefCell::new(None),
+        });
         // SAFETY: non-NULL and valid for a write by this function's contract.
         unsafe { out.write(Box::into_raw(audio)) };
         Ok(SbStatus::Ok)
@@ -2614,31 +2621,191 @@ pub unsafe extern "C" fn sb_track_audio_read(
         if buf.is_null() || cap < size {
             return Err(Failure(SbStatus::BufferTooSmall, format!("a frame needs {size} bytes")));
         }
-        let mut disc = d.get_mut()?;
-        let frame = cursor.next_frame(disc.image_mut());
-        // The disc's seek index (`sb_disc_seek_index_enable`), shared with its clones, takes
-        // what the read recorded: a test when there is nothing.
-        disc.absorb_seek_checkpoints(&mut *cursor);
-        let Some(frame) = frame else {
-            return Ok(SbStatus::End);
+        let mut held = a.held.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))?;
+        let frame = match held.take() {
+            // Held by sb_track_audio_read_with_stored: its stored content is dropped.
+            Some((frame, _)) => frame,
+            None => {
+                let mut disc = d.get_mut()?;
+                let frame = cursor.next_frame(disc.image_mut());
+                // The disc's seek index (`sb_disc_seek_index_enable`), shared with its
+                // clones, takes what the read recorded: a test when there is nothing.
+                disc.absorb_seek_checkpoints(&mut *cursor);
+                let Some(frame) = frame else {
+                    return Ok(SbStatus::End);
+                };
+                frame?
+            }
         };
-        let frame = frame?;
-        let (status, rule) = match frame.status {
-            FrameStatus::Dsd => (SbFrameStatus::Dsd, 0),
-            FrameStatus::Decoded => (SbFrameStatus::Decoded, 0),
-            FrameStatus::Missing => (SbFrameStatus::Missing, 0),
-            FrameStatus::Invalid(e) => (SbFrameStatus::Invalid, u32::from(e.rule())),
+        // SAFETY: forwarded contract (buf checked above for `size` bytes).
+        unsafe { write_decoded(&frame, size, buf, info) };
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// Copies a decoded frame into `buf` and describes it in `*info` (if not NULL).
+///
+/// # Safety
+///
+/// `buf` must be valid for `size` bytes of writes, `size` the frame size of the handle's
+/// area (channels x 4704); `info` NULL or valid for a write.
+unsafe fn write_decoded(frame: &AudioFrame, size: usize, buf: *mut u8, info: *mut SbFrameInfo) {
+    // SAFETY: forwarded contract.
+    unsafe { copy_decoded(frame, size, buf) };
+    if !info.is_null() {
+        // SAFETY: non-NULL and valid for a write by this function's contract.
+        unsafe { info.write(decoded_info(frame, size)) };
+    }
+}
+
+/// Copies a decoded frame into `buf`.
+///
+/// # Safety
+///
+/// `buf` must be valid for `size` bytes of writes.
+unsafe fn copy_decoded(frame: &AudioFrame, size: usize, buf: *mut u8) {
+    let n = frame.data.len().min(size);
+    // SAFETY: buf is valid for size >= n bytes of writes; frame.data is owned by this
+    // library, so the regions do not overlap.
+    unsafe { std::ptr::copy_nonoverlapping(frame.data.as_ptr(), buf, n) };
+}
+
+/// The `SbFrameInfo` of a decoded frame copied into a buffer of `size` bytes.
+fn decoded_info(frame: &AudioFrame, size: usize) -> SbFrameInfo {
+    let (status, rule) = match frame.status {
+        FrameStatus::Dsd => (SbFrameStatus::Dsd, 0),
+        FrameStatus::Decoded => (SbFrameStatus::Decoded, 0),
+        FrameStatus::Missing => (SbFrameStatus::Missing, 0),
+        FrameStatus::Invalid(e) => (SbFrameStatus::Invalid, u32::from(e.rule())),
+    };
+    // At most size = channels x 4704, so it fits.
+    let n = frame.data.len().min(size);
+    SbFrameInfo { number: frame.number, status: status as u32, dst_rule: rule, size: n as u32 }
+}
+
+/// Makes a track or range audio handle keep each position's stored content next to its
+/// decoding, for `sb_track_audio_read_with_stored`: from one read of the area's sectors,
+/// what `sb_raw_frames_read` gives for each position and what `sb_track_audio_read` gives,
+/// decoded where the handle decodes (`sb_track_audio_set_pool`) with the same frames held
+/// ahead. Call it before the first read (`SB_STATUS_INVALID_ARGUMENT` afterwards); handles
+/// continued from it (`sb_track_audio_open_next`, `sb_range_audio_open_next`) keep it.
+/// Each DST frame's bytes (at most `SB_MAX_FRAME_BYTES`) are then kept until the position
+/// is read.
+///
+/// # Safety
+///
+/// `audio` must be NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_track_audio_keep_stored(audio: *const SbTrackAudio) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let a = unsafe { audio_handle(audio) }?;
+        a.inner.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))?.keep_stored()?;
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// Reads the next position of a handle that keeps stored content
+/// (`sb_track_audio_keep_stored`): its decoded audio into `buf` and `*info`, exactly as
+/// `sb_track_audio_read` writes them, and its stored content into `raw_buf` and
+/// `*raw_info`, exactly as `sb_raw_frames_read` writes them for the same position (with
+/// `dst_equivalent` 1, as `sb_raw_frames_read_dst_equivalent` does: the position's DST
+/// equivalent). Returns `SB_STATUS_END` after the last position.
+///
+/// `buf` needs channels x 4704 bytes, `raw_buf` the position's size (`SB_MAX_FRAME_BYTES`
+/// always suffices; a missing position has none, unless `dst_equivalent`). If `raw_buf`
+/// is too small, the call writes `*info` and `*raw_info` (with the size needed) but
+/// neither buffer, returns `SB_STATUS_BUFFER_TOO_SMALL`, and keeps the position for the
+/// next call (or for `sb_track_audio_read`, which then drops its stored content). The
+/// handle's other calls behave as for any track audio handle; `sb_track_audio_read` may be
+/// mixed with this one.
+///
+/// # Safety
+///
+/// `audio` and `disc` must be NULL or live handles; `buf` NULL or valid for `cap` bytes of
+/// writes; `raw_buf` NULL or valid for `raw_cap` bytes of writes, not overlapping `buf`;
+/// `info` and `raw_info` NULL or valid for a write.
+#[allow(clippy::too_many_arguments, reason = "the two buffers of sb_track_audio_read and sb_raw_frames_read")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_track_audio_read_with_stored(
+    audio: *const SbTrackAudio,
+    disc: *const SbDisc,
+    buf: *mut u8,
+    cap: usize,
+    info: *mut SbFrameInfo,
+    raw_buf: *mut u8,
+    raw_cap: usize,
+    raw_info: *mut SbRawFrameInfo,
+    dst_equivalent: u8,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let a = unsafe { audio_handle(audio) }?;
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?;
+        if a.disc_id != d.id {
+            return Err(Failure::arg("the track audio handle belongs to another disc"));
+        }
+        if dst_equivalent > 1 {
+            return Err(Failure::arg("dst_equivalent must be 0 or 1"));
+        }
+        let mut cursor = a.inner.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))?;
+        if !cursor.keeps_stored() {
+            return Err(Failure::arg("the handle does not keep stored content (sb_track_audio_keep_stored)"));
+        }
+        let size = usize::from(cursor.channels()) * scarletbook::audio::FRAME_BYTES_PER_CHANNEL;
+        if buf.is_null() || cap < size {
+            return Err(Failure(SbStatus::BufferTooSmall, format!("a frame needs {size} bytes")));
+        }
+        let mut held = a.held.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))?;
+        let (frame, stored) = match held.take() {
+            Some(pair) => pair,
+            None => {
+                let mut disc = d.get_mut()?;
+                let pair = cursor.next_frame_with_stored(disc.image_mut());
+                // As in sb_track_audio_read.
+                disc.absorb_seek_checkpoints(&mut *cursor);
+                let Some(pair) = pair else {
+                    return Ok(SbStatus::End);
+                };
+                pair?
+            }
         };
-        let n = frame.data.len().min(size);
-        // SAFETY: buf is valid for cap >= size >= n bytes of writes; frame.data is owned
-        // here, so the regions do not overlap.
-        unsafe { std::ptr::copy_nonoverlapping(frame.data.as_ptr(), buf, n) };
-        // n <= size = channels x 4704, so it fits.
-        let fi = SbFrameInfo { number: frame.number, status: status as u32, dst_rule: rule, size: n as u32 };
+        // Stored content and DST equivalents: specification 4, 4.6.1 items 1 to 4.
+        let kind = match &stored {
+            Stored::Dst(_) => SbFrameKind::Dst,
+            Stored::Plain => SbFrameKind::Dsd,
+            Stored::Missing => SbFrameKind::Missing,
+        };
+        let bytes: std::borrow::Cow<'_, [u8]> = match (&stored, dst_equivalent == 1) {
+            (Stored::Dst(b), _) => std::borrow::Cow::Borrowed(b),
+            (_, false) => std::borrow::Cow::Borrowed(stored.bytes(&frame)),
+            (_, true) => std::borrow::Cow::Owned(cursor.dst_equivalent(&stored.content(&frame)).into_owned()),
+        };
+        let raw_size = bytes.len();
         if !info.is_null() {
             // SAFETY: non-NULL and valid for a write by this function's contract.
-            unsafe { info.write(fi) };
+            unsafe { info.write(decoded_info(&frame, size)) };
         }
+        if !raw_info.is_null() {
+            // At most SB_MAX_FRAME_BYTES (a stored frame or its DST equivalent), so it fits.
+            let ri = SbRawFrameInfo { number: frame.number, kind: kind as u32, size: raw_size as u32 };
+            // SAFETY: non-NULL and valid for a write by this function's contract.
+            unsafe { raw_info.write(ri) };
+        }
+        if raw_size > 0 && (raw_buf.is_null() || raw_cap < raw_size) {
+            let msg = format!("frame {} needs {raw_size} bytes of stored content", frame.number);
+            drop(bytes);
+            *held = Some((frame, stored));
+            return Err(Failure(SbStatus::BufferTooSmall, msg));
+        }
+        if raw_size > 0 {
+            // SAFETY: raw_buf is valid for raw_cap >= raw_size bytes of writes; `bytes` is
+            // owned by this library, so the regions do not overlap.
+            unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), raw_buf, raw_size) };
+        }
+        // SAFETY: buf is valid for cap >= size bytes of writes (checked above).
+        unsafe { copy_decoded(&frame, size, buf) };
         Ok(SbStatus::Ok)
     })
 }
@@ -2662,10 +2829,19 @@ pub unsafe extern "C" fn sb_track_audio_counts(
             return Err(Failure::arg("NULL output pointer"));
         }
         let cursor = a.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
+        // A held position (sb_track_audio_read_with_stored) has been counted by the cursor
+        // but not yet returned.
+        let held = a.held.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
+        let status = held.as_ref().map(|(f, _)| f.status);
+        let (held_missing, held_invalid) = match status {
+            Some(FrameStatus::Missing) => (1, 0),
+            Some(FrameStatus::Invalid(_)) => (0, 1),
+            _ => (0, 0),
+        };
         // SAFETY: forwarded contract (checked non-NULL above).
-        unsafe { write_out(missing, cursor.missing_frames()) }?;
+        unsafe { write_out(missing, cursor.missing_frames() - held_missing) }?;
         // SAFETY: forwarded contract (checked non-NULL above).
-        unsafe { write_out(invalid, cursor.invalid_dst_frames()) }?;
+        unsafe { write_out(invalid, cursor.invalid_dst_frames() - held_invalid) }?;
         Ok(SbStatus::Ok)
     })
 }

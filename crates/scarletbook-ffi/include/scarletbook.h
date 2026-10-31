@@ -1819,6 +1819,54 @@ SbStatus sb_track_audio_read(const struct SbTrackAudio *audio,
                              struct SbFrameInfo *info);
 
 /*
+ Makes a track or range audio handle keep each position's stored content next to its
+ decoding, for `sb_track_audio_read_with_stored`: from one read of the area's sectors,
+ what `sb_raw_frames_read` gives for each position and what `sb_track_audio_read` gives,
+ decoded where the handle decodes (`sb_track_audio_set_pool`) with the same frames held
+ ahead. Call it before the first read (`SB_STATUS_INVALID_ARGUMENT` afterwards); handles
+ continued from it (`sb_track_audio_open_next`, `sb_range_audio_open_next`) keep it.
+ Each DST frame's bytes (at most `SB_MAX_FRAME_BYTES`) are then kept until the position
+ is read.
+
+ # Safety
+
+ `audio` must be NULL or a live handle.
+ */
+SbStatus sb_track_audio_keep_stored(const struct SbTrackAudio *audio);
+
+/*
+ Reads the next position of a handle that keeps stored content
+ (`sb_track_audio_keep_stored`): its decoded audio into `buf` and `*info`, exactly as
+ `sb_track_audio_read` writes them, and its stored content into `raw_buf` and
+ `*raw_info`, exactly as `sb_raw_frames_read` writes them for the same position (with
+ `dst_equivalent` 1, as `sb_raw_frames_read_dst_equivalent` does: the position's DST
+ equivalent). Returns `SB_STATUS_END` after the last position.
+
+ `buf` needs channels x 4704 bytes, `raw_buf` the position's size (`SB_MAX_FRAME_BYTES`
+ always suffices; a missing position has none, unless `dst_equivalent`). If `raw_buf`
+ is too small, the call writes `*info` and `*raw_info` (with the size needed) but
+ neither buffer, returns `SB_STATUS_BUFFER_TOO_SMALL`, and keeps the position for the
+ next call (or for `sb_track_audio_read`, which then drops its stored content). The
+ handle's other calls behave as for any track audio handle; `sb_track_audio_read` may be
+ mixed with this one.
+
+ # Safety
+
+ `audio` and `disc` must be NULL or live handles; `buf` NULL or valid for `cap` bytes of
+ writes; `raw_buf` NULL or valid for `raw_cap` bytes of writes, not overlapping `buf`;
+ `info` and `raw_info` NULL or valid for a write.
+ */
+SbStatus sb_track_audio_read_with_stored(const struct SbTrackAudio *audio,
+                                         const struct SbDisc *disc,
+                                         uint8_t *buf,
+                                         size_t cap,
+                                         struct SbFrameInfo *info,
+                                         uint8_t *raw_buf,
+                                         size_t raw_cap,
+                                         struct SbRawFrameInfo *raw_info,
+                                         uint8_t dst_equivalent);
+
+/*
  The missing and invalid DST frame counts of the frames returned so far.
 
  # Safety

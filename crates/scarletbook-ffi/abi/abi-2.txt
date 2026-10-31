@@ -344,6 +344,8 @@ SbStatus sb_range_audio_open(const struct SbDisc *disc, uint32_t slot, uint32_t 
 SbStatus sb_range_audio_open_next(const struct SbDisc *disc, struct SbTrackAudio *prev, uint32_t slot, uint32_t first, uint32_t end, struct SbTrackAudio **out);
 uint32_t sb_track_audio_channels(const struct SbTrackAudio *audio);
 SbStatus sb_track_audio_read(const struct SbTrackAudio *audio, const struct SbDisc *disc, uint8_t *buf, size_t cap, struct SbFrameInfo *info);
+SbStatus sb_track_audio_keep_stored(const struct SbTrackAudio *audio);
+SbStatus sb_track_audio_read_with_stored(const struct SbTrackAudio *audio, const struct SbDisc *disc, uint8_t *buf, size_t cap, struct SbFrameInfo *info, uint8_t *raw_buf, size_t raw_cap, struct SbRawFrameInfo *raw_info, uint8_t dst_equivalent);
 SbStatus sb_track_audio_counts(const struct SbTrackAudio *audio, uint64_t *missing, uint64_t *invalid);
 SbStatus sb_track_audio_malformed_sectors(const struct SbTrackAudio *audio, uint64_t *count);
 SbStatus sb_track_audio_warning(const struct SbTrackAudio *audio, uint32_t index, struct SbWarning *out);
