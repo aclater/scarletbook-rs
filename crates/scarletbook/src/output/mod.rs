@@ -33,6 +33,7 @@
 mod dsdiff;
 mod dsdiff_dst;
 mod dsf;
+mod markers;
 
 use std::borrow::Cow;
 use std::collections::VecDeque;
@@ -45,11 +46,12 @@ use crate::audio::{
 use crate::disc::Disc;
 use crate::dst::DstDecoder;
 use crate::error::{Error, Slot};
-use crate::toc::{Area, TocDigests};
+use crate::toc::{Area, TocDigests, Track};
 
 pub use dsdiff::{LocalChunk, PropertyChunk};
 pub use dsdiff_dst::{DstIndexOffset, DstLengths, InvalidDst};
 pub use dsf::DsfBitsPerSample;
+pub use markers::{Marker, MarkerKind, Markers};
 
 /// An output file format (specification 8).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -62,6 +64,21 @@ pub enum Format {
     /// DSDIFF with DST sound data (8.4.6): the positions' DST equivalents, unchanged. Its
     /// layout needs the frame lengths as well as the TOC: see [`Layout::new_dst`].
     DsdiffDst,
+}
+
+/// Which track a file holds (specification 8, 8.1 item 7; W29), for the per-track tag
+/// items and the one-track markers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum SourceTrack {
+    /// The track whose `[s_i, s_i + d_i)` or track with pause is the range (the
+    /// lowest-numbered one, if several are), or none: a frame range that is neither, and the
+    /// play range `[0, P)`, which holds the whole area.
+    Auto,
+    /// None.
+    None,
+    /// The track with this number, which must overlap the range.
+    Track(u8),
 }
 
 /// The writer's choices of specification 8, 8.6 ("W" numbers below are its rows), each
@@ -111,6 +128,36 @@ pub struct OutputOptions {
     /// [`DstIndexOffset::ChunkHeader`], the `DSTF` chunk's first byte; the other reading,
     /// [`DstIndexOffset::FrameData`], is 12 bytes later.
     pub dsdiff_dst_index_offset: DstIndexOffset,
+    /// W29, the file's source track (8.1 item 7). Default [`SourceTrack::Auto`].
+    pub source_track: SourceTrack,
+    /// Whether a DSDIFF file is an edited master (8.4.11). One is the play range `[0, P)` of
+    /// an area with a defined layout and 1 to 255 tracks of at least 75 frames, in order,
+    /// in a program of at most 255:59:74; any other gives
+    /// [`crate::OutputRefusal::NotEditedMaster`]. It always has `ABSS` (the time of
+    /// [`OutputOptions::dsdiff_absolute_start`], or 0), and `DIIN` with `EMID` and the
+    /// program's markers, whatever [`OutputOptions::dsdiff_edited_master_info`] says. It
+    /// needs `LSCO` ([`OutputOptions::dsdiff_loudspeaker_configuration`]) and the markers of
+    /// the TOC: without either, it is an [`Error::InvalidArgument`]. Default `false`.
+    pub dsdiff_edited_master: bool,
+    /// W24, whether a DSDIFF file has an edited master information chunk `DIIN` (8.4.8),
+    /// with `EMID` and the markers of [`OutputOptions::dsdiff_markers`]. Default `false`
+    /// (an edited master always has one).
+    pub dsdiff_edited_master_info: bool,
+    /// W24, the text of `EMID`: text bytes 0x20 to 0x7E. Default empty. The DSDIFF document recommends
+    /// something unique per file.
+    pub dsdiff_edited_master_id: String,
+    /// The markers of `DIIN` (8.4.10). Default [`Markers::FromToc`].
+    pub dsdiff_markers: Markers,
+    /// W28, whether a file with a source track has a one-track program (8.4.10 item 3).
+    /// Default `false`.
+    pub dsdiff_source_track_markers: bool,
+    /// W30, whether a frame range without a source track has its clipped program (8.4.10
+    /// item 4). Default `false`.
+    pub dsdiff_clipped_program: bool,
+    /// W22, whether the data size `D` of `MARK` (and of `DIAR` and `DITI`) counts the pad
+    /// byte after odd-length text (8.4.7 item 6); the file's bytes are the same either way.
+    /// Default `false`, as for every other chunk (8.4.1 item 1).
+    pub dsdiff_text_pad_counted: bool,
 }
 
 impl Default for OutputOptions {
@@ -127,6 +174,14 @@ impl Default for OutputOptions {
             dsdiff_dst_crc: false,
             dsdiff_dst_index: true,
             dsdiff_dst_index_offset: DstIndexOffset::ChunkHeader,
+            source_track: SourceTrack::Auto,
+            dsdiff_edited_master: false,
+            dsdiff_edited_master_info: false,
+            dsdiff_edited_master_id: String::new(),
+            dsdiff_markers: Markers::FromToc,
+            dsdiff_source_track_markers: false,
+            dsdiff_clipped_program: false,
+            dsdiff_text_pad_counted: false,
         }
     }
 }
@@ -185,6 +240,46 @@ impl OutputOptions {
     /// These options with or without a `DSTI` sound index (W20).
     pub fn with_dsdiff_dst_index(self, write: bool) -> Self {
         OutputOptions { dsdiff_dst_index: write, ..self }
+    }
+
+    /// These options with source track `track` (W29).
+    pub fn with_source_track(self, track: SourceTrack) -> Self {
+        OutputOptions { source_track: track, ..self }
+    }
+
+    /// These options for an edited master, or not (8.4.11).
+    pub fn with_dsdiff_edited_master(self, edited_master: bool) -> Self {
+        OutputOptions { dsdiff_edited_master: edited_master, ..self }
+    }
+
+    /// These options with or without `DIIN` (W24).
+    pub fn with_dsdiff_edited_master_info(self, write: bool) -> Self {
+        OutputOptions { dsdiff_edited_master_info: write, ..self }
+    }
+
+    /// These options with `EMID` text `id` (W24).
+    pub fn with_dsdiff_edited_master_id(self, id: String) -> Self {
+        OutputOptions { dsdiff_edited_master_id: id, ..self }
+    }
+
+    /// These options with markers `markers`.
+    pub fn with_dsdiff_markers(self, markers: Markers) -> Self {
+        OutputOptions { dsdiff_markers: markers, ..self }
+    }
+
+    /// These options with or without one-track programs (W28).
+    pub fn with_dsdiff_source_track_markers(self, write: bool) -> Self {
+        OutputOptions { dsdiff_source_track_markers: write, ..self }
+    }
+
+    /// These options with or without clipped programs (W30).
+    pub fn with_dsdiff_clipped_program(self, write: bool) -> Self {
+        OutputOptions { dsdiff_clipped_program: write, ..self }
+    }
+
+    /// These options with the text pad counted in `D`, or not (W22).
+    pub fn with_dsdiff_text_pad_counted(self, counted: bool) -> Self {
+        OutputOptions { dsdiff_text_pad_counted: counted, ..self }
     }
 
     /// These options with `DSTI` offsets pointing at `offset` (W21).
@@ -288,6 +383,8 @@ pub struct Layout {
     /// The image's TOC digests, for a layout made from a [`Disc`]: [`Layout::read_at`]
     /// refuses a disc of another image.
     image: Option<TocDigests>,
+    /// The source track's number (8.1 item 7).
+    source: Option<u8>,
 }
 
 impl Layout {
@@ -321,6 +418,7 @@ impl Layout {
             invalid: None,
             crc: false,
             image: None,
+            source: source_track(area, first, end, options.source_track)?,
         };
         match format {
             Format::Dsf => dsf::build(&mut layout, area, options)?,
@@ -360,6 +458,7 @@ impl Layout {
             invalid: Some(lengths.invalid()),
             crc: options.dsdiff_dst_crc,
             image: None,
+            source: source_track(area, first, end, options.source_track)?,
         };
         let data = dsdiff_dst::DstData::new(&layout, lengths, options)?;
         dsdiff::assemble(&mut layout, area, options, dsdiff::Sound::Dst(data))?;
@@ -391,6 +490,11 @@ impl Layout {
     /// The frame range `[first, end)` the file holds.
     pub fn range(&self) -> (u32, u32) {
         (self.first, self.end)
+    }
+
+    /// The number of the file's source track (specification 8, 8.1 item 7), if it has one.
+    pub fn source_track(&self) -> Option<u8> {
+        self.source
     }
 
     /// The area's channel count `C`, 1 to 6.
@@ -573,6 +677,31 @@ impl<R: Read + Seek> Disc<R> {
         let mut layout = Layout::new_dst(area, self.image_sectors(), lengths, options)?;
         layout.image = Some(self.toc_digests().clone());
         Ok(layout)
+    }
+}
+
+/// The source track of `[first, end)` of `area` (8.1 item 7, W29).
+fn source_track(area: &Area, first: u32, end: u32, choice: SourceTrack) -> Result<Option<u8>, Error> {
+    match choice {
+        SourceTrack::None => Ok(None),
+        SourceTrack::Track(n) => {
+            let t: &Track =
+                area.track(u32::from(n)).ok_or(Error::NoSuchTrack { slot: area.slot, track: n.into() })?;
+            if t.start_frame.max(first) < t.end_frame().min(end) {
+                Ok(Some(n))
+            } else {
+                Err(Error::InvalidArgument("the source track must overlap the range"))
+            }
+        }
+        SourceTrack::Auto if (first, end) == (0, area.playtime_frames()) => Ok(None),
+        SourceTrack::Auto => Ok(area
+            .tracks
+            .iter()
+            .find(|t| {
+                let with_pause = audio::track_range_with_pause(area, u32::from(t.number));
+                (t.start_frame, t.end_frame()) == (first, end) || with_pause == Some((first, end))
+            })
+            .map(|t| t.number)),
     }
 }
 

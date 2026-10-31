@@ -1,0 +1,1 @@
+| 2026-10-31 | #131 DSDIFF markers and edited master (#145) | `output::Marker`, `Markers`, `SourceTrack`, `EditedMasterCheck`, `DIIN`/`EMID`/`MARK`. Specification 8, 8.1 item 7, 8.4.2, 8.4.7, 8.4.8, 8.4.10 (items 1 to 4) and 8.4.11, and 8.6 rows 22 to 24 and 27 to 30, at sacd-spec `6db1251`. No new sources consulted. |
