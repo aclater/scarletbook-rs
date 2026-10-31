@@ -133,9 +133,7 @@ const SJIS_RESERVED: [u16; 10] =
 
 /// Decodes bytes with a character set (specification 2, 2.6.2 and 2.6.3). Never fails.
 pub fn decode(bytes: &[u8], cs: Charset) -> String {
-    let Some(t) = table(cs) else {
-        return bytes.iter().map(|&b| char::from(b)).collect();
-    };
+    let Some(t) = table(cs) else { return latin1(bytes) };
     let mut out = String::with_capacity(bytes.len());
     let mut i = 0usize;
     while let Some(&b0) = bytes.get(i) {
@@ -164,6 +162,18 @@ pub fn decode(bytes: &[u8], cs: Charset) -> String {
     out
 }
 
+/// Latin-1 bytes as text, each byte the code point of its value: a plain copy when the bytes
+/// are ASCII, which is UTF-8 as it stands (#132).
+fn latin1(bytes: &[u8]) -> String {
+    if bytes.is_ascii() {
+        return String::from_utf8(bytes.to_vec()).unwrap_or_default();
+    }
+    // At most 2 UTF-8 bytes per character.
+    let mut s = String::with_capacity(2 * bytes.len());
+    s.extend(bytes.iter().map(|&b| char::from(b)));
+    s
+}
+
 /// The bytes of a text string at `q` in `buf` (specification 2, 2.6.4 item 1): up to the
 /// first 0x00, within at most 4096 bytes and the end of the buffer.
 pub fn string_bytes(buf: &[u8], q: usize) -> &[u8] {
@@ -176,7 +186,12 @@ pub fn string_bytes(buf: &[u8], q: usize) -> &[u8] {
 /// Decodes a text string's bytes and replaces control characters (2.6.4 items 2 to 4).
 /// Returns `None` when the result is empty (the item is absent).
 pub fn decode_string(bytes: &[u8], cs: Charset) -> Option<String> {
-    let s: String = decode(bytes, cs).chars().map(|c| if c < '\u{20}' { ' ' } else { c }).collect();
+    let mut s = decode(bytes, cs);
+    // Control characters are single bytes in UTF-8: the string is copied again only when it
+    // holds some.
+    if s.bytes().any(|b| b < 0x20) {
+        s = s.replace(|c: char| c < '\u{20}', " ");
+    }
     (!s.is_empty()).then_some(s)
 }
 
@@ -195,8 +210,11 @@ fn is_w(c: char) -> bool {
 
 /// A fixed text field (specification 2, 2.6.5).
 pub fn fixed_text(field: &[u8]) -> String {
-    let s: String = fixed_bytes(field).iter().map(|&b| char::from(b)).collect();
-    s.trim_matches(is_w).to_owned()
+    // Each byte is one character, so trimming the bytes trims the text.
+    let bytes = fixed_bytes(field);
+    let start = bytes.iter().position(|&b| !is_w(char::from(b))).unwrap_or(bytes.len());
+    let end = bytes.iter().rposition(|&b| !is_w(char::from(b))).map_or(start, |i| i + 1);
+    latin1(bytes.get(start..end).unwrap_or_default())
 }
 
 /// A fixed text field's bytes up to the first 0x00, all of them if there is none
@@ -222,6 +240,41 @@ mod tests {
         assert_eq!(decode_string(b"", Charset::Latin1), None);
         assert_eq!(Charset::from_code(0xFF), Charset::Latin1);
         assert_eq!(Charset::from_code(0x0B), Charset::ShiftJisX0213);
+    }
+
+    /// The decoding before #132 (one pass to decode, one to replace controls, one to trim),
+    /// against which the faster one is checked.
+    fn decode_string_before(bytes: &[u8], cs: Charset) -> Option<String> {
+        let s: String = decode(bytes, cs).chars().map(|c| if c < '\u{20}' { ' ' } else { c }).collect();
+        (!s.is_empty()).then_some(s)
+    }
+
+    fn fixed_text_before(field: &[u8]) -> String {
+        let s: String = fixed_bytes(field).iter().map(|&b| char::from(b)).collect();
+        s.trim_matches(is_w).to_owned()
+    }
+
+    #[test]
+    fn latin1_decoding_is_unchanged() {
+        let every: Vec<u8> = (0..=255).collect();
+        let mut cases: Vec<Vec<u8>> = vec![every.clone(), b"plain ASCII".to_vec(), Vec::new()];
+        cases.extend(every.iter().map(|&b| vec![b' ', b, b'x', b, 0x85, 0xA0]));
+        cases.extend(every.iter().map(|&b| vec![b]));
+        for bytes in &cases {
+            assert_eq!(decode_string(bytes, Charset::Latin1), decode_string_before(bytes, Charset::Latin1));
+            assert_eq!(fixed_text(bytes), fixed_text_before(bytes), "{bytes:?}");
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "parses large tables")]
+    fn table_decoding_is_unchanged() {
+        let bytes: Vec<u8> = (0..4096u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8).collect();
+        for cs in [Charset::ShiftJisX0213, Charset::EucKr, Charset::EucCn, Charset::Big5] {
+            for chunk in bytes.chunks(97) {
+                assert_eq!(decode_string(chunk, cs), decode_string_before(chunk, cs), "{cs:?}");
+            }
+        }
     }
 
     #[test]
