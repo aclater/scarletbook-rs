@@ -1,0 +1,1 @@
+| 2026-10-31 | #131 DSF layout (#139) | `output::Layout`, `OutputOptions`, `Error::OutputRefused`: DSF header, sound data and sizes. Specification 8, 8.1, 8.2.1 to 8.2.5 and 8.6 rows 1 and 2 at sacd-spec `1517ab7` (unchanged at `6db1251`), with specification 0, 0.6 and 4, 4.6, 4.7.1 and 4.8. No new sources consulted. |

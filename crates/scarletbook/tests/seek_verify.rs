@@ -174,6 +174,31 @@ fn provisional_checkpoints_serve_later_starts() {
     assert!(events.iter().all(|e| matches!(e.speculation, Speculation::Confirmed { .. })));
 }
 
+/// A range between two earlier provisional readings is not started at the end of the
+/// first one, far before it: its search finds it (a provisional checkpoint is used only
+/// from the reading that covers the range).
+#[test]
+#[cfg_attr(miri, ignore = "reads thousands of sectors")]
+fn provisional_checkpoints_of_another_reading_are_not_used() {
+    let img = image(&frames(1000), 1000);
+    let mut plain = Disc::open(Cursor::new(img.clone())).unwrap();
+    let mut disc = speculative_disc(img, 16);
+    for first in [100, 900] {
+        let c = disc.range_frames_cursor(Slot::TwoChannel, first, first + 20).unwrap();
+        read(&mut disc, c);
+    }
+    let c = disc.range_frames_cursor(Slot::TwoChannel, 500, 505).unwrap();
+    let mut it = disc.read_frames(c);
+    let got: Vec<TrackFrame> = it.by_ref().map(Result::unwrap).collect();
+    let mut c = it.into_cursor();
+    let p = plain.range_frames_cursor(Slot::TwoChannel, 500, 505).unwrap();
+    assert_eq!(got, read(&mut plain, p).0);
+    let ResumedFrom::Speculative { lsn, probes } = c.resumed_from() else { panic!("{:?}", c.resumed_from()) };
+    assert!(probes > 0, "searched, not started from the first reading's checkpoints (LSN {lsn})");
+    // A bounded read: the search and the range, not the 2000 sectors from frame 120 on.
+    assert!(c.progress().get().0 < 400, "{} sectors", c.progress().get().0);
+}
+
 /// The discs made from one share the verdicts.
 #[test]
 #[cfg_attr(miri, ignore = "reads thousands of sectors")]

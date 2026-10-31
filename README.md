@@ -186,7 +186,10 @@ codes (`sb_disc_text_channel_count`, `sb_disc_text_channel`), catalogue numbers 
 padding kept (`sb_disc_catalog_number_stored`), and manufacturer data
 (`sb_disc_manufacturer`) have calls of their own, as do an area's version, maximum
 available channels, mute flags, track attribute and offset, and text channels
-(`sb_area_details`, `sb_area_text_channel`).
+(`sb_area_details`, `sb_area_text_channel`). The area play time and each track's start and
+duration are also given as their stored timecode bytes (`SbTimecode`:
+`sb_area_playtime_stored`, `sb_track_timecodes_stored`), before any clamping and whatever
+their range, beside the frame counts of `SbAreaInfo` and `SbTrackInfo`.
 
 `sb_disc_read_sectors(disc, lsn, count, buf, cap)` copies the 2048-byte user data of
 logical sectors `[lsn, lsn + count)`, whatever the image's stored sector size (2048, 2054
@@ -446,6 +449,9 @@ class SbFrameInfo(C.Structure):
     _fields_ = [("number", C.c_uint32), ("status", C.c_uint32), ("dst_rule", C.c_uint32),
                 ("size", C.c_uint32)]
 
+class SbTimecode(C.Structure):
+    _fields_ = [("minutes", C.c_uint8), ("seconds", C.c_uint8), ("frames", C.c_uint8)]
+
 class SbRawFrameInfo(C.Structure):
     _fields_ = [("number", C.c_uint32), ("kind", C.c_uint32), ("size", C.c_uint32)]
 
@@ -495,6 +501,8 @@ bind("sb_disc_manufacturer", S, H, C.c_char_p, SIZE, P(SIZE))
 bind("sb_area_details", S, H, U32, P(SbAreaDetails))
 bind("sb_area_text_channel", S, H, U32, U32, P(SbTextChannel))
 bind("sb_track_info", S, H, U32, U32, P(SbTrackInfo))
+bind("sb_area_playtime_stored", S, H, U32, P(SbTimecode))
+bind("sb_track_timecodes_stored", S, H, U32, U32, P(SbTimecode), P(SbTimecode))
 bind("sb_track_string", S, H, U32, U32, U32, C.c_char_p, SIZE, P(SIZE))
 bind("sb_track_check", S, H, U32, U32)
 bind("sb_track_audio_open", S, H, U32, U32, P(H))
@@ -615,7 +623,7 @@ that loads the library at run time can look the symbol up instead.
 | `SB_ABI_VERSION` | First release |
 |---|---|
 | 1 | 0.1.0 to 0.3.0 (additions only in 0.3.0) |
-| 2 | 0.4.0 (additions in 0.4.1 and 0.5.0) |
+| 2 | 0.4.0 (additions in 0.4.1, 0.5.0 and 0.5.1) |
 
 CI enforces this. `crates/scarletbook-ffi/abi/abi-N.txt` is the baseline of ABI version N:
 the header's declarations without comments or layout. `.github/scripts/abi-check.py`
@@ -716,12 +724,13 @@ read call) and decodes the same ranges cold, exact and provisional: on the same 
 read calls (164 to 285 KB, 3.5 to 5.6 ms modelled) for a provisional range anywhere in the area,
 against up to 14 696 read calls (963 MB) for an exact one at 99 %.
 
-Two criterion benchmarks track the decoder between releases:
+Three criterion benchmarks track the decoder and the TOC between releases:
 
 ```sh
 cargo bench -p scarletbook --bench dst_frames             # DstDecoder::decode, one frame per iteration
 cargo bench -p scarletbook --bench dst_frames -- stress/2ch
 cargo bench -p scarletbook-conformance --bench pipeline   # Disc::open + TrackAudio, in-memory images
+cargo bench -p scarletbook-ffi --bench toc_read           # open + every TOC query, one disc per iteration
 ```
 
 - `dst_frames` reports the time per frame and symbols per second (37 632 x channels per
@@ -732,6 +741,12 @@ cargo bench -p scarletbook-conformance --bench pipeline   # Disc::open + TrackAu
   several filter and ptable segments). The stress frames are identical on every run.
 - `pipeline` reads every track of a 2-channel and a 6-channel area of small synthetic
   images (plain DSD, DST, DST in 2064-byte sectors) on one thread.
+- `toc_read` opens a disc and reads its whole TOC, as a consumer listing a library does
+  (#132): `c/IMAGE` through `sb_disc_open_callbacks_at` over the image in memory and every
+  TOC query of the C interface (disc, areas, tracks, strings, genres, text channels,
+  timecodes, warnings), `rust/IMAGE` the same through `Disc::open`. The images are the
+  corpus images with the most text and tracks and a synthetic disc of 2 x 255 tracks.
+  `SCARLETBOOK_PERF_BENCH=list` prints the calls, read callbacks and bytes read per disc.
 
 The scripts in `perf/` need Linux and `perf`:
 

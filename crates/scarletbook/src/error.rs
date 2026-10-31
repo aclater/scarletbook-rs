@@ -109,6 +109,28 @@ pub enum Error {
     /// cursor stays where it was, and continues once the request is withdrawn.
     #[error("cancelled")]
     Cancelled,
+    /// The requested output file can't be written for this area with these options
+    /// (specification 8). It is not an outcome of the image: other options, or another
+    /// format, may write it.
+    #[error("output refused: {0}")]
+    OutputRefused(OutputRefusal),
+}
+
+/// Why an output file can't be written ([`Error::OutputRefused`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum OutputRefusal {
+    /// The area has no defined loudspeaker layout (specification 8, 8.1 item 5), and the
+    /// options give no channel type or channel IDs for it (8.2.4 item 2).
+    #[error(
+        "the area's layout ({channels} channels, configuration {config:#04x}) is unspecified, and the options give no channel type for it"
+    )]
+    UnspecifiedLayout {
+        /// The area's channel count.
+        channels: u8,
+        /// The area configuration byte, as stored.
+        config: u8,
+    },
 }
 
 /// Broad classes of [`Error`], for callers (and the FFI) that map errors to codes.
@@ -145,7 +167,8 @@ impl Error {
             | Error::FrameRangeInvalid { .. }
             | Error::InvalidArgument(_)
             | Error::Io(_)
-            | Error::Cancelled => {
+            | Error::Cancelled
+            | Error::OutputRefused(_) => {
                 return None;
             }
         })
@@ -165,7 +188,8 @@ impl Error {
             Error::NoSuchArea(_)
             | Error::NoSuchTrack { .. }
             | Error::FrameRangeInvalid { .. }
-            | Error::InvalidArgument(_) => ErrorClass::Usage,
+            | Error::InvalidArgument(_)
+            | Error::OutputRefused(_) => ErrorClass::Usage,
             Error::Io(_) => ErrorClass::Io,
             Error::Cancelled => ErrorClass::Cancelled,
         }

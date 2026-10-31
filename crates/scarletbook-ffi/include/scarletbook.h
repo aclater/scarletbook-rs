@@ -925,6 +925,27 @@ typedef struct SbTextChannel {
 } SbTextChannel;
 
 /*
+ A timecode as stored: its three bytes, minutes, seconds and frames (specification 0,
+ 0.5), not validated (a stored 255:255:255 is given as such).
+
+ Layout: 3 bytes, aligned to 1, without padding (3 fields of 1 byte).
+ */
+typedef struct SbTimecode {
+  /*
+   Minutes.
+   */
+  uint8_t minutes;
+  /*
+   Seconds.
+   */
+  uint8_t seconds;
+  /*
+   Frames.
+   */
+  uint8_t frames;
+} SbTimecode;
+
+/*
  More of an area's TOC fields (specification 3, 3.4 and 3.5): `sb_area_details`.
 
  Layout: 8 bytes, aligned to 1, without padding (8 fields of 1 byte).
@@ -1587,6 +1608,32 @@ SbStatus sb_disc_catalog_number_stored(const struct SbDisc *disc,
  `len` NULL or valid for a write.
  */
 SbStatus sb_disc_manufacturer(const struct SbDisc *disc, uint8_t *buf, size_t cap, size_t *len);
+
+/*
+ The total play time of the area from `slot` as stored (area TOC offset 64,
+ specification 3); `SbAreaInfo.playtime_frames` is its frame number.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `out` NULL or valid for a write.
+ */
+SbStatus sb_area_playtime_stored(const struct SbDisc *disc, uint32_t slot, struct SbTimecode *out);
+
+/*
+ The start and duration of track `number` of the area from `slot` as stored in the area
+ TOC's `SACDTRL2` (specification 3, 3.7.2): before the clamping of 3.9.2, whatever their
+ range. `SbTrackInfo.start_frame` and `duration_frames` are their frame numbers after
+ clamping. Both outputs are required.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `start` and `duration` NULL or valid for writes.
+ */
+SbStatus sb_track_timecodes_stored(const struct SbDisc *disc,
+                                   uint32_t slot,
+                                   uint32_t number,
+                                   struct SbTimecode *start,
+                                   struct SbTimecode *duration);
 
 /*
  More TOC fields of the area from `slot` (`SbAreaDetails`).

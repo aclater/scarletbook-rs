@@ -642,7 +642,9 @@ impl Warnings {
 }
 
 /// Reads the whole TOC (specifications 2 and 3), returning it with its warnings.
-pub(crate) fn read_toc<R: Read + Seek>(img: &mut Image<R>) -> Result<(Toc, Vec<Warning>, TocDigests), Error> {
+pub(crate) fn read_toc<R: Read + Seek>(
+    img: &mut Image<R>,
+) -> Result<(Toc, Vec<Warning>, TocDigests, TocStored), Error> {
     let log = img.log().clone();
     sb_log!(
         &log,
@@ -656,14 +658,16 @@ pub(crate) fn read_toc<R: Read + Seek>(img: &mut Image<R>) -> Result<(Toc, Vec<W
     let (master, master_digest) = read_master(img, &mut warnings)?;
     let mut areas = Vec::new();
     let mut area_digests = Vec::new();
+    let mut stored = TocStored::default();
     for slot in Slot::ALL {
         let ptr = master.pointer(slot);
         if !ptr.is_used() {
             sb_log!(&warnings.log, Info, "area {slot}: slot unused");
             continue;
         }
-        if let Some((area, digest)) = read_area(img, slot, ptr, &mut warnings)? {
+        if let Some((area, digest, timecodes)) = read_area(img, slot, ptr, &mut warnings)? {
             area_digests.push(digest);
+            stored.track_timecodes.push((slot, timecodes));
             sb_log!(
                 &warnings.log,
                 Info,
@@ -692,7 +696,29 @@ pub(crate) fn read_toc<R: Read + Seek>(img: &mut Image<R>) -> Result<(Toc, Vec<W
         Toc { sector_format: img.format(), sectors: img.sector_count(), master, areas },
         warnings.list,
         digests,
+        stored,
     ))
+}
+
+/// TOC fields as stored that [`Toc`] gives only as interpreted: each track's start and
+/// duration timecodes of `SACDTRL2` (specification 3, 3.7.2), before the clamping of
+/// 3.9.2, per area in [`Toc::areas`] order. Kept beside the TOC rather than in [`Track`],
+/// whose fields are all public (a new field would break code that builds one).
+#[derive(Debug, Default)]
+pub(crate) struct TocStored {
+    track_timecodes: Vec<(Slot, Vec<TrackTimecodes>)>,
+}
+
+/// A track's start and duration timecodes as stored.
+type TrackTimecodes = (Timecode, Timecode);
+
+impl TocStored {
+    /// The stored start and duration timecodes of track `number` (1-based) of the area from
+    /// `slot`.
+    pub(crate) fn track_timecodes(&self, slot: Slot, number: u32) -> Option<(Timecode, Timecode)> {
+        let (_, list) = self.track_timecodes.iter().find(|(s, _)| *s == slot)?;
+        list.get(usize::try_from(number).ok()?.checked_sub(1)?).copied()
+    }
 }
 
 /// Digests of the TOC sectors a parse used: the master TOC sector at LSN 510 and, for each
@@ -716,20 +742,46 @@ impl TocDigests {
         if img.read_into(u64::from(MASTER_TOC_LSN), &mut sector)? == ReadOutcome::OutOfRange {
             return Ok(None);
         }
-        let master = fnv1a(&sector);
+        let master = toc_digest(&sector);
         let mut areas = Vec::with_capacity(toc.areas.len());
         for area in &toc.areas {
             // At most MAX_AREA_TOC_SECTORS sectors: the parse refused larger copies.
             let Some(copy) = read_copy(img, area.toc_lsn, area.toc_sectors)? else { return Ok(None) };
-            areas.push(fnv1a(&copy));
+            areas.push(toc_digest(&copy));
         }
         Ok(Some(TocDigests { master, areas }))
     }
 }
 
-/// 64-bit FNV-1a: a digest to tell images apart, not a defence against forgery.
-fn fnv1a(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
+/// A 64-bit digest of TOC sectors, to tell images apart within a process (it is never
+/// stored); not a defence against forgery.
+///
+/// Four lanes take the 8-byte little-endian words in turn, each lane folding a word in with
+/// `(lane ^ word) * K`, rotated; the lanes and the length are then folded together. Each
+/// step is a bijection of the lane for a given word and of the word for a given lane, so
+/// two inputs of one length that differ in a single word never collide. The lanes are
+/// independent, so the digest runs several bytes per cycle where byte-wise FNV-1a ran one
+/// byte per multiply (#132). The bytes after the last whole 32-byte block (none for whole
+/// sectors) are folded in one at a time.
+fn toc_digest(bytes: &[u8]) -> u64 {
+    // The golden-ratio constant 2^64 / phi, odd: multiplying by it is a bijection.
+    const K: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mix = |h: u64, w: u64| (h ^ w).wrapping_mul(K).rotate_left(31);
+    let mut lanes: [u64; 4] = [0, 1, 2, 3];
+    let mut blocks = bytes.chunks_exact(32);
+    for block in &mut blocks {
+        for (lane, word) in lanes.iter_mut().zip(block.chunks_exact(8)) {
+            *lane = mix(*lane, u64::from_le_bytes(word.try_into().unwrap_or([0; 8])));
+        }
+    }
+    let mut h = lanes.iter().fold(bytes.len() as u64, |h, &lane| mix(h, lane));
+    for &b in blocks.remainder() {
+        h = mix(h, u64::from(b));
+    }
+    // Spread the last word over every bit.
+    h ^= h >> 32;
+    h = h.wrapping_mul(K);
+    h ^ (h >> 29)
 }
 
 fn read_master<R: Read + Seek>(
@@ -815,7 +867,7 @@ fn read_master<R: Read + Seek>(
         text: disc_text,
         manufacturer,
     };
-    Ok((master, fnv1a(s0)))
+    Ok((master, toc_digest(s0)))
 }
 
 /// LSNs of the master TOC copies (specification 1, 1.5).
@@ -896,7 +948,7 @@ fn read_area<R: Read + Seek>(
     slot: Slot,
     ptr: AreaPointer,
     warnings: &mut Warnings,
-) -> Result<Option<(Area, u64)>, Error> {
+) -> Result<Option<(Area, u64, Vec<TrackTimecodes>)>, Error> {
     let skip = |warnings: &mut Warnings, code| {
         warnings.push(Warning::area(code, slot));
         Ok(None)
@@ -989,11 +1041,13 @@ fn read_area<R: Read + Seek>(
     let p_frames = playtime.frame_number();
 
     let mut tracks = Vec::with_capacity(usize::from(track_count));
+    let mut timecodes = Vec::with_capacity(usize::from(track_count));
     for i in 0..usize::from(track_count) {
         // Track numbers are 1 to 255: i is at most 254.
         let number = u8::try_from(i + 1).unwrap_or(u8::MAX);
         let start_tc = Timecode::parse(sub(&z, trl2 + 8 + 4 * i, 3));
         let dur_tc = Timecode::parse(sub(&z, trl2 + 1028 + 4 * i, 3));
+        timecodes.push((start_tc, dur_tc));
         let (mut start_frame, mut duration_frames) = (start_tc.frame_number(), dur_tc.frame_number());
         if start_frame + duration_frames > p_frames {
             start_frame = start_frame.min(p_frames);
@@ -1053,7 +1107,7 @@ fn read_area<R: Read + Seek>(
         text: area_text,
         tracks,
     };
-    Ok(Some((area, fnv1a(&z))))
+    Ok(Some((area, toc_digest(&z), timecodes)))
 }
 
 /// Parses one track's text (specification 3, 3.8.1).
@@ -1109,6 +1163,25 @@ fn track_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn toc_digest_tells_small_changes_apart() {
+        let mut bytes: Vec<u8> = (0..2 * SECTOR_SIZE).map(|i| (i * 7 % 251) as u8).collect();
+        let mut seen = std::collections::HashSet::from([toc_digest(&bytes)]);
+        // One bit flipped at a time, across both sectors and every bit position.
+        for i in (0..bytes.len()).step_by(61) {
+            bytes[i] ^= 1 << (i % 8);
+            assert!(seen.insert(toc_digest(&bytes)), "flip at byte {i}");
+            bytes[i] ^= 1 << (i % 8);
+        }
+        // Two words swapped, a different length, a tail shorter than a block.
+        bytes.swap(0, 8);
+        assert!(seen.insert(toc_digest(&bytes)));
+        assert!(seen.insert(toc_digest(&bytes[..SECTOR_SIZE])));
+        assert!(seen.insert(toc_digest(&bytes[..SECTOR_SIZE + 5])));
+        assert!(seen.insert(toc_digest(&[])));
+        assert_ne!(toc_digest(&[0; SECTOR_SIZE]), toc_digest(&[0; SECTOR_SIZE + 1]));
+    }
 
     #[test]
     fn track_text_item_types() {
