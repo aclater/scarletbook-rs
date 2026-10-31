@@ -886,3 +886,60 @@ fn a_clone_checks_readings_on_another_thread() {
     audio_free(a);
     free(disc);
 }
+
+fn suspect(a: *mut SbTrackAudio) -> u32 {
+    let mut s = u32::MAX;
+    // SAFETY: a live handle and a valid out-pointer.
+    assert_eq!(unsafe { sb_track_audio_suspect(a, &mut s) }, SbStatus::Ok, "{}", last_error());
+    s
+}
+
+/// The suspect mark through the C interface (specification 4, 4.2 item 8, sacd-spec
+/// `eafaaba`): provisional readings of `area-audio-past-end`'s 2-channel area (its audio
+/// sectors run past the image's end) are suspect for its layout, and read exactly with
+/// `SB_SEEK_POLICY_SPECULATIVE_EXACT_WHEN_SUSPECT`; a valid image's are not suspect.
+#[test]
+#[cfg_attr(miri, ignore = "reads corpus images")]
+fn suspect_readings() {
+    let bytes = image("area-audio-past-end");
+    let disc = open(&bytes);
+    let p = playtime(disc, 0);
+    assert_eq!(policy(disc, 0, SB_SEEK_POLICY_SPECULATIVE, 0), SbStatus::Ok);
+    let a = range_open(disc, 0, p - 2, p);
+    read_all(a, disc);
+    assert_eq!(speculation(a).state, SB_SPECULATION_PENDING);
+    assert_eq!(suspect(a), SB_SUSPECT_AREA_LAYOUT);
+    audio_free(a);
+    assert_eq!(policy(disc, 0, SB_SEEK_POLICY_SPECULATIVE_EXACT_WHEN_SUSPECT, 0), SbStatus::Ok);
+    let a = range_open(disc, 0, p - 2, p);
+    read_all(a, disc);
+    assert_eq!((speculation(a).state, suspect(a)), (SB_SPECULATION_EXACT, SB_SUSPECT_NONE));
+    audio_free(a);
+    free(disc);
+    let bytes = image("dst-features-2ch-6ch");
+    let disc = open(&bytes);
+    let p = playtime(disc, 0);
+    assert_eq!(policy(disc, 0, SB_SEEK_POLICY_SPECULATIVE, 0), SbStatus::Ok);
+    let a = range_open(disc, 0, p / 2, p / 2 + 3);
+    read_all(a, disc);
+    assert_eq!((speculation(a).state, suspect(a)), (SB_SPECULATION_PENDING, SB_SUSPECT_NONE));
+    audio_free(a);
+    free(disc);
+}
+
+/// Arguments of the suspect queries. Small enough for Miri.
+#[test]
+fn suspect_arguments() {
+    let bytes = small_image(5);
+    let disc = open(&bytes);
+    let a = range_open(disc, 0, 0, 1);
+    // SAFETY: NULL arguments are refused.
+    assert_eq!(unsafe { sb_track_audio_suspect(a, ptr::null_mut()) }, SbStatus::InvalidArgument);
+    // SAFETY: as above.
+    assert_eq!(unsafe { sb_track_audio_suspect(ptr::null(), &mut 0) }, SbStatus::InvalidArgument);
+    // SAFETY: as above.
+    assert_eq!(unsafe { sb_raw_frames_suspect(ptr::null(), &mut 0) }, SbStatus::InvalidArgument);
+    assert_eq!(suspect(a), SB_SUSPECT_NONE);
+    audio_free(a);
+    free(disc);
+}

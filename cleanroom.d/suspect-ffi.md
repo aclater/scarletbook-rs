@@ -1,0 +1,1 @@
+| 2026-10-31 | sacd-spec#37 suspect provisional readings, C interface | `sb_track_audio_suspect`, `sb_raw_frames_suspect`, a policy that reads suspect readings exactly; over the core API. Specification 4, 4.2 item 8, at sacd-spec `eafaaba`. No new sources consulted. |

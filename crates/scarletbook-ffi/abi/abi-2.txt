@@ -31,12 +31,17 @@
 #define SB_SEEK_DEFAULT_INLINE_BUDGET 1048576
 #define SB_SEEK_POLICY_EXACT 0
 #define SB_SEEK_POLICY_SPECULATIVE 1
+#define SB_SEEK_POLICY_SPECULATIVE_EXACT_WHEN_SUSPECT 2
 #define SB_SEEK_DEFAULT_MIN_GAP 2048
 #define SB_SPECULATION_EXACT 0
 #define SB_SPECULATION_PENDING 1
 #define SB_SPECULATION_CONFIRMED 2
 #define SB_SPECULATION_REFUTED 3
 #define SB_SPECULATION_UNVERIFIED 4
+#define SB_SUSPECT_NONE 0
+#define SB_SUSPECT_AREA_LAYOUT 1
+#define SB_SUSPECT_FRAME_NUMBERS_DECREASE 2
+#define SB_SUSPECT_OTHER 255
 #define SB_TOC_MAJOR 1
 #define SB_TOC_MINOR 0
 #define SB_TOC_ABSENT 4294967295
@@ -459,6 +464,8 @@ SbStatus sb_raw_frames_absorb(const struct SbRawFrames *raw, struct SbSeekIndex 
 SbStatus sb_disc_seek_policy_set(const struct SbDisc *disc, uint32_t slot, uint32_t policy, uint64_t min_gap_sectors);
 SbStatus sb_track_audio_speculation(const struct SbTrackAudio *audio, struct SbSpeculation *out);
 SbStatus sb_raw_frames_speculation(const struct SbRawFrames *raw, struct SbSpeculation *out);
+SbStatus sb_track_audio_suspect(const struct SbTrackAudio *audio, uint32_t *out);
+SbStatus sb_raw_frames_suspect(const struct SbRawFrames *raw, uint32_t *out);
 SbStatus sb_disc_seek_verify(const struct SbDisc *disc, uint32_t slot, uint64_t max_sectors, uint8_t *complete);
 SbStatus sb_disc_seek_event_next(const struct SbDisc *disc, uint32_t slot, struct SbSpeculation *out);
 SbStatus sb_seek_index_verify(const struct SbDisc *disc, struct SbSeekIndex *index, uint32_t *settled);

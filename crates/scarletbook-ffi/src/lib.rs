@@ -4208,6 +4208,10 @@ pub unsafe extern "C" fn sb_raw_frames_absorb(raw: *const SbRawFrames, index: *m
 pub const SB_SEEK_POLICY_EXACT: u32 = 0;
 /// `sb_disc_seek_policy_set`: provisional reading allowed (specification 4, 4.2 item 8).
 pub const SB_SEEK_POLICY_SPECULATIVE: u32 = 1;
+/// `sb_disc_seek_policy_set`: provisional reading allowed, but suspect areas and ranges
+/// (`sb_track_audio_suspect`) are read exactly instead (specification 4, 4.2 item 8,
+/// sacd-spec `eafaaba`).
+pub const SB_SEEK_POLICY_SPECULATIVE_EXACT_WHEN_SUSPECT: u32 = 2;
 /// The default `min_gap_sectors` of `sb_disc_seek_policy_set` (4 MiB of sectors).
 pub const SB_SEEK_DEFAULT_MIN_GAP: u64 = 2048;
 
@@ -4287,6 +4291,10 @@ impl SbSpeculation {
 /// readings are checked as the index is built (`sb_disc_seek_verify`) and their verdicts
 /// returned by `sb_disc_seek_event_next`.
 ///
+/// `SB_SEEK_POLICY_SPECULATIVE_EXACT_WHEN_SUSPECT` is `SB_SEEK_POLICY_SPECULATIVE`, except
+/// that areas and ranges whose provisional reading would be suspect (`sb_track_audio_suspect`)
+/// are read exactly.
+///
 /// A provisional start is used when the exact start lies more than `min_gap_sectors`
 /// (`SB_SEEK_DEFAULT_MIN_GAP`) before the range's estimated position; 0 allows one whenever
 /// the exact start lies before it at all. `min_gap_sectors` is ignored with
@@ -4309,12 +4317,17 @@ pub unsafe extern "C" fn sb_disc_seek_policy_set(
         let d = unsafe { disc_handle(disc) }?;
         let policy = match policy {
             SB_SEEK_POLICY_EXACT => SeekPolicy::Exact,
-            SB_SEEK_POLICY_SPECULATIVE => {
-                SeekPolicy::Speculative(SpeculativeOptions::new().with_min_gap_sectors(min_gap_sectors))
+            SB_SEEK_POLICY_SPECULATIVE | SB_SEEK_POLICY_SPECULATIVE_EXACT_WHEN_SUSPECT => {
+                SeekPolicy::Speculative(
+                    SpeculativeOptions::new()
+                        .with_min_gap_sectors(min_gap_sectors)
+                        .with_exact_when_suspect(policy == SB_SEEK_POLICY_SPECULATIVE_EXACT_WHEN_SUSPECT),
+                )
             }
             _ => {
                 return Err(Failure::arg(
-                    "policy must be SB_SEEK_POLICY_EXACT or SB_SEEK_POLICY_SPECULATIVE",
+                    "policy must be SB_SEEK_POLICY_EXACT, SB_SEEK_POLICY_SPECULATIVE or \
+                     SB_SEEK_POLICY_SPECULATIVE_EXACT_WHEN_SUSPECT",
                 ));
             }
         };
@@ -4365,6 +4378,71 @@ pub unsafe extern "C" fn sb_raw_frames_speculation(
         let value = match &raw.source {
             Source::Range(c) => SbSpeculation::of(c.slot(), c.speculation_id(), c.speculation()),
             Source::List(..) => SbSpeculation::default(),
+        };
+        // SAFETY: forwarded contract.
+        unsafe { write_out(out, value) }?;
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// `sb_track_audio_suspect`: not suspect (exact positions, or a provisional reading with no
+/// reason to doubt it).
+pub const SB_SUSPECT_NONE: u32 = 0;
+/// `sb_track_audio_suspect`: the area's TOC places its audio sectors past the end of the
+/// image or over the other area's TOC or audio sectors.
+pub const SB_SUSPECT_AREA_LAYOUT: u32 = 1;
+/// `sb_track_audio_suspect`: the first frame records of the sectors read while choosing the
+/// provisional start decrease from one sector to a later one.
+pub const SB_SUSPECT_FRAME_NUMBERS_DECREASE: u32 = 2;
+/// `sb_track_audio_suspect`: a reason this interface does not know yet.
+pub const SB_SUSPECT_OTHER: u32 = 255;
+
+fn suspect_code(s: Option<scarletbook::Suspect>) -> u32 {
+    match s {
+        None => SB_SUSPECT_NONE,
+        Some(scarletbook::Suspect::AreaLayout) => SB_SUSPECT_AREA_LAYOUT,
+        Some(scarletbook::Suspect::FrameNumbersDecrease) => SB_SUSPECT_FRAME_NUMBERS_DECREASE,
+        Some(_) => SB_SUSPECT_OTHER,
+    }
+}
+
+/// Writes to `*out` why `audio`'s provisional reading is **suspect** (specification 4, 4.2
+/// item 8, sacd-spec `eafaaba`): `SB_SUSPECT_NONE`, or an `SB_SUSPECT_*` reason of the
+/// library's own to doubt it. The mark is informative: the reading is provisional and is
+/// settled (`sb_track_audio_speculation`) as any other. Query it after the handle's first
+/// read, which is when it chooses its start.
+///
+/// # Safety
+///
+/// `audio` must be NULL or a live handle; `out` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_track_audio_suspect(audio: *const SbTrackAudio, out: *mut u32) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let a = unsafe { audio_handle(audio) }?;
+        let c = a.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
+        let value = suspect_code(c.suspect());
+        // SAFETY: forwarded contract.
+        unsafe { write_out(out, value) }?;
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// As `sb_track_audio_suspect`, for a raw frames handle (a stored frame list's positions are
+/// exact).
+///
+/// # Safety
+///
+/// `raw` must be NULL or a live handle; `out` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_raw_frames_suspect(raw: *const SbRawFrames, out: *mut u32) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let r = unsafe { raw_handle(raw) }?;
+        let raw = r.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
+        let value = match &raw.source {
+            Source::Range(c) => suspect_code(c.suspect()),
+            Source::List(..) => SB_SUSPECT_NONE,
         };
         // SAFETY: forwarded contract.
         unsafe { write_out(out, value) }?;
