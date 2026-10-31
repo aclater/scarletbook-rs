@@ -162,7 +162,12 @@ fn hash_track(disc: *const SbDisc, slot: u32, number: u32) -> (Vec<String>, u64,
     // SAFETY: `a` is a live handle; both out-pointers are valid.
     assert_eq!(unsafe { sb_track_audio_counts(a, &mut missing, &mut invalid) }, SbStatus::Ok);
     audio_free(a);
-    (hashers.into_iter().map(|h| format!("{:x}", h.finalize())).collect(), missing, invalid)
+    (hashers.into_iter().map(|h| hex(&h.finalize())).collect(), missing, invalid)
+}
+
+/// Lower-case hex of a digest (sha2 0.11's output has no `LowerHex`).
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[test]
@@ -506,7 +511,7 @@ fn hash_handle(a: *mut SbTrackAudio, disc: *const SbDisc) -> Vec<String> {
             h.update(buf.iter().skip(c).step_by(ch).copied().collect::<Vec<u8>>());
         }
     }
-    hashers.into_iter().map(|h| format!("{:x}", h.finalize())).collect()
+    hashers.into_iter().map(|h| hex(&h.finalize())).collect()
 }
 
 #[test]
