@@ -21,6 +21,7 @@
 #define SB_SPEAKER_LOW_FREQUENCY_EFFECTS 4
 #define SB_SPEAKER_SURROUND_LEFT 5
 #define SB_SPEAKER_SURROUND_RIGHT 6
+#define SB_SECTOR_SIZE 2048
 #define SB_MAX_POOL_THREADS 256
 #define SB_SEEK_DEFAULT_INTERVAL 64
 #define SB_SEEK_MAX_INTERVAL 65536
@@ -58,6 +59,7 @@ SB_STATUS_PANIC = -14,
 SB_STATUS_FRAME_RANGE_INVALID = -15,
 SB_STATUS_THREADS_UNAVAILABLE = -16,
 SB_STATUS_OUT_OF_MEMORY = -17,
+SB_STATUS_SECTOR_RANGE_INVALID = -18,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -299,6 +301,7 @@ SbStatus sb_area_string(const struct SbDisc *disc, uint32_t slot, uint32_t field
 SbStatus sb_track_info(const struct SbDisc *disc, uint32_t slot, uint32_t number, struct SbTrackInfo *out);
 SbStatus sb_track_string(const struct SbDisc *disc, uint32_t slot, uint32_t number, uint32_t field, char *buf, size_t cap, size_t *len);
 SbStatus sb_disc_warning(const struct SbDisc *disc, uint32_t index, struct SbWarning *out);
+SbStatus sb_disc_read_sectors(const struct SbDisc *disc, uint64_t lsn, uint32_t count, uint8_t *buf, size_t cap);
 SbStatus sb_track_check(const struct SbDisc *disc, uint32_t slot, uint32_t number);
 SbStatus sb_track_audio_open(const struct SbDisc *disc, uint32_t slot, uint32_t number, struct SbTrackAudio **out);
 SbStatus sb_track_audio_open_next(const struct SbDisc *disc, struct SbTrackAudio *prev, uint32_t slot, uint32_t number, struct SbTrackAudio **out);
