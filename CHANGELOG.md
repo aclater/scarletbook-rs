@@ -14,6 +14,19 @@ is shared by every crate of the workspace; releases carry the `bench` program an
 - `DecodeOn` and `TrackAudioCursor::set_decode_on` (`parallel` feature, #36): a cursor
   decodes on a rayon pool of its own, whatever thread reads it, or on the calling thread
   only; continuations keep the choice. The default stays the current pool.
+- Parallel decoding through the C interface (#36): `sb_pool_new`, `sb_pool_threads`,
+  `sb_pool_free` and `sb_track_audio_set_pool` decode a track or range handle's DST frames
+  on a pool of the caller's own (N threads, 0 for one per CPU), with frames returned in
+  order on the calling thread, at most `min(16 x N, 256)` positions ahead, and output
+  identical to the calling thread's. Pools are reference-counted by the handles given
+  them; the library starts no global pool. `SB_MAX_POOL_THREADS` and
+  `SB_STATUS_THREADS_UNAVAILABLE` are new. Additive: the ABI version stays 1. The C smoke
+  test also decodes every track on a pool and compares.
+
+### Changed
+
+- The C library now always links rayon; its `parallel` feature only makes handles without
+  a pool decode on rayon's global pool, as before.
 
 ### Fixed
 

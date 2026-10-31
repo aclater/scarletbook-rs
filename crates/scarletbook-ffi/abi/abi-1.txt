@@ -11,6 +11,7 @@
 #define SB_LOG_INFO 3
 #define SB_LOG_DEBUG 4
 #define SB_LOG_TRACE 5
+#define SB_MAX_POOL_THREADS 256
 typedef enum SbStatus {
 SB_STATUS_OK = 0,
 SB_STATUS_END = 1,
@@ -30,6 +31,7 @@ SB_STATUS_IO = -12,
 SB_STATUS_INVALID_DST_FRAME = -13,
 SB_STATUS_PANIC = -14,
 SB_STATUS_FRAME_RANGE_INVALID = -15,
+SB_STATUS_THREADS_UNAVAILABLE = -16,
 } SbStatus;
 typedef enum SbFrameStatus {
 SB_FRAME_STATUS_DSD = 0,
@@ -90,6 +92,7 @@ SB_TRACK_STRING_EXTRA_MESSAGE_PHONETIC = 13,
 SB_TRACK_STRING_ISRC = 14,
 } SbTrackString;
 typedef struct SbDisc SbDisc;
+typedef struct SbPool SbPool;
 typedef struct SbRawFrames SbRawFrames;
 typedef struct SbTrackAudio SbTrackAudio;
 typedef void(*SbLogFn)(void *user, int32_t level, const char *message);
@@ -189,6 +192,10 @@ enum SbStatus sb_track_audio_counts(const struct SbTrackAudio *audio, uint64_t *
 enum SbStatus sb_track_audio_malformed_sectors(const struct SbTrackAudio *audio, uint64_t *count);
 enum SbStatus sb_track_audio_warning(const struct SbTrackAudio *audio, uint32_t index, struct SbWarning *out);
 void sb_track_audio_free(struct SbTrackAudio *audio);
+enum SbStatus sb_pool_new(uint32_t threads, struct SbPool **out);
+uint32_t sb_pool_threads(const struct SbPool *pool);
+void sb_pool_free(struct SbPool *pool);
+enum SbStatus sb_track_audio_set_pool(const struct SbTrackAudio *audio, const struct SbPool *pool);
 enum SbStatus sb_raw_frames_open(const struct SbDisc *disc, uint32_t slot, uint32_t first, uint32_t end, struct SbRawFrames **out);
 enum SbStatus sb_raw_frames_open_next(const struct SbDisc *disc, struct SbRawFrames *prev, uint32_t slot, uint32_t first, uint32_t end, struct SbRawFrames **out);
 enum SbStatus sb_stored_frame_list_open(const struct SbDisc *disc, uint32_t slot, struct SbRawFrames **out);

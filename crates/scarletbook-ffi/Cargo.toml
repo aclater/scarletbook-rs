@@ -14,10 +14,14 @@ name = "scarletbook_ffi"
 crate-type = ["cdylib", "staticlib", "rlib"]
 
 [features]
-parallel = ["scarletbook/parallel"]
+# Track audio handles without a pool of their own (sb_track_audio_set_pool) decode on
+# rayon's global pool instead of the calling thread.
+parallel = []
 
 [dependencies]
-scarletbook = { path = "../scarletbook" }
+# Decoding pools (sb_pool_new) are in every build.
+rayon = "1.10"
+scarletbook = { path = "../scarletbook", features = ["parallel"] }
 
 [lints.rust]
 missing_debug_implementations = "warn"
@@ -31,7 +35,5 @@ expect_used = "warn"
 panic = "warn"
 
 [dev-dependencies]
-# A pool of several threads for the test of the log callback from the `parallel` path.
-rayon = "1.10"
 serde_json = "1"
 sha2 = "0.11"

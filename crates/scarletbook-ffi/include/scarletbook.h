@@ -9,7 +9,7 @@
  *   failure, sb_last_error_message() describes the error. The message belongs to the
  *   calling thread and stays valid until that thread's next call into this library.
  *
- * - Handles. SbDisc, SbTrackAudio and SbRawFrames are opaque. Each is created by one
+ * - Handles. SbDisc, SbTrackAudio, SbRawFrames and SbPool are opaque. Each is created by one
  *   function and released by exactly one call to its _free function; passing NULL to a
  *   _free function does nothing. A function that creates a handle sets *out to NULL when it fails, so
  *   freeing that pointer afterwards is safe.
@@ -26,9 +26,13 @@
  *   (a language code can), so use *len rather than strlen.
  *
  * - Threads. A handle may be moved between threads, but must not be used by two threads
- *   at once. Read and seek callbacks (sb_disc_open_callbacks) run on the thread that
- *   makes the call that needs them. A log callback (sb_disc_set_log) also runs there and,
- *   in a library built with the parallel feature, on the library's worker threads.
+ *   at once; an SbPool, which only holds threads, may. Read and seek callbacks
+ *   (sb_disc_open_callbacks) run on the thread that makes the call that needs them, also
+ *   when a pool decodes. A log callback (sb_disc_set_log) also runs there and on the
+ *   threads of the pools decoding for the disc's track handles (sb_track_audio_set_pool;
+ *   in a library built with the parallel feature, rayon's global pool by default). The
+ *   library has no other threads and no global state besides the per-thread error
+ *   message.
  *
  * - Callbacks and re-entrancy. While a disc's callback runs, that disc and its track
  *   and raw frames handles are in use: calling into this library with them from the
@@ -100,6 +104,12 @@
  frames decoded.
  */
 #define SB_LOG_TRACE 5
+
+/*
+ Most threads of a decoding pool (`sb_pool_new`). A handle keeps at most
+ `16 x threads` frames ahead, and never more than 256, so more threads would stay idle.
+ */
+#define SB_MAX_POOL_THREADS 256
 
 /*
  Result of every call.
@@ -177,6 +187,10 @@ typedef enum SbStatus {
    A frame range is reversed or extends past the area's play time (a caller error).
    */
   SB_STATUS_FRAME_RANGE_INVALID = -15,
+  /*
+   The operating system could not start a decoding pool's threads (`sb_pool_new`).
+   */
+  SB_STATUS_THREADS_UNAVAILABLE = -16,
 } SbStatus;
 
 /*
@@ -409,6 +423,13 @@ typedef enum SbTrackString {
  state borrowed and fails cleanly instead of aliasing it.
  */
 typedef struct SbDisc SbDisc;
+
+/*
+ A pool of decoding threads (`sb_pool_new`), shared by the track audio handles given it.
+ Unlike the other handles it holds no state of its own beyond its threads, so it may be
+ used by several threads at once.
+ */
+typedef struct SbPool SbPool;
 
 /*
  The reading state of one frame range's stored content, or of an area's stored frame
@@ -784,16 +805,18 @@ enum SbStatus sb_disc_open_callbacks_with_log(SbReadFn read,
  callback, or above its level, no message is formatted.
 
  Calls with this disc and its track handles invoke the callback on the calling thread
- while they run, in order. A library built with the `parallel` feature also invokes it
- from its worker threads, which decode ahead of the caller: at `SB_LOG_TRACE` (groups
+ while they run, in order. A track handle decoding on a pool (`sb_track_audio_set_pool`;
+ in a library built with the `parallel` feature, every track handle) also invokes it
+ from the pool's threads, which decode ahead of the caller: at `SB_LOG_TRACE` (groups
  of frames decoded) and `SB_LOG_ERROR` (an internal error), possibly concurrently with
  other calls of it and after the call that started the work has returned; such lines
  can interleave with the calling thread's. Frame problems are reported on the calling
  thread, in frame order. Once sb_disc_set_log or sb_disc_free returns, the previous
  callback is not called again (they wait for calls on other threads to return).
 
- A worker's message can also be delivered on the calling thread while it waits for a
- frame inside `sb_track_audio_read` (the pool runs pending work there), and the callback
+ A worker's message can also be delivered on a thread that waits for a frame inside
+ `sb_track_audio_read` when that thread is one of a pool's (the pool runs pending work
+ there; for example a callback on a pool thread that reads another handle), and the callback
  can be entered again on a thread that is already inside it (when the callback itself
  calls this library, with any handle, and that call waits for decoding). A callback
  that takes a non-recursive lock which it, or the caller around its calls to this
@@ -1106,6 +1129,75 @@ enum SbStatus sb_track_audio_warning(const struct SbTrackAudio *audio,
  `audio` must be NULL or a live handle, freed only once.
  */
 void sb_track_audio_free(struct SbTrackAudio *audio);
+
+/*
+ Starts a pool of `threads` decoding threads for `sb_track_audio_set_pool`: 1 to
+ `SB_MAX_POOL_THREADS`, or 0 for one per logical CPU (at most `SB_MAX_POOL_THREADS`,
+ whatever `RAYON_NUM_THREADS` says). The pool belongs to the caller: no global pool is
+ created or used. On failure `*out` is set to NULL: `SB_STATUS_INVALID_ARGUMENT` for
+ more than `SB_MAX_POOL_THREADS` threads, `SB_STATUS_THREADS_UNAVAILABLE` when the
+ operating system cannot start them (those already started then exit).
+
+ A pool may be used by several threads at once and shared by the track audio handles of
+ any number of discs. It is reference-counted: each handle given it holds a reference,
+ so `sb_pool_free` may come before or after `sb_track_audio_free`. Its threads exit,
+ without being waited for, once the pool and every handle given it are freed (or given
+ another pool), after finishing the frames already sent to them.
+
+ # Safety
+
+ `out` must be NULL or valid for a write.
+ */
+enum SbStatus sb_pool_new(uint32_t threads, struct SbPool **out);
+
+/*
+ The number of threads of a pool, or 0 for NULL.
+
+ # Safety
+
+ `pool` must be NULL or a live handle.
+ */
+uint32_t sb_pool_threads(const struct SbPool *pool);
+
+/*
+ Frees a pool. NULL is ignored. Track audio handles given it keep its threads running
+ until they are freed or given another pool; the call does not wait for the threads.
+
+ # Safety
+
+ `pool` must be NULL or a live handle, freed only once, and not in use by another call.
+ */
+void sb_pool_free(struct SbPool *pool);
+
+/*
+ Makes a track or range audio handle decode its DST frames on `pool` from the next
+ `sb_track_audio_read` on or, with `pool` NULL, where handles decode by default: on the
+ calling thread (in a library built with the `parallel` feature, on rayon's global
+ pool). Handles continued from it by `sb_track_audio_open_next` and
+ `sb_range_audio_open_next` keep the choice. The handle holds a reference to the pool
+ (see `sb_pool_new`).
+
+ The reading stays on the calling thread: `sb_track_audio_read` reads the disc (and
+ runs its read callbacks) and returns the frames there, in order, while the pool's
+ threads decode DST frames ahead of it. The disc's log callback is then also invoked
+ from the pool's threads (see `sb_disc_set_log`). The frames returned, their statuses
+ and the counts are exactly those of decoding on the calling thread, whatever the pool
+ and whenever it is set or changed (frames already sent to an earlier pool finish
+ there). A pool of one thread decodes on the calling thread too.
+
+ Memory stays bounded whatever the image: a handle holds at most `16 x threads` frame
+ positions ahead of the caller, and never more than 256, each at most one stored frame
+ (`SB_MAX_FRAME_BYTES`) and one decoded frame (channels x 4704 bytes): about 24 MB at
+ most, about 3.4 MB for 2 channels and 10 MB for 6 with typical DST frames. Each of the
+ pool's threads also keeps decoder tables of up to about 3.4 MB.
+
+ Returns `SB_STATUS_INVALID_ARGUMENT` when the handle is in use by a callback.
+
+ # Safety
+
+ `audio` and `pool` must be NULL or live handles.
+ */
+enum SbStatus sb_track_audio_set_pool(const struct SbTrackAudio *audio, const struct SbPool *pool);
 
 /*
  Opens the frames of the frame range `[first, end)` of the area from `slot` without

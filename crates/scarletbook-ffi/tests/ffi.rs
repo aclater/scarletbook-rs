@@ -1447,3 +1447,282 @@ fn log_callback_cannot_reach_a_raw_handle_being_consumed() {
     raw_free(c);
     free(disc);
 }
+
+fn pool_new(threads: u32) -> Result<*mut SbPool, SbStatus> {
+    let mut p: *mut SbPool = ptr::dangling_mut();
+    // SAFETY: `&mut p` is a valid out-pointer.
+    match unsafe { sb_pool_new(threads, &mut p) } {
+        SbStatus::Ok => Ok(p),
+        s => {
+            assert!(p.is_null(), "*out not cleared on failure");
+            Err(s)
+        }
+    }
+}
+
+fn pool_threads(pool: *const SbPool) -> u32 {
+    // SAFETY: `pool` is NULL or a live handle.
+    unsafe { sb_pool_threads(pool) }
+}
+
+fn pool_free(pool: *mut SbPool) {
+    // SAFETY: `pool` is NULL or a live handle that the caller does not use again.
+    unsafe { sb_pool_free(pool) };
+}
+
+fn set_pool(audio: *const SbTrackAudio, pool: *const SbPool) -> SbStatus {
+    // SAFETY: both are NULL or live handles.
+    unsafe { sb_track_audio_set_pool(audio, pool) }
+}
+
+/// Every track of area `index` through one continued handle (given `pool` once, at the
+/// first track), then the whole area `[0, P)` through a fresh one: each frame's number,
+/// status and bytes, hashed, with the counts.
+fn decode_area_with(disc: *const SbDisc, index: u32, pool: *const SbPool) -> (Vec<String>, Vec<String>) {
+    let (s, info) = area(disc, index);
+    assert_eq!(s, SbStatus::Ok);
+    let slot = info.slot;
+    let digest = |frames: Vec<(u32, u32, Vec<u8>)>| {
+        let mut h = Sha256::new();
+        for (number, status, bytes) in &frames {
+            h.update(number.to_le_bytes());
+            h.update(status.to_le_bytes());
+            h.update(bytes);
+        }
+        format!("{} frames {}", frames.len(), hex(&h.finalize()))
+    };
+    let mut tracks = Vec::new();
+    let mut prev: *mut SbTrackAudio = ptr::null_mut();
+    for n in 1..=info.track_count {
+        if check(disc, slot, n) != SbStatus::Ok {
+            tracks.push(format!("track {n}: {:?}", check(disc, slot, n)));
+            continue;
+        }
+        let first = prev.is_null();
+        prev = audio_open_next(disc, prev, slot, n).unwrap();
+        if first {
+            assert_eq!(set_pool(prev, pool), SbStatus::Ok);
+        }
+        let frames = read_frames(prev, disc);
+        let (mut missing, mut invalid) = (0u64, 0u64);
+        // SAFETY: `prev` is a live handle; both out-pointers are valid.
+        assert_eq!(unsafe { sb_track_audio_counts(prev, &mut missing, &mut invalid) }, SbStatus::Ok);
+        tracks.push(format!("track {n}: {} missing {missing} invalid {invalid}", digest(frames)));
+    }
+    audio_free(prev);
+    let mut whole = Vec::new();
+    if range_check(disc, slot, 0, info.playtime_frames) == SbStatus::Ok {
+        let h = range_open(disc, slot, 0, info.playtime_frames).unwrap();
+        assert_eq!(set_pool(h, pool), SbStatus::Ok);
+        whole.push(digest(read_frames(h, disc)));
+        audio_free(h);
+    }
+    (tracks, whole)
+}
+
+/// Corpus areas decoded on pools of 1, 2, 4 and one thread per CPU give exactly the
+/// calling thread's frames, statuses and counts, for tracks (continued from handle to
+/// handle, which keeps the pool) and whole-area ranges; above one thread, DST frames are
+/// decoded on the pool's threads while frame lines stay on the caller.
+#[test]
+#[cfg_attr(miri, ignore = "reads whole corpus images")]
+fn pool_decoding_equals_the_calling_thread() {
+    for id in ["dst-features-2ch-6ch", "dst-invalid-frames-5ch", "dst-invalid-frames-2ch", "hostile-base"] {
+        let bytes = image(id);
+        let disc = open(&bytes).unwrap();
+        let (s, d) = info(disc);
+        assert_eq!(s, SbStatus::Ok);
+        let serial: Vec<_> = (0..d.area_count).map(|i| decode_area_with(disc, i, ptr::null())).collect();
+        free(disc);
+        for threads in [1, 2, 4, 0] {
+            let pool = pool_new(threads).unwrap();
+            let n = pool_threads(pool);
+            assert!(n >= 1 && (threads == 0 || n == threads), "{n}");
+            let user = LogUser::default();
+            let disc = open_logged(&bytes, &user, SB_LOG_TRACE).unwrap();
+            let pooled: Vec<_> = (0..d.area_count).map(|i| decode_area_with(disc, i, pool)).collect();
+            assert_eq!(pooled, serial, "{id} on {threads} threads");
+            free(disc);
+            pool_free(pool);
+            let caller = std::thread::current().id();
+            let lines = user.lines.lock().unwrap();
+            let elsewhere =
+                lines.iter().any(|(t, _, m)| m.starts_with("decoding DST frames") && *t != caller);
+            let dst = lines.iter().any(|(_, _, m)| m.starts_with("decoding DST frames"));
+            assert_eq!(elsewhere, dst && n > 1, "{id} on {threads} threads");
+            assert!(
+                lines
+                    .iter()
+                    .filter(|(_, _, m)| !m.starts_with("decoding DST frames"))
+                    .all(|(t, _, _)| *t == caller)
+            );
+        }
+    }
+}
+
+/// Two handles read in turn, frame by frame, on one pool and on two pools, and handles of
+/// two discs read on two threads at once on one pool: the frames of reading each alone on
+/// the calling thread.
+#[test]
+#[cfg_attr(miri, ignore = "reads whole corpus images")]
+fn handles_share_pools() {
+    let id = "dst-features-2ch-6ch";
+    let bytes = image(id);
+    let disc = open(&bytes).unwrap();
+    let whole = |slot| {
+        let (_, a) = area(disc, slot);
+        let h = range_open(disc, slot, 0, a.playtime_frames).unwrap();
+        let frames = read_frames(h, disc);
+        audio_free(h);
+        frames
+    };
+    let expected = [whole(0), whole(1)];
+    let (p, q) = (pool_new(2).unwrap(), pool_new(3).unwrap());
+    for (first, second) in [(p, p), (p, q)] {
+        let handles: Vec<_> = [(0, first), (1, second)]
+            .into_iter()
+            .map(|(slot, pool)| {
+                let (_, a) = area(disc, slot);
+                let h = range_open(disc, slot, 0, a.playtime_frames).unwrap();
+                assert_eq!(set_pool(h, pool), SbStatus::Ok);
+                h
+            })
+            .collect();
+        let mut got = [Vec::new(), Vec::new()];
+        let mut buf = vec![0u8; 6 * 4704];
+        let mut done = [false, false];
+        while !done.iter().all(|&d| d) {
+            for (i, &h) in handles.iter().enumerate() {
+                if done[i] {
+                    continue;
+                }
+                match audio_read(h, disc, &mut buf) {
+                    (SbStatus::Ok, fi) => got[i].push((fi.number, fi.status, buf[..fi.size].to_vec())),
+                    (SbStatus::End, _) => done[i] = true,
+                    (s, _) => panic!("{s:?}: {}", last_error()),
+                }
+            }
+        }
+        handles.into_iter().for_each(audio_free);
+        assert_eq!(got, expected);
+    }
+    free(disc);
+    pool_free(q);
+    // Two threads, each with its own disc, on one pool at once.
+    let shared = p.expose_provenance();
+    let threads: Vec<_> = (0..2u32)
+        .map(|slot| {
+            let bytes = bytes.clone();
+            std::thread::spawn(move || {
+                let pool: *const SbPool = ptr::with_exposed_provenance(shared);
+                let disc = open(&bytes).unwrap();
+                let (_, a) = area(disc, slot);
+                let h = range_open(disc, slot, 0, a.playtime_frames).unwrap();
+                assert_eq!(set_pool(h, pool), SbStatus::Ok);
+                let frames = read_frames(h, disc);
+                audio_free(h);
+                free(disc);
+                frames
+            })
+        })
+        .collect();
+    let got: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+    assert_eq!(got, expected);
+    pool_free(p);
+}
+
+/// A pool may be freed before or after the handles given it, and changed or removed in the
+/// middle of a read, with decoding jobs in flight, without changing the frames.
+#[test]
+#[cfg_attr(miri, ignore = "reads whole corpus images")]
+fn pools_are_freed_in_any_order() {
+    let disc = open(&image("dst-features-2ch-6ch")).unwrap();
+    let (_, a) = area(disc, 1);
+    let end = a.playtime_frames;
+    let h = range_open(disc, 1, 0, end).unwrap();
+    let expected = read_frames(h, disc);
+    audio_free(h);
+    let mut buf = vec![0u8; 6 * 4704];
+    let mut first = |h| {
+        let (s, fi) = audio_read(h, disc, &mut buf);
+        assert_eq!(s, SbStatus::Ok);
+        (fi.number, fi.status, buf[..fi.size].to_vec())
+    };
+    // The pool first: the handle keeps it running.
+    let pool = pool_new(4).unwrap();
+    let h = range_open(disc, 1, 0, end).unwrap();
+    assert_eq!(set_pool(h, pool), SbStatus::Ok);
+    let mut got = vec![first(h)];
+    pool_free(pool);
+    got.extend(read_frames(h, disc));
+    audio_free(h);
+    assert_eq!(got, expected);
+    // The handle first, with jobs in flight.
+    let pool = pool_new(4).unwrap();
+    let h = range_open(disc, 1, 0, end).unwrap();
+    assert_eq!(set_pool(h, pool), SbStatus::Ok);
+    assert_eq!(first(h), expected[0]);
+    audio_free(h);
+    pool_free(pool);
+    // Moved to another pool, then to none, between frames; the first pool freed while
+    // its jobs may still run.
+    let (p, q) = (pool_new(2).unwrap(), pool_new(4).unwrap());
+    let h = range_open(disc, 1, 0, end).unwrap();
+    assert_eq!(set_pool(h, p), SbStatus::Ok);
+    let mut got = vec![first(h)];
+    assert_eq!(set_pool(h, q), SbStatus::Ok);
+    pool_free(p);
+    got.push(first(h));
+    assert_eq!(set_pool(h, ptr::null()), SbStatus::Ok);
+    got.extend(read_frames(h, disc));
+    audio_free(h);
+    pool_free(q);
+    assert_eq!(got, expected);
+    free(disc);
+}
+
+/// The argument checks, without starting a thread (for Miri).
+#[test]
+fn pool_arguments() {
+    assert_eq!(pool_new(SB_MAX_POOL_THREADS + 1).unwrap_err(), SbStatus::InvalidArgument);
+    // SAFETY: a NULL out-pointer is allowed (and refused).
+    assert_eq!(unsafe { sb_pool_new(1, ptr::null_mut()) }, SbStatus::InvalidArgument);
+    assert_eq!(status_name(SbStatus::ThreadsUnavailable as i32), "threads-unavailable");
+    assert_eq!(pool_threads(ptr::null()), 0);
+    pool_free(ptr::null_mut());
+    assert_eq!(set_pool(ptr::null(), ptr::null()), SbStatus::InvalidArgument);
+    let disc = open(&tiny_image()).unwrap();
+    let a = audio_open(disc, 0, 1).unwrap();
+    assert_eq!(set_pool(a, ptr::null()), SbStatus::Ok);
+    assert_eq!(read_frames(a, disc).len(), 2);
+    audio_free(a);
+    free(disc);
+}
+
+/// Pools started and freed in either order around a handle of a small image.
+#[test]
+#[cfg_attr(miri, ignore = "rayon's crossbeam-epoch fails Stacked Borrows (int-to-pointer casts)")]
+fn pool_handles_of_a_small_image() {
+    let disc = open(&tiny_image()).unwrap();
+    for pool_first in [true, false] {
+        let pool = pool_new(2).unwrap();
+        assert_eq!(pool_threads(pool), 2);
+        let a = audio_open(disc, 0, 1).unwrap();
+        assert_eq!(set_pool(ptr::null(), pool), SbStatus::InvalidArgument);
+        assert_eq!(set_pool(a, pool), SbStatus::Ok);
+        if pool_first {
+            pool_free(pool);
+        }
+        let frames = read_frames(a, disc);
+        assert_eq!(frames.iter().map(|f| (f.0, f.1)).collect::<Vec<_>>(), [(0, 2), (1, 2)]);
+        assert_eq!(set_pool(a, ptr::null()), SbStatus::Ok);
+        audio_free(a);
+        if !pool_first {
+            pool_free(pool);
+        }
+    }
+    let pool = pool_new(0).unwrap();
+    assert!((1..=SB_MAX_POOL_THREADS).contains(&pool_threads(pool)));
+    pool_free(pool);
+    free(disc);
+}

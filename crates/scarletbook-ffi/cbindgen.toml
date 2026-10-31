@@ -14,7 +14,7 @@ header = """/* SPDX-License-Identifier: MIT OR Apache-2.0 */
  *   failure, sb_last_error_message() describes the error. The message belongs to the
  *   calling thread and stays valid until that thread's next call into this library.
  *
- * - Handles. SbDisc, SbTrackAudio and SbRawFrames are opaque. Each is created by one
+ * - Handles. SbDisc, SbTrackAudio, SbRawFrames and SbPool are opaque. Each is created by one
  *   function and released by exactly one call to its _free function; passing NULL to a
  *   _free function does nothing. A function that creates a handle sets *out to NULL when it fails, so
  *   freeing that pointer afterwards is safe.
@@ -31,9 +31,13 @@ header = """/* SPDX-License-Identifier: MIT OR Apache-2.0 */
  *   (a language code can), so use *len rather than strlen.
  *
  * - Threads. A handle may be moved between threads, but must not be used by two threads
- *   at once. Read and seek callbacks (sb_disc_open_callbacks) run on the thread that
- *   makes the call that needs them. A log callback (sb_disc_set_log) also runs there and,
- *   in a library built with the parallel feature, on the library's worker threads.
+ *   at once; an SbPool, which only holds threads, may. Read and seek callbacks
+ *   (sb_disc_open_callbacks) run on the thread that makes the call that needs them, also
+ *   when a pool decodes. A log callback (sb_disc_set_log) also runs there and on the
+ *   threads of the pools decoding for the disc's track handles (sb_track_audio_set_pool;
+ *   in a library built with the parallel feature, rayon's global pool by default). The
+ *   library has no other threads and no global state besides the per-thread error
+ *   message.
  *
  * - Callbacks and re-entrancy. While a disc's callback runs, that disc and its track
  *   and raw frames handles are in use: calling into this library with them from the
