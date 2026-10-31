@@ -118,12 +118,12 @@ fn a_stale_index_is_discarded() {
     }));
     for first in [30, 150] {
         let c = TrackCursor::for_range_indexed(&area, first, p, n, &index).unwrap();
-        let (got, c) = frames(&mut b, c);
+        let (got, mut c) = frames(&mut b, c);
         assert!(matches!(c.resumed_from(), ResumedFrom::Discarded { .. }), "{:?}", c.resumed_from());
         assert_eq!(got, straight(&mut b, first, p));
         // A discarded cursor records nothing.
         let before = index.clone();
-        index.absorb(&c).unwrap();
+        index.absorb(&mut c).unwrap();
         assert_eq!(index, before);
     }
     assert!(lines.lock().unwrap().iter().any(|l| l.contains("seek index does not match the image")));
@@ -346,4 +346,90 @@ fn a_read_error_during_replay_counts_nothing_twice() {
     assert!(matches!(it.next(), Some(Err(Error::Io(_)))));
     assert_eq!(it.malformed_sectors(), 20, "the checkpoint's count, nothing replayed added");
     assert_eq!(it.warnings().len(), 20);
+}
+
+/// Two images of the same size and layout, different contents (#90): an index built from
+/// one refuses the other's cursors (which stop recording), its reads (`extend`) and an
+/// index built from it (`merge`); a loaded index takes the image of its first absorb.
+#[test]
+#[cfg_attr(miri, ignore = "reads a few hundred sectors")]
+fn an_index_is_of_one_image() {
+    let (mut x, p) = disc(200, 0);
+    let (mut y, _) = disc(200, 0x5A);
+    let area = x.toc().areas[0].clone();
+    let n = x.toc().sectors;
+    assert_eq!((area.clone(), n), (y.toc().areas[0].clone(), y.toc().sectors), "same key");
+    let options = IndexOptions::new().with_interval(8);
+    let mut index = AreaIndex::new(&area, n, options).unwrap();
+    index.extend(x.image_mut(), 40).unwrap();
+    let before = index.clone();
+    // A cursor of Y that recorded checkpoints (made from an empty index, so no digest
+    // check stops it), read through Y and absorbed: refused, and it stops recording
+    // (absorbing it again does nothing).
+    let empty = AreaIndex::new(&area, n, options).unwrap();
+    let mut c = TrackCursor::for_range_indexed(&area, 150, p, n, &empty).unwrap();
+    while let Some(f) = c.next_frame(y.image_mut()) {
+        f.unwrap();
+    }
+    assert!(matches!(index.absorb(&mut c), Err(Error::InvalidArgument(_))));
+    assert_eq!(index, before);
+    let mut fresh = AreaIndex::new(&area, n, options).unwrap();
+    fresh.absorb(&mut c).unwrap();
+    assert_eq!(fresh.checkpoints(), 0, "the refused cursor recorded nothing more");
+    // Extending with Y: refused.
+    assert!(matches!(index.extend(y.image_mut(), 40), Err(Error::InvalidArgument(_))));
+    assert_eq!(index, before);
+    // Merging an index of Y: refused, both unchanged.
+    let mut of_y = AreaIndex::new(&area, n, options).unwrap();
+    of_y.extend(y.image_mut(), 100).unwrap();
+    let mut merged = index.clone();
+    assert!(matches!(merged.merge(&of_y), Err(Error::InvalidArgument(_))));
+    assert_eq!(merged, index);
+    // X's own cursors and reads go on.
+    let mut c = TrackCursor::for_range_indexed(&area, 0, p, n, &index).unwrap();
+    while let Some(f) = c.next_frame(x.image_mut()) {
+        f.unwrap();
+    }
+    index.absorb(&mut c).unwrap();
+    assert!(index.is_complete());
+    // Saved and loaded, the index has no image until its first absorb or extend: then
+    // it is of that one.
+    let mut loaded = AreaIndex::from_bytes(&area, n, &index.to_bytes(), usize::MAX).unwrap();
+    assert_eq!(loaded, index, "the image is not part of the saved state");
+    let mut c =
+        TrackCursor::for_range_indexed(&area, 0, 1, n, &AreaIndex::new(&area, n, options).unwrap()).unwrap();
+    while let Some(f) = c.next_frame(y.image_mut()) {
+        f.unwrap();
+    }
+    loaded.absorb(&mut c).unwrap();
+    let mut cx =
+        TrackCursor::for_range_indexed(&area, 0, 1, n, &AreaIndex::new(&area, n, options).unwrap()).unwrap();
+    while let Some(f) = cx.next_frame(x.image_mut()) {
+        f.unwrap();
+    }
+    assert!(matches!(loaded.absorb(&mut cx), Err(Error::InvalidArgument(_))));
+}
+
+/// Discs made from one by `share` and `clone` read the same image: their cursors feed one
+/// caller-kept index.
+#[test]
+#[cfg_attr(miri, ignore = "reads a few hundred sectors")]
+fn shares_feed_one_index() {
+    let (x, p) = disc(200, 0);
+    let bytes = x.into_inner().into_inner();
+    let mut a =
+        Disc::open(scarletbook::ReadAtReader::new(std::sync::Arc::<[u8]>::from(bytes.clone()))).unwrap();
+    let mut b = a.clone();
+    let mut s = a.share(Cursor::new(bytes)).unwrap();
+    let area = a.toc().areas[0].clone();
+    let n = a.toc().sectors;
+    let mut index = AreaIndex::new(&area, n, IndexOptions::new().with_interval(8)).unwrap();
+    index.extend(a.image_mut(), 30).unwrap();
+    index.extend(b.image_mut(), 30).unwrap();
+    let mut c = TrackCursor::for_range_indexed(&area, 100, p, n, &index).unwrap();
+    while let Some(f) = c.next_frame(s.image_mut()) {
+        f.unwrap();
+    }
+    index.absorb(&mut c).unwrap();
+    assert!(index.is_complete());
 }

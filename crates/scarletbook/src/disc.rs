@@ -237,15 +237,21 @@ impl<R: Read + Seek> Disc<R> {
     }
 
     /// Keeps `index` (for example one loaded with [`AreaIndex::from_bytes`]) as the seek
-    /// index of the area from `slot`, as [`Disc::enable_seek_index`] does an empty one.
+    /// index of the area from `slot`, as [`Disc::enable_seek_index`] does an empty one. It
+    /// is trusted to be of this disc's image (see [One index per
+    /// image](AreaIndex#one-index-per-image)): whatever image it was built from in this
+    /// process, it takes this disc's from then on.
     ///
     /// # Errors
     ///
     /// [`Error::NoSuchArea`], or [`Error::InvalidArgument`] if `index` is of another area
     /// or image size.
-    pub fn set_seek_index(&mut self, slot: Slot, index: AreaIndex) -> Result<(), Error> {
+    pub fn set_seek_index(&mut self, slot: Slot, mut index: AreaIndex) -> Result<(), Error> {
         let area = self.shared.toc.area(slot).ok_or(Error::NoSuchArea(slot))?;
         index.check_key(area, self.image.sector_count())?;
+        // Trusted to be of this image, as a loaded one is: it is this image's from its
+        // first absorb on.
+        index.forget_image();
         sb_log!(
             self.log(),
             Debug,
