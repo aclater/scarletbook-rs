@@ -1,1 +1,1 @@
-| 2026-10-31 | #132 the whole TOC in one call | `sb_disc_toc` and its layout structs: the values of the existing TOC queries in a binary layout of our own design; no specification involved beyond the fields already read. No new sources consulted. |
+| 2026-10-31 | #132 the whole TOC in one call (#147) | `sb_disc_toc` and its layout structs: the values of the existing TOC queries in a binary layout of our own design; no specification involved beyond the fields already read. No new sources consulted. |
