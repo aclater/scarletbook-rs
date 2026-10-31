@@ -2501,3 +2501,54 @@ fn read_at_discs_and_callback_clones_share_the_seek_index() {
         free(d);
     }
 }
+
+/// A caller-kept seek index made from a positional-callback disc takes the checkpoints of
+/// handles read through its clones (`sb_disc_clone`, `sb_disc_clone_callbacks`), which
+/// have the disc's image, and refuses those of a disc opened on its own over the same bytes.
+#[test]
+#[cfg_attr(miri, ignore = "reads a whole corpus image")]
+fn read_at_clones_keep_the_image_for_caller_kept_indexes() {
+    let user = AtUser::new(image("dst-features-2ch-6ch"));
+    let disc = open_at(&user, user.data.len() as u64).unwrap();
+    let at_clone = clone(disc).unwrap();
+    let mut seek_user = SeekUser(&user, 0);
+    let cb_clone = clone_seek(disc, &mut seek_user).unwrap();
+    let other = open_at(&user, user.data.len() as u64).unwrap();
+    let p = area(disc, 0).1.playtime_frames;
+    // A fresh index, bound to `disc`'s image by a first step of building through it,
+    // takes or refuses the checkpoints of a whole-area read through `d`, and the next
+    // building step through `d`.
+    let absorb_after_read = |d: *mut SbDisc| {
+        let mut index = ptr::null_mut();
+        // SAFETY: a live handle and a valid out-pointer.
+        let s = unsafe { sb_seek_index_new(disc, 0, 4, SB_SEEK_DEFAULT_INLINE_BUDGET, &mut index) };
+        assert_eq!(s, SbStatus::Ok, "{}", last_error());
+        let mut complete = false;
+        // SAFETY: live handles and a valid out-pointer.
+        assert_eq!(unsafe { sb_seek_index_extend(disc, index, 8, &mut complete) }, SbStatus::Ok);
+        assert!(!complete);
+        // SAFETY: as above.
+        let extended = unsafe { sb_seek_index_extend(d, index, 8, &mut complete) };
+        let mut a = ptr::null_mut();
+        // SAFETY: live handles and a valid out-pointer.
+        let s = unsafe { sb_range_audio_open_indexed(d, 0, 0, p, index, &mut a) };
+        assert_eq!(s, SbStatus::Ok, "{}", last_error());
+        read_frames(a, d);
+        // SAFETY: live handles, used on this thread only.
+        let absorbed = unsafe { sb_track_audio_absorb(a, index) };
+        audio_free(a);
+        let (mut lsn, mut complete) = (0u64, false);
+        // SAFETY: a live index handle and valid out-pointers.
+        assert_eq!(unsafe { sb_seek_index_frontier(index, &mut lsn, &mut complete) }, SbStatus::Ok);
+        // SAFETY: a live index handle, freed once.
+        unsafe { sb_seek_index_free(index) };
+        (extended, absorbed, complete)
+    };
+    for d in [at_clone, cb_clone] {
+        assert_eq!(absorb_after_read(d), (SbStatus::Ok, SbStatus::Ok, true), "{}", last_error());
+    }
+    assert_eq!(absorb_after_read(other), (SbStatus::InvalidArgument, SbStatus::InvalidArgument, false));
+    for d in [other, cb_clone, at_clone, disc] {
+        free(d);
+    }
+}
