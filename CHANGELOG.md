@@ -31,6 +31,10 @@ is shared by every crate of the workspace; releases carry the `bench` program an
   header's conventions state the C types used (fixed-width integers, `size_t` for lengths,
   `bool`, the int-sized `SbStatus`, no variadic functions). Comments only: the ABI is
   unchanged.
+- README "Using from Python (ctypes)" (#39): the ABI version check at load, the six
+  structs and the `argtypes`/`restype` of the main functions, a decoding example, and the
+  rules for threads, error messages, freeing and callbacks. The ctypes smoke test of every
+  release package runs these bindings and checks them against the header.
 
 ### Changed
 

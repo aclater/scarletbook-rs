@@ -42,6 +42,8 @@ on:
       - ".github/scripts/clib-*"
       # clib-smoke.py reads the header through its normalisation.
       - .github/scripts/abi-check.py
+      # ... and runs the README's ctypes bindings.
+      - README.md
   workflow_dispatch:
   workflow_call:
 

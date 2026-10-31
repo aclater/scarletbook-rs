@@ -7,7 +7,8 @@ EXPORTS lists the sb_* symbols of the shared library's export table, one per lin
 (clib-test.sh writes it with nm or objdump). Loads the package's shared library, checks
 that the functions the header declares are exactly the exported ones and can be looked up,
 that sb_abi_version() equals the header's SB_ABI_VERSION and sb_version() the
-package version, then opens corpus image dst-features-2ch-6ch, compares its TOC with the
+package version, that the README's ctypes bindings run and match the header, then opens
+corpus image dst-features-2ch-6ch, compares its TOC with the
 conformance manifest and decodes track 1 of each area against the manifest's per-channel
 SHA-256.
 """
@@ -55,6 +56,33 @@ check("sb_abi_version()", lib.sb_abi_version(), abi)
 version = re.fullmatch(r"scarletbook-ffi-(.+)-(x86_64|aarch64)-[a-z0-9_]+-[a-z0-9_]+(-[a-z0-9_]+)?", pkg.name).group(1)
 check("sb_version()", lib.sb_version().decode(), version)
 print(f"sb_version() {lib.sb_version().decode()}, sb_abi_version() {lib.sb_abi_version()}")
+
+
+# The bindings of README.md ("Using from Python (ctypes)"), run against this library: they
+# pass the version check, their structs are the header's field for field, and each bound
+# function takes as many arguments as the header declares.
+readme = pathlib.Path("README.md").read_text(encoding="utf-8")
+block = re.search(r"^### Using from Python \(ctypes\)\n.*?^```python\n(.*?)^```", readme, flags=re.M | re.S).group(1)
+bindings = {}
+exec(block.replace('"/path/to/libscarletbook_ffi.so"', repr(str(lib_path))), bindings)
+check("README SB_ABI_VERSION", bindings["SB_ABI_VERSION"], int(re.search(r"^#define SB_ABI_VERSION (\d+)$", header, flags=re.M).group(1)))
+CTYPES = {"uint8_t": C.c_uint8, "uint16_t": C.c_uint16, "uint32_t": C.c_uint32, "uint64_t": C.c_uint64,
+          "int32_t": C.c_int32, "int64_t": C.c_int64, "bool": C.c_bool, "size_t": C.c_size_t,
+          "const char *": C.c_char_p}
+decls = abi_check.normalise(header)
+structs = re.findall(r"^typedef struct (\w+) \{\n(.*?)^\} \1;", decls, flags=re.M | re.S)
+check("structs", sorted(n for n, _ in structs), sorted(n for n, v in bindings.items()
+                                                       if isinstance(v, type) and issubclass(v, C.Structure)))
+for name, body in structs:
+    want = [(m.group(2), CTYPES.get(m.group(1).strip())) for m in re.finditer(r"^(.*?)\s*\b(\w+);$", body, flags=re.M)]
+    got = [(f, t) for f, t in bindings[name]._fields_] if name in bindings else []
+    check(f"README struct {name}", got, want)
+for m in re.finditer(r"^(?!typedef)[^(]*?\b(sb_\w+)\((.*)\);$", decls, flags=re.M):
+    fn = getattr(bindings["lib"], m.group(1))
+    if fn.argtypes is not None:
+        params = 0 if m.group(2) == "void" else m.group(2).count(",") + 1
+        check(f"README argtypes of {m.group(1)}", len(fn.argtypes), params)
+print("README ctypes bindings match the header")
 
 
 class DiscInfo(C.Structure):

@@ -455,3 +455,4 @@ on 2026-10-30: the name `scarletbook` is not taken on crates.io. Nothing was pub
 | 2026-10-31 | abandoned decode jobs (#29) | queued jobs of a continued or dropped cursor skip decoding; the transient bound documented. No new sources consulted. |
 | 2026-10-31 | #39 concurrency test | N threads with N discs through the C interface. No new sources consulted. |
 | 2026-10-31 | #39 struct layouts | C struct sizes, alignment and padding documented in the header and tested. No new sources consulted. |
+| 2026-10-31 | #39 ctypes README | README section on using the C library from Python's ctypes, checked by clib-smoke.py. Python `ctypes` documentation (docs.python.org/3/library/ctypes.html) from memory, not fetched; a general reference. No SACD or DST sources. |
