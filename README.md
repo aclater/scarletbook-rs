@@ -229,7 +229,7 @@ that loads the library at run time can look the symbol up instead.
 
 | `SB_ABI_VERSION` | First release |
 |---|---|
-| 1 | 0.1.0 (unchanged in 0.2.0) |
+| 1 | 0.1.0 (additions only in 0.3.0) |
 
 CI enforces this. `crates/scarletbook-ffi/abi/abi-N.txt` is the baseline of ABI version N:
 the header's declarations without comments or layout. `.github/scripts/abi-check.py`
@@ -262,7 +262,8 @@ target/release/bench decode disc.iso --area 2ch --threads 0 --sink hash   # or n
 Pushing a version tag (`v0.1.0`, matching the crate version) runs the release workflow:
 it publishes `bench-<version>-x86_64-linux.tar.gz` (generic x86-64, cargo profile `dist`),
 after the correctness gate has passed on that very build, and two labelled builds,
-`-v3` (`-C target-cpu=x86-64-v3`) and `-znver5` (AMD Zen 5), each with a SHA-256 checksum and, from 0.2.0, a signed
+`bench-<version>-x86-64-v3-linux.tar.gz` (`-C target-cpu=x86-64-v3`, not a benchmark asset)
+and `bench-<version>-x86_64-linux-znver5.tar.gz` (AMD Zen 5), each with a SHA-256 checksum and, from 0.2.0, a signed
 build provenance attestation:
 
 ```sh
