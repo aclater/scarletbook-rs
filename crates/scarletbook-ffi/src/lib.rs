@@ -14,6 +14,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
@@ -21,7 +22,8 @@ use scarletbook::log::{Level, Log};
 use scarletbook::toc::{AreaTextItem, DiscTextItem, TrackTextItem};
 use scarletbook::{
     Area, AreaCursor, AreaIndex, DecodeOn, Disc, Error, FrameContent, FrameKind, FrameStatus, IndexOptions,
-    LoudspeakerLayout, ReadAtReader, Slot, Speaker, TrackAudioCursor, TrackCursor, TrackFrame, WarningCode,
+    LoudspeakerLayout, ReadAt, ReadAtReader, Slot, Speaker, TrackAudioCursor, TrackCursor, TrackFrame,
+    WarningCode,
 };
 
 /// Result of every call.
@@ -536,6 +538,8 @@ enum DiscSource {
     File(Arc<File>),
     /// An image copied into memory by `sb_disc_open_memory`.
     Memory(Arc<Vec<u8>>),
+    /// A positional read callback (`sb_disc_open_callbacks_at`).
+    At(Arc<AtCallbacks>),
     /// A reader with a single position (read and seek callbacks): not shared.
     Single,
 }
@@ -547,6 +551,7 @@ impl DiscSource {
             #[cfg(any(unix, windows))]
             DiscSource::File(file) => Some(Box::new(ReadAtReader::new(Arc::clone(file)))),
             DiscSource::Memory(bytes) => Some(Box::new(ReadAtReader::new(Arc::clone(bytes)))),
+            DiscSource::At(callbacks) => Some(Box::new(ReadAtReader::new(Arc::clone(callbacks)))),
             DiscSource::Single => None,
         }
     }
@@ -997,6 +1002,45 @@ impl Seek for Callbacks {
     }
 }
 
+/// Reads up to `len` bytes at byte `offset` of the image into `buf`; returns the count (0
+/// at or past the end) or -1 on error. May be called from several threads at once (see
+/// `sb_disc_open_callbacks_at`).
+pub type SbReadAtFn =
+    Option<unsafe extern "C" fn(user: *mut c_void, offset: u64, buf: *mut u8, len: usize) -> i64>;
+
+type ReadAtFn = unsafe extern "C" fn(*mut c_void, u64, *mut u8, usize) -> i64;
+
+/// A positional read callback, shared by a disc and its clones.
+struct AtCallbacks {
+    read_at: ReadAtFn,
+    size: u64,
+    user: *mut c_void,
+}
+
+// SAFETY: the caller of sb_disc_open_callbacks_at guarantees that `read_at` may be called
+// with `user` from any thread, concurrently, until the disc and its clones are freed (its
+// # Safety section); `size` is plain data.
+unsafe impl Send for AtCallbacks {}
+// SAFETY: as above: calls through shared references, concurrent ones included, are allowed.
+unsafe impl Sync for AtCallbacks {}
+
+impl ReadAt for AtCallbacks {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
+        // SAFETY: the caller of sb_disc_open_callbacks_at guaranteed that `read_at` may be
+        // called with `user`, from any thread, concurrently, and a buffer valid for `len`
+        // bytes of writes, which `buf` is.
+        let n = unsafe { (self.read_at)(self.user, offset, buf.as_mut_ptr(), buf.len()) };
+        usize::try_from(n)
+            .ok()
+            .filter(|&n| n <= buf.len())
+            .ok_or_else(|| io::Error::other("read callback failed or returned too many bytes"))
+    }
+
+    fn size(&self) -> io::Result<u64> {
+        Ok(self.size)
+    }
+}
+
 /// Opens a disc image read through callbacks. On failure `*out` is set to NULL.
 ///
 /// The callbacks run during this call and during `sb_track_audio_read` and
@@ -1051,6 +1095,68 @@ pub unsafe extern "C" fn sb_disc_open_callbacks_with_log(
     })
 }
 
+/// Opens a disc image of `size` bytes read through a positional read callback, which is
+/// given the offset of each read and so can serve the disc and its clones (`sb_disc_clone`)
+/// on several threads at once. On failure `*out` is set to NULL.
+///
+/// The callback runs during this call and during `sb_track_audio_read` and
+/// `sb_raw_frames_read`, on the calling thread, with the rules of `sb_disc_open_callbacks`
+/// for calling back into this library; clones of the disc used on several threads call it
+/// on those threads at the same time. `size` is the image's length (what `seek` to the end
+/// gives for `sb_disc_open_callbacks`): a short count or -1 fails the read that needed it
+/// (`SB_STATUS_IO`).
+///
+/// # Safety
+///
+/// `read_at` must be safe to call with `user` from any thread, concurrently, until the
+/// disc and all its clones are freed; it must not unwind, and must write at most `len`
+/// bytes to `buf`. `out` must be NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_disc_open_callbacks_at(
+    read_at: SbReadAtFn,
+    size: u64,
+    user: *mut c_void,
+    out: *mut *mut SbDisc,
+) -> SbStatus {
+    // SAFETY: forwarded contract; no log.
+    unsafe { sb_disc_open_callbacks_at_with_log(read_at, size, user, None, ptr::null_mut(), SB_LOG_OFF, out) }
+}
+
+/// `sb_disc_open_callbacks_at`, reporting to a log callback from the format detection on
+/// (see `sb_disc_set_log`). `user` goes to the read callback, `log_user` to the log
+/// callback.
+///
+/// # Safety
+///
+/// As `sb_disc_open_callbacks_at` and `sb_disc_set_log`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_disc_open_callbacks_at_with_log(
+    read_at: SbReadAtFn,
+    size: u64,
+    user: *mut c_void,
+    log: SbLogFn,
+    log_user: *mut c_void,
+    level: i32,
+    out: *mut *mut SbDisc,
+) -> SbStatus {
+    // SAFETY: forwarded contract.
+    unsafe { clear_out(out) };
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let log = unsafe { DiscLog::new(log, log_user, level) }?;
+        let Some(read_at) = read_at else {
+            if let Some(t) = &log.1 {
+                t.clear();
+            }
+            return Err(Failure::arg("NULL callback"));
+        };
+        let callbacks = Arc::new(AtCallbacks { read_at, size, user });
+        let reader = Box::new(ReadAtReader::new(Arc::clone(&callbacks)));
+        // SAFETY: forwarded contract.
+        unsafe { open_reader(reader, DiscSource::At(callbacks), log, out) }
+    })
+}
+
 /// Opens a clone of a disc: the same image with a reading position of its own, sharing
 /// the disc's parsed TOC, warnings and sector format, without the log callback (see
 /// `sb_disc_clone_with_log`). For reads of one image on several threads at once, give each
@@ -1096,33 +1202,119 @@ pub unsafe extern "C" fn sb_disc_clone_with_log(
     unsafe { clear_out(out) };
     guard(|| {
         // SAFETY: forwarded contract.
-        let DiscLog(log, target) = unsafe { DiscLog::new(log, log_user, level) }?;
-        // The new callback is called only by the clone: stop it on every failure.
-        let clear = |e: Failure| {
-            if let Some(t) = &target {
+        let log = unsafe { DiscLog::new(log, log_user, level) }?;
+        // SAFETY: forwarded contract.
+        unsafe { clone_into(disc, None, log, out) }
+    })
+}
+
+/// The log user data of a function without a log callback.
+const NO_USER: *mut c_void = ptr::null_mut();
+
+/// The shared body of the `sb_disc_clone` functions: a clone of `disc` reading through
+/// `reader` (with what a clone of it would read through), or by default through a new
+/// reader of the disc's source.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle; `out` NULL or valid for a write and already
+/// cleared by the caller.
+unsafe fn clone_into(
+    disc: *const SbDisc,
+    reader: Option<(Reader, DiscSource)>,
+    log: DiscLog,
+    out: *mut *mut SbDisc,
+) -> Result<SbStatus, Failure> {
+    let DiscLog(log, target) = log;
+    // The new callback is called only by the clone: stop it on every failure.
+    let clear = |e: Failure| {
+        if let Some(t) = &target {
+            t.clear();
+        }
+        e
+    };
+    // SAFETY: forwarded contract.
+    let handle = unsafe { disc_handle(disc) }.map_err(clear)?;
+    if out.is_null() {
+        return Err(clear(Failure::arg("NULL output pointer")));
+    }
+    let (reader, source) = match reader {
+        Some(given) => given,
+        None => match handle.source.reader() {
+            Some(reader) => (reader, handle.source.clone()),
+            None => {
+                return Err(clear(Failure::arg(
+                    "a disc opened with read and seek callbacks cannot be cloned (see sb_disc_clone_callbacks)",
+                )));
+            }
+        },
+    };
+    let d = handle.get().map_err(clear)?;
+    let clone = d.share_with_log(reader, log).map_err(|e| clear(e.into()))?;
+    let clone =
+        Box::new(SbDisc { inner: RefCell::new(clone), id: handle.id, source, log: RefCell::new(target) });
+    // SAFETY: non-NULL and valid for a write by this function's contract.
+    unsafe { out.write(Box::into_raw(clone)) };
+    Ok(SbStatus::Ok)
+}
+
+/// Opens a clone of any disc read through new read and seek callbacks (see
+/// `sb_disc_open_callbacks`), for example over a second handle of the image's file: as
+/// `sb_disc_clone`, with the clone reading through `read` and `seek`. The reader is
+/// checked: it must have the image's length and the same TOC sectors, else
+/// `SB_STATUS_INVALID_ARGUMENT`; that cannot prove every sector the same, which is the
+/// caller's responsibility. The clone has a single position: `sb_disc_clone` refuses it,
+/// while `sb_disc_clone_callbacks` takes it. On failure `*out` is set to NULL.
+///
+/// # Safety
+///
+/// As `sb_disc_clone` for `disc` and `out`, and as `sb_disc_open_callbacks` for `read`,
+/// `seek` and `user`, until the clone is freed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_disc_clone_callbacks(
+    disc: *const SbDisc,
+    read: SbReadFn,
+    seek: SbSeekFn,
+    user: *mut c_void,
+    out: *mut *mut SbDisc,
+) -> SbStatus {
+    // SAFETY: forwarded contract; no log.
+    unsafe { sb_disc_clone_callbacks_with_log(disc, read, seek, user, None, NO_USER, SB_LOG_OFF, out) }
+}
+
+/// `sb_disc_clone_callbacks`, with the clone reporting to a log callback of its own (see
+/// `sb_disc_clone_with_log`). `user` goes to the read and seek callbacks, `log_user` to the
+/// log callback.
+///
+/// # Safety
+///
+/// As `sb_disc_clone_callbacks` and `sb_disc_set_log`.
+#[allow(clippy::too_many_arguments)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_disc_clone_callbacks_with_log(
+    disc: *const SbDisc,
+    read: SbReadFn,
+    seek: SbSeekFn,
+    user: *mut c_void,
+    log: SbLogFn,
+    log_user: *mut c_void,
+    level: i32,
+    out: *mut *mut SbDisc,
+) -> SbStatus {
+    // SAFETY: forwarded contract.
+    unsafe { clear_out(out) };
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let log = unsafe { DiscLog::new(log, log_user, level) }?;
+        let (Some(read), Some(seek)) = (read, seek) else {
+            if let Some(t) = &log.1 {
                 t.clear();
             }
-            e
+            return Err(Failure::arg("NULL callback"));
         };
+        let reader: Reader = Box::new(Callbacks { read, seek, user });
         // SAFETY: forwarded contract.
-        let handle = unsafe { disc_handle(disc) }.map_err(clear)?;
-        if out.is_null() {
-            return Err(clear(Failure::arg("NULL output pointer")));
-        }
-        let Some(reader) = handle.source.reader() else {
-            return Err(clear(Failure::arg("a disc opened with read and seek callbacks cannot be cloned")));
-        };
-        let d = handle.get().map_err(clear)?;
-        let clone = d.share_with_log(reader, log).map_err(|e| clear(e.into()))?;
-        let clone = Box::new(SbDisc {
-            inner: RefCell::new(clone),
-            id: handle.id,
-            source: handle.source.clone(),
-            log: RefCell::new(target),
-        });
-        // SAFETY: non-NULL and valid for a write by this function's contract.
-        unsafe { out.write(Box::into_raw(clone)) };
-        Ok(SbStatus::Ok)
+        unsafe { clone_into(disc, Some((reader, DiscSource::Single)), log, out) }
     })
 }
 
@@ -2988,9 +3180,9 @@ pub unsafe extern "C" fn sb_seek_index_free(index: *mut SbSeekIndex) {
 /// Keeps a seek index of the area from `slot` in `disc`, empty to begin with (see
 /// `sb_seek_index_new` for `interval` and `inline_budget`), replacing one kept before:
 /// from then on every track audio and raw frames handle of that area opened through the
-/// disc or any of its clones (`sb_disc_clone`) starts from it, and reads through them
-/// (`sb_track_audio_read`, `sb_raw_frames_read`) and continuations (`_open_next`) build
-/// it. The disc and its clones keep one index, used and grown from any thread; a
+/// disc or any of its clones (`sb_disc_clone`, `sb_disc_clone_callbacks`) starts from it,
+/// and reads through them (`sb_track_audio_read`, `sb_raw_frames_read`) and continuations
+/// (`_open_next`) build it. The disc and its clones keep one index, used and grown from any thread; a
 /// handle's frames, statuses, counts and warnings are those without an index. Fails with
 /// `SB_STATUS_NO_SUCH_AREA` or `SB_STATUS_INVALID_ARGUMENT`.
 ///

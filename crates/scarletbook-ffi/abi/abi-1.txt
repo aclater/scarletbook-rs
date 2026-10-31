@@ -114,6 +114,7 @@ typedef struct SbTrackAudio SbTrackAudio;
 typedef void(*SbLogFn)(void *user, int32_t level, const char *message);
 typedef int64_t(*SbReadFn)(void *user, uint8_t *buf, size_t len);
 typedef int64_t(*SbSeekFn)(void *user, int64_t offset, int32_t whence);
+typedef int64_t(*SbReadAtFn)(void *user, uint64_t offset, uint8_t *buf, size_t len);
 typedef struct SbDiscInfo {
 uint32_t sector_size;
 uint64_t sectors;
@@ -186,8 +187,12 @@ enum SbStatus sb_disc_open_memory(const uint8_t *data, size_t len, struct SbDisc
 enum SbStatus sb_disc_open_memory_with_log(const uint8_t *data, size_t len, SbLogFn log, void *log_user, int32_t level, struct SbDisc **out);
 enum SbStatus sb_disc_open_callbacks(SbReadFn read, SbSeekFn seek, void *user, struct SbDisc **out);
 enum SbStatus sb_disc_open_callbacks_with_log(SbReadFn read, SbSeekFn seek, void *user, SbLogFn log, void *log_user, int32_t level, struct SbDisc **out);
+enum SbStatus sb_disc_open_callbacks_at(SbReadAtFn read_at, uint64_t size, void *user, struct SbDisc **out);
+enum SbStatus sb_disc_open_callbacks_at_with_log(SbReadAtFn read_at, uint64_t size, void *user, SbLogFn log, void *log_user, int32_t level, struct SbDisc **out);
 enum SbStatus sb_disc_clone(const struct SbDisc *disc, struct SbDisc **out);
 enum SbStatus sb_disc_clone_with_log(const struct SbDisc *disc, SbLogFn log, void *log_user, int32_t level, struct SbDisc **out);
+enum SbStatus sb_disc_clone_callbacks(const struct SbDisc *disc, SbReadFn read, SbSeekFn seek, void *user, struct SbDisc **out);
+enum SbStatus sb_disc_clone_callbacks_with_log(const struct SbDisc *disc, SbReadFn read, SbSeekFn seek, void *user, SbLogFn log, void *log_user, int32_t level, struct SbDisc **out);
 enum SbStatus sb_disc_set_log(const struct SbDisc *disc, SbLogFn log, void *user, int32_t level);
 void sb_disc_free(struct SbDisc *disc);
 enum SbStatus sb_disc_info(const struct SbDisc *disc, struct SbDiscInfo *out);

@@ -2154,3 +2154,350 @@ fn a_clone_logs_to_its_own_callback() {
     free(silent);
     free(logged);
 }
+
+/// An image served by a positional read callback, failing (with -1, or as a short read
+/// with `short`) at the offsets in `fault`.
+struct AtUser {
+    data: Vec<u8>,
+    fault: std::ops::Range<u64>,
+    short: bool,
+    /// Calls running now, and the most seen at once.
+    running: std::sync::atomic::AtomicUsize,
+    most: std::sync::atomic::AtomicUsize,
+}
+
+impl AtUser {
+    fn new(data: Vec<u8>) -> Self {
+        AtUser { data, fault: 0..0, short: false, running: 0.into(), most: 0.into() }
+    }
+
+    /// What a read of `len` bytes at `offset` gives: bytes, or -1 / 0 in the fault window
+    /// (a read reaching into it stops at its start).
+    fn read(&self, offset: u64, out: &mut [u8]) -> i64 {
+        if self.fault.contains(&offset) {
+            return if self.short { 0 } else { -1 };
+        }
+        let start = (offset as usize).min(self.data.len());
+        let mut end = (start + out.len()).min(self.data.len());
+        if offset < self.fault.start {
+            end = end.min(self.fault.start as usize);
+        }
+        out[..end - start].copy_from_slice(&self.data[start..end]);
+        (end - start) as i64
+    }
+}
+
+unsafe extern "C" fn cb_read_at(user: *mut c_void, offset: u64, buf: *mut u8, len: usize) -> i64 {
+    use std::sync::atomic::Ordering::SeqCst;
+    // SAFETY: `user` is an `AtUser` that outlives the disc and its clones; it is only read.
+    let u = unsafe { &*user.cast::<AtUser>() };
+    let now = u.running.fetch_add(1, SeqCst) + 1;
+    u.most.fetch_max(now, SeqCst);
+    // SAFETY: the library passes a buffer valid for `len` bytes of writes.
+    let out = unsafe { std::slice::from_raw_parts_mut(buf, len) };
+    let n = u.read(offset, out);
+    u.running.fetch_sub(1, SeqCst);
+    n
+}
+
+unsafe extern "C" fn cb_read_at_lies(_: *mut c_void, _: u64, _: *mut u8, len: usize) -> i64 {
+    len as i64 + 1
+}
+
+/// The same image and faults through read and seek callbacks.
+struct SeekUser<'a>(&'a AtUser, u64);
+
+unsafe extern "C" fn cb_fault_read(user: *mut c_void, buf: *mut u8, len: usize) -> i64 {
+    // SAFETY: `user` is a `SeekUser` used by one disc on one thread at a time.
+    let u = unsafe { &mut *user.cast::<SeekUser<'_>>() };
+    // SAFETY: the library passes a buffer valid for `len` bytes of writes.
+    let n = u.0.read(u.1, unsafe { std::slice::from_raw_parts_mut(buf, len) });
+    if n > 0 {
+        u.1 += n as u64;
+    }
+    n
+}
+
+unsafe extern "C" fn cb_fault_seek(user: *mut c_void, offset: i64, whence: i32) -> i64 {
+    // SAFETY: as in `cb_fault_read`.
+    let u = unsafe { &mut *user.cast::<SeekUser<'_>>() };
+    let base = match whence {
+        0 => 0,
+        1 => u.1 as i64,
+        _ => u.0.data.len() as i64,
+    };
+    match base.checked_add(offset).filter(|&p| p >= 0) {
+        Some(p) => {
+            u.1 = p as u64;
+            p
+        }
+        None => -1,
+    }
+}
+
+fn open_at(user: &AtUser, size: u64) -> Result<*mut SbDisc, SbStatus> {
+    let mut d: *mut SbDisc = ptr::dangling_mut();
+    let u = ptr::from_ref(user).cast_mut().cast::<c_void>();
+    // SAFETY: `cb_read_at` may be called with `u` from any thread, concurrently, while
+    // `user` lives, which outlives the disc and its clones; `&mut d` is a valid out-pointer.
+    match unsafe { sb_disc_open_callbacks_at(Some(cb_read_at), size, u, &mut d) } {
+        SbStatus::Ok => Ok(d),
+        s => {
+            assert!(d.is_null(), "*out not cleared on failure");
+            Err(s)
+        }
+    }
+}
+
+fn open_seek(user: &mut SeekUser<'_>) -> Result<*mut SbDisc, SbStatus> {
+    let mut d: *mut SbDisc = ptr::dangling_mut();
+    let u = ptr::from_mut(user).cast::<c_void>();
+    // SAFETY: the callbacks follow the contract; `user` outlives the disc, used on this
+    // thread only; `&mut d` is a valid out-pointer.
+    match unsafe { sb_disc_open_callbacks(Some(cb_fault_read), Some(cb_fault_seek), u, &mut d) } {
+        SbStatus::Ok => Ok(d),
+        s => {
+            assert!(d.is_null());
+            Err(s)
+        }
+    }
+}
+
+fn clone_seek(disc: *const SbDisc, user: &mut SeekUser<'_>) -> Result<*mut SbDisc, SbStatus> {
+    let mut d: *mut SbDisc = ptr::dangling_mut();
+    let u = ptr::from_mut(user).cast::<c_void>();
+    // SAFETY: as in `open_seek`; `disc` is a live handle.
+    match unsafe { sb_disc_clone_callbacks(disc, Some(cb_fault_read), Some(cb_fault_seek), u, &mut d) } {
+        SbStatus::Ok => Ok(d),
+        s => {
+            assert!(d.is_null(), "*out not cleared on failure");
+            Err(s)
+        }
+    }
+}
+
+/// Every read of a track: each frame's number, status and bytes, and the final status.
+fn read_all(disc: *const SbDisc, slot: u32, n: u32) -> (Vec<(u32, u32, Vec<u8>)>, SbStatus) {
+    let a = audio_open(disc, slot, n).unwrap();
+    let mut buf = vec![0u8; audio_channels(a) as usize * 4704];
+    let mut frames = Vec::new();
+    let end = loop {
+        match audio_read(a, disc, &mut buf) {
+            (SbStatus::Ok, fi) => frames.push((fi.number, fi.status, buf.clone())),
+            (s, _) => break s,
+        }
+    };
+    audio_free(a);
+    (frames, end)
+}
+
+/// One image decoded on 6 threads through clones of a disc served by a positional read
+/// callback: the manifest's hashes, with calls at once (usually).
+#[test]
+#[cfg_attr(miri, ignore = "reads whole corpus images")]
+fn read_at_callbacks_serve_clones_on_threads() {
+    const THREADS: usize = 6;
+    for id in ["dst-features-2ch-6ch", "hostile-base"] {
+        let user = AtUser::new(image(id));
+        let disc = open_at(&user, user.data.len() as u64).unwrap();
+        let mut jobs = Vec::new();
+        for area in expected(id)["audio"].as_array().unwrap() {
+            let slot = if area["area"] == "2ch" { 0 } else { 1 };
+            for t in area["tracks"].as_array().unwrap().iter().filter(|t| t["outcome"] == "ok") {
+                jobs.push((slot, t.clone()));
+            }
+        }
+        let clones: Vec<usize> = (0..THREADS).map(|_| clone(disc).unwrap().expose_provenance()).collect();
+        std::thread::scope(|s| {
+            for (i, &c) in clones.iter().enumerate() {
+                let jobs = &jobs;
+                s.spawn(move || {
+                    let c: *const SbDisc = ptr::with_exposed_provenance(c);
+                    for (slot, t) in jobs.iter().skip(i % jobs.len()).step_by(THREADS) {
+                        let n = t["number"].as_u64().unwrap() as u32;
+                        let exp: Vec<_> =
+                            t["sha256"].as_array().unwrap().iter().map(|h| h.as_str().unwrap()).collect();
+                        assert_eq!(hash_track(c, *slot, n).0, exp, "{id} clone {i}: {slot} {n}");
+                    }
+                });
+            }
+        });
+        eprintln!("{id}: at most {} read calls at once", user.most.load(std::sync::atomic::Ordering::SeqCst));
+        free(disc);
+        clones.into_iter().map(ptr::with_exposed_provenance_mut).for_each(free);
+    }
+}
+
+/// Failing and short reads give through a positional callback, its clones and a clone with
+/// read and seek callbacks exactly what they give through read and seek callbacks.
+#[test]
+#[cfg_attr(miri, ignore = "reads whole corpus images")]
+fn read_at_callback_failures_match_read_and_seek() {
+    let id = "dst-features-2ch-6ch";
+    let bytes = image(id);
+    let probe = open(&bytes).unwrap();
+    let (_, a) = area(probe, 0);
+    free(probe);
+    let mid = u64::from(a.audio_start_lsn + a.audio_end_lsn) / 2;
+    for short in [false, true] {
+        let mut user = AtUser::new(bytes.clone());
+        user.fault = mid * 2048 + 100..mid * 2048 + 4196;
+        user.short = short;
+        let mut seek_user = SeekUser(&user, 0);
+        let seek = open_seek(&mut seek_user).unwrap();
+        let at = open_at(&user, bytes.len() as u64).unwrap();
+        let at_clone = clone(at).unwrap();
+        let mut seek_user2 = SeekUser(&user, 0);
+        let seek_clone = clone_seek(at, &mut seek_user2).unwrap();
+        let mut failed = 0;
+        for slot in [0u32, 1] {
+            for n in 1..=info_tracks(seek, slot) {
+                if check(seek, slot, n) != SbStatus::Ok {
+                    continue;
+                }
+                let want = read_all(seek, slot, n);
+                failed += usize::from(want.1 != SbStatus::End);
+                for d in [at, at_clone, seek_clone] {
+                    assert_eq!(read_all(d, slot, n), want, "short {short}: {slot} {n}");
+                }
+            }
+        }
+        assert!(failed > 0, "the fault must fail a read");
+        for d in [seek_clone, at_clone, at, seek] {
+            free(d);
+        }
+    }
+}
+
+fn info_tracks(disc: *const SbDisc, slot: u32) -> u32 {
+    (0..info(disc).1.area_count)
+        .map(|i| area(disc, i).1)
+        .find(|a| a.slot == slot)
+        .map_or(0, |a| a.track_count)
+}
+
+/// Small enough for Miri: the positional opener and clones through callbacks, and what
+/// they refuse.
+#[test]
+fn read_at_callbacks_and_callback_clones() {
+    let bytes = tiny_image();
+    let user = AtUser::new(bytes.clone());
+    let disc = open_at(&user, bytes.len() as u64).unwrap();
+    let c = clone(disc).unwrap();
+    let a = audio_open(c, 0, 1).unwrap();
+    assert_eq!(hash_handle(a, disc).len(), 2);
+    audio_free(a);
+    // A NULL callback; a callback that claims more bytes than asked; a size past the data.
+    let mut d = ptr::dangling_mut();
+    // SAFETY: a NULL callback is refused; `&mut d` is a valid out-pointer.
+    let s = unsafe { sb_disc_open_callbacks_at(None, 1, ptr::null_mut(), &mut d) };
+    assert_eq!(s, SbStatus::InvalidArgument);
+    assert!(d.is_null());
+    // SAFETY: `cb_read_at_lies` writes nothing; `&mut d` is a valid out-pointer.
+    let s = unsafe { sb_disc_open_callbacks_at(Some(cb_read_at_lies), 1 << 20, ptr::null_mut(), &mut d) };
+    assert_eq!(s, SbStatus::Io);
+    assert!(d.is_null());
+    // Clones through read and seek callbacks: of the same image, or refused.
+    let mut same = SeekUser(&user, 0);
+    let sc = clone_seek(disc, &mut same).unwrap();
+    let a = audio_open(disc, 0, 1).unwrap();
+    assert_eq!(hash_handle(a, sc).len(), 2);
+    audio_free(a);
+    // A single-position clone cannot be cloned again without callbacks.
+    assert_eq!(clone(sc).unwrap_err(), SbStatus::InvalidArgument);
+    let mut longer = bytes.clone();
+    longer.extend_from_slice(&[0u8; 2048]);
+    let mut changed = bytes.clone();
+    changed[540 * 2048 + 2 * 2048 + 2000] ^= 1; // in the area TOC copy used
+    for other in [longer, changed] {
+        let other_user = AtUser::new(other);
+        let mut u = SeekUser(&other_user, 0);
+        assert_eq!(clone_seek(disc, &mut u).unwrap_err(), SbStatus::InvalidArgument);
+        assert!(last_error().contains("another image"), "{}", last_error());
+    }
+    let mut d = ptr::dangling_mut();
+    // SAFETY: a NULL callback is refused before anything is called.
+    let s = unsafe { sb_disc_clone_callbacks(disc, None, Some(cb_fault_seek), ptr::null_mut(), &mut d) };
+    assert_eq!(s, SbStatus::InvalidArgument);
+    assert!(d.is_null());
+    for d in [sc, c, disc] {
+        free(d);
+    }
+}
+
+/// The seek index `disc` keeps for slot 0: its frontier and whether it is complete, or
+/// `None` when none is kept.
+fn kept_index(disc: *const SbDisc) -> Option<(u64, bool)> {
+    let mut index = ptr::null_mut();
+    // SAFETY: a live handle and a valid out-pointer.
+    match unsafe { sb_disc_seek_index_get(disc, 0, &mut index) } {
+        SbStatus::Absent => None,
+        SbStatus::Ok => {
+            let (mut lsn, mut complete) = (0u64, false);
+            // SAFETY: a live index handle and valid out-pointers.
+            assert_eq!(unsafe { sb_seek_index_frontier(index, &mut lsn, &mut complete) }, SbStatus::Ok);
+            // SAFETY: a live index handle, freed once.
+            unsafe { sb_seek_index_free(index) };
+            Some((lsn, complete))
+        }
+        s => panic!("{s:?}: {}", last_error()),
+    }
+}
+
+/// A disc opened with a positional read callback and its clones (through `sb_disc_clone`,
+/// and through read and seek callbacks) keep one seek index: enabled through one, built
+/// through another on another thread, seen and disabled through the third; reads through
+/// any of them equal reads without an index.
+#[test]
+#[cfg_attr(miri, ignore = "reads a whole corpus image")]
+fn read_at_discs_and_callback_clones_share_the_seek_index() {
+    let id = "dst-features-2ch-6ch";
+    let user = AtUser::new(image(id));
+    let plain = open(&user.data).unwrap();
+    let disc = open_at(&user, user.data.len() as u64).unwrap();
+    let at_clone = clone(disc).unwrap();
+    let mut seek_user = SeekUser(&user, 0);
+    let cb_clone = clone_seek(disc, &mut seek_user).unwrap();
+    // Enabled through the callbacks clone: every disc of the family sees it.
+    // SAFETY: a live handle.
+    let s = unsafe { sb_disc_seek_index_enable(cb_clone, 0, 4, SB_SEEK_DEFAULT_INLINE_BUDGET) };
+    assert_eq!(s, SbStatus::Ok, "{}", last_error());
+    let empty = kept_index(disc).expect("kept for the original");
+    assert!(!empty.1);
+    assert_eq!(kept_index(at_clone), Some(empty));
+    // Built by a whole-area read through the positional clone on another thread.
+    let (_, a) = area(disc, 0);
+    let p = a.playtime_frames;
+    let c = at_clone.expose_provenance();
+    let whole = std::thread::spawn(move || {
+        let c: *mut SbDisc = ptr::with_exposed_provenance_mut(c);
+        let h = range_open(c, 0, 0, p).unwrap();
+        let got = read_frames(h, c);
+        audio_free(h);
+        got
+    })
+    .join()
+    .unwrap();
+    let h = range_open(plain, 0, 0, p).unwrap();
+    assert_eq!(whole, read_frames(h, plain));
+    audio_free(h);
+    // The original and the callbacks clone see the complete index, and seeks from it read
+    // as without one.
+    for d in [disc, cb_clone] {
+        assert!(kept_index(d).expect("kept").1, "complete");
+    }
+    for (d, first) in [(disc, p / 2), (cb_clone, p - 1), (at_clone, p / 3)] {
+        let a = range_open(d, 0, first, p).unwrap();
+        let b = range_open(plain, 0, first, p).unwrap();
+        assert_eq!(read_frames(a, d), read_frames(b, plain), "first {first}");
+        audio_free(a);
+        audio_free(b);
+    }
+    // Disabled through the original: gone for every clone.
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { sb_disc_seek_index_disable(disc, 0) }, SbStatus::Ok);
+    assert_eq!((kept_index(at_clone), kept_index(cb_clone)), (None, None));
+    for d in [cb_clone, at_clone, disc, plain] {
+        free(d);
+    }
+}
