@@ -23,6 +23,9 @@
 #define SB_SPEAKER_SURROUND_LEFT 5
 #define SB_SPEAKER_SURROUND_RIGHT 6
 #define SB_MAX_POOL_THREADS 256
+#define SB_SEEK_DEFAULT_INTERVAL 64
+#define SB_SEEK_MAX_INTERVAL 65536
+#define SB_SEEK_DEFAULT_INLINE_BUDGET 1048576
 typedef enum SbStatus {
 SB_STATUS_OK = 0,
 SB_STATUS_END = 1,
@@ -106,6 +109,7 @@ SB_TRACK_STRING_ISRC = 14,
 typedef struct SbDisc SbDisc;
 typedef struct SbPool SbPool;
 typedef struct SbRawFrames SbRawFrames;
+typedef struct SbSeekIndex SbSeekIndex;
 typedef struct SbTrackAudio SbTrackAudio;
 typedef void(*SbLogFn)(void *user, int32_t level, const char *message);
 typedef int64_t(*SbReadFn)(void *user, uint8_t *buf, size_t len);
@@ -223,6 +227,25 @@ enum SbStatus sb_raw_frames_malformed_sectors(const struct SbRawFrames *raw, uin
 enum SbStatus sb_raw_frames_warning(const struct SbRawFrames *raw, uint32_t index, struct SbWarning *out);
 void sb_raw_frames_free(struct SbRawFrames *raw);
 enum SbStatus sb_dst_decode(const uint8_t *frame, size_t len, uint32_t channels, uint8_t *out, size_t out_len, uint32_t *rule);
+enum SbStatus sb_seek_index_new(const struct SbDisc *disc, uint32_t slot, uint32_t interval, size_t inline_budget, struct SbSeekIndex **out);
+enum SbStatus sb_seek_index_extend(const struct SbDisc *disc, struct SbSeekIndex *index, uint64_t max_sectors, bool *complete);
+enum SbStatus sb_seek_index_frontier(const struct SbSeekIndex *index, uint64_t *lsn, bool *complete);
+enum SbStatus sb_seek_index_memory(const struct SbSeekIndex *index, size_t *bytes);
+enum SbStatus sb_seek_index_merge(struct SbSeekIndex *into, const struct SbSeekIndex *from);
+enum SbStatus sb_seek_index_save(const struct SbSeekIndex *index, uint8_t *buf, size_t cap, size_t *len);
+enum SbStatus sb_seek_index_load(const struct SbDisc *disc, uint32_t slot, const uint8_t *buf, size_t len, size_t inline_budget, struct SbSeekIndex **out);
+void sb_seek_index_free(struct SbSeekIndex *index);
+enum SbStatus sb_disc_seek_index_enable(const struct SbDisc *disc, uint32_t slot, uint32_t interval, size_t inline_budget);
+enum SbStatus sb_disc_seek_index_set(const struct SbDisc *disc, uint32_t slot, const struct SbSeekIndex *index);
+enum SbStatus sb_disc_seek_index_get(const struct SbDisc *disc, uint32_t slot, struct SbSeekIndex **out);
+enum SbStatus sb_disc_seek_index_disable(const struct SbDisc *disc, uint32_t slot);
+enum SbStatus sb_disc_seek_index_extend(const struct SbDisc *disc, uint32_t slot, uint64_t max_sectors, bool *complete);
+enum SbStatus sb_range_audio_open_indexed(const struct SbDisc *disc, uint32_t slot, uint32_t first, uint32_t end, const struct SbSeekIndex *index, struct SbTrackAudio **out);
+enum SbStatus sb_range_audio_open_next_indexed(const struct SbDisc *disc, struct SbTrackAudio *prev, uint32_t slot, uint32_t first, uint32_t end, struct SbSeekIndex *index, struct SbTrackAudio **out);
+enum SbStatus sb_raw_frames_open_indexed(const struct SbDisc *disc, uint32_t slot, uint32_t first, uint32_t end, const struct SbSeekIndex *index, struct SbRawFrames **out);
+enum SbStatus sb_raw_frames_open_next_indexed(const struct SbDisc *disc, struct SbRawFrames *prev, uint32_t slot, uint32_t first, uint32_t end, struct SbSeekIndex *index, struct SbRawFrames **out);
+enum SbStatus sb_track_audio_absorb(const struct SbTrackAudio *audio, struct SbSeekIndex *index);
+enum SbStatus sb_raw_frames_absorb(const struct SbRawFrames *raw, struct SbSeekIndex *index);
 #ifdef __cplusplus
 }
 #endif

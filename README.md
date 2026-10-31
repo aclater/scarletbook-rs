@@ -146,6 +146,40 @@ at the top of `crates/scarletbook-ffi/include/scarletbook.h`;
 `cbindgen --config cbindgen.toml --crate scarletbook-ffi --output include/scarletbook.h`
 in `crates/scarletbook-ffi` (cbindgen 0.29.4; CI checks the committed header).
 
+### Seeking
+
+A seek index (see [Seeking within an area](#seeking-within-an-area)) is a handle of its
+own, `SbSeekIndex`, tied to an area and image size rather than to a disc handle, so it can
+be built on one disc handle and used on another of the same image:
+
+```c
+SbSeekIndex *index = NULL;
+sb_seek_index_new(disc, slot, SB_SEEK_DEFAULT_INTERVAL, SB_SEEK_DEFAULT_INLINE_BUDGET, &index);
+bool complete = false;
+while (sb_seek_index_extend(disc, index, 65536, &complete) == SB_STATUS_OK && !complete) {}
+SbTrackAudio *audio = NULL;
+sb_range_audio_open_indexed(disc, slot, first, end, index, &audio); /* same frames, few reads */
+/* ... sb_track_audio_read ... then hand its new checkpoints back: */
+sb_track_audio_absorb(audio, index);
+size_t len = 0;
+sb_seek_index_save(index, NULL, 0, &len);  /* SB_STATUS_BUFFER_TOO_SMALL, *len set */
+/* ... sb_seek_index_save(index, buf, len, &len); later
+   sb_seek_index_load(disc, slot, buf, len, SB_SEEK_DEFAULT_INLINE_BUDGET, &index) */
+```
+
+`sb_range_audio_open_next_indexed` and `sb_raw_frames_open_next_indexed` continue a handle
+through an index; `sb_seek_index_merge` joins indexes built apart.
+
+A disc can also keep the index itself: after `sb_disc_seek_index_enable` (or
+`sb_disc_seek_index_set` with a loaded one), every handle opened through the disc or any of
+its clones (`sb_disc_clone`) starts from it, and reads build it, with no `_indexed` calls.
+The disc and its clones keep one index, so `sb_disc_seek_index_extend` on a clone in a
+thread of its own builds it for all of them; `sb_disc_seek_index_get` copies it out to
+save. Loaded bytes are checked
+before use, and an index that does not match the image's sectors is discarded as it is used
+(a warning in the log, then a scan from the area's first sector). The additions keep
+`SB_ABI_VERSION` 1.
+
 ### Parallel decoding
 
 Track and range audio handles decode on the calling thread unless given a pool of

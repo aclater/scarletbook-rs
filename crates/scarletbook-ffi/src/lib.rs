@@ -20,8 +20,8 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use scarletbook::log::{Level, Log};
 use scarletbook::toc::{AreaTextItem, DiscTextItem, TrackTextItem};
 use scarletbook::{
-    Area, AreaCursor, DecodeOn, Disc, Error, FrameContent, FrameKind, FrameStatus, LoudspeakerLayout,
-    ReadAtReader, Slot, Speaker, TrackAudioCursor, TrackCursor, TrackFrame, WarningCode,
+    Area, AreaCursor, AreaIndex, DecodeOn, Disc, Error, FrameContent, FrameKind, FrameStatus, IndexOptions,
+    LoudspeakerLayout, ReadAtReader, Slot, Speaker, TrackAudioCursor, TrackCursor, TrackFrame, WarningCode,
 };
 
 /// Result of every call.
@@ -502,6 +502,16 @@ impl RawFrames {
     }
 }
 
+/// A seek index of one area (`sb_seek_index_new`, `sb_seek_index_load`): the area's
+/// reading state every `interval` sectors, so that a range opened with it
+/// (`sb_range_audio_open_indexed`) starts near its first frame instead of at the area's
+/// first sector. It belongs to no disc: any disc of the same image (the same area and
+/// sector count) can use it.
+#[derive(Debug)]
+pub struct SbSeekIndex {
+    inner: RefCell<AreaIndex>,
+}
+
 // Handles may be moved between threads (the conventions allow it); this must keep
 // compiling.
 const _: () = {
@@ -509,6 +519,7 @@ const _: () = {
     assert_send::<SbDisc>();
     assert_send::<SbTrackAudio>();
     assert_send::<SbRawFrames>();
+    assert_send::<SbSeekIndex>();
     const fn assert_sync<T: Sync>() {}
     assert_send::<SbPool>();
     assert_sync::<SbPool>();
@@ -626,6 +637,17 @@ unsafe fn clear_out<T>(out: *mut *mut T) {
         // SAFETY: non-NULL and valid for a write by this function's contract.
         unsafe { out.write(std::ptr::null_mut()) };
     }
+}
+
+/// Borrows a seek index handle.
+///
+/// # Safety
+///
+/// `index` must be NULL or a live handle from `sb_seek_index_new` or `sb_seek_index_load`.
+unsafe fn index_handle<'a>(index: *const SbSeekIndex) -> Result<&'a SbSeekIndex, Failure> {
+    // SAFETY: NULL or a live handle by this function's contract; only shared references
+    // to it are ever made.
+    unsafe { index.as_ref() }.ok_or_else(|| Failure::arg("NULL seek index handle"))
 }
 
 /// Borrows a disc handle.
@@ -1725,7 +1747,7 @@ pub unsafe extern "C" fn sb_track_audio_open_next(
     out: *mut *mut SbTrackAudio,
 ) -> SbStatus {
     // SAFETY: forwarded contract.
-    unsafe { open_next(disc, prev, slot, Target::Track(number), out) }
+    unsafe { open_next(disc, prev, slot, Target::Track(number), std::ptr::null_mut(), out) }
 }
 
 /// What `open_next` opens.
@@ -1745,6 +1767,7 @@ unsafe fn open_next(
     prev: *mut SbTrackAudio,
     slot: u32,
     target: Target,
+    index: *mut SbSeekIndex,
     out: *mut *mut SbTrackAudio,
 ) -> SbStatus {
     // SAFETY: forwarded contract.
@@ -1757,10 +1780,20 @@ unsafe fn open_next(
         }
         let slot = slot_from(slot)?;
         let d = handle.get()?;
+        // The index stays borrowed to the end: a callback that reaches it gets
+        // SB_STATUS_INVALID_ARGUMENT.
+        let mut index = if index.is_null() {
+            None
+        } else {
+            // SAFETY: forwarded contract.
+            let i = unsafe { index_handle(index) }?;
+            Some(i.inner.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))?)
+        };
         if prev.is_null() {
-            let cursor = match target {
-                Target::Track(n) => d.track_audio_cursor(slot, n)?,
-                Target::Range(first, end) => d.range_audio_cursor(slot, first, end)?,
+            let cursor = match (target, &index) {
+                (Target::Track(n), _) => d.track_audio_cursor(slot, n)?,
+                (Target::Range(first, end), None) => d.range_audio_cursor(slot, first, end)?,
+                (Target::Range(first, end), Some(i)) => d.range_audio_cursor_indexed(slot, first, end, i)?,
             };
             let audio = SbTrackAudio::fresh(cursor, handle.id);
             // SAFETY: non-NULL and valid for a write by this function's contract.
@@ -1783,14 +1816,24 @@ unsafe fn open_next(
             Target::Range(first, end) => d.range_continuation(slot, first, end)?,
         };
         // Decided once, so that the line logged says what is done.
-        let opening = next.log_audio(&borrowed);
+        let opening = match &index {
+            Some(i) => {
+                next.check_index(i)?;
+                next.log_audio_indexed(&borrowed, i)
+            }
+            None => next.log_audio(&borrowed),
+        };
         drop(borrowed);
         // From here to the end, nothing logs: no callback runs while `prev` is consumed.
         // SAFETY: a live handle created by Box::into_raw and not in use (no borrow is
         // active, and no callback runs before it is freed); the caller does not use it
         // again after this successful call.
         let prev_box = unsafe { Box::from_raw(prev) };
-        let cursor = next.audio_as(prev_box.inner.into_inner(), opening);
+        let prev_cursor = prev_box.inner.into_inner();
+        let cursor = match index.as_deref_mut() {
+            Some(i) => next.audio_indexed_as(prev_cursor, i, opening),
+            None => next.audio_as(prev_cursor, opening),
+        };
         let audio = Box::new(SbTrackAudio { inner: RefCell::new(cursor), disc_id: handle.id });
         // SAFETY: non-NULL and valid for a write by this function's contract.
         unsafe { out.write(Box::into_raw(audio)) };
@@ -1890,7 +1933,7 @@ pub unsafe extern "C" fn sb_range_audio_open_next(
     out: *mut *mut SbTrackAudio,
 ) -> SbStatus {
     // SAFETY: forwarded contract.
-    unsafe { open_next(disc, prev, slot, Target::Range(first, end), out) }
+    unsafe { open_next(disc, prev, slot, Target::Range(first, end), std::ptr::null_mut(), out) }
 }
 
 /// The channel count of a track's audio (1 to 6), or 0 for NULL or a handle in use.
@@ -1936,7 +1979,11 @@ pub unsafe extern "C" fn sb_track_audio_read(
             return Err(Failure(SbStatus::BufferTooSmall, format!("a frame needs {size} bytes")));
         }
         let mut disc = d.get_mut()?;
-        let Some(frame) = cursor.next_frame(disc.image_mut()) else {
+        let frame = cursor.next_frame(disc.image_mut());
+        // The disc's seek index (`sb_disc_seek_index_enable`), shared with its clones, takes
+        // what the read recorded: a test when there is nothing.
+        disc.absorb_seek_checkpoints(&mut *cursor);
+        let Some(frame) = frame else {
             return Ok(SbStatus::End);
         };
         let frame = frame?;
@@ -2234,6 +2281,23 @@ pub unsafe extern "C" fn sb_raw_frames_open_next(
     out: *mut *mut SbRawFrames,
 ) -> SbStatus {
     // SAFETY: forwarded contract.
+    unsafe { raw_open_next(disc, prev, slot, (first, end), std::ptr::null_mut(), out) }
+}
+
+/// The shared body of `sb_raw_frames_open_next` and `sb_raw_frames_open_next_indexed`.
+///
+/// # Safety
+///
+/// As `sb_raw_frames_open_next`, and `index` NULL or a live handle.
+unsafe fn raw_open_next(
+    disc: *const SbDisc,
+    prev: *mut SbRawFrames,
+    slot: u32,
+    (first, end): (u32, u32),
+    index: *mut SbSeekIndex,
+    out: *mut *mut SbRawFrames,
+) -> SbStatus {
+    // SAFETY: forwarded contract.
     unsafe { clear_out(out) };
     guard(|| {
         // SAFETY: forwarded contract.
@@ -2243,8 +2307,19 @@ pub unsafe extern "C" fn sb_raw_frames_open_next(
         }
         let slot = slot_from(slot)?;
         let d = handle.get()?;
+        // Borrowed to the end, as in `open_next`.
+        let mut index = if index.is_null() {
+            None
+        } else {
+            // SAFETY: forwarded contract.
+            let i = unsafe { index_handle(index) }?;
+            Some(i.inner.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))?)
+        };
         let cursor = if prev.is_null() {
-            d.range_frames_cursor(slot, first, end)?
+            match &index {
+                None => d.range_frames_cursor(slot, first, end)?,
+                Some(i) => d.range_frames_cursor_indexed(slot, first, end, i)?,
+            }
         } else {
             // Every check that can fail comes before `prev` is taken, so a failure leaves
             // it untouched; continuing into a checked range cannot fail.
@@ -2258,12 +2333,29 @@ pub unsafe extern "C" fn sb_raw_frames_open_next(
             // or a no-op from sb_raw_frames_free, instead of freeing or reading it.
             let borrowed = p.inner.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))?;
             let next = d.range_continuation(slot, first, end)?;
-            let opening = match &borrowed.source {
-                Source::Range(c) => Some(next.log_frames(c)),
-                Source::List(..) => {
+            if let Some(i) = &index {
+                next.check_index(i)?;
+            }
+            // Decided once, so that the line logged says what is done.
+            let opening = match (&borrowed.source, &index) {
+                (Source::Range(c), Some(i)) => Some(next.log_frames_indexed(c, i)),
+                (Source::Range(c), None) => Some(next.log_frames(c)),
+                (Source::List(..), _) => {
                     next.log_fresh_frames();
                     None
                 }
+            };
+            // A stored frame list records no checkpoints: after one, a range starts from
+            // the index, made here, before `prev` is taken (it does not log or fail).
+            let from_index = match (&borrowed.source, &index) {
+                (Source::List(..), Some(i)) => Some(TrackCursor::for_range_indexed(
+                    find_area(&d, slot_index(slot))?,
+                    first,
+                    end,
+                    d.toc().sectors,
+                    i,
+                )?),
+                _ => None,
             };
             drop(borrowed);
             // From here to the end, nothing logs: no callback runs while `prev` is consumed.
@@ -2274,12 +2366,15 @@ pub unsafe extern "C" fn sb_raw_frames_open_next(
             // A frame held for a too small buffer is dropped: the cursor stands after it,
             // so a range that starts at or before it scans afresh. A stored frame list's
             // scan is not a range's: the range then starts afresh.
-            match prev_box.inner.into_inner().source {
-                Source::Range(c) => match opening {
-                    Some(opening) => next.frames_as(c, opening),
-                    None => next.frames_unlogged(c),
+            match (prev_box.inner.into_inner().source, index.as_deref_mut(), opening) {
+                (Source::Range(c), Some(i), Some(opening)) => next.frames_indexed_as(c, i, opening),
+                (Source::Range(c), None, Some(opening)) => next.frames_as(c, opening),
+                (Source::Range(c), Some(i), None) => next.frames_indexed_unlogged(c, i),
+                (Source::Range(c), None, None) => next.frames_unlogged(c),
+                (Source::List(..), _, _) => match from_index {
+                    Some(cursor) => cursor,
+                    None => next.fresh_frames(),
                 },
-                Source::List(..) => next.fresh_frames(),
             }
         };
         let raw = Box::new(SbRawFrames {
@@ -2440,7 +2535,11 @@ unsafe fn raw_read(
             Some(f) => f,
             None => {
                 let mut disc = d.get_mut()?;
-                match state.next_frame(disc.image_mut()) {
+                let frame = state.next_frame(disc.image_mut());
+                if let Source::Range(c) = &mut state.source {
+                    disc.absorb_seek_checkpoints(c);
+                }
+                match frame {
                     None => return Ok(SbStatus::End),
                     Some(f) => f?,
                 }
@@ -2613,6 +2712,538 @@ pub unsafe extern "C" fn sb_dst_decode(
                 Err(Failure(SbStatus::InvalidDstFrame, format!("invalid DST frame: {e}")))
             }
         }
+    })
+}
+
+/// The default checkpoint interval of a seek index, in sectors (`sb_seek_index_new`).
+pub const SB_SEEK_DEFAULT_INTERVAL: u32 = 64;
+
+/// The largest checkpoint interval of a seek index, in sectors.
+pub const SB_SEEK_MAX_INTERVAL: u32 = 65_536;
+
+/// The default bound on the bytes of frames under assembly a seek index stores (1 MiB).
+pub const SB_SEEK_DEFAULT_INLINE_BUDGET: usize = 1_048_576;
+
+// The constants above are the library's (cbindgen needs literals).
+const _: () = {
+    assert!(SB_SEEK_DEFAULT_INTERVAL == scarletbook::seek::DEFAULT_INTERVAL);
+    assert!(SB_SEEK_MAX_INTERVAL == scarletbook::seek::MAX_INTERVAL);
+    assert!(SB_SEEK_DEFAULT_INLINE_BUDGET == scarletbook::seek::DEFAULT_INLINE_BUDGET);
+};
+
+/// Makes an empty seek index of the area from `slot` of `disc`, with a checkpoint every
+/// `interval` sectors (1 to `SB_SEEK_MAX_INTERVAL`; `SB_SEEK_DEFAULT_INTERVAL` is 64) and
+/// at most `inline_budget` bytes of stored frames under assembly
+/// (`SB_SEEK_DEFAULT_INLINE_BUDGET`; 0 stores none, which is always correct and only
+/// slower on hostile images).
+///
+/// An index is the reading state of the area: ranges opened with it
+/// (`sb_range_audio_open_indexed`, `sb_raw_frames_open_indexed`) start at its last
+/// checkpoint before their first frame, with exactly the frames, counts and warnings of a
+/// scan from the area's first sector. It fills as handles opened with it read
+/// (`sb_track_audio_absorb`, `sb_raw_frames_absorb`), or at once with
+/// `sb_seek_index_extend`. It holds about 24 bytes per `interval` audio sectors, plus at
+/// most `inline_budget` bytes and 16 KiB (`sb_seek_index_memory`). On failure `*out` is
+/// set to NULL: `SB_STATUS_NO_SUCH_AREA`, or `SB_STATUS_INVALID_ARGUMENT` for a bad slot
+/// or interval.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle; `out` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_seek_index_new(
+    disc: *const SbDisc,
+    slot: u32,
+    interval: u32,
+    inline_budget: usize,
+    out: *mut *mut SbSeekIndex,
+) -> SbStatus {
+    // SAFETY: forwarded contract.
+    unsafe { clear_out(out) };
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let handle = unsafe { disc_handle(disc) }?;
+        if out.is_null() {
+            return Err(Failure::arg("NULL output pointer"));
+        }
+        let d = handle.get()?;
+        let area = find_area(&d, slot)?;
+        let options = IndexOptions::new().with_interval(interval).with_inline_budget(inline_budget);
+        let index = AreaIndex::new(area, d.toc().sectors, options)?;
+        let index = Box::new(SbSeekIndex { inner: RefCell::new(index) });
+        // SAFETY: non-NULL and valid for a write by this function's contract.
+        unsafe { out.write(Box::into_raw(index)) };
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// Reads the index's area on from its frontier, about `max_sectors` sectors (at least to
+/// the next checkpoint), recording checkpoints; `*complete` (if not NULL) says whether the
+/// index now covers the whole area. Calling it until complete builds the index in one
+/// pass over the area, for example on a second disc handle of the same image on another
+/// thread. The disc's read and log callbacks run during this call. Fails with
+/// `SB_STATUS_INVALID_ARGUMENT` for an index of another area or image, or one that does
+/// not match the image's sectors; `SB_STATUS_IO` if a read fails (the checkpoints
+/// recorded before stay).
+///
+/// # Safety
+///
+/// `disc` and `index` must be NULL or live handles; `complete` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_seek_index_extend(
+    disc: *const SbDisc,
+    index: *mut SbSeekIndex,
+    max_sectors: u64,
+    complete: *mut bool,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?;
+        // SAFETY: forwarded contract.
+        let i = unsafe { index_handle(index) }?;
+        let mut index = i.inner.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))?;
+        let mut disc = d.get_mut()?;
+        let done = index.extend(disc.image_mut(), max_sectors)?;
+        if !complete.is_null() {
+            // SAFETY: non-NULL and valid for a write by this function's contract.
+            unsafe { complete.write(done) };
+        }
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// The LSN up to which the index holds the area's reading state (`*lsn`, required), and
+/// whether it covers the whole area (`*complete`, optional).
+///
+/// # Safety
+///
+/// `index` must be NULL or a live handle; `lsn` and `complete` NULL or valid for writes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_seek_index_frontier(
+    index: *const SbSeekIndex,
+    lsn: *mut u64,
+    complete: *mut bool,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let i = unsafe { index_handle(index) }?;
+        let index = i.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
+        // SAFETY: forwarded contract.
+        unsafe { write_out(lsn, index.frontier()) }?;
+        if !complete.is_null() {
+            // SAFETY: non-NULL and valid for a write by this function's contract.
+            unsafe { complete.write(index.is_complete()) };
+        }
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// The bytes the index holds in memory.
+///
+/// # Safety
+///
+/// `index` must be NULL or a live handle; `bytes` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_seek_index_memory(index: *const SbSeekIndex, bytes: *mut usize) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let i = unsafe { index_handle(index) }?;
+        let index = i.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
+        // SAFETY: forwarded contract.
+        unsafe { write_out(bytes, index.memory()) }?;
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// Takes into `into` the checkpoints of `from`, an index of the same area, image size and
+/// interval (for example one built on another thread); `into` then reaches the farther of
+/// the two frontiers. Fails with `SB_STATUS_INVALID_ARGUMENT`, both indexes unchanged,
+/// for indexes of different areas, sizes or intervals, or that disagree (of two images).
+/// Merging an index into itself does nothing.
+///
+/// # Safety
+///
+/// `into` and `from` must be NULL or live handles.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_seek_index_merge(into: *mut SbSeekIndex, from: *const SbSeekIndex) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let a = unsafe { index_handle(into) }?;
+        // SAFETY: forwarded contract.
+        let b = unsafe { index_handle(from) }?;
+        if std::ptr::eq(a, b) {
+            return Ok(SbStatus::Ok);
+        }
+        let mut a = a.inner.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))?;
+        let b = b.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
+        a.merge(&b)?;
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// Saves the index as bytes, to load it with `sb_seek_index_load` the next time the image
+/// is opened. `*len` (required) receives the size; with `buf` NULL or `cap` below it, the
+/// call returns `SB_STATUS_BUFFER_TOO_SMALL` and writes nothing else (a size query).
+///
+/// # Safety
+///
+/// `index` must be NULL or a live handle; `buf` NULL or valid for `cap` bytes of writes;
+/// `len` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_seek_index_save(
+    index: *const SbSeekIndex,
+    buf: *mut u8,
+    cap: usize,
+    len: *mut usize,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let i = unsafe { index_handle(index) }?;
+        let bytes = i.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?.to_bytes();
+        // SAFETY: forwarded contract.
+        unsafe { write_out(len, bytes.len()) }?;
+        if buf.is_null() || cap < bytes.len() {
+            return Err(Failure(SbStatus::BufferTooSmall, format!("the index needs {} bytes", bytes.len())));
+        }
+        // SAFETY: buf is valid for cap >= bytes.len() bytes; `bytes` is owned here.
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, bytes.len()) };
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// Loads a seek index of the area from `slot` of `disc` from `len` bytes saved by
+/// `sb_seek_index_save`. The bytes may be anything: every bound and invariant is checked
+/// before use, and the memory taken is proportional to `len`. On failure `*out` is set to
+/// NULL: `SB_STATUS_INVALID_ARGUMENT` for bytes that are not a valid index of this area
+/// and image size, `SB_STATUS_NO_SUCH_AREA`. An index that passes is still checked
+/// against the image's sectors as it is used: on a mismatch a handle discards it (a
+/// warning in the log) and scans from the area's first sector, with the right result.
+///
+/// `inline_budget` bounds the bytes of stored frames under assembly the loaded index holds
+/// (`SB_SEEK_DEFAULT_INLINE_BUDGET` is 1 MiB, as for `sb_seek_index_new`): its budget is the
+/// smaller of the saved one and this, and stored frames beyond it are dropped (their
+/// checkpoints replayed instead, with the same results).
+///
+/// The checks make loading safe, not exact: bytes forged to pass them can make reads
+/// return other frames than the image holds. If exact output matters, rebuild an index
+/// read from untrusted storage (`sb_seek_index_new` and `sb_seek_index_extend`) instead.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle; `buf` NULL or valid for `len` bytes of reads;
+/// `out` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_seek_index_load(
+    disc: *const SbDisc,
+    slot: u32,
+    buf: *const u8,
+    len: usize,
+    inline_budget: usize,
+    out: *mut *mut SbSeekIndex,
+) -> SbStatus {
+    // SAFETY: forwarded contract.
+    unsafe { clear_out(out) };
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let handle = unsafe { disc_handle(disc) }?;
+        if out.is_null() {
+            return Err(Failure::arg("NULL output pointer"));
+        }
+        if buf.is_null() {
+            return Err(Failure::arg("NULL buffer"));
+        }
+        // SAFETY: non-NULL and valid for `len` bytes of reads by this function's contract.
+        let bytes = unsafe { std::slice::from_raw_parts(buf, len) };
+        let d = handle.get()?;
+        let area = find_area(&d, slot)?;
+        let index = AreaIndex::from_bytes(area, d.toc().sectors, bytes, inline_budget)?;
+        let index = Box::new(SbSeekIndex { inner: RefCell::new(index) });
+        // SAFETY: non-NULL and valid for a write by this function's contract.
+        unsafe { out.write(Box::into_raw(index)) };
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// Frees a seek index. NULL is ignored. Handles opened with it hold no reference to it.
+/// A call from one of a disc's callbacks while the index is in use by the call that
+/// invoked the callback does nothing.
+///
+/// # Safety
+///
+/// `index` must be NULL or a live handle, freed only once.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_seek_index_free(index: *mut SbSeekIndex) {
+    let _ = guard(|| {
+        // SAFETY: forwarded contract.
+        let handle = unsafe { index_handle(index) }?;
+        if handle.inner.try_borrow_mut().is_err() {
+            return Err(Failure::arg(REENTRANT));
+        }
+        // SAFETY: a live handle created by Box::into_raw and not in use, freed only once.
+        drop(unsafe { Box::from_raw(index) });
+        Ok(SbStatus::Ok)
+    });
+}
+
+/// Keeps a seek index of the area from `slot` in `disc`, empty to begin with (see
+/// `sb_seek_index_new` for `interval` and `inline_budget`), replacing one kept before:
+/// from then on every track audio and raw frames handle of that area opened through the
+/// disc or any of its clones (`sb_disc_clone`) starts from it, and reads through them
+/// (`sb_track_audio_read`, `sb_raw_frames_read`) and continuations (`_open_next`) build
+/// it. The disc and its clones keep one index, used and grown from any thread; a
+/// handle's frames, statuses, counts and warnings are those without an index. Fails with
+/// `SB_STATUS_NO_SUCH_AREA` or `SB_STATUS_INVALID_ARGUMENT`.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_disc_seek_index_enable(
+    disc: *const SbDisc,
+    slot: u32,
+    interval: u32,
+    inline_budget: usize,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?;
+        let options = IndexOptions::new().with_interval(interval).with_inline_budget(inline_budget);
+        d.get_mut()?.enable_seek_index(slot_from(slot)?, options)?;
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// Keeps a copy of `index` (for example one loaded with `sb_seek_index_load`) as the seek
+/// index of its area in `disc` and its clones, as `sb_disc_seek_index_enable` does an
+/// empty one. Fails with `SB_STATUS_INVALID_ARGUMENT` for an index of another area or
+/// image size, or `SB_STATUS_NO_SUCH_AREA`.
+///
+/// # Safety
+///
+/// `disc` and `index` must be NULL or live handles.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_disc_seek_index_set(
+    disc: *const SbDisc,
+    slot: u32,
+    index: *const SbSeekIndex,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?;
+        // SAFETY: forwarded contract.
+        let i = unsafe { index_handle(index) }?;
+        let copy = i.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?.clone();
+        d.get_mut()?.set_seek_index(slot_from(slot)?, copy)?;
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// A copy of the seek index `disc` (and its clones) keeps for the area from `slot`, as a
+/// new handle in `*out`, for example to save it (`sb_seek_index_save`). Returns
+/// `SB_STATUS_ABSENT`, with `*out` NULL, when none is kept.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle; `out` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_disc_seek_index_get(
+    disc: *const SbDisc,
+    slot: u32,
+    out: *mut *mut SbSeekIndex,
+) -> SbStatus {
+    // SAFETY: forwarded contract.
+    unsafe { clear_out(out) };
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?;
+        if out.is_null() {
+            return Err(Failure::arg("NULL output pointer"));
+        }
+        let Some(index) = d.get()?.seek_index(slot_from(slot)?) else { return Ok(SbStatus::Absent) };
+        let index = Box::new(SbSeekIndex { inner: RefCell::new(index) });
+        // SAFETY: non-NULL and valid for a write by this function's contract.
+        unsafe { out.write(Box::into_raw(index)) };
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// Stops keeping a seek index of the area from `slot` in `disc` and its clones.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_disc_seek_index_disable(disc: *const SbDisc, slot: u32) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?;
+        d.get_mut()?.take_seek_index(slot_from(slot)?);
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// Reads the area from `slot` on from the frontier of the seek index `disc` keeps, about
+/// `max_sectors` sectors, building it (see `sb_seek_index_extend`); `*complete` (if not
+/// NULL) says whether it now covers the whole area. Call it on a clone in a thread of its
+/// own to build the index while other clones read. Fails with
+/// `SB_STATUS_INVALID_ARGUMENT` when no index is kept or it does not match the image,
+/// `SB_STATUS_IO` if a read fails.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle; `complete` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_disc_seek_index_extend(
+    disc: *const SbDisc,
+    slot: u32,
+    max_sectors: u64,
+    complete: *mut bool,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?;
+        let done = d.get_mut()?.extend_seek_index(slot_from(slot)?, max_sectors)?;
+        if !complete.is_null() {
+            // SAFETY: non-NULL and valid for a write by this function's contract.
+            unsafe { complete.write(done) };
+        }
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// As `sb_range_audio_open`, starting from `index` (a seek index of the area, or NULL for
+/// none): at its last checkpoint before frame `first`, with exactly the frames, counts and
+/// warnings of `sb_range_audio_open`. The handle copies what it needs and holds no
+/// reference to `index`; it records the checkpoints it crosses past the index's frontier,
+/// which `sb_track_audio_absorb` hands to an index. Fails as `sb_range_audio_open`, or
+/// with `SB_STATUS_INVALID_ARGUMENT` for an index of another area or image size.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle; `index` NULL or a live handle; `out` NULL or
+/// valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_range_audio_open_indexed(
+    disc: *const SbDisc,
+    slot: u32,
+    first: u32,
+    end: u32,
+    index: *const SbSeekIndex,
+    out: *mut *mut SbTrackAudio,
+) -> SbStatus {
+    // SAFETY: forwarded contract; a NULL `prev` is never consumed, and the index is only
+    // borrowed (a mutable borrow of a shared handle, checked by its RefCell).
+    unsafe { open_next(disc, std::ptr::null_mut(), slot, Target::Range(first, end), index.cast_mut(), out) }
+}
+
+/// As `sb_range_audio_open_next`, with `index` (NULL for none): `prev`'s recorded
+/// checkpoints are first taken into `index`, then `prev` is continued where that gives the
+/// same result, or the range starts from the index. Ownership of `prev` is as for
+/// `sb_track_audio_open_next`; every check, the index's included, comes before `prev` is
+/// taken.
+///
+/// # Safety
+///
+/// As `sb_range_audio_open_next`; `index` NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_range_audio_open_next_indexed(
+    disc: *const SbDisc,
+    prev: *mut SbTrackAudio,
+    slot: u32,
+    first: u32,
+    end: u32,
+    index: *mut SbSeekIndex,
+    out: *mut *mut SbTrackAudio,
+) -> SbStatus {
+    // SAFETY: forwarded contract.
+    unsafe { open_next(disc, prev, slot, Target::Range(first, end), index, out) }
+}
+
+/// As `sb_raw_frames_open`, starting from `index` (NULL for none), as
+/// `sb_range_audio_open_indexed` does for decoded audio.
+///
+/// # Safety
+///
+/// As `sb_range_audio_open_indexed`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_raw_frames_open_indexed(
+    disc: *const SbDisc,
+    slot: u32,
+    first: u32,
+    end: u32,
+    index: *const SbSeekIndex,
+    out: *mut *mut SbRawFrames,
+) -> SbStatus {
+    // SAFETY: forwarded contract (see `sb_range_audio_open_indexed`).
+    unsafe { raw_open_next(disc, std::ptr::null_mut(), slot, (first, end), index.cast_mut(), out) }
+}
+
+/// As `sb_raw_frames_open_next`, with `index` (NULL for none), as
+/// `sb_range_audio_open_next_indexed` does for decoded audio.
+///
+/// # Safety
+///
+/// As `sb_raw_frames_open_next`; `index` NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_raw_frames_open_next_indexed(
+    disc: *const SbDisc,
+    prev: *mut SbRawFrames,
+    slot: u32,
+    first: u32,
+    end: u32,
+    index: *mut SbSeekIndex,
+    out: *mut *mut SbRawFrames,
+) -> SbStatus {
+    // SAFETY: forwarded contract.
+    unsafe { raw_open_next(disc, prev, slot, (first, end), index, out) }
+}
+
+/// Takes into `index` the checkpoints a track audio handle recorded past the index's
+/// frontier (one opened with an index; others recorded none, and this does nothing). Call
+/// it whenever convenient, for example before freeing the handle. Fails with
+/// `SB_STATUS_INVALID_ARGUMENT`, `index` unchanged, if the handle's checkpoints are of
+/// another area, image size or interval, or do not join the index.
+///
+/// # Safety
+///
+/// `audio` and `index` must be NULL or live handles.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_track_audio_absorb(
+    audio: *const SbTrackAudio,
+    index: *mut SbSeekIndex,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let a = unsafe { audio_handle(audio) }?;
+        // SAFETY: forwarded contract.
+        let i = unsafe { index_handle(index) }?;
+        let cursor = a.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
+        let mut index = i.inner.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))?;
+        index.absorb(&*cursor)?;
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// As `sb_track_audio_absorb`, for a raw frames handle (a stored frame list's records
+/// none).
+///
+/// # Safety
+///
+/// `raw` and `index` must be NULL or live handles.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_raw_frames_absorb(raw: *const SbRawFrames, index: *mut SbSeekIndex) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let r = unsafe { raw_handle(raw) }?;
+        // SAFETY: forwarded contract.
+        let i = unsafe { index_handle(index) }?;
+        let raw = r.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
+        let mut index = i.inner.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))?;
+        match &raw.source {
+            Source::Range(c) => index.absorb(c)?,
+            Source::List(..) => {}
+        }
+        Ok(SbStatus::Ok)
     })
 }
 
