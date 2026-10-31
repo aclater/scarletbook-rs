@@ -26,6 +26,7 @@ mod disc;
 pub mod dst;
 mod error;
 mod image;
+pub mod log;
 pub mod text;
 pub mod toc;
 

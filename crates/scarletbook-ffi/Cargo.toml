@@ -31,5 +31,7 @@ expect_used = "warn"
 panic = "warn"
 
 [dev-dependencies]
+# A pool of several threads for the test of the log callback from the `parallel` path.
+rayon = "1.10"
 serde_json = "1"
 sha2 = "0.10"

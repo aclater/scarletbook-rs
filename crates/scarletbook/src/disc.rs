@@ -7,6 +7,7 @@ use std::io::{Read, Seek};
 use crate::audio::{self, AreaFrames, Continuation, TrackAudio, TrackAudioCursor, TrackCursor, TrackFrames};
 use crate::error::{Error, Slot, Warning};
 use crate::image::{Image, SectorFormat};
+use crate::log::{Log, sb_log};
 use crate::toc::{self, Toc};
 
 /// An opened disc image with its table of contents.
@@ -29,6 +30,16 @@ impl<R: Read + Seek> Disc<R> {
         Self::from_image(Image::open(reader)?)
     }
 
+    /// Opens a disc image, detecting its sector format, and reports to `log` from the
+    /// detection on (see [`crate::log`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Disc::open`].
+    pub fn open_with_log(reader: R, log: Log) -> Result<Self, Error> {
+        Self::from_image(Image::open_with_log(reader, log)?)
+    }
+
     /// Opens a disc image in a sector format chosen by the caller.
     ///
     /// # Errors
@@ -38,7 +49,17 @@ impl<R: Read + Seek> Disc<R> {
         Self::from_image(Image::with_format(reader, format)?)
     }
 
-    /// Parses the TOC of an image.
+    /// Opens a disc image in a sector format chosen by the caller, and reports to `log`
+    /// from the start (see [`crate::log`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Disc::open`].
+    pub fn open_with_format_and_log(reader: R, format: SectorFormat, log: Log) -> Result<Self, Error> {
+        Self::from_image(Image::with_format_and_log(reader, format, log)?)
+    }
+
+    /// Parses the TOC of an image, reporting to the image's log ([`Image::set_log`]).
     ///
     /// # Errors
     ///
@@ -51,6 +72,18 @@ impl<R: Read + Seek> Disc<R> {
     /// The table of contents.
     pub fn toc(&self) -> &Toc {
         &self.toc
+    }
+
+    /// The log this disc reports to.
+    pub fn log(&self) -> &Log {
+        self.image.log()
+    }
+
+    /// Replaces the log this disc reports to, from the next call on. Audio cursors report
+    /// to the log of the disc they read through; decoding jobs already started on the pool
+    /// (`parallel` feature) keep the log they started with.
+    pub fn set_log(&mut self, log: Log) {
+        self.image.set_log(log);
     }
 
     /// The warnings emitted while reading the TOC (specification 7, 7.7.3).
@@ -78,8 +111,23 @@ impl<R: Read + Seek> Disc<R> {
     /// and [`Error::TrackExceedsCapacity`], or [`Error::NoSuchArea`] /
     /// [`Error::NoSuchTrack`].
     pub fn check_track(&self, slot: Slot, number: u32) -> Result<(), Error> {
-        let (area, track) = audio::find_track(&self.toc.areas, slot, number)?;
+        let (area, track) = self.find_track(slot, number)?;
         audio::check_track(area, track, self.image.sector_count())
+            .inspect_err(|e| sb_log!(self.log(), Info, "area {slot} track {number}: no audio: {e}"))
+    }
+
+    /// The track a slot and number name, with its area; logs a track that does not exist.
+    fn find_track(&self, slot: Slot, number: u32) -> Result<(&crate::Area, &crate::Track), Error> {
+        audio::find_track(&self.toc.areas, slot, number)
+            .inspect_err(|e| sb_log!(self.log(), Info, "area {slot} track {number}: {e}"))
+    }
+
+    /// Logs the opening of a track's frames or audio, on a new scan of its area.
+    fn log_track(&self, slot: Slot, number: u32, what: &str) {
+        if let Ok((area, track)) = audio::find_track(&self.toc.areas, slot, number) {
+            let range = (track.start_frame, track.end_frame());
+            audio::log_open(self.log(), area, Some(number), range, what, "new scan of the area");
+        }
     }
 
     /// The timeline positions of track `number` (1-based) of the area from `slot`, each
@@ -92,6 +140,8 @@ impl<R: Read + Seek> Disc<R> {
     ///
     /// As [`Disc::check_track`].
     pub fn track_frames(&mut self, slot: Slot, number: u32) -> Result<TrackFrames<'_, R>, Error> {
+        self.check_track(slot, number)?;
+        self.log_track(slot, number, "frames");
         let (area, track) = audio::find_track(&self.toc.areas, slot, number)?;
         let cursor = TrackCursor::new(area, track, self.image.sector_count())?;
         Ok(TrackFrames::with_cursor(&mut self.image, cursor))
@@ -119,8 +169,13 @@ impl<R: Read + Seek> Disc<R> {
     /// [`Error::ChannelCountUnsupported`], [`Error::FrameRangeInvalid`],
     /// [`Error::TrackEmpty`] and [`Error::TrackExceedsCapacity`], or [`Error::NoSuchArea`].
     pub fn check_range(&self, slot: Slot, first: u32, end: u32) -> Result<(), Error> {
-        let area = self.toc.area(slot).ok_or(Error::NoSuchArea(slot))?;
-        audio::check_range(area, first, end, self.image.sector_count())
+        self.toc
+            .area(slot)
+            .ok_or(Error::NoSuchArea(slot))
+            .and_then(|area| audio::check_range(area, first, end, self.image.sector_count()))
+            .inspect_err(|e| {
+                sb_log!(self.log(), Info, "area {slot} range: frames {first}..{end}: no audio: {e}")
+            })
     }
 
     /// The decoded audio of the frame range `[first, end)` of the area from `slot`: every
@@ -147,7 +202,9 @@ impl<R: Read + Seek> Disc<R> {
     ///
     /// As [`Disc::check_range`].
     pub fn range_audio_cursor(&self, slot: Slot, first: u32, end: u32) -> Result<TrackAudioCursor, Error> {
+        self.check_range(slot, first, end)?;
         let area = self.toc.area(slot).ok_or(Error::NoSuchArea(slot))?;
+        audio::log_open(self.log(), area, None, (first, end), "decoded audio", "new scan of the area");
         TrackAudioCursor::for_range(area, first, end, self.image.sector_count())
     }
 
@@ -177,6 +234,8 @@ impl<R: Read + Seek> Disc<R> {
     ///
     /// As [`Disc::check_track`].
     pub fn track_audio_cursor(&self, slot: Slot, number: u32) -> Result<TrackAudioCursor, Error> {
+        self.check_track(slot, number)?;
+        self.log_track(slot, number, "decoded audio");
         let (area, track) = audio::find_track(&self.toc.areas, slot, number)?;
         TrackAudioCursor::new(area, track, self.image.sector_count())
     }
@@ -233,11 +292,12 @@ impl<R: Read + Seek> Disc<R> {
     ///
     /// As [`Disc::check_track`].
     pub fn track_continuation(&self, slot: Slot, number: u32) -> Result<Continuation<'_>, Error> {
+        self.check_track(slot, number)?;
         let (area, track) = audio::find_track(&self.toc.areas, slot, number)?;
         let n = self.image.sector_count();
-        audio::check_track(area, track, n)?;
+        let range = (track.start_frame, track.end_frame());
         // A cursor from another disc is never continued, whatever its layout.
-        Ok(Continuation::new(area, track.start_frame, track.end_frame(), n, Some(self.image.id())))
+        Ok(Continuation::new(area, range, n, Some(self.image.id()), self.log(), Some(number)))
     }
 
     /// The frame range `[first, end)` of the area from `slot`, checked
@@ -248,11 +308,11 @@ impl<R: Read + Seek> Disc<R> {
     ///
     /// As [`Disc::check_range`].
     pub fn range_continuation(&self, slot: Slot, first: u32, end: u32) -> Result<Continuation<'_>, Error> {
+        self.check_range(slot, first, end)?;
         let area = self.toc.area(slot).ok_or(Error::NoSuchArea(slot))?;
         let n = self.image.sector_count();
-        audio::check_range(area, first, end, n)?;
         // A cursor from another disc is never continued, whatever its layout.
-        Ok(Continuation::new(area, first, end, n, Some(self.image.id())))
+        Ok(Continuation::new(area, (first, end), n, Some(self.image.id()), self.log(), None))
     }
 
     /// Track `number`'s track with pause (specification 4, 4.7.1 item 5): see

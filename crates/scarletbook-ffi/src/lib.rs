@@ -13,7 +13,9 @@ use std::fs::File;
 use std::io::{self, BufReader, Cursor, Read, Seek, SeekFrom};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
+use scarletbook::log::{Level, Log};
 use scarletbook::toc::{AreaTextItem, DiscTextItem, TrackTextItem};
 use scarletbook::{Area, Disc, Error, FrameStatus, Slot, TrackAudioCursor, WarningCode};
 
@@ -305,6 +307,19 @@ type Reader = Box<dyn ReadSeek + Send>;
 pub struct SbDisc {
     inner: RefCell<Disc<Reader>>,
     id: u64,
+    /// The C log callback the disc's log calls, if any; replaced only while `inner` can be
+    /// borrowed mutably, and cleared when the disc is dropped.
+    log: RefCell<Option<Arc<LogTarget>>>,
+}
+
+impl Drop for SbDisc {
+    fn drop(&mut self) {
+        // Decoding jobs still on the pool hold the disc's log: make sure they no longer
+        // reach the callback once sb_disc_free returns.
+        if let Some(target) = self.log.get_mut().take() {
+            target.clear();
+        }
+    }
 }
 
 impl std::fmt::Debug for SbDisc {
@@ -503,13 +518,25 @@ fn find_area(disc: &Disc<Reader>, slot: u32) -> Result<&Area, Failure> {
 /// # Safety
 ///
 /// `out` must be NULL or valid for a write.
-unsafe fn open_reader(reader: Reader, out: *mut *mut SbDisc) -> Result<SbStatus, Failure> {
+unsafe fn open_reader(reader: Reader, log: DiscLog, out: *mut *mut SbDisc) -> Result<SbStatus, Failure> {
     if out.is_null() {
         return Err(Failure::arg("NULL output pointer"));
     }
-    let disc = Disc::open(reader)?;
-    let handle =
-        Box::new(SbDisc { inner: RefCell::new(disc), id: NEXT_DISC_ID.fetch_add(1, Ordering::Relaxed) });
+    let DiscLog(log, target) = log;
+    let disc = match Disc::open_with_log(reader, log) {
+        Ok(disc) => disc,
+        Err(e) => {
+            if let Some(t) = target {
+                t.clear();
+            }
+            return Err(e.into());
+        }
+    };
+    let handle = Box::new(SbDisc {
+        inner: RefCell::new(disc),
+        id: NEXT_DISC_ID.fetch_add(1, Ordering::Relaxed),
+        log: RefCell::new(target),
+    });
     // SAFETY: `out` is non-NULL and valid for a write by this function's contract.
     unsafe { out.write(Box::into_raw(handle)) };
     Ok(SbStatus::Ok)
@@ -583,18 +610,41 @@ pub extern "C" fn sb_status_name(status: i32) -> *const c_char {
 /// `path` must be NULL or a valid NUL-terminated string; `out` NULL or valid for a write.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sb_disc_open_file(path: *const c_char, out: *mut *mut SbDisc) -> SbStatus {
+    // SAFETY: forwarded contract; no log.
+    unsafe { sb_disc_open_file_with_log(path, None, std::ptr::null_mut(), SB_LOG_OFF, out) }
+}
+
+/// `sb_disc_open_file`, reporting to a log callback from the format detection on (see
+/// `sb_disc_set_log`).
+///
+/// # Safety
+///
+/// As `sb_disc_open_file` and `sb_disc_set_log`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_disc_open_file_with_log(
+    path: *const c_char,
+    log: SbLogFn,
+    log_user: *mut c_void,
+    level: i32,
+    out: *mut *mut SbDisc,
+) -> SbStatus {
     // SAFETY: forwarded contract.
     unsafe { clear_out(out) };
     guard(|| {
+        // SAFETY: forwarded contract.
+        let log = unsafe { DiscLog::new(log, log_user, level) }?;
         if path.is_null() {
             return Err(Failure::arg("NULL path"));
         }
         // SAFETY: non-NULL and NUL-terminated by this function's contract.
         let path = unsafe { CStr::from_ptr(path) };
         let path = path.to_str().map_err(|_| Failure::arg("path is not UTF-8"))?;
-        let file = File::open(path).map_err(|e| Failure(SbStatus::Io, format!("{path}: {e}")))?;
+        let file = File::open(path).map_err(|e| {
+            log.0.write(Level::Error, format_args!("{path}: {e}"));
+            Failure(SbStatus::Io, format!("{path}: {e}"))
+        })?;
         // SAFETY: forwarded contract.
-        unsafe { open_reader(Box::new(BufReader::new(file)), out) }
+        unsafe { open_reader(Box::new(BufReader::new(file)), log, out) }
     })
 }
 
@@ -607,9 +657,30 @@ pub unsafe extern "C" fn sb_disc_open_file(path: *const c_char, out: *mut *mut S
 /// or valid for a write.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sb_disc_open_memory(data: *const u8, len: usize, out: *mut *mut SbDisc) -> SbStatus {
+    // SAFETY: forwarded contract; no log.
+    unsafe { sb_disc_open_memory_with_log(data, len, None, std::ptr::null_mut(), SB_LOG_OFF, out) }
+}
+
+/// `sb_disc_open_memory`, reporting to a log callback from the format detection on (see
+/// `sb_disc_set_log`).
+///
+/// # Safety
+///
+/// As `sb_disc_open_memory` and `sb_disc_set_log`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_disc_open_memory_with_log(
+    data: *const u8,
+    len: usize,
+    log: SbLogFn,
+    log_user: *mut c_void,
+    level: i32,
+    out: *mut *mut SbDisc,
+) -> SbStatus {
     // SAFETY: forwarded contract.
     unsafe { clear_out(out) };
     guard(|| {
+        // SAFETY: forwarded contract.
+        let log = unsafe { DiscLog::new(log, log_user, level) }?;
         let bytes = if len == 0 {
             Vec::new()
         } else if data.is_null() {
@@ -619,7 +690,7 @@ pub unsafe extern "C" fn sb_disc_open_memory(data: *const u8, len: usize, out: *
             unsafe { std::slice::from_raw_parts(data, len) }.to_vec()
         };
         // SAFETY: forwarded contract.
-        unsafe { open_reader(Box::new(Cursor::new(bytes)), out) }
+        unsafe { open_reader(Box::new(Cursor::new(bytes)), log, out) }
     })
 }
 
@@ -688,14 +759,224 @@ pub unsafe extern "C" fn sb_disc_open_callbacks(
     user: *mut c_void,
     out: *mut *mut SbDisc,
 ) -> SbStatus {
+    // SAFETY: forwarded contract; no log.
+    unsafe { sb_disc_open_callbacks_with_log(read, seek, user, None, std::ptr::null_mut(), SB_LOG_OFF, out) }
+}
+
+/// `sb_disc_open_callbacks`, reporting to a log callback from the format detection on
+/// (see `sb_disc_set_log`). `user` goes to the read and seek callbacks, `log_user` to the
+/// log callback.
+///
+/// # Safety
+///
+/// As `sb_disc_open_callbacks` and `sb_disc_set_log`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_disc_open_callbacks_with_log(
+    read: SbReadFn,
+    seek: SbSeekFn,
+    user: *mut c_void,
+    log: SbLogFn,
+    log_user: *mut c_void,
+    level: i32,
+    out: *mut *mut SbDisc,
+) -> SbStatus {
     // SAFETY: forwarded contract.
     unsafe { clear_out(out) };
     guard(|| {
+        // SAFETY: forwarded contract.
+        let log = unsafe { DiscLog::new(log, log_user, level) }?;
         let (Some(read), Some(seek)) = (read, seek) else {
             return Err(Failure::arg("NULL callback"));
         };
         // SAFETY: forwarded contract.
-        unsafe { open_reader(Box::new(Callbacks { read, seek, user }), out) }
+        unsafe { open_reader(Box::new(Callbacks { read, seek, user }), log, out) }
+    })
+}
+
+/// Log levels, most severe first: the `level` of a message and the most verbose level a
+/// log callback receives. `SB_LOG_OFF` as a `level` argument turns the log off.
+pub const SB_LOG_OFF: i32 = 0;
+/// The reader failed, or decoding stopped on an internal error.
+pub const SB_LOG_ERROR: i32 = 1;
+/// A problem in the image: a warning (also reported by `sb_disc_warning` and
+/// `sb_track_audio_warning`), a malformed sector or a missing, invalid or discarded frame,
+/// with its LSN or frame number.
+pub const SB_LOG_WARN: i32 = 2;
+/// What was found: the sector format, the TOC copies used, the areas, the tracks opened.
+pub const SB_LOG_INFO: i32 = 3;
+/// What was done: every read (LSN, sector count, byte range), the format probes, the
+/// master TOC copy comparisons, the area scans.
+pub const SB_LOG_DEBUG: i32 = 4;
+/// Every frame returned, every frame the reassembler accepts, and each group of DST
+/// frames decoded.
+pub const SB_LOG_TRACE: i32 = 5;
+
+/// Receives one log message: `level` is one of `SB_LOG_ERROR` to `SB_LOG_TRACE`, `message`
+/// a NUL-terminated UTF-8 line without a trailing newline, valid only during the call.
+pub type SbLogFn = Option<unsafe extern "C" fn(user: *mut c_void, level: i32, message: *const c_char)>;
+
+type LogFn = unsafe extern "C" fn(*mut c_void, i32, *const c_char);
+
+/// A disc's C log callback, shared with the decoding jobs that report to it, until it is
+/// cleared.
+struct LogTarget {
+    state: Mutex<LogState>,
+    idle: Condvar,
+}
+
+struct LogState {
+    /// The callback and its user data; `None` once cleared.
+    callback: Option<(LogFn, *mut c_void)>,
+    /// Callbacks running now.
+    running: usize,
+}
+
+// SAFETY: the caller of sb_disc_set_log and the _with_log openers guarantees that the
+// callback may be called with its user data from any thread, concurrently (their # Safety
+// sections); the rest is plain data under the mutex.
+unsafe impl Send for LogState {}
+
+impl LogTarget {
+    fn lock(&self) -> MutexGuard<'_, LogState> {
+        // No panic happens while the lock is held: the state stays consistent.
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Calls the callback with a message, unless it has been cleared. The lock is not held
+    /// during the call, so the callback may run on several threads at once.
+    fn emit(&self, level: Level, message: std::fmt::Arguments<'_>) {
+        let Some((callback, user)) = ({
+            let mut state = self.lock();
+            let callback = state.callback;
+            if callback.is_some() {
+                state.running += 1;
+            }
+            callback
+        }) else {
+            return;
+        };
+        /// Counts the call as finished however it ends.
+        struct Running<'a>(&'a LogTarget);
+        impl Drop for Running<'_> {
+            fn drop(&mut self) {
+                let mut state = self.0.lock();
+                state.running -= 1;
+                if state.running == 0 {
+                    self.0.idle.notify_all();
+                }
+            }
+        }
+        let _running = Running(self);
+        // Formatted only once the callback is known to be set.
+        let text = CString::new(message.to_string().replace('\0', " ")).unwrap_or_default();
+        // SAFETY: the callback may be called with its user data from any thread until it
+        // is cleared (the setter's contract); clear() waits for this call to return.
+        // `text` is a valid NUL-terminated string that outlives the call.
+        unsafe { callback(user, level as i32, text.as_ptr()) };
+    }
+
+    /// Stops the callback: returns once no call is running and none will start.
+    fn clear(&self) {
+        let mut state = self.lock();
+        state.callback = None;
+        while state.running > 0 {
+            state = self.idle.wait(state).unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+}
+
+/// A disc's core log and the C callback behind it, from the arguments of a setter.
+struct DiscLog(Log, Option<Arc<LogTarget>>);
+
+impl DiscLog {
+    /// Checks the level and builds the log; no log for a NULL callback or `SB_LOG_OFF`.
+    ///
+    /// # Safety
+    ///
+    /// `callback` must be safe to call with `user` from any thread, concurrently, until
+    /// the log is replaced or the disc freed.
+    unsafe fn new(callback: SbLogFn, user: *mut c_void, level: i32) -> Result<Self, Failure> {
+        let level = match level {
+            SB_LOG_OFF => None,
+            SB_LOG_ERROR => Some(Level::Error),
+            SB_LOG_WARN => Some(Level::Warn),
+            SB_LOG_INFO => Some(Level::Info),
+            SB_LOG_DEBUG => Some(Level::Debug),
+            SB_LOG_TRACE => Some(Level::Trace),
+            _ => return Err(Failure::arg("log level must be SB_LOG_OFF (0) to SB_LOG_TRACE (5)")),
+        };
+        let (Some(callback), Some(level)) = (callback, level) else {
+            return Ok(DiscLog(Log::none(), None));
+        };
+        let target = Arc::new(LogTarget {
+            state: Mutex::new(LogState { callback: Some((callback, user)), running: 0 }),
+            idle: Condvar::new(),
+        });
+        let sink = Arc::clone(&target);
+        Ok(DiscLog(Log::new(level, move |level, message| sink.emit(level, message)), Some(target)))
+    }
+}
+
+/// Sets, replaces or removes (`log` NULL or `level` `SB_LOG_OFF`) a disc's log callback.
+/// It receives the messages at `level` and more severe ones (`SB_LOG_ERROR` <
+/// `SB_LOG_WARN` < ... < `SB_LOG_TRACE`), from the next call on. To also get the format
+/// detection and TOC messages, open the disc with a `_with_log` function. Without a
+/// callback, or above its level, no message is formatted.
+///
+/// Calls with this disc and its track handles invoke the callback on the calling thread
+/// while they run, in order. A library built with the `parallel` feature also invokes it
+/// from its worker threads, which decode ahead of the caller: at `SB_LOG_TRACE` (groups
+/// of frames decoded) and `SB_LOG_ERROR` (an internal error), possibly concurrently with
+/// other calls of it and after the call that started the work has returned; such lines
+/// can interleave with the calling thread's. Frame problems are reported on the calling
+/// thread, in frame order. Once sb_disc_set_log or sb_disc_free returns, the previous
+/// callback is not called again (they wait for calls on other threads to return).
+///
+/// A worker's message can also be delivered on the calling thread while it waits for a
+/// frame inside `sb_track_audio_read` (the pool runs pending work there), and the callback
+/// can be entered again on a thread that is already inside it (when the callback itself
+/// calls this library, with any handle, and that call waits for decoding). A callback
+/// that takes a non-recursive lock which it, or the caller around its calls to this
+/// library, already holds can therefore deadlock.
+///
+/// Lines about problems are capped: at most 4096 per kind (malformed sectors and
+/// discarded frames per area scan, missing and invalid frames per track), then one line
+/// saying the rest are suppressed. The counts (`sb_track_audio_counts`,
+/// `sb_track_audio_malformed_sectors`) are kept in full.
+///
+/// The message is valid only during the call. The callback must not unwind. It may call
+/// this library with other handles. With this disc or its track handles, it may do so only
+/// when it runs on the thread of the call that invoked it, where a call that conflicts
+/// with the running one fails with `SB_STATUS_INVALID_ARGUMENT`; from a worker thread that
+/// would use the handle from two threads at once.
+///
+/// Returns `SB_STATUS_INVALID_ARGUMENT` for a level outside `SB_LOG_OFF` to
+/// `SB_LOG_TRACE`, or when called from one of this disc's callbacks; the log is then
+/// unchanged.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle. `log` must be safe to call with `user` from any
+/// thread, concurrently, until it is replaced or the disc is freed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_disc_set_log(
+    disc: *const SbDisc,
+    log: SbLogFn,
+    user: *mut c_void,
+    level: i32,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let handle = unsafe { disc_handle(disc) }?;
+        let mut d = handle.get_mut()?;
+        // SAFETY: forwarded contract.
+        let DiscLog(log, target) = unsafe { DiscLog::new(log, user, level) }?;
+        d.set_log(log);
+        let old = handle.log.replace(target);
+        if let Some(old) = old {
+            old.clear();
+        }
+        Ok(SbStatus::Ok)
     })
 }
 
