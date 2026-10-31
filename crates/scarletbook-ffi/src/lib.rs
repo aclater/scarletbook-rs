@@ -13,6 +13,7 @@ use std::fs::File;
 #[cfg(not(any(unix, windows)))]
 use std::io::BufReader;
 use std::io::{self, Read, Seek, SeekFrom};
+use std::mem::offset_of;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,8 +23,9 @@ use scarletbook::log::{Level, Log};
 use scarletbook::toc::{AreaTextItem, DiscTextItem, TrackTextItem};
 use scarletbook::{
     Area, AreaCursor, AreaIndex, AudioFrame, CancelToken, DecodeOn, Disc, Error, FrameContent, FrameKind,
-    FrameStatus, IndexOptions, LoudspeakerLayout, Progress, ReadAt, ReadAtReader, SeekPolicy, Slot, Speaker,
-    Speculation, SpeculativeOptions, Stored, TrackAudioCursor, TrackCursor, TrackFrame, WarningCode,
+    FrameStatus, IndexOptions, LoudspeakerLayout, MasterToc, Progress, ReadAt, ReadAtReader, SeekPolicy,
+    Slot, Speaker, Speculation, SpeculativeOptions, Stored, Track, TrackAudioCursor, TrackCursor, TrackFrame,
+    WarningCode,
 };
 
 /// Result of every call: an `int32_t`, whose values are the `SB_STATUS_*` constants. In C
@@ -822,6 +824,126 @@ impl SbDisc {
     fn get_mut(&self) -> Result<RefMut<'_, Disc<Reader>>, Failure> {
         self.inner.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))
     }
+}
+
+/// The disc's `SbDiscInfo` (`sb_disc_info`, `sb_disc_toc`).
+fn disc_info(d: &Disc<Reader>) -> SbDiscInfo {
+    let toc = d.toc();
+    let m = &toc.master;
+    SbDiscInfo {
+        sectors: toc.sectors,
+        sector_size: toc.sector_format.stored_size() as u32,
+        version_major: m.version.major,
+        version_minor: m.version.minor,
+        album_set_size: m.album_set_size,
+        album_sequence_number: m.album_sequence_number,
+        hybrid: u8::from(m.hybrid()),
+        manufacturer_sector: u8::from(m.manufacturer.is_some()),
+        year: m.date.year,
+        month: m.date.month,
+        day: m.date.day,
+        area_count: toc.areas.len() as u32,
+        warning_count: u32::try_from(d.warnings().len()).unwrap_or(u32::MAX),
+    }
+}
+
+/// Disc string `field` of `sb_disc_string` (`None`: absent).
+fn disc_string(m: &MasterToc, field: u32) -> Result<Option<&str>, Failure> {
+    Ok(match field {
+        16 => Some(m.album_catalog_number.as_str()),
+        17 => Some(m.disc_catalog_number.as_str()),
+        f => {
+            let item =
+                DiscTextItem::ALL.get(f as usize).ok_or_else(|| Failure::arg("unknown disc string"))?;
+            m.text.get(*item)
+        }
+    })
+}
+
+/// An area's `SbAreaInfo` (`sb_disc_area`, `sb_disc_toc`).
+fn area_info(a: &Area) -> SbAreaInfo {
+    SbAreaInfo {
+        slot: slot_index(a.slot),
+        kind_channels: match a.kind {
+            scarletbook::AreaKind::TwoChannel => 2,
+            scarletbook::AreaKind::Multichannel => 6,
+        },
+        toc_lsn: a.toc_lsn,
+        toc_sectors: u32::from(a.toc_sectors),
+        channel_count: u32::from(a.channel_count),
+        area_config: u32::from(a.area_config),
+        sample_frequency_code: u32::from(a.sample_frequency_code),
+        frame_format: u32::from(a.frame_format),
+        max_byte_rate: a.max_byte_rate,
+        playtime_frames: a.playtime_frames(),
+        audio_start_lsn: a.audio_start_lsn,
+        audio_end_lsn: a.audio_end_lsn,
+        track_count: a.tracks.len() as u32,
+    }
+}
+
+/// An area's `SbAreaDetails` (`sb_area_details`, `sb_disc_toc`).
+fn area_details(a: &Area) -> SbAreaDetails {
+    SbAreaDetails {
+        version_major: a.version.major,
+        version_minor: a.version.minor,
+        max_available_channels: a.max_available_channels,
+        mute_flags: a.area_mute_flags,
+        track_attribute: a.track_attribute,
+        track_offset: a.track_offset,
+        text_channel_count: a.text_channel_count,
+        text_charset: a.text_charset,
+    }
+}
+
+/// An area's `SB_LAYOUT_*` value (`sb_area_loudspeaker_layout`, `sb_disc_toc`).
+fn layout_value(a: &Area) -> u32 {
+    match a.loudspeaker_layout() {
+        LoudspeakerLayout::Stereo => SB_LAYOUT_STEREO,
+        LoudspeakerLayout::ThreeTwo => SB_LAYOUT_THREE_TWO,
+        LoudspeakerLayout::FivePointOne => SB_LAYOUT_FIVE_POINT_ONE,
+        LoudspeakerLayout::Unspecified { .. } => SB_LAYOUT_UNSPECIFIED,
+    }
+}
+
+/// The `SB_SPEAKER_*` value of channel `index` of an area (`sb_area_channel_speaker`,
+/// `sb_disc_toc`).
+fn speaker_value(a: &Area, index: usize) -> u32 {
+    match a.channel_speakers().and_then(|s| s.get(index)) {
+        None => SB_SPEAKER_UNSPECIFIED,
+        Some(Speaker::FrontLeft) => SB_SPEAKER_FRONT_LEFT,
+        Some(Speaker::FrontRight) => SB_SPEAKER_FRONT_RIGHT,
+        Some(Speaker::Centre) => SB_SPEAKER_CENTRE,
+        Some(Speaker::LowFrequencyEffects) => SB_SPEAKER_LOW_FREQUENCY_EFFECTS,
+        Some(Speaker::SurroundLeft) => SB_SPEAKER_SURROUND_LEFT,
+        Some(Speaker::SurroundRight) => SB_SPEAKER_SURROUND_RIGHT,
+    }
+}
+
+/// A track's `SbTrackInfo` (`sb_track_info`, `sb_disc_toc`).
+fn track_info(t: &Track) -> SbTrackInfo {
+    SbTrackInfo {
+        number: u32::from(t.number),
+        start_lsn: t.start_lsn,
+        length_sectors: t.length_sectors,
+        start_frame: t.start_frame,
+        duration_frames: t.duration_frames,
+        start_flags: t.start_flags,
+        duration_flags: t.duration_flags,
+        has_genre: u8::from(t.genre.is_some()),
+        genre_category: t.genre.map_or(0, |g| g.category),
+        genre_index: t.genre.map_or(0, |g| g.index),
+        reserved: [0; 3],
+    }
+}
+
+/// Track string `field` of `sb_track_string` (`None`: absent).
+fn track_string(t: &Track, field: u32) -> Result<Option<&str>, Failure> {
+    if field == 14 {
+        return Ok(t.isrc.as_deref());
+    }
+    let item = TrackTextItem::ALL.get(field as usize).ok_or_else(|| Failure::arg("unknown track string"))?;
+    Ok(t.text.get(*item))
 }
 
 /// Copies a string out (see the conventions in the header).
@@ -1721,25 +1843,8 @@ pub unsafe extern "C" fn sb_disc_info(disc: *const SbDisc, out: *mut SbDiscInfo)
     guard(|| {
         // SAFETY: forwarded contract.
         let d = unsafe { disc_handle(disc) }?.get()?;
-        let toc = d.toc();
-        let m = &toc.master;
-        let info = SbDiscInfo {
-            sectors: toc.sectors,
-            sector_size: toc.sector_format.stored_size() as u32,
-            version_major: m.version.major,
-            version_minor: m.version.minor,
-            album_set_size: m.album_set_size,
-            album_sequence_number: m.album_sequence_number,
-            hybrid: u8::from(m.hybrid()),
-            manufacturer_sector: u8::from(m.manufacturer.is_some()),
-            year: m.date.year,
-            month: m.date.month,
-            day: m.date.day,
-            area_count: toc.areas.len() as u32,
-            warning_count: u32::try_from(d.warnings().len()).unwrap_or(u32::MAX),
-        };
         // SAFETY: forwarded contract.
-        unsafe { write_out(out, info) }?;
+        unsafe { write_out(out, disc_info(&d)) }?;
         Ok(SbStatus::Ok)
     })
 }
@@ -1761,16 +1866,7 @@ pub unsafe extern "C" fn sb_disc_string(
     guard(|| {
         // SAFETY: forwarded contract.
         let d = unsafe { disc_handle(disc) }?.get()?;
-        let m = &d.toc().master;
-        let s = match field {
-            16 => Some(m.album_catalog_number.as_str()),
-            17 => Some(m.disc_catalog_number.as_str()),
-            f => {
-                let item =
-                    DiscTextItem::ALL.get(f as usize).ok_or_else(|| Failure::arg("unknown disc string"))?;
-                m.text.get(*item)
-            }
-        };
+        let s = disc_string(&d.toc().master, field)?;
         // SAFETY: forwarded contract.
         unsafe { copy_string(s, buf, cap, len) }
     })
@@ -1787,26 +1883,8 @@ pub unsafe extern "C" fn sb_disc_area(disc: *const SbDisc, index: u32, out: *mut
         // SAFETY: forwarded contract.
         let d = unsafe { disc_handle(disc) }?.get()?;
         let a = d.toc().areas.get(index as usize).ok_or_else(|| Failure::arg("area index out of range"))?;
-        let info = SbAreaInfo {
-            slot: slot_index(a.slot),
-            kind_channels: match a.kind {
-                scarletbook::AreaKind::TwoChannel => 2,
-                scarletbook::AreaKind::Multichannel => 6,
-            },
-            toc_lsn: a.toc_lsn,
-            toc_sectors: u32::from(a.toc_sectors),
-            channel_count: u32::from(a.channel_count),
-            area_config: u32::from(a.area_config),
-            sample_frequency_code: u32::from(a.sample_frequency_code),
-            frame_format: u32::from(a.frame_format),
-            max_byte_rate: a.max_byte_rate,
-            playtime_frames: a.playtime_frames(),
-            audio_start_lsn: a.audio_start_lsn,
-            audio_end_lsn: a.audio_end_lsn,
-            track_count: a.tracks.len() as u32,
-        };
         // SAFETY: forwarded contract.
-        unsafe { write_out(out, info) }?;
+        unsafe { write_out(out, area_info(a)) }?;
         Ok(SbStatus::Ok)
     })
 }
@@ -1852,12 +1930,7 @@ pub unsafe extern "C" fn sb_area_loudspeaker_layout(
     guard(|| {
         // SAFETY: forwarded contract.
         let d = unsafe { disc_handle(disc) }?.get()?;
-        let value = match find_area(&d, slot)?.loudspeaker_layout() {
-            LoudspeakerLayout::Stereo => SB_LAYOUT_STEREO,
-            LoudspeakerLayout::ThreeTwo => SB_LAYOUT_THREE_TWO,
-            LoudspeakerLayout::FivePointOne => SB_LAYOUT_FIVE_POINT_ONE,
-            LoudspeakerLayout::Unspecified { .. } => SB_LAYOUT_UNSPECIFIED,
-        };
+        let value = layout_value(find_area(&d, slot)?);
         // SAFETY: forwarded contract.
         unsafe { write_out(layout, value) }?;
         Ok(SbStatus::Ok)
@@ -1887,15 +1960,7 @@ pub unsafe extern "C" fn sb_area_channel_speaker(
         if index >= u32::from(area.channel_count) {
             return Err(Failure::arg("channel index out of range"));
         }
-        let value = match area.channel_speakers().and_then(|s| s.get(index as usize)) {
-            None => SB_SPEAKER_UNSPECIFIED,
-            Some(Speaker::FrontLeft) => SB_SPEAKER_FRONT_LEFT,
-            Some(Speaker::FrontRight) => SB_SPEAKER_FRONT_RIGHT,
-            Some(Speaker::Centre) => SB_SPEAKER_CENTRE,
-            Some(Speaker::LowFrequencyEffects) => SB_SPEAKER_LOW_FREQUENCY_EFFECTS,
-            Some(Speaker::SurroundLeft) => SB_SPEAKER_SURROUND_LEFT,
-            Some(Speaker::SurroundRight) => SB_SPEAKER_SURROUND_RIGHT,
-        };
+        let value = speaker_value(area, index as usize);
         // SAFETY: forwarded contract.
         unsafe { write_out(speaker, value) }?;
         Ok(SbStatus::Ok)
@@ -2166,17 +2231,7 @@ pub unsafe extern "C" fn sb_area_details(
     guard(|| {
         // SAFETY: forwarded contract.
         let d = unsafe { disc_handle(disc) }?.get()?;
-        let a = find_area(&d, slot)?;
-        let details = SbAreaDetails {
-            version_major: a.version.major,
-            version_minor: a.version.minor,
-            max_available_channels: a.max_available_channels,
-            mute_flags: a.area_mute_flags,
-            track_attribute: a.track_attribute,
-            track_offset: a.track_offset,
-            text_channel_count: a.text_channel_count,
-            text_charset: a.text_charset,
-        };
+        let details = area_details(find_area(&d, slot)?);
         // SAFETY: forwarded contract.
         unsafe { write_out(out, details) }?;
         Ok(SbStatus::Ok)
@@ -2224,21 +2279,8 @@ pub unsafe extern "C" fn sb_track_info(
         let d = unsafe { disc_handle(disc) }?.get()?;
         let area = find_area(&d, slot)?;
         let t = area.track(number).ok_or(Error::NoSuchTrack { slot: area.slot, track: number })?;
-        let info = SbTrackInfo {
-            number: u32::from(t.number),
-            start_lsn: t.start_lsn,
-            length_sectors: t.length_sectors,
-            start_frame: t.start_frame,
-            duration_frames: t.duration_frames,
-            start_flags: t.start_flags,
-            duration_flags: t.duration_flags,
-            has_genre: u8::from(t.genre.is_some()),
-            genre_category: t.genre.map_or(0, |g| g.category),
-            genre_index: t.genre.map_or(0, |g| g.index),
-            reserved: [0; 3],
-        };
         // SAFETY: forwarded contract.
-        unsafe { write_out(out, info) }?;
+        unsafe { write_out(out, track_info(t)) }?;
         Ok(SbStatus::Ok)
     })
 }
@@ -2263,13 +2305,7 @@ pub unsafe extern "C" fn sb_track_string(
         let d = unsafe { disc_handle(disc) }?.get()?;
         let area = find_area(&d, slot)?;
         let t = area.track(number).ok_or(Error::NoSuchTrack { slot: area.slot, track: number })?;
-        let s = if field == 14 {
-            t.isrc.as_deref()
-        } else {
-            let item =
-                TrackTextItem::ALL.get(field as usize).ok_or_else(|| Failure::arg("unknown track string"))?;
-            t.text.get(*item)
-        };
+        let s = track_string(t, field)?;
         // SAFETY: forwarded contract.
         unsafe { copy_string(s, buf, cap, len) }
     })
@@ -4688,6 +4724,540 @@ pub unsafe extern "C" fn sb_progress_free(progress: *mut SbProgress) {
         }
         Ok(SbStatus::Ok)
     });
+}
+
+/// The first 8 bytes of a `sb_disc_toc` layout (`SbTocHeader.magic`).
+const TOC_MAGIC: &[u8; 8] = b"SBTOC\0\0\0";
+/// The major version of the `sb_disc_toc` layout this library writes. A reader refuses a
+/// layout of any other major version.
+pub const SB_TOC_MAJOR: u16 = 1;
+/// The minor version of the `sb_disc_toc` layout this library writes. Minor versions only
+/// append fields to the end of records (the record sizes in `SbTocHeader` grow); every
+/// offset of an earlier minor version stays.
+pub const SB_TOC_MINOR: u16 = 0;
+/// `SbTocStr.offset` of an absent string.
+pub const SB_TOC_ABSENT: u32 = 0xFFFF_FFFF;
+
+/// A string in a `sb_disc_toc` layout: `length` bytes at byte `offset` of the layout,
+/// followed by a NUL that `length` does not count; `offset` is `SB_TOC_ABSENT` (and
+/// `length` 0) for an absent string, where the per-field call returns
+/// `SB_STATUS_ABSENT`. Text is UTF-8, as from `sb_disc_string`; stored catalogue numbers
+/// and the manufacturer sector are bytes as stored.
+///
+/// Layout: 8 bytes, aligned to 4: `offset` at 0, `length` at 4.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SbTocStr {
+    /// Byte offset from the start of the layout, or `SB_TOC_ABSENT`.
+    pub offset: u32,
+    /// Length in bytes, without the trailing NUL.
+    pub length: u32,
+}
+
+/// The header of a `sb_disc_toc` layout, at offset 0.
+///
+/// Layout: 56 bytes, aligned to 4: `magic` at 0, `major` at 8, `minor` at 10, `size` at
+/// 12, `disc_offset` at 16, the four record sizes at 20, 22, 24 and 26, `areas_offset` at
+/// 28, `area_count` at 32, `warnings_offset` at 36, `warning_count` at 40,
+/// `strings_offset` at 44, `strings_size` at 48, `reserved` at 52.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SbTocHeader {
+    /// The bytes "SBTOC" and three NULs.
+    pub magic: [u8; 8],
+    /// `SB_TOC_MAJOR` of the library that wrote the layout.
+    pub major: u16,
+    /// `SB_TOC_MINOR` of the library that wrote the layout.
+    pub minor: u16,
+    /// The layout's size in bytes (what `*len` receives).
+    pub size: u32,
+    /// Offset of the `SbTocDisc` record.
+    pub disc_offset: u32,
+    /// Size of the disc record (256 in format 1.0).
+    pub disc_record_size: u16,
+    /// Size of each area record (152 in format 1.0).
+    pub area_record_size: u16,
+    /// Size of each track record (168 in format 1.0).
+    pub track_record_size: u16,
+    /// Size of each warning record (24 in format 1.0).
+    pub warning_record_size: u16,
+    /// Offset of the first area record; the others follow, `area_record_size` apart, in
+    /// `sb_disc_area` index order.
+    pub areas_offset: u32,
+    /// Number of area records (`SbDiscInfo.area_count`).
+    pub area_count: u32,
+    /// Offset of the first warning record; the others follow, `warning_record_size` apart,
+    /// in `sb_disc_warning` index order.
+    pub warnings_offset: u32,
+    /// Number of warning records (`SbDiscInfo.warning_count`).
+    pub warning_count: u32,
+    /// Offset of the string area, where every `SbTocStr` points.
+    pub strings_offset: u32,
+    /// Size of the string area.
+    pub strings_size: u32,
+    /// Written as 0.
+    pub reserved: u32,
+}
+
+/// The disc record of a `sb_disc_toc` layout.
+///
+/// Layout (format 1.0): 256 bytes, aligned to 8: `info` at 0, `album_genres` at 32,
+/// `disc_genres` at 40, `text_channel_count` at 48, `text_charset` at 49, `disc_flags` at
+/// 50, `reserved` at 51, `text_channels` at 52, `reserved2` at 84, `strings` at 88,
+/// `catalog_numbers_stored` at 232, `manufacturer` at 248.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SbTocDisc {
+    /// As `sb_disc_info`.
+    pub info: SbDiscInfo,
+    /// As `sb_disc_genre` with `SB_GENRE_LIST_ALBUM`, indexes 0 to 3.
+    pub album_genres: [SbGenre; 4],
+    /// As `sb_disc_genre` with `SB_GENRE_LIST_DISC`, indexes 0 to 3.
+    pub disc_genres: [SbGenre; 4],
+    /// As `sb_disc_text_channel_count`, as stored (may exceed 8).
+    pub text_channel_count: u8,
+    /// The master TOC's text character set code byte, as stored.
+    pub text_charset: u8,
+    /// The disc flags byte, as stored (`SbDiscInfo.hybrid` is its bit 7).
+    pub disc_flags: u8,
+    /// Written as 0.
+    pub reserved: u8,
+    /// As `sb_disc_text_channel`, for the first `min(text_channel_count, 8)`; zero after.
+    pub text_channels: [SbTextChannel; 8],
+    /// Written as 0.
+    pub reserved2: u32,
+    /// As `sb_disc_string`, fields 0 to 17 (`SbDiscString`).
+    pub strings: [SbTocStr; 18],
+    /// As `sb_disc_catalog_number_stored`: the album's, then the disc's.
+    pub catalog_numbers_stored: [SbTocStr; 2],
+    /// As `sb_disc_manufacturer`: absent when `info.manufacturer_sector` is 0.
+    pub manufacturer: SbTocStr,
+}
+
+/// An area record of a `sb_disc_toc` layout.
+///
+/// Layout (format 1.0): 152 bytes, aligned to 4: `info` at 0, `details` at 52,
+/// `loudspeaker_layout` at 60, `channel_speakers` at 64, `playtime_stored` at 70,
+/// `reserved` at 73, `reserved2` at 74, `tracks_offset` at 76, `strings` at 80,
+/// `text_channels` at 112.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SbTocArea {
+    /// As `sb_disc_area`.
+    pub info: SbAreaInfo,
+    /// As `sb_area_details`.
+    pub details: SbAreaDetails,
+    /// As `sb_area_loudspeaker_layout`.
+    pub loudspeaker_layout: u32,
+    /// As `sb_area_channel_speaker`, for the first `min(info.channel_count, 6)`; 0 after.
+    pub channel_speakers: [u8; 6],
+    /// As `sb_area_playtime_stored`.
+    pub playtime_stored: SbTimecode,
+    /// Written as 0.
+    pub reserved: u8,
+    /// Written as 0.
+    pub reserved2: u16,
+    /// Offset of the area's first track record; the others follow, `track_record_size`
+    /// apart, `info.track_count` in all, in track number order from 1.
+    pub tracks_offset: u32,
+    /// As `sb_area_string`, fields 0 to 3 (`SbAreaString`).
+    pub strings: [SbTocStr; 4],
+    /// As `sb_area_text_channel`, for the first `min(details.text_channel_count, 10)`;
+    /// zero after.
+    pub text_channels: [SbTextChannel; 10],
+}
+
+/// A track record of a `sb_disc_toc` layout.
+///
+/// Layout (format 1.0): 168 bytes, aligned to 4: `info` at 0, `start_stored` at 28,
+/// `duration_stored` at 31, `reserved` at 34, `strings` at 36, `reserved2` at 164.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SbTocTrack {
+    /// As `sb_track_info`.
+    pub info: SbTrackInfo,
+    /// As `sb_track_timecodes_stored`: the start.
+    pub start_stored: SbTimecode,
+    /// As `sb_track_timecodes_stored`: the duration.
+    pub duration_stored: SbTimecode,
+    /// Written as 0.
+    pub reserved: [u8; 2],
+    /// As `sb_track_string`, fields 0 to 14 (`SbTrackString`); entry 15 is reserved and
+    /// always absent.
+    pub strings: [SbTocStr; 16],
+    /// Written as 0; keeps records a multiple of 8 bytes.
+    pub reserved2: u32,
+}
+
+/// A warning record of a `sb_disc_toc` layout.
+///
+/// Layout (format 1.0): 24 bytes, aligned to 8: `lsn` at 0, `slot` at 8, `track` at 12,
+/// `code` at 16.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SbTocWarning {
+    /// As `SbWarning.lsn`.
+    pub lsn: i64,
+    /// As `SbWarning.slot`.
+    pub slot: i32,
+    /// As `SbWarning.track`.
+    pub track: u32,
+    /// The code's name, as `SbWarning.code`.
+    pub code: SbTocStr,
+}
+
+// Format 1.0 of the layout; a change here is a change of the documented format.
+const _: () = {
+    assert!(size_of::<SbTocStr>() == 8);
+    assert!(size_of::<SbTocHeader>() == 56);
+    assert!(size_of::<SbTocDisc>() == 256);
+    assert!(size_of::<SbTocArea>() == 152);
+    assert!(size_of::<SbTocTrack>() == 168);
+    assert!(size_of::<SbTocWarning>() == 24);
+};
+
+/// Writes little-endian values at offsets of a byte buffer.
+struct LayoutWriter<'a> {
+    buf: &'a mut [u8],
+    /// Where the next string goes.
+    strings_at: usize,
+}
+
+impl LayoutWriter<'_> {
+    fn bytes(&mut self, at: usize, bytes: &[u8]) -> Result<(), Failure> {
+        let end =
+            at.checked_add(bytes.len()).ok_or_else(|| Failure(SbStatus::Panic, "layout offset".into()))?;
+        self.buf
+            .get_mut(at..end)
+            .ok_or_else(|| Failure(SbStatus::Panic, "layout field out of range".into()))?
+            .copy_from_slice(bytes);
+        Ok(())
+    }
+    fn u8(&mut self, at: usize, v: u8) -> Result<(), Failure> {
+        self.bytes(at, &[v])
+    }
+    fn u16(&mut self, at: usize, v: u16) -> Result<(), Failure> {
+        self.bytes(at, &v.to_le_bytes())
+    }
+    fn u32(&mut self, at: usize, v: u32) -> Result<(), Failure> {
+        self.bytes(at, &v.to_le_bytes())
+    }
+    fn u64(&mut self, at: usize, v: u64) -> Result<(), Failure> {
+        self.bytes(at, &v.to_le_bytes())
+    }
+
+    /// Appends `s` (and a NUL) to the string area and writes its `SbTocStr` at `at`.
+    fn str(&mut self, at: usize, s: Option<&[u8]>) -> Result<(), Failure> {
+        let r = match s {
+            None => SbTocStr { offset: SB_TOC_ABSENT, length: 0 },
+            Some(s) => {
+                let offset = self.strings_at;
+                self.bytes(offset, s)?;
+                self.u8(offset + s.len(), 0)?;
+                self.strings_at = offset + s.len() + 1;
+                SbTocStr { offset: layout_u32(offset)?, length: layout_u32(s.len())? }
+            }
+        };
+        self.u32(at + offset_of!(SbTocStr, offset), r.offset)?;
+        self.u32(at + offset_of!(SbTocStr, length), r.length)
+    }
+
+    fn timecode(&mut self, at: usize, t: SbTimecode) -> Result<(), Failure> {
+        self.bytes(at, &[t.minutes, t.seconds, t.frames])
+    }
+
+    fn text_channels(
+        &mut self,
+        at: usize,
+        locales: &[scarletbook::toc::Locale],
+        max: usize,
+    ) -> Result<(), Failure> {
+        for (i, l) in locales.iter().take(max).enumerate() {
+            let c = at + i * size_of::<SbTextChannel>();
+            self.bytes(c + offset_of!(SbTextChannel, language), &l.language_code)?;
+            self.u8(c + offset_of!(SbTextChannel, charset), l.charset)?;
+        }
+        Ok(())
+    }
+}
+
+fn layout_u32(n: usize) -> Result<u32, Failure> {
+    u32::try_from(n).map_err(|_| Failure(SbStatus::Panic, "layout larger than 4 GiB".into()))
+}
+
+/// Every string of a disc's layout, in the order they are written to the string area;
+/// `f` gets each (`None`: absent).
+fn layout_strings<'a>(d: &'a Disc<Reader>, mut f: impl FnMut(Option<&'a [u8]>)) -> Result<(), Failure> {
+    let m = &d.toc().master;
+    for field in 0..18 {
+        f(disc_string(m, field)?.map(str::as_bytes));
+    }
+    f(Some(&m.album_catalog_number_stored));
+    f(Some(&m.disc_catalog_number_stored));
+    f(m.manufacturer.as_deref());
+    for a in &d.toc().areas {
+        for item in AreaTextItem::ALL {
+            f(a.text.get(*item).map(str::as_bytes));
+        }
+    }
+    for a in &d.toc().areas {
+        for t in &a.tracks {
+            for field in 0..15 {
+                f(track_string(t, field)?.map(str::as_bytes));
+            }
+            f(None);
+        }
+    }
+    for w in d.warnings() {
+        f(Some(warning_code(w.code).to_bytes()));
+    }
+    Ok(())
+}
+
+/// The record offsets of a disc's layout.
+struct LayoutPlan {
+    areas: usize,
+    tracks: usize,
+    warnings: usize,
+    strings: usize,
+    strings_size: usize,
+    size: usize,
+}
+
+impl LayoutPlan {
+    /// Every count is bounded (2 areas, 255 tracks each, strings of the TOC sectors), so
+    /// the sums fit a `usize`; the size must fit the `u32` offsets (it is far below).
+    fn of(d: &Disc<Reader>) -> Result<Self, Failure> {
+        let areas = size_of::<SbTocHeader>() + size_of::<SbTocDisc>();
+        let tracks = areas + d.toc().areas.len() * size_of::<SbTocArea>();
+        let track_count: usize = d.toc().areas.iter().map(|a| a.tracks.len()).sum();
+        let warnings = tracks + track_count * size_of::<SbTocTrack>();
+        let strings = warnings + d.warnings().len() * size_of::<SbTocWarning>();
+        let mut strings_size = 0usize;
+        layout_strings(d, |s| strings_size += s.map_or(0, |s| s.len() + 1))?;
+        let size = strings + strings_size;
+        layout_u32(size)?;
+        Ok(LayoutPlan { areas, tracks, warnings, strings, strings_size, size })
+    }
+}
+
+/// Writes a disc's layout into `buf`, which is `plan.size` bytes.
+fn write_layout(d: &Disc<Reader>, plan: &LayoutPlan, buf: &mut [u8]) -> Result<(), Failure> {
+    buf.fill(0);
+    let mut w = LayoutWriter { buf, strings_at: plan.strings };
+    let toc = d.toc();
+    let m = &toc.master;
+
+    // Header.
+    w.bytes(offset_of!(SbTocHeader, magic), TOC_MAGIC)?;
+    w.u16(offset_of!(SbTocHeader, major), SB_TOC_MAJOR)?;
+    w.u16(offset_of!(SbTocHeader, minor), SB_TOC_MINOR)?;
+    w.u32(offset_of!(SbTocHeader, size), layout_u32(plan.size)?)?;
+    w.u32(offset_of!(SbTocHeader, disc_offset), layout_u32(size_of::<SbTocHeader>())?)?;
+    w.u16(offset_of!(SbTocHeader, disc_record_size), size_of::<SbTocDisc>() as u16)?;
+    w.u16(offset_of!(SbTocHeader, area_record_size), size_of::<SbTocArea>() as u16)?;
+    w.u16(offset_of!(SbTocHeader, track_record_size), size_of::<SbTocTrack>() as u16)?;
+    w.u16(offset_of!(SbTocHeader, warning_record_size), size_of::<SbTocWarning>() as u16)?;
+    w.u32(offset_of!(SbTocHeader, areas_offset), layout_u32(plan.areas)?)?;
+    w.u32(offset_of!(SbTocHeader, area_count), layout_u32(toc.areas.len())?)?;
+    w.u32(offset_of!(SbTocHeader, warnings_offset), layout_u32(plan.warnings)?)?;
+    w.u32(offset_of!(SbTocHeader, warning_count), layout_u32(d.warnings().len())?)?;
+    w.u32(offset_of!(SbTocHeader, strings_offset), layout_u32(plan.strings)?)?;
+    w.u32(offset_of!(SbTocHeader, strings_size), layout_u32(plan.strings_size)?)?;
+
+    // Disc record.
+    let at = size_of::<SbTocHeader>();
+    let info = disc_info(d);
+    let i = at + offset_of!(SbTocDisc, info);
+    w.u64(i + offset_of!(SbDiscInfo, sectors), info.sectors)?;
+    w.u32(i + offset_of!(SbDiscInfo, sector_size), info.sector_size)?;
+    w.u8(i + offset_of!(SbDiscInfo, version_major), info.version_major)?;
+    w.u8(i + offset_of!(SbDiscInfo, version_minor), info.version_minor)?;
+    w.u16(i + offset_of!(SbDiscInfo, album_set_size), info.album_set_size)?;
+    w.u16(i + offset_of!(SbDiscInfo, album_sequence_number), info.album_sequence_number)?;
+    w.u8(i + offset_of!(SbDiscInfo, hybrid), info.hybrid)?;
+    w.u8(i + offset_of!(SbDiscInfo, manufacturer_sector), info.manufacturer_sector)?;
+    w.u16(i + offset_of!(SbDiscInfo, year), info.year)?;
+    w.u8(i + offset_of!(SbDiscInfo, month), info.month)?;
+    w.u8(i + offset_of!(SbDiscInfo, day), info.day)?;
+    w.u32(i + offset_of!(SbDiscInfo, area_count), info.area_count)?;
+    w.u32(i + offset_of!(SbDiscInfo, warning_count), info.warning_count)?;
+    for (field, genres) in [
+        (offset_of!(SbTocDisc, album_genres), &m.album_genres),
+        (offset_of!(SbTocDisc, disc_genres), &m.disc_genres),
+    ] {
+        for (k, g) in genres.iter().enumerate() {
+            w.bytes(at + field + k * size_of::<SbGenre>(), &[g.category, g.index])?;
+        }
+    }
+    w.u8(at + offset_of!(SbTocDisc, text_channel_count), m.text_channel_count)?;
+    w.u8(at + offset_of!(SbTocDisc, text_charset), m.text_charset)?;
+    w.u8(at + offset_of!(SbTocDisc, disc_flags), m.disc_flags)?;
+    w.text_channels(at + offset_of!(SbTocDisc, text_channels), &m.locales, 8)?;
+    // The strings, in the order of `layout_strings`.
+    for field in 0..18 {
+        let s = disc_string(m, field)?.map(str::as_bytes);
+        w.str(at + offset_of!(SbTocDisc, strings) + field as usize * size_of::<SbTocStr>(), s)?;
+    }
+    let c = at + offset_of!(SbTocDisc, catalog_numbers_stored);
+    w.str(c, Some(&m.album_catalog_number_stored))?;
+    w.str(c + size_of::<SbTocStr>(), Some(&m.disc_catalog_number_stored))?;
+    w.str(at + offset_of!(SbTocDisc, manufacturer), m.manufacturer.as_deref())?;
+
+    // Area records.
+    let mut track_at = plan.tracks;
+    for (k, a) in toc.areas.iter().enumerate() {
+        let at = plan.areas + k * size_of::<SbTocArea>();
+        let info = area_info(a);
+        let i = at + offset_of!(SbTocArea, info);
+        for (field, v) in [
+            (offset_of!(SbAreaInfo, slot), info.slot),
+            (offset_of!(SbAreaInfo, kind_channels), info.kind_channels),
+            (offset_of!(SbAreaInfo, toc_lsn), info.toc_lsn),
+            (offset_of!(SbAreaInfo, toc_sectors), info.toc_sectors),
+            (offset_of!(SbAreaInfo, channel_count), info.channel_count),
+            (offset_of!(SbAreaInfo, area_config), info.area_config),
+            (offset_of!(SbAreaInfo, sample_frequency_code), info.sample_frequency_code),
+            (offset_of!(SbAreaInfo, frame_format), info.frame_format),
+            (offset_of!(SbAreaInfo, max_byte_rate), info.max_byte_rate),
+            (offset_of!(SbAreaInfo, playtime_frames), info.playtime_frames),
+            (offset_of!(SbAreaInfo, audio_start_lsn), info.audio_start_lsn),
+            (offset_of!(SbAreaInfo, audio_end_lsn), info.audio_end_lsn),
+            (offset_of!(SbAreaInfo, track_count), info.track_count),
+        ] {
+            w.u32(i + field, v)?;
+        }
+        let x = area_details(a);
+        w.bytes(
+            at + offset_of!(SbTocArea, details),
+            &[
+                x.version_major,
+                x.version_minor,
+                x.max_available_channels,
+                x.mute_flags,
+                x.track_attribute,
+                x.track_offset,
+                x.text_channel_count,
+                x.text_charset,
+            ],
+        )?;
+        w.u32(at + offset_of!(SbTocArea, loudspeaker_layout), layout_value(a))?;
+        for c in 0..usize::from(a.channel_count).min(6) {
+            w.u8(at + offset_of!(SbTocArea, channel_speakers) + c, speaker_value(a, c) as u8)?;
+        }
+        w.timecode(at + offset_of!(SbTocArea, playtime_stored), SbTimecode::from(a.playtime))?;
+        w.u32(at + offset_of!(SbTocArea, tracks_offset), layout_u32(track_at)?)?;
+        w.text_channels(at + offset_of!(SbTocArea, text_channels), &a.locales, 10)?;
+        for (f, item) in AreaTextItem::ALL.iter().enumerate() {
+            let s = a.text.get(*item).map(str::as_bytes);
+            w.str(at + offset_of!(SbTocArea, strings) + f * size_of::<SbTocStr>(), s)?;
+        }
+        track_at += a.tracks.len() * size_of::<SbTocTrack>();
+    }
+
+    // Track records, area by area.
+    let mut at = plan.tracks;
+    for a in &toc.areas {
+        for t in &a.tracks {
+            let info = track_info(t);
+            let i = at + offset_of!(SbTocTrack, info);
+            for (field, v) in [
+                (offset_of!(SbTrackInfo, number), info.number),
+                (offset_of!(SbTrackInfo, start_lsn), info.start_lsn),
+                (offset_of!(SbTrackInfo, length_sectors), info.length_sectors),
+                (offset_of!(SbTrackInfo, start_frame), info.start_frame),
+                (offset_of!(SbTrackInfo, duration_frames), info.duration_frames),
+            ] {
+                w.u32(i + field, v)?;
+            }
+            w.bytes(
+                i + offset_of!(SbTrackInfo, start_flags),
+                &[
+                    info.start_flags,
+                    info.duration_flags,
+                    info.has_genre,
+                    info.genre_category,
+                    info.genre_index,
+                ],
+            )?;
+            let (start, duration) = d.track_timecodes_stored(a.slot, u32::from(t.number))?;
+            w.timecode(at + offset_of!(SbTocTrack, start_stored), SbTimecode::from(start))?;
+            w.timecode(at + offset_of!(SbTocTrack, duration_stored), SbTimecode::from(duration))?;
+            for field in 0..16u32 {
+                let s = if field < 15 { track_string(t, field)?.map(str::as_bytes) } else { None };
+                w.str(at + offset_of!(SbTocTrack, strings) + field as usize * size_of::<SbTocStr>(), s)?;
+            }
+            at += size_of::<SbTocTrack>();
+        }
+    }
+
+    // Warning records.
+    for (k, warning) in d.warnings().iter().enumerate() {
+        let at = plan.warnings + k * size_of::<SbTocWarning>();
+        let sw = sb_warning(warning);
+        w.u64(at + offset_of!(SbTocWarning, lsn), sw.lsn as u64)?;
+        w.u32(at + offset_of!(SbTocWarning, slot), sw.slot as u32)?;
+        w.u32(at + offset_of!(SbTocWarning, track), sw.track)?;
+        w.str(at + offset_of!(SbTocWarning, code), Some(warning_code(warning.code).to_bytes()))?;
+    }
+
+    if w.strings_at != plan.size {
+        return Err(Failure(SbStatus::Panic, "layout strings differ from the plan".into()));
+    }
+    Ok(())
+}
+
+/// The whole TOC of a disc in one buffer, in a fixed, versioned binary layout: what the
+/// disc, area, track, string, genre, text channel, timecode and warning queries return,
+/// for every area and track, without a call per field. The layout is described by
+/// `SbTocHeader` (at offset 0), `SbTocDisc`, `SbTocArea`, `SbTocTrack`, `SbTocWarning` and
+/// `SbTocStr`: every integer is little-endian whatever the host, every field is at a fixed
+/// offset that is a multiple of its size, and a buffer aligned to 8 bytes can be read
+/// through these structs on a little-endian host. The README describes it, with a ctypes
+/// example.
+///
+/// `flags` must be 0. `*len` (required) receives the layout's size, the same on every call
+/// for a disc and its clones. If `buf` is NULL or `cap < *len`, nothing is written and the
+/// call returns `SB_STATUS_BUFFER_TOO_SMALL`; otherwise the layout is written to
+/// `buf[0..*len]` and the call returns `SB_STATUS_OK`. Recommended: pass a 64 KiB buffer
+/// (enough for typical discs) and call again with `*len` bytes on
+/// `SB_STATUS_BUFFER_TOO_SMALL`.
+///
+/// No I/O and no log output: the data is the TOC parsed when the disc was opened.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle; `buf` NULL or valid for `cap` bytes of writes;
+/// `len` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_disc_toc(
+    disc: *const SbDisc,
+    flags: u32,
+    buf: *mut u8,
+    cap: usize,
+    len: *mut usize,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?.get()?;
+        if len.is_null() {
+            return Err(Failure::arg("NULL output pointer"));
+        }
+        if flags != 0 {
+            return Err(Failure::arg("flags must be 0"));
+        }
+        let plan = LayoutPlan::of(&d)?;
+        // SAFETY: forwarded contract (checked non-NULL above).
+        unsafe { write_out(len, plan.size) }?;
+        if buf.is_null() || cap < plan.size {
+            return Ok(SbStatus::BufferTooSmall);
+        }
+        // SAFETY: `buf` is valid for `cap >= plan.size` bytes of writes by the contract and
+        // is the caller's memory, which no reference of this library aliases.
+        let out = unsafe { std::slice::from_raw_parts_mut(buf, plan.size) };
+        write_layout(&d, &plan, out)?;
+        Ok(SbStatus::Ok)
+    })
 }
 
 #[cfg(test)]

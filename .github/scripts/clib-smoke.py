@@ -83,8 +83,11 @@ check("structs", sorted(n for n, _ in structs), sorted(n for n, v in bindings.it
                                                        if isinstance(v, type) and issubclass(v, C.Structure)))
 for name, body in structs:
     # A field is "type name;" or, an array, "type name [ N ];" (as normalised).
-    want = [(m.group(2), CTYPES.get(m.group(1).strip()) if m.group(3) is None
-             else CTYPES.get(m.group(1).strip()) * int(m.group(3)))
+    # A field's type is a scalar or another struct of the header ("struct SbDiscInfo").
+    def ctype(t):
+        t = t.strip()
+        return CTYPES.get(t) or bindings.get(t.removeprefix("struct ").strip())
+    want = [(m.group(2), ctype(m.group(1)) if m.group(3) is None else ctype(m.group(1)) * int(m.group(3)))
             for m in re.finditer(r"^(.*?)\s*\b(\w+)(?: \[ (\d+) \])?;$", body, flags=re.M)]
     got = [(f, t) for f, t in bindings[name]._fields_] if name in bindings else []
     check(f"README struct {name}", got, want)

@@ -278,6 +278,24 @@
 #define SB_SPECULATION_UNVERIFIED 4
 
 /*
+ The major version of the `sb_disc_toc` layout this library writes. A reader refuses a
+ layout of any other major version.
+ */
+#define SB_TOC_MAJOR 1
+
+/*
+ The minor version of the `sb_disc_toc` layout this library writes. Minor versions only
+ append fields to the end of records (the record sizes in `SbTocHeader` grow); every
+ offset of an earlier minor version stays.
+ */
+#define SB_TOC_MINOR 0
+
+/*
+ `SbTocStr.offset` of an absent string.
+ */
+#define SB_TOC_ABSENT 4294967295
+
+/*
  Result of every call: an `int32_t`, whose values are the `SB_STATUS_*` constants. In C
  before C23, `SbStatus` is a typedef of `int32_t`; in C23 and C++, an enumeration whose
  underlying type is `int32_t`.
@@ -1156,6 +1174,274 @@ typedef struct SbSpeculation {
    */
   uint32_t reserved;
 } SbSpeculation;
+
+/*
+ The header of a `sb_disc_toc` layout, at offset 0.
+
+ Layout: 56 bytes, aligned to 4: `magic` at 0, `major` at 8, `minor` at 10, `size` at
+ 12, `disc_offset` at 16, the four record sizes at 20, 22, 24 and 26, `areas_offset` at
+ 28, `area_count` at 32, `warnings_offset` at 36, `warning_count` at 40,
+ `strings_offset` at 44, `strings_size` at 48, `reserved` at 52.
+ */
+typedef struct SbTocHeader {
+  /*
+   The bytes "SBTOC" and three NULs.
+   */
+  uint8_t magic[8];
+  /*
+   `SB_TOC_MAJOR` of the library that wrote the layout.
+   */
+  uint16_t major;
+  /*
+   `SB_TOC_MINOR` of the library that wrote the layout.
+   */
+  uint16_t minor;
+  /*
+   The layout's size in bytes (what `*len` receives).
+   */
+  uint32_t size;
+  /*
+   Offset of the `SbTocDisc` record.
+   */
+  uint32_t disc_offset;
+  /*
+   Size of the disc record (256 in format 1.0).
+   */
+  uint16_t disc_record_size;
+  /*
+   Size of each area record (152 in format 1.0).
+   */
+  uint16_t area_record_size;
+  /*
+   Size of each track record (168 in format 1.0).
+   */
+  uint16_t track_record_size;
+  /*
+   Size of each warning record (24 in format 1.0).
+   */
+  uint16_t warning_record_size;
+  /*
+   Offset of the first area record; the others follow, `area_record_size` apart, in
+   `sb_disc_area` index order.
+   */
+  uint32_t areas_offset;
+  /*
+   Number of area records (`SbDiscInfo.area_count`).
+   */
+  uint32_t area_count;
+  /*
+   Offset of the first warning record; the others follow, `warning_record_size` apart,
+   in `sb_disc_warning` index order.
+   */
+  uint32_t warnings_offset;
+  /*
+   Number of warning records (`SbDiscInfo.warning_count`).
+   */
+  uint32_t warning_count;
+  /*
+   Offset of the string area, where every `SbTocStr` points.
+   */
+  uint32_t strings_offset;
+  /*
+   Size of the string area.
+   */
+  uint32_t strings_size;
+  /*
+   Written as 0.
+   */
+  uint32_t reserved;
+} SbTocHeader;
+
+/*
+ A string in a `sb_disc_toc` layout: `length` bytes at byte `offset` of the layout,
+ followed by a NUL that `length` does not count; `offset` is `SB_TOC_ABSENT` (and
+ `length` 0) for an absent string, where the per-field call returns
+ `SB_STATUS_ABSENT`. Text is UTF-8, as from `sb_disc_string`; stored catalogue numbers
+ and the manufacturer sector are bytes as stored.
+
+ Layout: 8 bytes, aligned to 4: `offset` at 0, `length` at 4.
+ */
+typedef struct SbTocStr {
+  /*
+   Byte offset from the start of the layout, or `SB_TOC_ABSENT`.
+   */
+  uint32_t offset;
+  /*
+   Length in bytes, without the trailing NUL.
+   */
+  uint32_t length;
+} SbTocStr;
+
+/*
+ The disc record of a `sb_disc_toc` layout.
+
+ Layout (format 1.0): 256 bytes, aligned to 8: `info` at 0, `album_genres` at 32,
+ `disc_genres` at 40, `text_channel_count` at 48, `text_charset` at 49, `disc_flags` at
+ 50, `reserved` at 51, `text_channels` at 52, `reserved2` at 84, `strings` at 88,
+ `catalog_numbers_stored` at 232, `manufacturer` at 248.
+ */
+typedef struct SbTocDisc {
+  /*
+   As `sb_disc_info`.
+   */
+  struct SbDiscInfo info;
+  /*
+   As `sb_disc_genre` with `SB_GENRE_LIST_ALBUM`, indexes 0 to 3.
+   */
+  struct SbGenre album_genres[4];
+  /*
+   As `sb_disc_genre` with `SB_GENRE_LIST_DISC`, indexes 0 to 3.
+   */
+  struct SbGenre disc_genres[4];
+  /*
+   As `sb_disc_text_channel_count`, as stored (may exceed 8).
+   */
+  uint8_t text_channel_count;
+  /*
+   The master TOC's text character set code byte, as stored.
+   */
+  uint8_t text_charset;
+  /*
+   The disc flags byte, as stored (`SbDiscInfo.hybrid` is its bit 7).
+   */
+  uint8_t disc_flags;
+  /*
+   Written as 0.
+   */
+  uint8_t reserved;
+  /*
+   As `sb_disc_text_channel`, for the first `min(text_channel_count, 8)`; zero after.
+   */
+  struct SbTextChannel text_channels[8];
+  /*
+   Written as 0.
+   */
+  uint32_t reserved2;
+  /*
+   As `sb_disc_string`, fields 0 to 17 (`SbDiscString`).
+   */
+  struct SbTocStr strings[18];
+  /*
+   As `sb_disc_catalog_number_stored`: the album's, then the disc's.
+   */
+  struct SbTocStr catalog_numbers_stored[2];
+  /*
+   As `sb_disc_manufacturer`: absent when `info.manufacturer_sector` is 0.
+   */
+  struct SbTocStr manufacturer;
+} SbTocDisc;
+
+/*
+ An area record of a `sb_disc_toc` layout.
+
+ Layout (format 1.0): 152 bytes, aligned to 4: `info` at 0, `details` at 52,
+ `loudspeaker_layout` at 60, `channel_speakers` at 64, `playtime_stored` at 70,
+ `reserved` at 73, `reserved2` at 74, `tracks_offset` at 76, `strings` at 80,
+ `text_channels` at 112.
+ */
+typedef struct SbTocArea {
+  /*
+   As `sb_disc_area`.
+   */
+  struct SbAreaInfo info;
+  /*
+   As `sb_area_details`.
+   */
+  struct SbAreaDetails details;
+  /*
+   As `sb_area_loudspeaker_layout`.
+   */
+  uint32_t loudspeaker_layout;
+  /*
+   As `sb_area_channel_speaker`, for the first `min(info.channel_count, 6)`; 0 after.
+   */
+  uint8_t channel_speakers[6];
+  /*
+   As `sb_area_playtime_stored`.
+   */
+  struct SbTimecode playtime_stored;
+  /*
+   Written as 0.
+   */
+  uint8_t reserved;
+  /*
+   Written as 0.
+   */
+  uint16_t reserved2;
+  /*
+   Offset of the area's first track record; the others follow, `track_record_size`
+   apart, `info.track_count` in all, in track number order from 1.
+   */
+  uint32_t tracks_offset;
+  /*
+   As `sb_area_string`, fields 0 to 3 (`SbAreaString`).
+   */
+  struct SbTocStr strings[4];
+  /*
+   As `sb_area_text_channel`, for the first `min(details.text_channel_count, 10)`;
+   zero after.
+   */
+  struct SbTextChannel text_channels[10];
+} SbTocArea;
+
+/*
+ A track record of a `sb_disc_toc` layout.
+
+ Layout (format 1.0): 168 bytes, aligned to 4: `info` at 0, `start_stored` at 28,
+ `duration_stored` at 31, `reserved` at 34, `strings` at 36, `reserved2` at 164.
+ */
+typedef struct SbTocTrack {
+  /*
+   As `sb_track_info`.
+   */
+  struct SbTrackInfo info;
+  /*
+   As `sb_track_timecodes_stored`: the start.
+   */
+  struct SbTimecode start_stored;
+  /*
+   As `sb_track_timecodes_stored`: the duration.
+   */
+  struct SbTimecode duration_stored;
+  /*
+   Written as 0.
+   */
+  uint8_t reserved[2];
+  /*
+   As `sb_track_string`, fields 0 to 14 (`SbTrackString`); entry 15 is reserved and
+   always absent.
+   */
+  struct SbTocStr strings[16];
+  /*
+   Written as 0; keeps records a multiple of 8 bytes.
+   */
+  uint32_t reserved2;
+} SbTocTrack;
+
+/*
+ A warning record of a `sb_disc_toc` layout.
+
+ Layout (format 1.0): 24 bytes, aligned to 8: `lsn` at 0, `slot` at 8, `track` at 12,
+ `code` at 16.
+ */
+typedef struct SbTocWarning {
+  /*
+   As `SbWarning.lsn`.
+   */
+  int64_t lsn;
+  /*
+   As `SbWarning.slot`.
+   */
+  int32_t slot;
+  /*
+   As `SbWarning.track`.
+   */
+  uint32_t track;
+  /*
+   The code's name, as `SbWarning.code`.
+   */
+  struct SbTocStr code;
+} SbTocWarning;
 
 #ifdef __cplusplus
 extern "C" {
@@ -2758,6 +3044,36 @@ SbStatus sb_progress_get(const struct SbProgress *progress,
  call.
  */
 void sb_progress_free(struct SbProgress *progress);
+
+/*
+ The whole TOC of a disc in one buffer, in a fixed, versioned binary layout: what the
+ disc, area, track, string, genre, text channel, timecode and warning queries return,
+ for every area and track, without a call per field. The layout is described by
+ `SbTocHeader` (at offset 0), `SbTocDisc`, `SbTocArea`, `SbTocTrack`, `SbTocWarning` and
+ `SbTocStr`: every integer is little-endian whatever the host, every field is at a fixed
+ offset that is a multiple of its size, and a buffer aligned to 8 bytes can be read
+ through these structs on a little-endian host. The README describes it, with a ctypes
+ example.
+
+ `flags` must be 0. `*len` (required) receives the layout's size, the same on every call
+ for a disc and its clones. If `buf` is NULL or `cap < *len`, nothing is written and the
+ call returns `SB_STATUS_BUFFER_TOO_SMALL`; otherwise the layout is written to
+ `buf[0..*len]` and the call returns `SB_STATUS_OK`. Recommended: pass a 64 KiB buffer
+ (enough for typical discs) and call again with `*len` bytes on
+ `SB_STATUS_BUFFER_TOO_SMALL`.
+
+ No I/O and no log output: the data is the TOC parsed when the disc was opened.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `buf` NULL or valid for `cap` bytes of writes;
+ `len` NULL or valid for a write.
+ */
+SbStatus sb_disc_toc(const struct SbDisc *disc,
+                     uint32_t flags,
+                     uint8_t *buf,
+                     size_t cap,
+                     size_t *len);
 
 #ifdef __cplusplus
 }  // extern "C"

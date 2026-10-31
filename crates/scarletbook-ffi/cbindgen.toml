@@ -89,4 +89,4 @@ rename_variants = "ScreamingSnakeCase"
 prefix_with_name = true
 
 [export]
-include = ["SbStatus", "SbFrameStatus", "SbFrameKind", "SbSlot", "SbDiscString", "SbAreaString", "SbTrackString"]
+include = ["SbStatus", "SbFrameStatus", "SbFrameKind", "SbSlot", "SbDiscString", "SbAreaString", "SbTrackString", "SbTocHeader", "SbTocDisc", "SbTocArea", "SbTocTrack", "SbTocWarning", "SbTocStr"]

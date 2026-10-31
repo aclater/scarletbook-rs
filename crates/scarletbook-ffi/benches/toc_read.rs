@@ -9,6 +9,9 @@
 //!   for each area its information, details, loudspeaker layout and channel speakers,
 //!   strings, text channels and stored play time; for each track its information, strings
 //!   and stored timecodes. Then `sb_disc_free`.
+//! - `c-bulk/IMAGE`: the same open, then the whole TOC in one `sb_disc_toc` call, as the
+//!   README recommends (a 64 KiB buffer reused from disc to disc, a second call if it is too
+//!   small), and a walk over the layout's areas, tracks and string refs.
 //! - `rust/IMAGE`: the same through the Rust API, `Disc::open` over a `ReadAtReader`.
 //!
 //! One iteration is one disc, so criterion's time is the time per disc. The images are
@@ -18,7 +21,8 @@
 //! `cargo bench -p scarletbook-ffi --bench toc_read -- c/` filters as usual. Setting
 //! `SCARLETBOOK_PERF_BENCH=GROUP/ID` (or `list`) skips criterion: the program reads that
 //! disc `SCARLETBOOK_PERF_DISCS` times (default 20 000), for `perf`. `list` also prints,
-//! for each image, the calls one disc makes and the read callbacks and bytes of its open.
+//! for each image, the calls one disc makes, the read callbacks and bytes of its open, and
+//! the size of its `sb_disc_toc` layout.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -168,6 +172,46 @@ fn read_c(image: &Image) -> u32 {
     calls.get() + 1
 }
 
+/// Opens `image` through the C interface and reads its whole TOC with one `sb_disc_toc`
+/// call, as the README recommends: into `buf` (64 KiB, reused from disc to disc), again
+/// with the size given if that is too small. Then walks the layout as a consumer does: every
+/// area, every track and every string ref. Returns the layout's size.
+fn read_c_bulk(image: &Image, buf: &mut Vec<u8>) -> usize {
+    let mut disc: *mut SbDisc = ptr::null_mut();
+    let user = ptr::from_ref(image).cast_mut().cast::<c_void>();
+    // SAFETY: `read_at` is safe to call with `user`, a live `Image`, for the disc's lifetime;
+    // `disc` is a valid out-pointer.
+    let s = unsafe { sb_disc_open_callbacks_at(Some(read_at), image.bytes.len() as u64, user, &mut disc) };
+    assert_eq!(s, SbStatus::Ok);
+    let mut len = 0usize;
+    // SAFETY: `disc` is a live handle; `buf` is valid for `buf.len()` bytes; `len` for a write.
+    let mut s = unsafe { sb_disc_toc(disc, 0, buf.as_mut_ptr(), buf.len(), &mut len) };
+    if s == SbStatus::BufferTooSmall {
+        buf.resize(len, 0);
+        // SAFETY: as above.
+        s = unsafe { sb_disc_toc(disc, 0, buf.as_mut_ptr(), buf.len(), &mut len) };
+    }
+    assert_eq!(s, SbStatus::Ok);
+    // SAFETY: `disc` is a live handle, not used again.
+    unsafe { sb_disc_free(disc) };
+
+    let b = &buf[..len];
+    let u32_at = |at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap()) as usize;
+    let str_len = |at: usize| if u32_at(at) == SB_TOC_ABSENT as usize { 0 } else { u32_at(at + 4) };
+    let disc_at = u32_at(16);
+    let mut sum = (0..21).map(|i| str_len(disc_at + 88 + 8 * i)).sum::<usize>();
+    for i in 0..u32_at(32) {
+        let a = u32_at(28) + 152 * i;
+        sum += (0..4).map(|k| str_len(a + 80 + 8 * k)).sum::<usize>();
+        for t in 0..u32_at(a + 48) {
+            let t = u32_at(a + 76) + 168 * t;
+            sum += u32_at(t + 4) + (0..15).map(|k| str_len(t + 36 + 8 * k)).sum::<usize>();
+        }
+    }
+    black_box(sum);
+    len
+}
+
 /// Opens `image` through the Rust API and reads what `read_c` does.
 fn read_rust(image: &Arc<[u8]>) {
     let disc = Disc::open(ReadAtReader::new(Arc::clone(image))).unwrap();
@@ -230,12 +274,14 @@ fn main() {
 
     if let Ok(name) = std::env::var("SCARLETBOOK_PERF_BENCH") {
         if name == "list" {
+            let mut buf = vec![0u8; 64 * 1024];
             for image in &images {
+                let layout = read_c_bulk(image, &mut buf);
                 image.reads.store(0, Ordering::Relaxed);
                 image.read_bytes.store(0, Ordering::Relaxed);
                 let calls = read_c(image);
                 println!(
-                    "{}\t{calls} calls\t{} read callbacks\t{} bytes read",
+                    "{}\t{calls} calls\t{} read callbacks\t{} bytes read\t{layout} bytes of sb_disc_toc",
                     image.name,
                     image.reads.load(Ordering::Relaxed),
                     image.read_bytes.load(Ordering::Relaxed)
@@ -247,10 +293,14 @@ fn main() {
         let image = images.iter().find(|i| i.name == id).unwrap_or_else(|| panic!("no benchmark {name}"));
         let count = std::env::var("SCARLETBOOK_PERF_DISCS").map_or(20_000, |v| v.parse().expect("a number"));
         let shared: Arc<[u8]> = image.bytes.clone().into();
+        let mut buf = vec![0u8; 64 * 1024];
         for _ in 0..count {
             match group {
                 "c" => {
                     read_c(image);
+                }
+                "c-bulk" => {
+                    read_c_bulk(image, &mut buf);
                 }
                 "rust" => read_rust(&shared),
                 _ => panic!("no benchmark {name}"),
@@ -264,6 +314,12 @@ fn main() {
     let mut g = c.benchmark_group("c");
     for image in &images {
         g.bench_function(&image.name, |b| b.iter(|| read_c(image)));
+    }
+    g.finish();
+    let mut g = c.benchmark_group("c-bulk");
+    for image in &images {
+        let mut buf = vec![0u8; 64 * 1024];
+        g.bench_function(&image.name, |b| b.iter(|| read_c_bulk(image, &mut buf)));
     }
     g.finish();
     let mut g = c.benchmark_group("rust");
