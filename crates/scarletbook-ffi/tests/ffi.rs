@@ -1965,3 +1965,192 @@ fn pool_handles_of_a_small_image() {
     pool_free(pool);
     free(disc);
 }
+
+fn clone(disc: *const SbDisc) -> Result<*mut SbDisc, SbStatus> {
+    let mut d: *mut SbDisc = ptr::dangling_mut();
+    // SAFETY: `disc` is NULL or a live handle not used by another thread during the call;
+    // `&mut d` is a valid out-pointer.
+    match unsafe { sb_disc_clone(disc, &mut d) } {
+        SbStatus::Ok => Ok(d),
+        s => {
+            assert!(d.is_null(), "*out not cleared on failure");
+            Err(s)
+        }
+    }
+}
+
+fn clone_logged(disc: *const SbDisc, user: &LogUser, level: i32) -> Result<*mut SbDisc, SbStatus> {
+    let mut d: *mut SbDisc = ptr::dangling_mut();
+    let u = ptr::from_ref(user).cast_mut().cast::<c_void>();
+    // SAFETY: `disc` is a live handle; `cb_log` may be called with `u` from any thread
+    // while `user` lives, which outlives the clone; `&mut d` is a valid out-pointer.
+    match unsafe { sb_disc_clone_with_log(disc, Some(cb_log), u, level, &mut d) } {
+        SbStatus::Ok => Ok(d),
+        s => {
+            assert!(d.is_null(), "*out not cleared on failure");
+            Err(s)
+        }
+    }
+}
+
+/// One image decoded on several threads at once, each through a clone of one disc
+/// (opened from memory or from a file), hostile images included: every track gives the
+/// manifest's hashes and counts.
+#[test]
+#[cfg_attr(miri, ignore = "reads whole corpus images")]
+fn clones_decode_one_image_on_threads() {
+    const THREADS: usize = 6;
+    for id in ["dst-features-2ch-6ch", "dst-invalid-frames-5ch", "hostile-base", "dst-invalid-frames-6ch"] {
+        for from_file in [false, true] {
+            let disc = if from_file {
+                let path = CString::new(corpus().join("images").join(format!("{id}.iso")).to_str().unwrap())
+                    .unwrap();
+                let mut d = ptr::null_mut();
+                // SAFETY: `path` is NUL-terminated; `&mut d` is a valid out-pointer.
+                assert_eq!(unsafe { sb_disc_open_file(path.as_ptr(), &mut d) }, SbStatus::Ok);
+                d
+            } else {
+                open(&image(id)).unwrap()
+            };
+            let mut jobs = Vec::new();
+            for area in expected(id)["audio"].as_array().unwrap() {
+                let slot = if area["area"] == "2ch" { 0 } else { 1 };
+                for t in area["tracks"].as_array().unwrap() {
+                    jobs.push((slot, t.clone()));
+                }
+            }
+            // Clones are made on this thread, then each used by one thread only.
+            let clones: Vec<usize> = (0..THREADS).map(|_| clone(disc).unwrap().expose_provenance()).collect();
+            std::thread::scope(|s| {
+                for (i, &c) in clones.iter().enumerate() {
+                    let jobs = &jobs;
+                    s.spawn(move || {
+                        let c: *const SbDisc = ptr::with_exposed_provenance(c);
+                        for (slot, t) in jobs.iter().skip(i).step_by(THREADS) {
+                            let n = t["number"].as_u64().unwrap() as u32;
+                            if t["outcome"] != "ok" {
+                                assert_ne!(check(c, *slot, n), SbStatus::Ok);
+                                continue;
+                            }
+                            let (sha, missing, invalid) = hash_track(c, *slot, n);
+                            let exp: Vec<_> =
+                                t["sha256"].as_array().unwrap().iter().map(|h| h.as_str().unwrap()).collect();
+                            assert_eq!(sha, exp, "{id} clone {i}: {slot} {n}");
+                            assert_eq!(missing, t["missing_frames"].as_u64().unwrap());
+                            assert_eq!(invalid, t["invalid_dst_frames"].as_u64().unwrap());
+                        }
+                    });
+                }
+            });
+            // The original may go first.
+            free(disc);
+            clones.into_iter().map(ptr::with_exposed_provenance_mut).for_each(free);
+        }
+    }
+}
+
+/// A track continued and read through different clones gives what one disc gives.
+#[test]
+#[cfg_attr(miri, ignore = "reads whole corpus images")]
+fn handles_continue_across_clones() {
+    let id = "dst-features-2ch-6ch";
+    let disc = open(&image(id)).unwrap();
+    let clones = [clone(disc).unwrap(), clone(disc).unwrap()];
+    let exp = expected(id);
+    for (slot, area) in exp["audio"].as_array().unwrap().iter().enumerate() {
+        let slot = slot as u32;
+        let mut prev: *mut SbTrackAudio = ptr::null_mut();
+        for (k, t) in area["tracks"].as_array().unwrap().iter().enumerate() {
+            let n = t["number"].as_u64().unwrap() as u32;
+            if check(disc, slot, n) != SbStatus::Ok {
+                continue;
+            }
+            // Opened (or continued) through one disc, read through the next.
+            let a = audio_open_next(clones[k % 2], prev, slot, n).unwrap();
+            let read_through = if k % 3 == 0 { disc } else { clones[(k + 1) % 2] };
+            let exp_sha: Vec<String> =
+                t["sha256"].as_array().unwrap().iter().map(|h| h.as_str().unwrap().to_owned()).collect();
+            assert_eq!(hash_handle(a, read_through), exp_sha, "{id} {slot} {n}");
+            prev = a;
+        }
+        audio_free(prev);
+    }
+    free(disc);
+    clones.into_iter().for_each(free);
+}
+
+/// Small enough for Miri: clones share the disc's number, others do not; a clone outlives
+/// its original; what cannot be cloned is refused.
+#[test]
+fn clones_share_handles_and_refusals() {
+    let bytes = tiny_image();
+    let disc = open(&bytes).unwrap();
+    let other = open(&bytes).unwrap();
+    let c = clone(disc).unwrap();
+    let cc = clone(c).unwrap();
+    let a = audio_open(disc, 0, 1).unwrap();
+    let mut buf = vec![0u8; 2 * 4704];
+    assert_eq!(audio_read(a, c, &mut buf).0, SbStatus::Ok);
+    let raw = raw_open(c, 0, 0, 2).unwrap();
+    assert_eq!(raw_read(raw, disc, &mut buf).0, SbStatus::Ok);
+    assert_eq!(raw_read(raw, other, &mut buf).0, SbStatus::InvalidArgument);
+    assert_eq!(raw_read(raw, cc, &mut buf).0, SbStatus::Ok);
+    raw_free(raw);
+    // An image opened on its own is another disc, even with the same bytes.
+    assert_eq!(audio_read(a, other, &mut buf).0, SbStatus::InvalidArgument);
+    assert!(last_error().contains("another disc"), "{}", last_error());
+    free(disc);
+    assert_eq!(audio_read(a, cc, &mut buf).0, SbStatus::Ok);
+    assert_eq!(audio_read(a, c, &mut buf).0, SbStatus::End);
+    audio_free(a);
+    // A disc's info is its clone's.
+    let (s, i) = info(c);
+    assert_eq!((s, i.area_count), (SbStatus::Ok, info(other).1.area_count));
+    // Refusals.
+    assert_eq!(clone(ptr::null()).unwrap_err(), SbStatus::InvalidArgument);
+    // SAFETY: `c` is a live handle; a NULL out-pointer is refused.
+    assert_eq!(unsafe { sb_disc_clone(c, ptr::null_mut()) }, SbStatus::InvalidArgument);
+    let mut user = User {
+        cursor: Cursor::new(bytes.clone()),
+        disc: ptr::null_mut(),
+        audio: ptr::null_mut(),
+        raw: ptr::null_mut(),
+        probes: Vec::new(),
+    };
+    let cb = open_callbacks(Some(cb_read), &mut user).unwrap();
+    assert_eq!(clone(cb).unwrap_err(), SbStatus::InvalidArgument);
+    assert!(last_error().contains("read and seek callbacks"), "{}", last_error());
+    for d in [cb, c, cc, other] {
+        free(d);
+    }
+}
+
+/// A clone reports to its own callback only, from its check of the image on, and keeps it
+/// after the original's is replaced or freed.
+#[test]
+fn a_clone_logs_to_its_own_callback() {
+    let bytes = tiny_image();
+    let (first, second) = (LogUser::default(), LogUser::default());
+    let disc = open_logged(&bytes, &first, SB_LOG_DEBUG).unwrap();
+    let before = first.lines().len();
+    let silent = clone(disc).unwrap();
+    let logged = clone_logged(disc, &second, SB_LOG_DEBUG).unwrap();
+    assert!(second.lines().iter().any(|(_, m)| m.contains("shared reader checked")), "{:?}", second.lines());
+    for d in [silent, logged] {
+        let a = audio_open(d, 0, 1).unwrap();
+        hash_handle(a, d);
+        audio_free(a);
+    }
+    assert_eq!(first.lines().len(), before, "the original's callback got the clones' lines");
+    assert_eq!(set_log(disc, None, SB_LOG_OFF), SbStatus::Ok);
+    free(disc);
+    let n = second.lines().len();
+    let a = audio_open(logged, 0, 1).unwrap();
+    hash_handle(a, logged);
+    audio_free(a);
+    assert!(second.lines().len() > n);
+    // A level outside the range is refused, with no clone.
+    assert_eq!(clone_logged(logged, &second, 9).unwrap_err(), SbStatus::InvalidArgument);
+    free(silent);
+    free(logged);
+}

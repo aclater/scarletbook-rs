@@ -26,14 +26,17 @@
  *   (a language code can), so use *len rather than strlen.
  *
  * - Threads. A handle may be moved between threads, but must not be used by two threads
- *   at once; an SbPool, which only holds threads, may. Read and seek callbacks
+ *   at once; an SbPool, which only holds threads, may. To read one image on several
+ *   threads at once, give each thread a clone of its disc (sb_disc_clone): a handle of
+ *   its own over the same image. Read and seek callbacks
  *   (sb_disc_open_callbacks) run on the thread that makes the call that needs them, also
  *   when a pool decodes. A log callback (sb_disc_set_log) also runs there and on the
  *   threads of the pools decoding for the disc's track handles (sb_track_audio_set_pool;
  *   in a library built with the parallel feature, rayon's global pool by default). The
  *   library has no other threads, and no global state besides the per-thread error
  *   message, two atomic counters that number the discs and images opened (so that a
- *   handle can tell the disc and image it belongs to), and, on each pool thread, a DST
+ *   handle can tell the disc and image it belongs to; a clone keeps its original's
+ *   numbers), and, on each pool thread, a DST
  *   decoder reused from frame to frame (a cache, not shared between threads).
  *
  * - Callbacks and re-entrancy. While a disc's callback runs, that disc and its track
@@ -511,13 +514,13 @@ typedef struct SbPool SbPool;
 /*
  The reading state of one frame range's stored content, or of an area's stored frame
  list, without decoding. Each `sb_raw_frames_read` call reads through the disc it was
- opened from, as for `SbTrackAudio`.
+ opened from or a clone of it, as for `SbTrackAudio`.
  */
 typedef struct SbRawFrames SbRawFrames;
 
 /*
  The decoding state of one track or frame range. Each `sb_track_audio_read` call reads through the
- disc it was opened from; the disc must be live for those calls (it may be freed
+ disc it was opened from or a clone of it; that disc must be live for those calls (it may be freed
  before the track handle, which can then only be freed).
  */
 typedef struct SbTrackAudio SbTrackAudio;
@@ -893,6 +896,45 @@ enum SbStatus sb_disc_open_callbacks_with_log(SbReadFn read,
                                               struct SbDisc **out);
 
 /*
+ Opens a clone of a disc: the same image with a reading position of its own, sharing
+ the disc's parsed TOC, warnings and sector format, without the log callback (see
+ `sb_disc_clone_with_log`). For reads of one image on several threads at once, give each
+ thread a clone: each is a handle of its own, used by one thread at a time as any handle.
+ On failure `*out` is set to NULL.
+
+ A disc and its clones read the same image: a track audio or raw frames handle opened
+ from any of them may be read through any other (`sb_track_audio_read`,
+ `sb_raw_frames_read`), and continued through any other (`_open_next`). Each may be freed
+ before or after the others.
+
+ Discs opened from a file or from memory can be cloned; reads through a file use the
+ same file handle, at their own offsets (on Windows, the system may serialise reads
+ through one handle). A disc opened with read and seek callbacks has a single position:
+ cloning it fails with `SB_STATUS_INVALID_ARGUMENT`. The clone checks the image again
+ (its length and TOC sectors): `SB_STATUS_IO` if that read fails.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `out` NULL or valid for a write.
+ */
+enum SbStatus sb_disc_clone(const struct SbDisc *disc, struct SbDisc **out);
+
+/*
+ `sb_disc_clone`, with the clone reporting to a log callback of its own from the check
+ of the image on (see `sb_disc_set_log`). The callback is the clone's: replacing or
+ freeing the original's does not affect it.
+
+ # Safety
+
+ As `sb_disc_clone` and `sb_disc_set_log`.
+ */
+enum SbStatus sb_disc_clone_with_log(const struct SbDisc *disc,
+                                     SbLogFn log,
+                                     void *log_user,
+                                     int32_t level,
+                                     struct SbDisc **out);
+
+/*
  Sets, replaces or removes (`log` NULL or `level` `SB_LOG_OFF`) a disc's log callback.
  It receives the messages at `level` and more severe ones (`SB_LOG_ERROR` <
  `SB_LOG_WARN` < ... < `SB_LOG_TRACE`), from the next call on. To also get the format
@@ -942,7 +984,8 @@ enum SbStatus sb_disc_set_log(const struct SbDisc *disc, SbLogFn log, void *user
 
 /*
  Frees a disc. NULL is ignored, and so is a disc whose callback is running (the call is
- then a no-op). Track audio handles opened from it can afterwards only be freed.
+ then a no-op). Track audio handles opened from it can afterwards only be freed, or
+ read through a clone of it (`sb_disc_clone`). Its clones stay usable.
 
  # Safety
 
@@ -1085,7 +1128,7 @@ enum SbStatus sb_track_audio_open(const struct SbDisc *disc,
 
 /*
  Opens the decoded audio of track `number` of the area from `slot`, continuing `prev`
- (an earlier track's or range's handle from the same disc) without rescanning the area
+ (an earlier track's or range's handle from the same disc or a clone of it) without rescanning the area
  where the result is the same. Reading an area's tracks in increasing order this way
  reads each audio sector once. With `prev` NULL this is `sb_track_audio_open`.
 
@@ -1165,7 +1208,7 @@ enum SbStatus sb_range_audio_open(const struct SbDisc *disc,
 
 /*
  Opens the decoded audio of the frame range `[first, end)` of the area from `slot`,
- continuing `prev` (an earlier track's or range's handle from the same disc) as
+ continuing `prev` (an earlier track's or range's handle from the same disc or a clone of it) as
  `sb_track_audio_open_next` does, with the same ownership rules. With `prev` NULL this
  is `sb_range_audio_open`.
 
@@ -1192,7 +1235,8 @@ uint32_t sb_track_audio_channels(const struct SbTrackAudio *audio);
 /*
  Decodes the next frame of a track into `buf` (interleaved, channels x 4704 bytes).
  Returns `SB_STATUS_END` after the last frame. `disc` must be the live disc the track
- was opened from. The disc's read callbacks, if any, run during this call.
+ was opened from or a clone of it (`sb_disc_clone`). The disc's read callbacks, if any,
+ run during this call.
 
  # Safety
 
@@ -1398,8 +1442,8 @@ uint32_t sb_raw_frames_channels(const struct SbRawFrames *raw);
  its number, its `SbFrameKind` and its size (`channels x 4704` for a plain frame, the
  DST frame's length for a DST frame, 0 for a missing position, never more than
  `SB_MAX_FRAME_BYTES`). Returns `SB_STATUS_END` after the last position. `disc` must be
- the live disc the handle was opened from; its read callbacks, if any, run during this
- call. Invalid DST frames are not reported: validity is known only by decoding
+ the live disc the handle was opened from or a clone of it; its read callbacks, if any,
+ run during this call. Invalid DST frames are not reported: validity is known only by decoding
  (`sb_dst_decode`).
 
  The kind is fixed by the DST flag of the sector the frame starts in (specification 4,
@@ -1409,7 +1453,8 @@ uint32_t sb_raw_frames_channels(const struct SbRawFrames *raw);
  frame of a plain sector, without a prefix.
 
  On any failure other than `SB_STATUS_BUFFER_TOO_SMALL` (an I/O error, a handle in use,
- a handle of another disc) and on `SB_STATUS_END`, `*info` is not written.
+ a handle of a disc that is not this one or a clone of it) and on `SB_STATUS_END`,
+ `*info` is not written.
 
  If `buf` is NULL or `cap` is below the frame's size, nothing is copied, `*info` (if not
  NULL) still receives the number, kind and needed size, and the call returns

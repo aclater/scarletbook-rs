@@ -134,6 +134,12 @@ calling thread. A handle holds at most `16 x threads` frames ahead, never more t
 threads. The library creates no global pool; the log callback is also called from the
 pool's threads (see `sb_disc_set_log`).
 
+To read one image on several threads at once (for example several tracks of one disc),
+give each thread a clone of the disc: `sb_disc_clone(disc, &copy)` shares the parsed TOC
+and reads the same file or memory at a position of its own, and a track handle opened from
+any clone may be read through any other. A disc opened with read and seek callbacks cannot
+be cloned.
+
 ### Release assets
 
 Each release carries the C library as `scarletbook-ffi-<version>-<target>.tar.gz`, with a
@@ -335,8 +341,9 @@ finally:
 ```
 
 ctypes releases the GIL for each call, so conversions on several Python threads run in
-parallel: give each thread its own disc and handles (a handle may move between threads but
-not be used by two at once; an `SbPool` may be shared), and read `sb_last_error_message()`
+parallel: give each thread its own disc (or a clone of one, `sb_disc_clone`) and handles
+(a handle may move between threads but not be used by two at once; an `SbPool` may be
+shared), and read `sb_last_error_message()`
 on the thread whose call failed, before that thread's next call, as `check` does. Every
 handle has its `_free` function; nothing else needs freeing (the strings the library
 returns are static or copied into your buffers). Callbacks (`sb_disc_open_callbacks`,
