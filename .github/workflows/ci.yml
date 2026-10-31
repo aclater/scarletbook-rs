@@ -99,6 +99,19 @@ jobs:
           for f in LICENSE-MIT LICENSE-APACHE README.md; do
             grep -qx "$f" <<< "$files" || { echo "::error::$f is missing from the scarletbook package"; exit 1; }
           done
+      # Change records live in changelog.d/ and cleanroom.d/ until a release folds them in
+      # (#76; CONTRIBUTING.md, "Change records"): their format, and on pull requests that a
+      # change to library or program code adds one of each.
+      - name: Change-record fragments
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            git fetch --quiet --no-tags origin "$BASE_REF"
+            python3 -I .github/scripts/fragments.py require FETCH_HEAD
+          else
+            python3 -I .github/scripts/fragments.py check
+          fi
       # release.yml takes the release notes from CHANGELOG.md with this script.
       - name: CHANGELOG.md sections for the release notes
         run: |
