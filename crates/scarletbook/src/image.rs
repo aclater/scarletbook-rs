@@ -5,6 +5,7 @@
 use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::control::CancelToken;
 use crate::error::Error;
 use crate::log::{Log, sb_log};
 use crate::read_at::{ReadAt, ReadAtReader};
@@ -65,6 +66,8 @@ pub struct Image<R> {
     pos: Option<u64>,
     scratch: Vec<u8>,
     log: Log,
+    /// Shared with the images of the same source made from this one.
+    cancel: CancelToken,
 }
 
 /// The outcome of a sector read that did not fail with an I/O error.
@@ -180,6 +183,7 @@ impl<R: Read + Seek> Image<R> {
             pos: None,
             scratch: Vec::new(),
             log,
+            cancel: CancelToken::new(),
         }
     }
 
@@ -200,6 +204,18 @@ impl<R: Read + Seek> Image<R> {
     /// first read and refuse an image with any other.
     pub fn id(&self) -> u64 {
         self.id
+    }
+
+    /// The cancellation request of this image's reads (see [`CancelToken`]), shared with
+    /// the images of [`crate::Disc::share`] and of `clone`.
+    pub fn cancel_token(&self) -> CancelToken {
+        self.cancel.clone()
+    }
+
+    /// [`crate::Error::Cancelled`] if cancellation of this image's reads is requested.
+    #[inline]
+    pub(crate) fn check_cancel(&self) -> Result<(), Error> {
+        self.cancel.check()
     }
 
     /// The sector format.
@@ -255,6 +271,7 @@ impl<R: Read + Seek> Image<R> {
             pos: None,
             scratch: Vec::new(),
             log,
+            cancel: self.cancel.clone(),
         }
     }
 

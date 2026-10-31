@@ -104,6 +104,11 @@ pub enum Error {
     /// The underlying reader failed.
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
+    /// The call stopped because cancellation was requested through the image's
+    /// [`crate::CancelToken`] (see [`crate::Disc::cancel_token`]). Nothing was lost: the
+    /// cursor stays where it was, and continues once the request is withdrawn.
+    #[error("cancelled")]
+    Cancelled,
 }
 
 /// Broad classes of [`Error`], for callers (and the FFI) that map errors to codes.
@@ -120,6 +125,8 @@ pub enum ErrorClass {
     Usage,
     /// The reader failed.
     Io,
+    /// Cancellation was requested ([`Error::Cancelled`]).
+    Cancelled,
 }
 
 impl Error {
@@ -137,7 +144,8 @@ impl Error {
             | Error::NoSuchTrack { .. }
             | Error::FrameRangeInvalid { .. }
             | Error::InvalidArgument(_)
-            | Error::Io(_) => {
+            | Error::Io(_)
+            | Error::Cancelled => {
                 return None;
             }
         })
@@ -159,6 +167,7 @@ impl Error {
             | Error::FrameRangeInvalid { .. }
             | Error::InvalidArgument(_) => ErrorClass::Usage,
             Error::Io(_) => ErrorClass::Io,
+            Error::Cancelled => ErrorClass::Cancelled,
         }
     }
 }

@@ -22,6 +22,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod audio;
+mod control;
 mod disc;
 pub mod dst;
 mod error;
@@ -38,6 +39,7 @@ pub use audio::{
     AreaCursor, AreaFrame, AreaFrames, AudioFrame, Continuation, Demuxer, FrameContent, FrameKind,
     FrameStatus, Opening, TrackAudio, TrackAudioCursor, TrackCursor, TrackFrame, TrackFrames,
 };
+pub use control::{CancelToken, Progress};
 pub use disc::Disc;
 pub use dst::{DstDecoder, DstError};
 pub use error::{Error, ErrorClass, Slot, Warning, WarningCode};

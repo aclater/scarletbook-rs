@@ -525,13 +525,15 @@ const PROBE_SPAN: u64 = 32;
 
 /// Searches `[lo, hi)` for a sector holding a frame record whose timecode is at most
 /// `first`, as close before the frame numbered `first` as the probes allow: the sector
-/// found (`lo` itself if none) and the number of reads made.
+/// found (`lo` itself if none) and the number of reads made. `on_read` is told the
+/// sectors of each read; a cancellation request ([`crate::CancelToken`]) is honoured
+/// before each.
 pub(crate) fn locate<R: Read + Seek>(
     image: &mut Image<R>,
     (mut lo, mut hi): (u64, u64),
-    first: u32,
-    playtime: u32,
+    (first, playtime): (u32, u32),
     options: &SpeculativeOptions,
+    on_read: &mut dyn FnMut(u64),
 ) -> Result<(u64, u32), Error> {
     let per = u64::from(options.probe_sectors.clamp(1, 32));
     // Specification 7, 7.1 item 3: at most a constant times log2(n + 1) sectors.
@@ -559,9 +561,11 @@ pub(crate) fn locate<R: Read + Seek>(
         while found.is_none() && at < hi.min(guess + PROBE_SPAN) && reads < max {
             let count = per.min(hi - at);
             let chunk = &mut buf[..count as usize * SECTOR_SIZE];
+            image.check_cancel()?;
             if image.read_into(at, chunk)? == crate::image::ReadOutcome::OutOfRange {
                 return Err(Error::InvalidArgument("audio sectors outside the image"));
             }
+            on_read(count);
             reads += 1;
             found = (0..count)
                 .find_map(|i| first_record(&chunk[i as usize * SECTOR_SIZE..]).map(|t| (at + i, t)));

@@ -5,6 +5,7 @@
 use std::collections::VecDeque;
 use std::io::{Read, Seek};
 
+use crate::control::Progress;
 use crate::dst::{DstDecoder, DstError};
 use crate::error::{Error, Slot, Warning, WarningCode};
 use crate::image::{Image, ReadOutcome, SECTOR_SIZE};
@@ -451,6 +452,12 @@ pub struct AreaCursor {
     claim_registered: bool,
     /// Records provisional checkpoints, for a provisional reading.
     provisional: Option<Box<ProvisionalRecorder>>,
+    /// Sectors read through the image by this cursor (its reading, see [`Progress`]).
+    sectors_read: u64,
+    /// Where the reading is expected to end: the sector after the range's estimated last.
+    progress_end: u64,
+    /// The counts published for other threads, once asked for.
+    progress: Option<Progress>,
 }
 
 /// The state a resumed scan takes once its replay reaches the checkpoint.
@@ -498,7 +505,69 @@ impl AreaCursor {
             claim: None,
             claim_registered: false,
             provisional: None,
+            sectors_read: 0,
+            progress_end: end,
+            progress: None,
         }
+    }
+
+    /// The progress of this cursor's reading, readable from other threads (see
+    /// [`Progress`]); the same object every time.
+    pub fn progress(&mut self) -> Progress {
+        let read = self.sectors_read;
+        let expected = if self.finished { read } else { self.expected(self.next_lsn) };
+        self.progress
+            .get_or_insert_with(|| {
+                let p = Progress::default();
+                p.set(read, expected);
+                p
+            })
+            .clone()
+    }
+
+    /// The sectors expected in all when the next sector to read is `next`.
+    fn expected(&self, next: u64) -> u64 {
+        self.sectors_read + self.progress_end.saturating_sub(next)
+    }
+
+    /// Counts `n` sectors read, the next to read being `next`.
+    #[inline]
+    fn count_read(&mut self, n: u64, next: u64) {
+        self.sectors_read += n;
+        if let Some(p) = &self.progress {
+            p.set(self.sectors_read, self.expected(next));
+        }
+    }
+
+    /// The reading is complete: nothing more is expected.
+    pub(crate) fn progress_done(&self) {
+        if let Some(p) = &self.progress {
+            p.set(self.sectors_read, self.sectors_read);
+        }
+    }
+
+    /// Sets where the reading is expected to end (the sector after the range's estimated
+    /// last), also for the exact start a provisional one may fall back to.
+    pub(crate) fn set_progress_end(&mut self, lsn: u64) {
+        self.progress_end = lsn.min(self.end_lsn);
+        if let Some(sp) = self.speculate.as_mut() {
+            sp.exact.set_progress_end(lsn);
+        }
+    }
+
+    /// Starts a new reading: counts from 0, and a [`Progress`] of its own once asked for.
+    pub(crate) fn restart_progress(&mut self) {
+        self.sectors_read = 0;
+        self.progress = None;
+    }
+
+    /// Takes the counts of `from`, which this cursor replaces within one reading.
+    fn keep_progress(&mut self, from: (u64, u64, Option<Progress>)) {
+        (self.sectors_read, self.progress_end, self.progress) = from;
+    }
+
+    fn take_progress(&mut self) -> (u64, u64, Option<Progress>) {
+        (self.sectors_read, self.progress_end, self.progress.take())
     }
 
     /// A cursor that chooses on its first read whether to begin provisionally (specification
@@ -525,14 +594,25 @@ impl AreaCursor {
 
     /// Chooses the provisional start (see [`AreaCursor::speculative`]), reading through
     /// `image`; or takes the exact start, if the search finds nothing past it.
+    /// A cancelled search keeps `sp` for the next read.
     fn begin<R: Read + Seek>(&mut self, image: &mut Image<R>, sp: Speculate) -> Result<(), Error> {
         let (start, _) = self.key.audio_sector_range();
-        let (target, probes) = locate(image, (sp.from, self.end_lsn), sp.first, sp.playtime, &sp.options)?;
+        let range = (sp.from, self.end_lsn);
+        let located =
+            locate(image, range, (sp.first, sp.playtime), &sp.options, &mut |n| self.count_read(n, sp.from));
+        let (target, probes) = match located {
+            Err(Error::Cancelled) => {
+                self.speculate = Some(sp);
+                return Err(Error::Cancelled);
+            }
+            r => r?,
+        };
         let l = provisional_start(start, target, sp.interval);
         if l <= sp.from {
-            let image_id = self.image_id;
+            let (image_id, counts) = (self.image_id, self.take_progress());
             *self = *sp.exact;
             self.image_id = image_id;
+            self.keep_progress(counts);
             sb_log!(
                 image.log(),
                 Debug,
@@ -733,9 +813,10 @@ impl AreaCursor {
     /// another image of the same size). Nothing was returned from it yet: the sectors
     /// processed so far only rebuilt the frame under assembly.
     fn discard_index(&mut self, log: &Log, lsn: u64) {
-        let (image_id, stop) = (self.image_id, self.stop_lsn);
+        let (image_id, stop, counts) = (self.image_id, self.stop_lsn, self.take_progress());
         *self = Self::with_key(self.key);
         self.image_id = image_id;
+        self.keep_progress(counts);
         self.resumed = ResumedFrom::Discarded { lsn };
         if stop != u64::MAX {
             // Extending the index (`scan_to`): stop here; reading from the first sector
@@ -849,6 +930,7 @@ impl AreaCursor {
     fn sector<R: Read + Seek>(&mut self, image: &mut Image<R>, lsn: u64) -> Result<[u8; SECTOR_SIZE], Error> {
         if !(self.buf_lsn..self.buf_lsn + self.buf_sectors).contains(&lsn) {
             let n = READ_CHUNK.min(self.end_lsn - lsn);
+            image.check_cancel()?;
             self.buf.resize(n as usize * SECTOR_SIZE, 0);
             // For the image the cursor was made for, the range lies below its sector
             // count; another image may be shorter, which is reported, not assumed.
@@ -861,6 +943,7 @@ impl AreaCursor {
                 );
                 return Err(Error::InvalidArgument("audio sectors outside the image"));
             }
+            self.count_read(n, lsn + n);
             self.buf_lsn = lsn;
             self.buf_sectors = n;
         }
@@ -887,7 +970,12 @@ impl AreaCursor {
                 }
                 if let Some(sp) = self.speculate.take() {
                     if let Err(e) = self.begin(image, sp) {
-                        self.finished = true;
+                        if let Error::Cancelled = e {
+                            // Searched again, from the start, on the next read.
+                            self.image_id = None;
+                        } else {
+                            self.finished = true;
+                        }
                         return Some(Err(e));
                     }
                 }
@@ -1016,6 +1104,11 @@ impl AreaCursor {
                             });
                         }
                     }
+                    Err(Error::Cancelled) => {
+                        // Nothing was read: the same sector next time.
+                        self.next_lsn = lsn;
+                        return Some(Err(Error::Cancelled));
+                    }
                     Err(e) => {
                         self.finished = true;
                         return Some(Err(e));
@@ -1024,6 +1117,7 @@ impl AreaCursor {
             } else {
                 self.demux.finish_at(self.demux.at(image.log(), self.end_lsn));
                 self.finished = true;
+                self.progress_done();
                 if let Some(rec) = self.recorder.as_deref_mut() {
                     rec.finish(self.demux.next_acceptable, self.demux.malformed);
                 }
@@ -1071,6 +1165,11 @@ impl<'a, R: Read + Seek> AreaFrames<'a, R> {
     /// (see [`AreaCursor::warnings`]): per area, not per track, and each sector once.
     pub fn warnings(&self) -> &[Warning] {
         self.cursor.warnings()
+    }
+
+    /// The progress of the reading, readable from other threads (see [`Progress`]).
+    pub fn progress(&mut self) -> Progress {
+        self.cursor.progress()
     }
 }
 
@@ -1641,6 +1740,27 @@ impl TrackCursor {
         index: &AreaIndex,
     ) -> Self {
         TrackCursor { area: AreaCursor::resume(index, first), ..Self::start(area, first, end, image_sectors) }
+            .estimated(area)
+    }
+
+    /// This cursor, expecting its reading to end where the range's end lies in proportion
+    /// to the area's play time (see [`Progress`]).
+    fn estimated(mut self, area: &Area) -> Self {
+        let (start, stop) = audio_sector_range(area, self.area_key.image_sectors);
+        let playtime = area.playtime_frames();
+        let lsn = if playtime == 0 || self.end >= playtime {
+            stop
+        } else {
+            start + (u128::from(stop - start) * u128::from(self.end) / u128::from(playtime)) as u64
+        };
+        self.area.set_progress_end(lsn);
+        self
+    }
+
+    /// The progress of this cursor's reading, readable from other threads (see
+    /// [`Progress`]): the sectors read since it was made or continued.
+    pub fn progress(&mut self) -> Progress {
+        self.area.progress()
     }
 
     /// As [`TrackCursor::for_range_indexed`] (or [`TrackCursor::for_range`] without an
@@ -1682,7 +1802,7 @@ impl TrackCursor {
             None => Self::start(area, first, end, image_sectors),
         };
         let interval = index.map_or(crate::seek::DEFAULT_INTERVAL, AreaIndex::interval);
-        exact.speculate(area, first, (interval, index), policy)
+        exact.speculate(area, first, (interval, index), policy).estimated(area)
     }
 
     /// This cursor, or a provisional one in its place when `policy` allows it and the
@@ -1750,7 +1870,7 @@ impl TrackCursor {
 
     /// A fresh scan of `area` for the range `[first, end)`, already checked.
     pub(crate) fn start(area: &Area, first: u32, end: u32, image_sectors: u64) -> Self {
-        TrackCursor {
+        let cursor = TrackCursor {
             area: AreaCursor::new(area, image_sectors),
             area_key: AreaKey::new(area, image_sectors),
             next: first,
@@ -1760,7 +1880,8 @@ impl TrackCursor {
             exhausted: false,
             failed: false,
             missing: 0,
-        }
+        };
+        cursor.estimated(area)
     }
 
     /// A cursor at the start of `track`, reusing this cursor's reading state when that
@@ -1853,7 +1974,11 @@ impl TrackCursor {
     ) -> Self {
         let reusable = self.reusable(area, first, image_sectors, image_id);
         match (opening, index) {
-            (Opening::Continues, _) if reusable => TrackCursor { next: first, end, missing: 0, ..self },
+            (Opening::Continues, _) if reusable => {
+                let mut next = TrackCursor { next: first, end, missing: 0, ..self };
+                next.area.restart_progress();
+                next.estimated(area)
+            }
             // A range (or track) before this cursor's position, or in another area, scans
             // the area again: specification 4, 4.2 item 6 allows a pass per track or range,
             // and item 7 a start from the seek index (item 8 a provisional one, if allowed).
@@ -1946,12 +2071,17 @@ impl TrackCursor {
         if self.next >= self.end {
             return None;
         }
+        if let Err(e) = image.check_cancel() {
+            return Some(Err(e));
+        }
         let t = self.next;
         // Accepted frames arrive in increasing order: skip those before t. Stops reading
         // as soon as a frame at or after t is seen (specification 4, 4.5 item 4).
         while !self.exhausted && self.peeked.as_ref().is_none_or(|f| f.number < t) {
             match self.area.next_frame(image) {
                 Some(Ok(f)) => self.peeked = Some(f),
+                // Nothing consumed: position t again next time.
+                Some(Err(Error::Cancelled)) => return Some(Err(Error::Cancelled)),
                 Some(Err(e)) => {
                     self.next = self.end;
                     self.failed = true;
@@ -1964,6 +2094,9 @@ impl TrackCursor {
             }
         }
         self.next += 1;
+        if self.next >= self.end {
+            self.area.progress_done();
+        }
         if let Some(claim) = &self.area.claim {
             claim.returned(t);
         }
@@ -2067,6 +2200,11 @@ impl<'a, R: Read + Seek> TrackFrames<'a, R> {
     /// `None` for exact positions.
     pub fn speculation_id(&self) -> Option<u64> {
         self.cursor.speculation_id()
+    }
+
+    /// The progress of the reading, readable from other threads (see [`Progress`]).
+    pub fn progress(&mut self) -> Progress {
+        self.cursor.progress()
     }
 }
 
@@ -2475,6 +2613,12 @@ impl TrackAudioCursor {
         self.frames.warnings()
     }
 
+    /// The progress of this cursor's reading, readable from other threads (see
+    /// [`Progress`]): the sectors read since it was made or continued.
+    pub fn progress(&mut self) -> Progress {
+        self.frames.progress()
+    }
+
     /// Where DST frames are decoded (see [`DecodeOn`]); continuations keep it.
     #[cfg(feature = "parallel")]
     pub fn decode_on(&self) -> &DecodeOn {
@@ -2519,18 +2663,20 @@ impl TrackAudioCursor {
     /// of consecutive DST frames goes to the pool at once.
     ///
     /// The image reader stays on the calling thread: only decoding jobs, which own their
-    /// frames, go to the pool.
-    fn fill<R: Read + Seek>(&mut self, image: &mut Image<R>) {
+    /// frames, go to the pool. Returns whether it stopped at a cancellation request, which
+    /// leaves the positions demultiplexed so far in the window and no error pending.
+    fn fill<R: Read + Seek>(&mut self, image: &mut Image<R>) -> bool {
         let channels = self.channels();
         let window = self.window(channels);
         let group = crate::dst::lanes(channels);
         let held = self.ahead.len() + self.ready.len();
         if self.pending_error.is_some() || (held > 0 && held + group > window) {
-            return;
+            return false;
         }
         let mut room = (window - held) / group * group;
         #[cfg(feature = "parallel")]
         let mut batch: Vec<TrackFrame> = Vec::with_capacity(group);
+        let mut cancelled = false;
         while self.pending_error.is_none() && room > 0 {
             match self.frames.next_frame(image) {
                 #[cfg(feature = "parallel")]
@@ -2545,6 +2691,10 @@ impl TrackAudioCursor {
                     self.spawn_batch(&mut batch, channels, image.log());
                     self.ahead.push_back(Pending::Here(f));
                 }
+                Some(Err(Error::Cancelled)) => {
+                    cancelled = true;
+                    break;
+                }
                 Some(Err(e)) => {
                     #[cfg(feature = "parallel")]
                     self.spawn_batch(&mut batch, channels, image.log());
@@ -2556,6 +2706,7 @@ impl TrackAudioCursor {
         }
         #[cfg(feature = "parallel")]
         self.spawn_batch(&mut batch, channels, image.log());
+        cancelled
     }
 
     /// Sends the DST frames of `batch` (consecutive positions) to the cursor's pool as one
@@ -2580,11 +2731,19 @@ impl TrackAudioCursor {
     /// thread that belongs to a pool runs that pool's pending jobs meanwhile; otherwise,
     /// or when there are none, it blocks until the frame is decoded. A panic while decoding
     /// on the pool is resumed on the calling thread.
+    ///
+    /// While cancellation is requested ([`crate::CancelToken`]) it returns
+    /// [`Error::Cancelled`] and keeps every frame for later.
     pub fn next_frame<R: Read + Seek>(&mut self, image: &mut Image<R>) -> Option<Result<AudioFrame, Error>> {
+        if let Err(e) = image.check_cancel() {
+            return Some(Err(e));
+        }
         let mut frame = if let Some(f) = self.ready.pop_front() {
             f
         } else {
-            self.fill(image);
+            if self.fill(image) {
+                return Some(Err(Error::Cancelled));
+            }
             match self.ahead.pop_front() {
                 Some(Pending::Here(f)) => {
                     let channels = self.channels();
@@ -2917,6 +3076,11 @@ impl<'a, R: Read + Seek> TrackAudio<'a, R> {
     /// `None` for exact positions.
     pub fn speculation_id(&self) -> Option<u64> {
         self.cursor.speculation_id()
+    }
+
+    /// The progress of the reading, readable from other threads (see [`Progress`]).
+    pub fn progress(&mut self) -> Progress {
+        self.cursor.progress()
     }
 }
 

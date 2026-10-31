@@ -8,6 +8,7 @@ use std::sync::Arc;
 use crate::audio::{
     self, AreaCursor, AreaFrames, Continuation, TrackAudio, TrackAudioCursor, TrackCursor, TrackFrames,
 };
+use crate::control::CancelToken;
 use crate::error::{Error, Slot, Warning};
 use crate::image::{Image, SectorFormat};
 use crate::log::{Log, sb_log};
@@ -215,6 +216,13 @@ impl<R: Read + Seek> Disc<R> {
     /// (`parallel` feature) keep the log they started with.
     pub fn set_log(&mut self, log: Log) {
         self.image.set_log(log);
+    }
+
+    /// The cancellation request of this disc's reads, to cancel them from another thread
+    /// (see [`CancelToken`]). Every disc of the image ([`Disc::share`], `clone`) has the
+    /// same: cancelling stops the reads of all of them and their cursors.
+    pub fn cancel_token(&self) -> CancelToken {
+        self.image.cancel_token()
     }
 
     /// The warnings emitted while reading the TOC (specification 7, 7.7.3).
