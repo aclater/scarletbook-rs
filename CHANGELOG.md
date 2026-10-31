@@ -22,6 +22,10 @@ is shared by every crate of the workspace; releases carry the `bench` program an
   them; the library starts no global pool. `SB_MAX_POOL_THREADS` and
   `SB_STATUS_THREADS_UNAVAILABLE` are new. Additive: the ABI version stays 1. The C smoke
   test also decodes every track on a pool and compares.
+- A test of several discs decoded at once through the C interface (#39): 8 threads, each
+  with a disc of its own opened from memory or from a file, decode every track on the
+  calling thread or on a shared pool and match the conformance manifest; each thread's
+  error message stays its own, and a track handle is refused with another thread's disc.
 
 ### Changed
 
