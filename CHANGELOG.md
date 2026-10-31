@@ -34,6 +34,12 @@ is shared by every crate of the workspace; releases carry the `bench` program an
 
 - The `scarletbook` package carries the licence texts and the README; its `include`
   patterns are anchored, so the test fixtures' READMEs no longer slip in (#48).
+- A call into the C library from a thread-local destructor, after the library's per-thread
+  error message was destroyed while the thread exits, aborted the process (a panic outside
+  `guard`); it now returns its status, and `sb_last_error_message` returns an empty
+  string (#39). A new test checks, on the source, that every function the header declares
+  runs under `guard` or is on a short list of functions that cannot panic.
+
 
 ## [0.3.0] - 2026-10-31
 
