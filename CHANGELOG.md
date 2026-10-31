@@ -35,6 +35,9 @@ is shared by every crate of the workspace; releases carry the `bench` program an
   structs and the `argtypes`/`restype` of the main functions, a decoding example, and the
   rules for threads, error messages, freeing and callbacks. The ctypes smoke test of every
   release package runs these bindings and checks them against the header.
+- CI runs the `parallel` decoding path under Miri with Tree Borrows (#28): the C
+  interface's pools and the read-error test on pull requests, plus the continuation
+  property test and the window cap on `main`.
 
 ### Changed
 
