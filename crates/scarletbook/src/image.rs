@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error::Error;
 use crate::log::{Log, sb_log};
+use crate::read_at::{ReadAt, ReadAtReader};
 
 /// Size of a logical sector in bytes (specification 0, 0.3).
 pub const SECTOR_SIZE: usize = 2048;
@@ -193,8 +194,10 @@ impl<R: Read + Seek> Image<R> {
         self.log = log;
     }
 
-    /// An identifier of this image, unique within the process. Audio cursors bind to the
-    /// image they first read and refuse any other.
+    /// An identifier of this image, unique within the process except that the images of
+    /// [`crate::Disc::share`] and of `clone` (for a [`ReadAtReader`]) have their original's:
+    /// they read the same bytes. Audio cursors bind to the identifier of the image they
+    /// first read and refuse an image with any other.
     pub fn id(&self) -> u64 {
         self.id
     }
@@ -217,6 +220,42 @@ impl<R: Read + Seek> Image<R> {
     /// Whether the image is empty.
     pub fn is_empty(&self) -> bool {
         self.len == 0
+    }
+
+    /// The same image read through `reader`, which the caller checks holds the same bytes:
+    /// this image's format, sector count and identifier, with a position and buffer of its
+    /// own, reporting to `log`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidArgument`] if `reader` has another length, [`Error::Io`] if finding
+    /// its length fails.
+    pub(crate) fn share<R2: Read + Seek>(&self, mut reader: R2, log: Log) -> Result<Image<R2>, Error> {
+        let len = match reader.seek(SeekFrom::End(0)) {
+            Ok(len) => len,
+            Err(e) => {
+                sb_log!(&log, Error, "shared reader: seek to the end failed: {e}");
+                return Err(e.into());
+            }
+        };
+        if len != self.len {
+            sb_log!(&log, Info, "shared reader refused: {len} bytes, the image has {}", self.len);
+            return Err(Error::InvalidArgument("shared reader of another image"));
+        }
+        Ok(self.with_reader(reader, log))
+    }
+
+    fn with_reader<R2>(&self, reader: R2, log: Log) -> Image<R2> {
+        Image {
+            reader,
+            id: self.id,
+            format: self.format,
+            len: self.len,
+            sectors: self.sectors,
+            pos: None,
+            scratch: Vec::new(),
+            log,
+        }
     }
 
     /// Consumes the image and returns the reader.
@@ -313,6 +352,15 @@ impl<R: Read + Seek> Image<R> {
             self.pos = Some(at);
         }
         Ok(())
+    }
+}
+
+/// Another reader of the same source, with a position and buffer of its own and the same
+/// format, sector count, identifier and log: no I/O. Cheap when the source is (`&T`,
+/// `Arc<T>`); see [`ReadAtReader`].
+impl<A: ReadAt + Clone> Clone for Image<ReadAtReader<A>> {
+    fn clone(&self) -> Self {
+        self.with_reader(self.reader.clone(), self.log.clone())
     }
 }
 

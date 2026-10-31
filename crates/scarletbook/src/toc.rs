@@ -631,7 +631,7 @@ impl Warnings {
 }
 
 /// Reads the whole TOC (specifications 2 and 3), returning it with its warnings.
-pub(crate) fn read_toc<R: Read + Seek>(img: &mut Image<R>) -> Result<(Toc, Vec<Warning>), Error> {
+pub(crate) fn read_toc<R: Read + Seek>(img: &mut Image<R>) -> Result<(Toc, Vec<Warning>, TocDigests), Error> {
     let log = img.log().clone();
     sb_log!(
         &log,
@@ -642,15 +642,17 @@ pub(crate) fn read_toc<R: Read + Seek>(img: &mut Image<R>) -> Result<(Toc, Vec<W
         img.len()
     );
     let mut warnings = Warnings { list: Vec::new(), log };
-    let master = read_master(img, &mut warnings)?;
+    let (master, master_digest) = read_master(img, &mut warnings)?;
     let mut areas = Vec::new();
+    let mut area_digests = Vec::new();
     for slot in Slot::ALL {
         let ptr = master.pointer(slot);
         if !ptr.is_used() {
             sb_log!(&warnings.log, Info, "area {slot}: slot unused");
             continue;
         }
-        if let Some(area) = read_area(img, slot, ptr, &mut warnings)? {
+        if let Some((area, digest)) = read_area(img, slot, ptr, &mut warnings)? {
+            area_digests.push(digest);
             sb_log!(
                 &warnings.log,
                 Info,
@@ -674,10 +676,55 @@ pub(crate) fn read_toc<R: Read + Seek>(img: &mut Image<R>) -> Result<(Toc, Vec<W
         return Err(Error::NoAudioAreas);
     }
     sb_log!(&warnings.log, Info, "TOC read: {} areas, {} warnings", areas.len(), warnings.list.len());
-    Ok((Toc { sector_format: img.format(), sectors: img.sector_count(), master, areas }, warnings.list))
+    let digests = TocDigests { master: master_digest, areas: area_digests };
+    Ok((
+        Toc { sector_format: img.format(), sectors: img.sector_count(), master, areas },
+        warnings.list,
+        digests,
+    ))
 }
 
-fn read_master<R: Read + Seek>(img: &mut Image<R>, warnings: &mut Warnings) -> Result<MasterToc, Error> {
+/// Digests of the TOC sectors a parse used: the master TOC sector at LSN 510 and, for each
+/// area in [`Toc::areas`] order, the area TOC copy used (`toc_sectors` sectors at
+/// `toc_lsn`). Two images with different digests are different images.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TocDigests {
+    master: u64,
+    areas: Vec<u64>,
+}
+
+impl TocDigests {
+    /// The digests of the same sectors of `img`, for the areas of `toc`: `None` if any of
+    /// them does not exist there.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] if a read fails.
+    pub(crate) fn of<R: Read + Seek>(img: &mut Image<R>, toc: &Toc) -> Result<Option<Self>, Error> {
+        let mut sector = vec![0u8; SECTOR_SIZE];
+        if img.read_into(u64::from(MASTER_TOC_LSN), &mut sector)? == ReadOutcome::OutOfRange {
+            return Ok(None);
+        }
+        let master = fnv1a(&sector);
+        let mut areas = Vec::with_capacity(toc.areas.len());
+        for area in &toc.areas {
+            // At most MAX_AREA_TOC_SECTORS sectors: the parse refused larger copies.
+            let Some(copy) = read_copy(img, area.toc_lsn, area.toc_sectors)? else { return Ok(None) };
+            areas.push(fnv1a(&copy));
+        }
+        Ok(Some(TocDigests { master, areas }))
+    }
+}
+
+/// 64-bit FNV-1a: a digest to tell images apart, not a defence against forgery.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
+}
+
+fn read_master<R: Read + Seek>(
+    img: &mut Image<R>,
+    warnings: &mut Warnings,
+) -> Result<(MasterToc, u64), Error> {
     let mut buf = vec![0u8; 10 * SECTOR_SIZE];
     if img.read_into(u64::from(MASTER_TOC_LSN), &mut buf)? == ReadOutcome::OutOfRange {
         sb_log!(&warnings.log, Info, "rejected: master TOC at LSN {MASTER_TOC_LSN} truncated");
@@ -737,7 +784,7 @@ fn read_master<R: Read + Seek>(img: &mut Image<R>, warnings: &mut Warnings) -> R
         toc2_lsn: be32(s0, lsn2),
         toc_sectors: be16(s0, size),
     };
-    Ok(MasterToc {
+    let master = MasterToc {
         version,
         album_set_size: be16(s0, 16),
         album_sequence_number: be16(s0, 18),
@@ -754,7 +801,8 @@ fn read_master<R: Read + Seek>(img: &mut Image<R>, warnings: &mut Warnings) -> R
         text_charset,
         text: disc_text,
         manufacturer,
-    })
+    };
+    Ok((master, fnv1a(s0)))
 }
 
 /// LSNs of the master TOC copies (specification 1, 1.5).
@@ -835,7 +883,7 @@ fn read_area<R: Read + Seek>(
     slot: Slot,
     ptr: AreaPointer,
     warnings: &mut Warnings,
-) -> Result<Option<Area>, Error> {
+) -> Result<Option<(Area, u64)>, Error> {
     let skip = |warnings: &mut Warnings, code| {
         warnings.push(Warning::area(code, slot));
         Ok(None)
@@ -968,7 +1016,7 @@ fn read_area<R: Read + Seek>(
         });
     }
 
-    Ok(Some(Area {
+    let area = Area {
         slot,
         kind,
         version: Version { major: byte(&z, 8), minor: byte(&z, 9) },
@@ -991,7 +1039,8 @@ fn read_area<R: Read + Seek>(
         text_charset,
         text: area_text,
         tracks,
-    }))
+    };
+    Ok(Some((area, fnv1a(&z))))
 }
 
 /// Parses one track's text (specification 3, 3.8.1).
