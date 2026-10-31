@@ -218,7 +218,7 @@ impl AreaIndex {
     /// increasing LSN) have an allowance of the same size, separate from the stored frames
     /// (so the two together take at most twice `max_inline_budget`): the loaded index keeps
     /// at most `max_inline_budget / 8` hints, now and as it grows
-    /// ([`IndexOptions::max_hints`] becomes the smaller of the saved one and that), dropping
+    /// ([`super::IndexOptions::max_hints`] becomes the smaller of the saved one and that), dropping
     /// those closest to the one before them (specification 7, 7.1 item 2, sacd-spec `cb9530b`). Pass
     /// [`crate::seek::DEFAULT_INLINE_BUDGET`] or the [`IndexOptions`](super::IndexOptions)
     /// the caller builds with.
