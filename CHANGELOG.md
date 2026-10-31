@@ -31,6 +31,12 @@ assets. Nothing is published on crates.io yet.
 - Repository hygiene (#46): Dependabot, OpenSSF Scorecard, CodeQL, zizmor, dependency
   review and coverage workflows; `SECURITY.md`, `CONTRIBUTING.md` (with the clean-room
   rule) and this changelog; README badges; `readme` in the crate metadata.
+- Diagnostic log (#38, #43): an optional per-disc log (`scarletbook::log`, `Disc::open_with_log`,
+  `Disc::set_log`) of reads, sector-format detection, the TOC copies used, area scans, and
+  sector and frame problems with their position, at five levels; off by default, with
+  nothing formatted without a sink. In C, `sb_disc_set_log`, the `_with_log` variants of the
+  three openers and `SB_LOG_OFF` to `SB_LOG_TRACE`; the callback may also run on worker
+  threads. Additive: the ABI version stays 1.
 
 ### Changed
 
