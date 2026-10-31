@@ -1,0 +1,1 @@
+| 2026-10-31 | sacd-spec#37 suspect provisional readings | The suspect mark and the option to read suspect areas exactly. Specification 4, 4.2 item 8, at sacd-spec `eafaaba` (see "Specification version"). No new sources consulted. |

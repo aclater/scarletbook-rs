@@ -329,3 +329,48 @@ fn an_exact_continuation_of_a_provisional_cursor_takes_no_counts() {
     let (_, next) = read(&mut disc, next);
     assert_eq!((next.malformed_sectors(), next.counts_from()), (1, None));
 }
+
+/// Frame numbers that decrease between the sectors a search reads make its provisional
+/// reading suspect (4.2 item 8, sacd-spec `eafaaba`), an informative mark; a well-formed area
+/// gives none; asked to, the cursor reads such a range exactly instead.
+#[test]
+#[cfg_attr(miri, ignore = "reads thousands of sectors")]
+fn decreasing_frame_numbers_are_suspect() {
+    let well_formed = image(&frames(1000), 1000, Vec::new());
+    // Frames 1, 0, 3, 2, ...: neighbouring sectors' first records decrease.
+    let swapped: Vec<PFrame> = frames(1000)
+        .into_iter()
+        .map(|mut f| {
+            f.number ^= 1;
+            f
+        })
+        .collect();
+    let hostile = image(&swapped, 1000, Vec::new());
+    let mut suspects = Vec::new();
+    for (img, policy) in [
+        (&well_formed, options()),
+        (&hostile, options()),
+        (&hostile, options().with_exact_when_suspect(true)),
+    ] {
+        let mut disc = Disc::open(Cursor::new(img.clone())).unwrap();
+        disc.set_seek_policy(Slot::TwoChannel, SeekPolicy::Speculative(policy)).unwrap();
+        let mut marks = Vec::new();
+        for first in (100..1000).step_by(97) {
+            let c = disc.range_frames_cursor(Slot::TwoChannel, first, first + 10).unwrap();
+            let (_, c) = read(&mut disc, c);
+            let provisional = matches!(c.resumed_from(), ResumedFrom::Speculative { .. });
+            assert!(provisional || c.suspect().is_none(), "only provisional readings");
+            marks.push((provisional, c.suspect()));
+        }
+        suspects.push(marks);
+    }
+    assert!(suspects[0].iter().all(|m| m.0 && m.1.is_none()), "well-formed: {:?}", suspects[0]);
+    assert!(
+        suspects[1].iter().any(|m| m.1 == Some(scarletbook::Suspect::FrameNumbersDecrease)),
+        "{:?}",
+        suspects[1]
+    );
+    // Read exactly instead where the search saw them decrease.
+    let exact = suspects[2].iter().filter(|m| !m.0).count();
+    assert!(exact > 0 && suspects[2].iter().all(|m| m.1.is_none()), "{:?}", suspects[2]);
+}
