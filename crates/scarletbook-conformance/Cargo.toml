@@ -21,6 +21,10 @@ path = "src/bin/scarletbook-toc.rs"
 name = "scarletbook-synth"
 path = "src/bin/scarletbook-synth.rs"
 
+[[bin]]
+name = "scarletbook-seekcost"
+path = "src/bin/scarletbook-seekcost.rs"
+
 [dev-dependencies]
 # Benchmarks (benches/); no plotting.
 criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
