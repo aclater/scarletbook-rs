@@ -1336,13 +1336,35 @@ mod tests {
         assert_eq!(decode(&[0x00, 1], 7, &mut out), Err(DstError::InvalidArguments));
     }
 
+    // One test per frame count, so that Miri can run them in parallel jobs: this check is
+    // most of Miri's time on the crate (#76).
     #[test]
-    fn fast_loop_matches_general() {
-        // The lockstep loop of constant frame, channel and table counts against the general
-        // loop run on each frame alone, with channels using different numbers of tables
-        // (zero beyond), frames at different positions with different histories and code,
-        // for every frame count, channel count and table count.
-        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+    fn fast_loop_matches_general_1_frame() {
+        fast_loop_matches_general(1);
+    }
+
+    #[test]
+    fn fast_loop_matches_general_2_frames() {
+        fast_loop_matches_general(2);
+    }
+
+    #[test]
+    fn fast_loop_matches_general_3_frames() {
+        fast_loop_matches_general(3);
+    }
+
+    #[test]
+    fn fast_loop_matches_general_4_frames() {
+        fast_loop_matches_general(4);
+    }
+
+    /// The lockstep loop of `k` frames and constant channel and table counts against the
+    /// general loop run on each frame alone, with channels using different numbers of tables
+    /// (zero beyond), frames at different positions with different histories and code, for
+    /// every channel count and table count.
+    fn fast_loop_matches_general(k: usize) {
+        assert!((1..=MAX_LANES).contains(&k));
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64 ^ k as u64;
         let mut rnd = move || {
             seed ^= seed << 13;
             seed ^= seed >> 7;
@@ -1364,116 +1386,114 @@ mod tests {
             (0..2).map(|k| core::array::from_fn(|j| ((j * (k + 1) + k) % 128 + 1) as u8)).collect();
         let chunks: &[(usize, usize)] =
             if cfg!(miri) { &[(0, 0), (8, 24)] } else { &[(0, 0), (8, 16), (24, 96)] };
-        for k in 1..=MAX_LANES {
-            for nch in 1..=MAX_CHANNELS {
-                for u in [4, 8, 16] {
-                    for &(start, end) in chunks {
-                        // Frame l starts 64 l bits later; channel c of frame l uses u - (c + l)
-                        // tables (at least 1).
-                        let spans: Vec<Span<'_>> = (0..k)
-                            .map(|l| {
-                                let used = core::array::from_fn(|c| u - (c + l).min(u - 1));
-                                Span {
-                                    end: end + 64 * l,
-                                    half: false,
-                                    used,
-                                    most: u,
-                                    tabs: core::array::from_fn(|c| &tables[used[c]]),
-                                    partial: core::array::from_fn(|c| &partials[(c + l) % 2]),
-                                    luts: core::array::from_fn(|c| &luts[(c + 2 * l) % 3 % 2]),
+        for nch in 1..=MAX_CHANNELS {
+            for u in [4, 8, 16] {
+                for &(start, end) in chunks {
+                    // Frame l starts 64 l bits later; channel c of frame l uses u - (c + l)
+                    // tables (at least 1).
+                    let spans: Vec<Span<'_>> = (0..k)
+                        .map(|l| {
+                            let used = core::array::from_fn(|c| u - (c + l).min(u - 1));
+                            Span {
+                                end: end + 64 * l,
+                                half: false,
+                                used,
+                                most: u,
+                                tabs: core::array::from_fn(|c| &tables[used[c]]),
+                                partial: core::array::from_fn(|c| &partials[(c + l) % 2]),
+                                luts: core::array::from_fn(|c| &luts[(c + 2 * l) % 3 % 2]),
+                            }
+                        })
+                        .collect();
+                    let starts: Vec<usize> = (0..k).map(|l| start + 64 * l).collect();
+                    let len = (HISTORY_BYTES + FL) * nch + WINDOW;
+                    let hists: Vec<Vec<u8>> =
+                        (0..k).map(|_| (0..len).map(|_| rnd() as u8).collect()).collect();
+                    let mut results = Vec::new();
+                    for general in [false, true] {
+                        let mut bufs: Vec<Vec<u8>> = vec![Vec::new(); k];
+                        let mut ars: Vec<Arith<'_>> = bufs
+                            .iter_mut()
+                            .enumerate()
+                            .map(|(l, buf)| {
+                                let from = &code[128 * l..];
+                                Arith {
+                                    a: 4095 << 52,
+                                    x: 0,
+                                    code: CodeBits::new(buf, from, 0, from.len() * 8),
                                 }
                             })
                             .collect();
-                        let starts: Vec<usize> = (0..k).map(|l| start + 64 * l).collect();
-                        let len = (HISTORY_BYTES + FL) * nch + WINDOW;
-                        let hists: Vec<Vec<u8>> =
-                            (0..k).map(|_| (0..len).map(|_| rnd() as u8).collect()).collect();
-                        let mut results = Vec::new();
-                        for general in [false, true] {
-                            let mut bufs: Vec<Vec<u8>> = vec![Vec::new(); k];
-                            let mut ars: Vec<Arith<'_>> = bufs
-                                .iter_mut()
-                                .enumerate()
-                                .map(|(l, buf)| {
-                                    let from = &code[128 * l..];
-                                    Arith {
-                                        a: 4095 << 52,
-                                        x: 0,
-                                        code: CodeBits::new(buf, from, 0, from.len() * 8),
-                                    }
-                                })
-                                .collect();
-                            let mut hists = hists.clone();
-                            if general {
-                                for l in 0..k {
-                                    run_general(
-                                        starts[l],
-                                        &spans[l],
-                                        nch,
-                                        &[0; MAX_CHANNELS],
-                                        &mut ars[l],
-                                        &mut hists[l],
-                                    );
-                                }
-                            } else {
-                                let bytes = (end - start) / 8;
-                                let mut runs: Vec<LaneRun<'_, '_>> = ars
-                                    .iter_mut()
-                                    .zip(hists.iter_mut())
-                                    .enumerate()
-                                    .map(|(l, (arith, hist))| LaneRun {
-                                        start: starts[l] / 8,
-                                        tabs: spans[l].tabs,
-                                        partial: spans[l].partial,
-                                        luts: spans[l].luts,
-                                        arith,
-                                        hist,
-                                    })
-                                    .collect();
-                                macro_rules! by_tables {
-                                    ($k:literal, $n:literal) => {
-                                        match u {
-                                            4 => run::<$k, $n, 4>(&mut runs, bytes),
-                                            8 => run::<$k, $n, 8>(&mut runs, bytes),
-                                            _ => run::<$k, $n, 16>(&mut runs, bytes),
-                                        }
-                                    };
-                                }
-                                macro_rules! by_channels {
-                                    ($k:literal) => {
-                                        match nch {
-                                            1 => by_tables!($k, 1),
-                                            2 => by_tables!($k, 2),
-                                            3 => by_tables!($k, 3),
-                                            4 => by_tables!($k, 4),
-                                            5 => by_tables!($k, 5),
-                                            _ => by_tables!($k, 6),
-                                        }
-                                    };
-                                }
-                                match k {
-                                    1 => by_channels!(1),
-                                    2 => by_channels!(2),
-                                    3 => by_channels!(3),
-                                    _ => by_channels!(4),
-                                }
+                        let mut hists = hists.clone();
+                        if general {
+                            for l in 0..k {
+                                run_general(
+                                    starts[l],
+                                    &spans[l],
+                                    nch,
+                                    &[0; MAX_CHANNELS],
+                                    &mut ars[l],
+                                    &mut hists[l],
+                                );
                             }
-                            // The loops refill at different times: compare the code bits after C
-                            // as far as a refill makes them valid.
-                            let state: Vec<_> = ars
+                        } else {
+                            let bytes = (end - start) / 8;
+                            let mut runs: Vec<LaneRun<'_, '_>> = ars
                                 .iter_mut()
-                                .map(|ar| {
-                                    ar.refill();
-                                    (ar.a, ar.x, ar.code.pos)
+                                .zip(hists.iter_mut())
+                                .enumerate()
+                                .map(|(l, (arith, hist))| LaneRun {
+                                    start: starts[l] / 8,
+                                    tabs: spans[l].tabs,
+                                    partial: spans[l].partial,
+                                    luts: spans[l].luts,
+                                    arith,
+                                    hist,
                                 })
                                 .collect();
-                            results.push((state, hists));
+                            macro_rules! by_tables {
+                                ($k:literal, $n:literal) => {
+                                    match u {
+                                        4 => run::<$k, $n, 4>(&mut runs, bytes),
+                                        8 => run::<$k, $n, 8>(&mut runs, bytes),
+                                        _ => run::<$k, $n, 16>(&mut runs, bytes),
+                                    }
+                                };
+                            }
+                            macro_rules! by_channels {
+                                ($k:literal) => {
+                                    match nch {
+                                        1 => by_tables!($k, 1),
+                                        2 => by_tables!($k, 2),
+                                        3 => by_tables!($k, 3),
+                                        4 => by_tables!($k, 4),
+                                        5 => by_tables!($k, 5),
+                                        _ => by_tables!($k, 6),
+                                    }
+                                };
+                            }
+                            match k {
+                                1 => by_channels!(1),
+                                2 => by_channels!(2),
+                                3 => by_channels!(3),
+                                _ => by_channels!(4),
+                            }
                         }
-                        assert!(
-                            results[0] == results[1],
-                            "{k} frames, {nch} channels, {u} tables, chunk {start}..{end}"
-                        );
+                        // The loops refill at different times: compare the code bits after C
+                        // as far as a refill makes them valid.
+                        let state: Vec<_> = ars
+                            .iter_mut()
+                            .map(|ar| {
+                                ar.refill();
+                                (ar.a, ar.x, ar.code.pos)
+                            })
+                            .collect();
+                        results.push((state, hists));
                     }
+                    assert!(
+                        results[0] == results[1],
+                        "{k} frames, {nch} channels, {u} tables, chunk {start}..{end}"
+                    );
                 }
             }
         }

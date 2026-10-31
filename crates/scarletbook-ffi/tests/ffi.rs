@@ -1140,12 +1140,17 @@ fn log_callback_reports_reads_and_frame_problems() {
 }
 
 /// With the `parallel` feature the callback also runs on the pool's threads, and no longer
-/// once the disc is freed, even with decoding jobs still in flight.
+/// once the disc is freed, even with decoding jobs still in flight. Which of the pool's
+/// threads decodes a group is the scheduler's choice: the caller is one of them and may decode
+/// every group itself while it waits (a runner with few cores, #80), so only "on this pool" is
+/// checked.
 #[cfg(feature = "parallel")]
 #[test]
 #[cfg_attr(miri, ignore = "reads whole corpus images")]
 fn log_callback_from_the_pool() {
     let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+    let pool_threads: std::collections::HashSet<_> =
+        pool.broadcast(|_| std::thread::current().id()).into_iter().collect();
     let user = LogUser::default();
     let caller = pool.install(|| {
         let disc = open_logged(&image("dst-features-2ch-6ch"), &user, SB_LOG_TRACE).unwrap();
@@ -1164,9 +1169,10 @@ fn log_callback_from_the_pool() {
     std::thread::sleep(std::time::Duration::from_millis(100));
     assert_eq!(user.lines.lock().unwrap().len(), after_free, "callback after sb_disc_free");
     let lines = user.lines.lock().unwrap();
-    let pooled =
-        lines.iter().filter(|(t, _, m)| m.starts_with("decoding DST frames") && *t != caller).count();
-    assert!(pooled > 0, "no message from a pool thread");
+    let groups: Vec<_> =
+        lines.iter().filter(|(_, _, m)| m.starts_with("decoding DST frames")).map(|(t, _, _)| t).collect();
+    assert!(!groups.is_empty(), "no group decoded");
+    assert!(groups.iter().all(|t| pool_threads.contains(t)), "a group decoded off the pool");
     // Frame lines come from the calling thread, in order.
     let frames: Vec<u32> = lines
         .iter()
