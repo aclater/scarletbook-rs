@@ -127,6 +127,16 @@ describes. Every disc of one image (`Disc::share`, or `clone` of a disc read thr
 `extend_seek_index` on a clone in another thread while the others read; `AreaIndex::merge`
 joins indexes kept apart, for example one loaded and one built.
 
+A first seek into an area without a seek index still reads the area up to the range, which
+over a network share can take seconds. A caller that accepts provisional positions can opt in
+to **provisional reading** (specification 4, 4.2 item 8): `disc.set_seek_policy(slot,
+SeekPolicy::Speculative(SpeculativeOptions::new()))` makes far ranges start after a short
+search of the frame timecodes, a few small reads wherever the range lies. Their positions are
+marked provisional (`speculation()`): they equal a straight read on well-formed discs, but no
+reader can know that without reading the sectors before the range, and on hostile images they
+can differ (see `SeekPolicy`). Their malformed counts begin at the provisional start
+(`counts_from()`).
+
 Features: `parallel` decodes DST frames on rayon's thread pool, ahead of the caller: the
 current pool by default, or the pool chosen for a cursor with
 `TrackAudioCursor::set_decode_on(DecodeOn::Pool(pool))`, whichever thread reads it

@@ -95,6 +95,23 @@ matching `PROVENANCE.md` entries. The corpus and the charset tables are unchange
 (`git diff --stat e52a42b da6b900 -- corpus/ spec/charsets/` is empty), so the vendored
 copies are too.
 
+**Update to `82eac6c`** ("Merge pull request #30", answer to sacd-spec#29, for issue #94).
+Specification 4 gains 4.2 item 8 (provisional reading: beginning at a sector `L` after
+`S0` without the state of item 7, with no frame under assembly and a next acceptable frame
+number `u`, at the caller's request; its positions are exact when (a) `a_L <= u` and (b) the
+frame under assembly at `L` is none or numbered below `u`, are reported as provisional until
+both are established, and as possibly different if either fails; informative: positions
+numbered `a*` or more are exact in any case, where `a*` is the next acceptable frame number of
+a reader from `S0` just after it delivered or discarded the frame under assembly at `L`, while
+below `a*` a position can differ whether or not it is missing), 4.4.5 item 5 (the counts of a
+provisional reading begin at `L`, and the reader says so) and a sentence in 4.7.1 item 6
+(counts of provisional positions are provisional); specification 7, 7.1 item 3 allows a
+provisional reading to read at most a constant times `log2(n + 1)` sectors to choose `L`. Its
+`corpus/README.md` gains four lines (provisional readings are not compared with the manifest
+unless confirmed), copied unchanged into this repository's `corpus/README.md`; the images,
+the manifest and the charset tables are unchanged (`git diff --stat da6b900 82eac6c --
+corpus/images corpus/manifest.json spec/charsets/` is empty).
+
 ## Environment
 
 Work was done on 2026-10-30 in an isolated VM (hostname `scarletbook-cleanroom`, Fedora 44,

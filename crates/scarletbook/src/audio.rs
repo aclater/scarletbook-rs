@@ -9,7 +9,10 @@ use crate::dst::{DstDecoder, DstError};
 use crate::error::{Error, Slot, Warning, WarningCode};
 use crate::image::{Image, ReadOutcome, SECTOR_SIZE};
 use crate::log::{Level, Log, sb_log};
-use crate::seek::{AreaIndex, Assembling, Plan, Recorder, ResumedFrom, SeekIndexes, digest};
+use crate::seek::{
+    AreaIndex, Assembling, Plan, Recorder, ResumedFrom, SeekIndexes, SeekPolicy, Speculate, Speculation,
+    digest, locate, provisional_start,
+};
 use crate::toc::{Area, Track};
 
 /// DSD bytes per channel in one frame (specification 0, 0.5).
@@ -433,6 +436,10 @@ pub struct AreaCursor {
     /// The malformed count and warnings reported before the first read: those of the
     /// scan a continuation moved this cursor ahead of (see [`AreaCursor::carry_counts`]).
     before_read: Option<Box<(u64, Vec<Warning>)>>,
+    /// A provisional start to choose on the first read (specification 4, 4.2 item 8).
+    speculate: Option<Speculate>,
+    /// Whether the positions are provisional.
+    speculation: Speculation,
 }
 
 /// The state a resumed scan takes once its replay reaches the checkpoint.
@@ -476,6 +483,71 @@ impl AreaCursor {
             verify: None,
             key,
             before_read: None,
+            speculate: None,
+            speculation: Speculation::Exact,
+        }
+    }
+
+    /// A cursor that chooses on its first read whether to begin provisionally (specification
+    /// 4, 4.2 item 8) for positions `first` or more, or as `exact` does.
+    pub(crate) fn speculative(
+        exact: AreaCursor,
+        first: u32,
+        playtime: u32,
+        interval: u32,
+        options: crate::seek::SpeculativeOptions,
+    ) -> Self {
+        let from = match exact.resumed {
+            ResumedFrom::Checkpoint { lsn, .. } => lsn,
+            _ => exact.next_lsn,
+        };
+        let mut cursor = Self::with_key(exact.key);
+        cursor.next_lsn = from;
+        cursor.resumed = ResumedFrom::Speculative { lsn: 0, probes: 0 };
+        cursor.speculation = Speculation::Pending { lsn: 0, first };
+        cursor.speculate =
+            Some(Speculate { first, playtime, interval, options, exact: Box::new(exact), from });
+        cursor
+    }
+
+    /// Chooses the provisional start (see [`AreaCursor::speculative`]), reading through
+    /// `image`; or takes the exact start, if the search finds nothing past it.
+    fn begin<R: Read + Seek>(&mut self, image: &mut Image<R>, sp: Speculate) -> Result<(), Error> {
+        let (start, _) = self.key.audio_sector_range();
+        let (target, probes) = locate(image, (sp.from, self.end_lsn), sp.first, sp.playtime, &sp.options)?;
+        let l = provisional_start(start, target, sp.interval);
+        if l <= sp.from {
+            let image_id = self.image_id;
+            *self = *sp.exact;
+            self.image_id = image_id;
+            sb_log!(
+                image.log(),
+                Debug,
+                "area {}: no provisional start past LSN {} for frame {} ({probes} reads): exact",
+                self.slot,
+                sp.from,
+                sp.first
+            );
+            return Ok(());
+        }
+        self.next_lsn = l;
+        self.demux.next_acceptable = sp.first;
+        self.resumed = ResumedFrom::Speculative { lsn: l, probes };
+        self.speculation = Speculation::Pending { lsn: l, first: sp.first };
+        Ok(())
+    }
+
+    /// Whether this cursor's positions are provisional (see [`SeekPolicy`]).
+    pub fn speculation(&self) -> Speculation {
+        self.speculation
+    }
+
+    /// The sector the malformed count and warnings begin at: `None` for the area's first
+    /// sector, `Some(L)` for a provisional reading (specification 4, 4.4.5 item 5).
+    pub fn counts_from(&self) -> Option<u64> {
+        match self.speculation {
+            Speculation::Pending { lsn, .. } if lsn > 0 => Some(lsn),
+            _ => None,
         }
     }
 
@@ -600,6 +672,9 @@ impl AreaCursor {
         if let Some(r) = self.recorder.as_deref_mut() {
             r.kept = true;
         }
+        if let Some(sp) = self.speculate.as_mut() {
+            sp.exact.keep_for_disc();
+        }
     }
 
     /// Records no more checkpoints.
@@ -694,6 +769,12 @@ impl AreaCursor {
         match self.image_id {
             None => {
                 self.image_id = Some(image.id());
+                if let Some(sp) = self.speculate.take() {
+                    if let Err(e) = self.begin(image, sp) {
+                        self.finished = true;
+                        return Some(Err(e));
+                    }
+                }
                 match self.resumed {
                     ResumedFrom::Start => sb_log!(
                         image.log(),
@@ -717,6 +798,14 @@ impl AreaCursor {
                         Debug,
                         "area {}: seek index: no frame accepted at or after the range, nothing to read",
                         self.slot
+                    ),
+                    ResumedFrom::Speculative { lsn, probes } => sb_log!(
+                        image.log(),
+                        Info,
+                        "area {}: provisional reading from LSN {lsn} for frames {}.. ({probes} reads to choose it; \
+                         4.2 item 8): positions provisional, counts from LSN {lsn}",
+                        self.slot,
+                        self.demux.next_acceptable
                     ),
                     // Set only once the cursor reads.
                     ResumedFrom::Discarded { .. } => {}
@@ -977,6 +1066,8 @@ pub struct Continuation<'a> {
     track: Option<u32>,
     /// The disc's seek indexes.
     seek: &'a SeekIndexes,
+    /// The disc's seek policy for the area.
+    policy: SeekPolicy,
 }
 
 impl<'a> Continuation<'a> {
@@ -986,9 +1077,9 @@ impl<'a> Continuation<'a> {
         (image_sectors, image_id): (u64, Option<u64>),
         log: &'a Log,
         track: Option<u32>,
-        seek: &'a SeekIndexes,
+        (seek, policy): (&'a SeekIndexes, SeekPolicy),
     ) -> Self {
-        Continuation { area, first, end, image_sectors, image_id, log, track, seek }
+        Continuation { area, first, end, image_sectors, image_id, log, track, seek, policy }
     }
 
     /// The disc's index for this range's area, if it keeps one, under a read lock.
@@ -1072,7 +1163,7 @@ impl<'a> Continuation<'a> {
                 (self.first, self.end),
                 (self.image_sectors, self.image_id),
                 index,
-                opening,
+                (opening, self.policy),
             );
             if opening != Opening::Continues && index.is_some() {
                 next.frames.area.keep_for_disc();
@@ -1115,7 +1206,7 @@ impl<'a> Continuation<'a> {
                 (self.first, self.end),
                 (self.image_sectors, self.image_id),
                 index,
-                opening,
+                (opening, self.policy),
             );
             if opening != Opening::Continues && index.is_some() {
                 next.area.keep_for_disc();
@@ -1164,7 +1255,13 @@ impl<'a> Continuation<'a> {
     ) -> TrackAudioCursor {
         self.absorb_into(&mut prev.frames.area, index);
         let index = Some(&*index).filter(|i| self.check_index(i).is_ok());
-        prev.open_as(self.area, (self.first, self.end), (self.image_sectors, self.image_id), index, opening)
+        prev.open_as(
+            self.area,
+            (self.first, self.end),
+            (self.image_sectors, self.image_id),
+            index,
+            (opening, self.policy),
+        )
     }
 
     /// How this range's frames open from `prev` with the caller's `index` (see
@@ -1195,7 +1292,13 @@ impl<'a> Continuation<'a> {
     ) -> TrackCursor {
         self.absorb_into(&mut prev.area, index);
         let index = Some(&*index).filter(|i| self.check_index(i).is_ok());
-        prev.open_as(self.area, (self.first, self.end), (self.image_sectors, self.image_id), index, opening)
+        prev.open_as(
+            self.area,
+            (self.first, self.end),
+            (self.image_sectors, self.image_id),
+            index,
+            (opening, self.policy),
+        )
     }
 
     /// Logs (at [`Level::Info`]) the opening of this range's frames on a new scan, as
@@ -1208,20 +1311,13 @@ impl<'a> Continuation<'a> {
     /// logging (see [`Continuation::log_fresh_frames`]).
     pub fn fresh_frames(self) -> TrackCursor {
         self.seek.read(self.area.slot, |index| {
-            match index.filter(|i| i.check_key(self.area, self.image_sectors).is_ok()) {
-                Some(index) => {
-                    let mut c = TrackCursor::start_indexed(
-                        self.area,
-                        self.first,
-                        self.end,
-                        self.image_sectors,
-                        index,
-                    );
-                    c.area.keep_for_disc();
-                    c
-                }
-                None => TrackCursor::start(self.area, self.first, self.end, self.image_sectors),
+            let index = index.filter(|i| i.check_key(self.area, self.image_sectors).is_ok());
+            let range = (self.first, self.end);
+            let mut c = TrackCursor::start_with(self.area, range, self.image_sectors, index, self.policy);
+            if index.is_some() {
+                c.area.keep_for_disc();
             }
+            c
         })
     }
 }
@@ -1422,6 +1518,81 @@ impl TrackCursor {
         TrackCursor { area: AreaCursor::resume(index, first), ..Self::start(area, first, end, image_sectors) }
     }
 
+    /// As [`TrackCursor::for_range_indexed`] (or [`TrackCursor::for_range`] without an
+    /// index), allowing a provisional start (specification 4, 4.2 item 8, sacd-spec
+    /// `82eac6c`; see [`SeekPolicy`]) when the exact start would read more than
+    /// `options.min_gap_sectors` before the range's estimated position. The cursor chooses on
+    /// its first read; [`TrackCursor::speculation`] and [`TrackCursor::resumed_from`] then
+    /// say which start it took. A provisional cursor records no checkpoints.
+    ///
+    /// # Errors
+    ///
+    /// As [`TrackCursor::for_range_indexed`].
+    pub fn for_range_speculative(
+        area: &Area,
+        first: u32,
+        end: u32,
+        image_sectors: u64,
+        index: Option<&AreaIndex>,
+        options: crate::seek::SpeculativeOptions,
+    ) -> Result<Self, Error> {
+        check_range(area, first, end, image_sectors)?;
+        if let Some(index) = index {
+            index.check_key(area, image_sectors)?;
+        }
+        Ok(Self::start_with(area, (first, end), image_sectors, index, SeekPolicy::Speculative(options)))
+    }
+
+    /// A cursor of the range, already checked, from `index` (of the area, checked) or the
+    /// first sector, provisional where `policy` allows it.
+    pub(crate) fn start_with(
+        area: &Area,
+        (first, end): (u32, u32),
+        image_sectors: u64,
+        index: Option<&AreaIndex>,
+        policy: SeekPolicy,
+    ) -> Self {
+        let exact = match index {
+            Some(index) => Self::start_indexed(area, first, end, image_sectors, index),
+            None => Self::start(area, first, end, image_sectors),
+        };
+        let interval = index.map_or(crate::seek::DEFAULT_INTERVAL, AreaIndex::interval);
+        exact.speculate(area, first, interval, policy)
+    }
+
+    /// This cursor, or a provisional one in its place when `policy` allows it and the
+    /// exact start lies more than the options' gap before the range's estimated position.
+    fn speculate(self, area: &Area, first: u32, interval: u32, policy: SeekPolicy) -> Self {
+        let SeekPolicy::Speculative(options) = policy else { return self };
+        let from = match self.area.resumed {
+            ResumedFrom::Checkpoint { lsn, .. } => lsn,
+            ResumedFrom::Start => self.area.next_lsn,
+            // Reads nothing, or a cursor already chosen: keep it.
+            _ => return self,
+        };
+        let (start, end) = audio_sector_range(area, self.area_key.image_sectors);
+        let playtime = area.playtime_frames();
+        if playtime == 0 {
+            return self;
+        }
+        // The range's position in proportion to the play time.
+        let estimate = start + (u128::from(end - start) * u128::from(first) / u128::from(playtime)) as u64;
+        if estimate <= from.saturating_add(options.min_gap_sectors) {
+            return self;
+        }
+        TrackCursor { area: AreaCursor::speculative(self.area, first, playtime, interval, options), ..self }
+    }
+
+    /// Whether this cursor's positions are provisional (see [`SeekPolicy`]).
+    pub fn speculation(&self) -> Speculation {
+        self.area.speculation()
+    }
+
+    /// Where its malformed count and warnings begin (see [`AreaCursor::counts_from`]).
+    pub fn counts_from(&self) -> Option<u64> {
+        self.area.counts_from()
+    }
+
     /// Where this cursor's scan started (see [`ResumedFrom`]); continued cursors keep it.
     pub fn resumed_from(&self) -> ResumedFrom {
         self.area.resumed_from()
@@ -1503,7 +1674,7 @@ impl TrackCursor {
         index: Option<&AreaIndex>,
     ) -> Self {
         let opening = self.opening(area, first, image_sectors, image_id, index);
-        self.open_as(area, (first, end), (image_sectors, image_id), index, opening)
+        self.open_as(area, (first, end), (image_sectors, image_id), index, (opening, SeekPolicy::Exact))
     }
 
     /// How [`TrackCursor::continue_in`] opens the range starting at `first`.
@@ -1532,24 +1703,29 @@ impl TrackCursor {
         (first, end): (u32, u32),
         (image_sectors, image_id): (u64, Option<u64>),
         index: Option<&AreaIndex>,
-        opening: Opening,
+        (opening, policy): (Opening, SeekPolicy),
     ) -> Self {
         let reusable = self.reusable(area, first, image_sectors, image_id);
         match (opening, index) {
             (Opening::Continues, _) if reusable => TrackCursor { next: first, end, missing: 0, ..self },
             // A range (or track) before this cursor's position, or in another area, scans
             // the area again: specification 4, 4.2 item 6 allows a pass per track or range,
-            // and item 7 a start from the seek index.
+            // and item 7 a start from the seek index (item 8 a provisional one, if allowed).
             (Opening::Continues | Opening::FromIndex, Some(index)) => {
-                let mut next = Self::start_indexed(area, first, end, image_sectors, index);
-                if reusable {
+                let mut next = Self::start_with(area, (first, end), image_sectors, Some(index), policy);
+                if reusable
+                    && next.area.speculation() == Speculation::Exact
+                    && self.area.speculation() == Speculation::Exact
+                {
                     // Moved ahead of a scan that could have gone on: until it reads, it
-                    // reports what that scan reports (a pass from the first sector).
+                    // reports what that scan reports (a pass from the first sector). Not
+                    // from a provisional scan, whose counts begin at its `L` (4.4.5 items 4
+                    // and 5).
                     next.area.carry_counts(&self.area);
                 }
                 next
             }
-            _ => Self::start(area, first, end, image_sectors),
+            _ => Self::start_with(area, (first, end), image_sectors, None, policy),
         }
     }
 
@@ -1726,6 +1902,16 @@ impl<'a, R: Read + Seek> TrackFrames<'a, R> {
     /// (see [`AreaCursor::warnings`]): per area, not per track, and each sector once.
     pub fn warnings(&self) -> &[Warning] {
         self.cursor.warnings()
+    }
+
+    /// Whether the positions are provisional (see [`SeekPolicy`]).
+    pub fn speculation(&self) -> Speculation {
+        self.cursor.speculation()
+    }
+
+    /// Where the malformed count and warnings begin (see [`AreaCursor::counts_from`]).
+    pub fn counts_from(&self) -> Option<u64> {
+        self.cursor.counts_from()
     }
 }
 
@@ -1953,6 +2139,41 @@ impl TrackAudioCursor {
         self.frames.resumed_from()
     }
 
+    /// As [`TrackAudioCursor::for_range`], allowing a provisional start (see
+    /// [`TrackCursor::for_range_speculative`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`TrackCursor::for_range_speculative`].
+    pub fn for_range_speculative(
+        area: &Area,
+        first: u32,
+        end: u32,
+        image_sectors: u64,
+        index: Option<&AreaIndex>,
+        options: crate::seek::SpeculativeOptions,
+    ) -> Result<Self, Error> {
+        Ok(Self::from_frames(TrackCursor::for_range_speculative(
+            area,
+            first,
+            end,
+            image_sectors,
+            index,
+            options,
+        )?))
+    }
+
+    /// Whether this cursor's positions are provisional (see [`SeekPolicy`]). Its missing
+    /// and invalid counts are provisional as well (specification 4, 4.7.1 item 6).
+    pub fn speculation(&self) -> Speculation {
+        self.frames.speculation()
+    }
+
+    /// Where its malformed count and warnings begin (see [`AreaCursor::counts_from`]).
+    pub fn counts_from(&self) -> Option<u64> {
+        self.frames.counts_from()
+    }
+
     /// A cursor at the start of `track`, continuing this one's reading state where that
     /// gives the same result (see [`TrackCursor::continue_to`]). Frames of this cursor
     /// not yet returned are dropped; the counts start again at 0. With `parallel`, DST
@@ -1997,7 +2218,7 @@ impl TrackAudioCursor {
         index: Option<&AreaIndex>,
     ) -> Self {
         let opening = self.opening(area, first, image, index);
-        self.open_as(area, (first, end), image, index, opening)
+        self.open_as(area, (first, end), image, index, (opening, SeekPolicy::Exact))
     }
 
     /// How [`TrackAudioCursor::continue_in`] opens the range starting at `first`.
@@ -2022,7 +2243,7 @@ impl TrackAudioCursor {
         range: (u32, u32),
         image: (u64, Option<u64>),
         index: Option<&AreaIndex>,
-        opening: Opening,
+        opening: (Opening, SeekPolicy),
     ) -> Self {
         // Frames decoded or demultiplexed ahead of the caller came from the track cursor
         // already, so it stands after them and they lie inside this range: dropping them
@@ -2514,6 +2735,16 @@ impl<'a, R: Read + Seek> TrackAudio<'a, R> {
     /// (see [`AreaCursor::warnings`]): per area, not per track, and each sector once.
     pub fn warnings(&self) -> &[Warning] {
         self.cursor.warnings()
+    }
+
+    /// Whether the positions are provisional (see [`SeekPolicy`]).
+    pub fn speculation(&self) -> Speculation {
+        self.cursor.speculation()
+    }
+
+    /// Where the malformed count and warnings begin (see [`AreaCursor::counts_from`]).
+    pub fn counts_from(&self) -> Option<u64> {
+        self.cursor.counts_from()
     }
 }
 
