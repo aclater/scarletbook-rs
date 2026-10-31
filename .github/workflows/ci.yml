@@ -24,6 +24,33 @@ defaults:
     shell: bash
 
 jobs:
+  # Whether the change can affect what Miri and fuzzing check: the Rust code, its
+  # dependencies, the corpus or this workflow. Pushes to main always count as changed.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" != pull_request ]]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed=$(git diff --name-only "$BASE_SHA" HEAD)
+          printf '%s\n' "$changed"
+          if grep -qE '^(crates/|fuzz/|corpus/|Cargo\.(toml|lock)$|rust-toolchain|\.github/workflows/ci\.yml$)' <<< "$changed"; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
   test:
     name: test (${{ matrix.os }})
     strategy:
@@ -36,6 +63,10 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup toolchain install "$RUST_STABLE" --profile minimal && rustup default "$RUST_STABLE"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Only main writes the cache; pull requests read it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo test --workspace --locked
       - run: cargo test --workspace --locked --all-features
 
@@ -46,6 +77,10 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup toolchain install "$RUST_STABLE" --profile minimal -c rustfmt,clippy && rustup default "$RUST_STABLE"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Only main writes the cache; pull requests read it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo doc --workspace --no-deps --all-features --locked
@@ -66,6 +101,10 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup toolchain install "$RUST_STABLE" --profile minimal && rustup default "$RUST_STABLE"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Only main writes the cache; pull requests read it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo bench --workspace --locked --no-run
       - run: bash -n perf/*.sh
 
@@ -76,16 +115,37 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup toolchain install "$RUST_MSRV" --profile minimal
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Only main writes the cache; pull requests read it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo +"$RUST_MSRV" check -p scarletbook -p scarletbook-ffi --all-features --locked
 
+  # Miri's value is mostly in scarletbook-ffi, the only crate with `unsafe`. The unit tests
+  # of the core crate (forbid(unsafe_code)) take most of Miri's time, so pull requests run
+  # every scarletbook-ffi test and the core crate's integration tests, and pushes to main
+  # run everything.
   miri:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - run: rustup toolchain install "$RUST_NIGHTLY" --profile minimal -c miri,rust-src
-      - run: cargo +"$RUST_NIGHTLY" miri test -p scarletbook -p scarletbook-ffi --locked
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Miri on scarletbook-ffi
+        run: cargo +"$RUST_NIGHTLY" miri test -p scarletbook-ffi --locked
+      - name: Miri on scarletbook (integration tests on pull requests, all on main)
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            cargo +"$RUST_NIGHTLY" miri test -p scarletbook --locked --test '*'
+          else
+            cargo +"$RUST_NIGHTLY" miri test -p scarletbook --locked
+          fi
 
   ffi:
     name: ffi (${{ matrix.os }})
@@ -99,6 +159,10 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup toolchain install "$RUST_STABLE" --profile minimal && rustup default "$RUST_STABLE"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Only main writes the cache; pull requests read it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: The committed header is what cbindgen generates
         if: runner.os == 'Linux'
         working-directory: crates/scarletbook-ffi
@@ -151,6 +215,8 @@ jobs:
           command: check advisories bans licenses sources
 
   fuzz:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
