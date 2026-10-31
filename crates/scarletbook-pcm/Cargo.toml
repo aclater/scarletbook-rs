@@ -1,0 +1,27 @@
+[package]
+name = "scarletbook-pcm"
+description = "DSD64 to 24-bit PCM conversion, deterministic per Super Audio CD frame"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["dsd", "pcm", "audio", "decimation", "sacd"]
+categories = ["multimedia::audio"]
+include = ["/src/**", "/Cargo.toml", "/README.md", "/LICENSE-MIT", "/LICENSE-APACHE"]
+
+[dependencies]
+thiserror = "2"
+
+[dev-dependencies]
+# Benchmarks (benches/); no plotting.
+criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
+proptest = { version = "1", default-features = false, features = ["std"] }
+
+[[bench]]
+name = "convert"
+harness = false
+
+[lints]
+workspace = true
