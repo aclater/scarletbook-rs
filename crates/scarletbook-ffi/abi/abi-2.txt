@@ -25,6 +25,14 @@
 #define SB_SEEK_DEFAULT_INTERVAL 64
 #define SB_SEEK_MAX_INTERVAL 65536
 #define SB_SEEK_DEFAULT_INLINE_BUDGET 1048576
+#define SB_SEEK_POLICY_EXACT 0
+#define SB_SEEK_POLICY_SPECULATIVE 1
+#define SB_SEEK_DEFAULT_MIN_GAP 2048
+#define SB_SPECULATION_EXACT 0
+#define SB_SPECULATION_PENDING 1
+#define SB_SPECULATION_CONFIRMED 2
+#define SB_SPECULATION_REFUTED 3
+#define SB_SPECULATION_UNVERIFIED 4
 enum SbStatus
 #if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
 : int32_t
@@ -251,6 +259,16 @@ uint32_t number;
 uint32_t kind;
 uint32_t size;
 } SbRawFrameInfo;
+typedef struct SbSpeculation {
+uint64_t claim;
+uint64_t lsn;
+uint32_t slot;
+uint32_t state;
+uint32_t first;
+uint32_t last_returned;
+uint32_t exact_from;
+uint32_t reserved;
+} SbSpeculation;
 #ifdef __cplusplus
 extern " C " {
 #endif
@@ -328,6 +346,13 @@ SbStatus sb_raw_frames_open_indexed(const struct SbDisc *disc, uint32_t slot, ui
 SbStatus sb_raw_frames_open_next_indexed(const struct SbDisc *disc, struct SbRawFrames *prev, uint32_t slot, uint32_t first, uint32_t end, struct SbSeekIndex *index, struct SbRawFrames **out);
 SbStatus sb_track_audio_absorb(const struct SbTrackAudio *audio, struct SbSeekIndex *index);
 SbStatus sb_raw_frames_absorb(const struct SbRawFrames *raw, struct SbSeekIndex *index);
+SbStatus sb_disc_seek_policy_set(const struct SbDisc *disc, uint32_t slot, uint32_t policy, uint64_t min_gap_sectors);
+SbStatus sb_track_audio_speculation(const struct SbTrackAudio *audio, struct SbSpeculation *out);
+SbStatus sb_raw_frames_speculation(const struct SbRawFrames *raw, struct SbSpeculation *out);
+SbStatus sb_disc_seek_verify(const struct SbDisc *disc, uint32_t slot, uint64_t max_sectors, uint8_t *complete);
+SbStatus sb_disc_seek_event_next(const struct SbDisc *disc, uint32_t slot, struct SbSpeculation *out);
+SbStatus sb_seek_index_verify(const struct SbDisc *disc, struct SbSeekIndex *index, uint32_t *settled);
+SbStatus sb_seek_index_event_next(const struct SbSeekIndex *index, struct SbSpeculation *out);
 #ifdef __cplusplus
 }
 #endif

@@ -196,6 +196,13 @@ save. Loaded bytes are checked
 before use, and an index that does not match the image's sectors is discarded as it is used
 (a warning in the log, then a scan from the area's first sector).
 
+Provisional reading (cold seeks, specification 4, 4.2 item 8) is opt-in per disc handle:
+`sb_disc_seek_policy_set(disc, slot, SB_SEEK_POLICY_SPECULATIVE, SB_SEEK_DEFAULT_MIN_GAP)`.
+After a handle's first read, `sb_track_audio_speculation` says whether its positions are
+provisional (`SbSpeculation`). With a seek index kept, `sb_disc_seek_verify` (on a clone in a
+thread of its own) checks provisional readings, and `sb_disc_seek_event_next` returns each
+verdict once: confirmed, or refuted with the frame from which the positions are exact.
+
 ### Parallel decoding
 
 Track and range audio handles decode on the calling thread unless given a pool of

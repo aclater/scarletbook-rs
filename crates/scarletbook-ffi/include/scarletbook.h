@@ -211,6 +211,47 @@
 #define SB_SEEK_DEFAULT_INLINE_BUDGET 1048576
 
 /*
+ `sb_disc_seek_policy_set`: exact reads only (the default).
+ */
+#define SB_SEEK_POLICY_EXACT 0
+
+/*
+ `sb_disc_seek_policy_set`: provisional reading allowed (specification 4, 4.2 item 8).
+ */
+#define SB_SEEK_POLICY_SPECULATIVE 1
+
+/*
+ The default `min_gap_sectors` of `sb_disc_seek_policy_set` (4 MiB of sectors).
+ */
+#define SB_SEEK_DEFAULT_MIN_GAP 2048
+
+/*
+ `SbSpeculation.state`: exact positions, not a provisional reading.
+ */
+#define SB_SPECULATION_EXACT 0
+
+/*
+ `SbSpeculation.state`: provisional positions, not yet checked.
+ */
+#define SB_SPECULATION_PENDING 1
+
+/*
+ `SbSpeculation.state`: provisional positions confirmed: they are the specification's.
+ */
+#define SB_SPECULATION_CONFIRMED 2
+
+/*
+ `SbSpeculation.state`: provisional positions possibly different from the specification's
+ below `exact_from`.
+ */
+#define SB_SPECULATION_REFUTED 3
+
+/*
+ `SbSpeculation.state`: provisional positions that will not be checked.
+ */
+#define SB_SPECULATION_UNVERIFIED 4
+
+/*
  Result of every call: an `int32_t`, whose values are the `SB_STATUS_*` constants. In C
  before C23, `SbStatus` is a typedef of `int32_t`; in C23 and C++, an enumeration whose
  underlying type is `int32_t`.
@@ -918,6 +959,51 @@ typedef struct SbRawFrameInfo {
    */
   uint32_t size;
 } SbRawFrameInfo;
+
+/*
+ Whether a handle's positions are provisional (specification 4, 4.2 item 8, sacd-spec
+ `82eac6c`), or the verdict an event reports (`sb_disc_seek_event_next`).
+
+ Layout: 40 bytes, aligned to 8, without padding (2 fields of 8 bytes, then 6 of 4).
+ */
+typedef struct SbSpeculation {
+  /*
+   The provisional reading's number (0 for exact positions): events and handles name it
+   alike.
+   */
+  uint64_t claim;
+  /*
+   `L`, the sector the provisional reading began at (0 before the handle's first read,
+   which is when it chooses, and for exact positions). The malformed count and warnings
+   of a provisional handle begin there (4.4.5 item 5).
+   */
+  uint64_t lsn;
+  /*
+   The area's slot.
+   */
+  uint32_t slot;
+  /*
+   `SB_SPECULATION_*`.
+   */
+  uint32_t state;
+  /*
+   `u`, the first position read provisionally.
+   */
+  uint32_t first;
+  /*
+   For `SB_SPECULATION_REFUTED`: the last position returned, `UINT32_MAX` if none.
+   */
+  uint32_t last_returned;
+  /*
+   For `SB_SPECULATION_REFUTED`: positions from this frame on are exact (positions
+   `first` to `exact_from - 1` are possibly different, whether or not missing).
+   */
+  uint32_t exact_from;
+  /*
+   0.
+   */
+  uint32_t reserved;
+} SbSpeculation;
 
 #ifdef __cplusplus
 extern "C" {
@@ -2062,6 +2148,116 @@ SbStatus sb_track_audio_absorb(const struct SbTrackAudio *audio, struct SbSeekIn
  `raw` and `index` must be NULL or live handles.
  */
 SbStatus sb_raw_frames_absorb(const struct SbRawFrames *raw, struct SbSeekIndex *index);
+
+/*
+ Sets how `disc` starts ranges of the area from `slot` that its seek index (if any)
+ cannot reach cheaply: `SB_SEEK_POLICY_EXACT` (the default) or
+ `SB_SEEK_POLICY_SPECULATIVE`, which lets a handle begin a range far into the area after a
+ short search of the frame timecodes instead of reading the area up to it
+ (**provisional reading**, specification 4, 4.2 item 8, sacd-spec `82eac6c`).
+
+ Opting in is accepting provisional positions: they equal a straight read whenever no
+ frame numbered at or after the range was accepted before the provisional start and the
+ frame under assembly there is none or numbered below the range (always on a well-formed
+ disc), but no reader can know that without reading the sectors before the range, and
+ on hostile images they can differ. Query a handle with `sb_track_audio_speculation`
+ after its first read; with a seek index kept (`sb_disc_seek_index_enable`), provisional
+ readings are checked as the index is built (`sb_disc_seek_verify`) and their verdicts
+ returned by `sb_disc_seek_event_next`.
+
+ A provisional start is used when the exact start lies more than `min_gap_sectors`
+ (`SB_SEEK_DEFAULT_MIN_GAP`) before the range's estimated position. The policy is the
+ handle's own: clones (`sb_disc_clone`) start with a copy. Fails with
+ `SB_STATUS_NO_SUCH_AREA`, or `SB_STATUS_INVALID_ARGUMENT` for another `policy`.
+
+ # Safety
+
+ `disc` must be NULL or a live handle.
+ */
+SbStatus sb_disc_seek_policy_set(const struct SbDisc *disc,
+                                 uint32_t slot,
+                                 uint32_t policy,
+                                 uint64_t min_gap_sectors);
+
+/*
+ Writes to `*out` whether `audio`'s positions are provisional (see
+ `sb_disc_seek_policy_set`): `SB_SPECULATION_EXACT`, or the state of its provisional
+ reading. A handle chooses its start on its first read: query it after that.
+
+ # Safety
+
+ `audio` must be NULL or a live handle; `out` NULL or valid for a write.
+ */
+SbStatus sb_track_audio_speculation(const struct SbTrackAudio *audio, struct SbSpeculation *out);
+
+/*
+ As `sb_track_audio_speculation`, for a raw frames handle (a stored frame list's are
+ exact).
+
+ # Safety
+
+ `raw` must be NULL or a live handle; `out` NULL or valid for a write.
+ */
+SbStatus sb_raw_frames_speculation(const struct SbRawFrames *raw, struct SbSpeculation *out);
+
+/*
+ Builds the seek index `disc` keeps for the area from `slot` by about `max_sectors` more
+ sectors and checks the provisional readings it then reaches: as
+ `sb_disc_seek_index_extend`, whose verdicts `sb_disc_seek_event_next` returns. `*complete`
+ (if not NULL) is 1 once the index covers the whole area: every provisional reading of
+ the area has its verdict then. Call it on a clone in a thread of its own while other
+ clones read. Fails as `sb_disc_seek_index_extend`.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `complete` NULL or valid for a write.
+ */
+SbStatus sb_disc_seek_verify(const struct SbDisc *disc,
+                             uint32_t slot,
+                             uint64_t max_sectors,
+                             uint8_t *complete);
+
+/*
+ The next verdict on a provisional reading of the area from `slot` of `disc` or any of its
+ clones, in `*out`: `SB_SPECULATION_CONFIRMED`, `SB_SPECULATION_REFUTED` (drop or re-read
+ what was served from positions `first` to `exact_from - 1`; an exact read of them is now
+ cheap) or `SB_SPECULATION_UNVERIFIED`. Returns `SB_STATUS_END` when there is none. The
+ disc and its clones share one queue, which keeps the last 1 024 verdicts; each verdict
+ is returned once, by whichever handle asks first.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `out` NULL or valid for a write.
+ */
+SbStatus sb_disc_seek_event_next(const struct SbDisc *disc,
+                                 uint32_t slot,
+                                 struct SbSpeculation *out);
+
+/*
+ Checks the provisional readings a caller-kept seek index has taken
+ (`sb_track_audio_absorb`) and that its checkpoints now reach, reading through `disc` (a
+ disc of the index's image); `*settled` (if not NULL) receives the number checked. Their
+ verdicts are returned by `sb_seek_index_event_next`; `sb_seek_index_extend` checks them
+ too. Fails with `SB_STATUS_INVALID_ARGUMENT` for a disc of another image (see
+ `SbSeekIndex`), `SB_STATUS_IO` if a read fails.
+
+ # Safety
+
+ `disc` and `index` must be NULL or live handles; `settled` NULL or valid for a write.
+ */
+SbStatus sb_seek_index_verify(const struct SbDisc *disc,
+                              struct SbSeekIndex *index,
+                              uint32_t *settled);
+
+/*
+ The next verdict on a provisional reading a caller-kept seek index has checked, in
+ `*out` (see `sb_disc_seek_event_next`); `SB_STATUS_END` when there is none.
+
+ # Safety
+
+ `index` must be NULL or a live handle; `out` NULL or valid for a write.
+ */
+SbStatus sb_seek_index_event_next(const struct SbSeekIndex *index, struct SbSpeculation *out);
 
 #ifdef __cplusplus
 }  // extern "C"
