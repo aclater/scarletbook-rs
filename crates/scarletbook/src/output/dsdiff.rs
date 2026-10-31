@@ -4,7 +4,8 @@
 
 use std::ops::Range;
 
-use super::{Checked, Layout, OutputOptions, Part, RegionKind};
+use super::markers::{self, Markers};
+use super::{Checked, Layout, OutputOptions, Part, RegionKind, SourceTrack};
 use crate::audio::FRAME_BYTES_PER_CHANNEL;
 use crate::error::Error;
 use crate::toc::{Area, LoudspeakerLayout};
@@ -179,13 +180,16 @@ pub enum LocalChunk {
     /// `DSTI`, the DST sound index (written with DST sound data as
     /// [`OutputOptions::dsdiff_dst_index`] says).
     DstIndex,
+    /// `DIIN`, the edited master information (written as
+    /// [`OutputOptions::dsdiff_edited_master_info`] says).
+    EditedMasterInfo,
 }
 
 impl LocalChunk {
-    /// The default order: `PROP`, the sound data, `DSTI`. Chunks added later take their
-    /// place in it, so it is a slice.
+    /// The default order: `PROP`, `DIIN`, the sound data, `DSTI`. Chunks added later take
+    /// their place in it, so it is a slice.
     pub const DEFAULT_ORDER: &'static [LocalChunk] =
-        &[LocalChunk::Property, LocalChunk::SoundData, LocalChunk::DstIndex];
+        &[LocalChunk::Property, LocalChunk::EditedMasterInfo, LocalChunk::SoundData, LocalChunk::DstIndex];
 }
 
 /// The sound data of a file, for [`assemble`].
@@ -204,6 +208,30 @@ pub(super) fn assemble(
     options: &OutputOptions,
     sound: Sound,
 ) -> Result<(), Error> {
+    let edited;
+    let options = if options.dsdiff_edited_master {
+        // 8.4.11: the area and range qualify, and the file has `ABSS`, `LSCO` and `DIIN`
+        // with the program's markers.
+        markers::check_edited_master(area, layout.first, layout.end)?;
+        if matches!(options.dsdiff_markers, Markers::Custom(_)) {
+            return Err(Error::InvalidArgument(
+                "an edited master has the program's markers, not custom ones",
+            ));
+        }
+        // `LSCO` is required (8.4.11 item 1; 8.6 row 16).
+        if !options.dsdiff_loudspeaker_configuration {
+            return Err(Error::InvalidArgument("an edited master has LSCO"));
+        }
+        edited = OutputOptions {
+            dsdiff_absolute_start: Some(options.dsdiff_absolute_start.unwrap_or(0)),
+            dsdiff_edited_master_info: true,
+            source_track: SourceTrack::None,
+            ..options.clone()
+        };
+        &edited
+    } else {
+        options
+    };
     let positions = u64::from(layout.end - layout.first);
     let cmpr = match sound {
         Sound::Dsd(..) => CMPR_DSD,
@@ -214,8 +242,23 @@ pub(super) fn assemble(
         Sound::Dst(_) if options.dsdiff_dst_index => Some(12 * positions),
         _ => None,
     };
+    let diin = if options.dsdiff_edited_master_info {
+        let source = if options.dsdiff_edited_master {
+            None
+        } else {
+            layout.source.and_then(|n| area.track(u32::from(n)))
+        };
+        let list = match &options.dsdiff_markers {
+            Markers::FromToc => markers::from_toc(area, layout.first, layout.end, source, options),
+            Markers::Custom(list) => list.clone(),
+        };
+        Some(markers::diin(layout, &list, options)?)
+    } else {
+        None
+    };
     let written = |c: LocalChunk| match c {
         LocalChunk::Property | LocalChunk::SoundData => true,
+        LocalChunk::EditedMasterInfo => diin.is_some(),
         LocalChunk::DstIndex => index.is_some(),
     };
     let mut order: Vec<LocalChunk> = Vec::with_capacity(LocalChunk::DEFAULT_ORDER.len());
@@ -245,6 +288,7 @@ pub(super) fn assemble(
     };
     let size_of = |c: LocalChunk| match c {
         LocalChunk::Property => prop.len() as u64,
+        LocalChunk::EditedMasterInfo => diin.as_ref().map_or(0, |d| d.len() as u64),
         LocalChunk::SoundData => occupied(sound_d),
         LocalChunk::DstIndex => index.map_or(0, occupied),
     };
@@ -266,6 +310,7 @@ pub(super) fn assemble(
     for &c in &order {
         match c {
             LocalChunk::Property => bytes.extend_from_slice(&prop),
+            LocalChunk::EditedMasterInfo => bytes.extend_from_slice(diin.as_deref().unwrap_or_default()),
             LocalChunk::DstIndex => {
                 if let Sound::Dst(dst) = &sound {
                     let entries = dst.index(units, options.dsdiff_dst_index_offset);

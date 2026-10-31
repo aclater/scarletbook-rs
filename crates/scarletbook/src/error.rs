@@ -131,6 +131,37 @@ pub enum OutputRefusal {
         /// The area configuration byte, as stored.
         config: u8,
     },
+    /// The file can't be an edited master (specification 8, 8.4.11): the check that fails.
+    #[error("not an edited master: {0}")]
+    NotEditedMaster(EditedMasterCheck),
+}
+
+/// A requirement of an edited master (specification 8, 8.4.11) that an area or range
+/// fails ([`OutputRefusal::NotEditedMaster`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum EditedMasterCheck {
+    /// The range is not the play range `[0, P)` (8.4.11, first paragraph).
+    #[error("it holds only the play range of an area")]
+    Range,
+    /// The layout is not stereo, 3/2 or 5.1 (item 2).
+    #[error("the area's loudspeaker layout is unspecified")]
+    Layout,
+    /// The area has no track, or more than 255 (item 5).
+    #[error("the area must have 1 to 255 tracks")]
+    TrackCount,
+    /// A track's duration is below 75 frames (item 5).
+    #[error("track {track} is shorter than 75 frames")]
+    TrackTooShort {
+        /// The track's number.
+        track: u8,
+    },
+    /// The tracks are out of order, overlap or are empty (item 5, 8.4.10 item 2).
+    #[error("the tracks are out of order or overlap")]
+    TracksNotInOrder,
+    /// The program is longer than 255 minutes, 59 seconds and 74 frames (item 6).
+    #[error("the program is longer than 255:59:74")]
+    ProgramTooLong,
 }
 
 /// Broad classes of [`Error`], for callers (and the FFI) that map errors to codes.

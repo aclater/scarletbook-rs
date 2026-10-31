@@ -44,7 +44,7 @@ pub use audio::{
 pub use control::{CancelToken, Progress};
 pub use disc::Disc;
 pub use dst::{DstDecoder, DstError};
-pub use error::{Error, ErrorClass, OutputRefusal, Slot, Warning, WarningCode};
+pub use error::{EditedMasterCheck, Error, ErrorClass, OutputRefusal, Slot, Warning, WarningCode};
 pub use image::{Image, MASTER_TOC_LSN, SECTOR_SIZE, SectorFormat};
 pub use read_at::{ReadAt, ReadAtReader};
 pub use seek::{
