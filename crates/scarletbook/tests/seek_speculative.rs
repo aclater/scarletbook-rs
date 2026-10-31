@@ -298,3 +298,32 @@ proptest! {
         }
     }
 }
+
+/// An exact cursor continued from a provisional one does not take its counts, which begin
+/// at its `L`: until it reads, it reports a scan that has read nothing (4.4.5 items 4 and
+/// 5).
+#[test]
+#[cfg_attr(miri, ignore = "reads thousands of sectors")]
+fn an_exact_continuation_of_a_provisional_cursor_takes_no_counts() {
+    let mut audio = pack(&frames(1000));
+    let mid = audio.len() / 2;
+    audio.insert(mid, overrun_sector());
+    let img =
+        Spec { channels: 2, playtime: 1000, tracks: vec![TrackSpec { start: 0, duration: 1000 }], audio }
+            .build();
+    let mut disc = Disc::open(Cursor::new(img)).unwrap();
+    disc.enable_seek_index(Slot::TwoChannel, IndexOptions::new()).unwrap();
+    disc.set_seek_policy(Slot::TwoChannel, SeekPolicy::Speculative(options())).unwrap();
+    let c = disc.range_frames_cursor(Slot::TwoChannel, 480, 520).unwrap();
+    let (_, prev) = read(&mut disc, c);
+    assert!(matches!(prev.speculation(), Speculation::Pending { .. }));
+    assert_eq!(prev.malformed_sectors(), 1, "counted from L");
+    while !disc.extend_seek_index(Slot::TwoChannel, 1 << 20).unwrap() {}
+    let next = disc.continue_range_frames(prev, Slot::TwoChannel, 900, 910).unwrap();
+    assert_eq!(next.speculation(), Speculation::Exact);
+    assert_eq!(next.counts_from(), None);
+    assert_eq!((next.malformed_sectors(), next.warnings().len()), (0, 0));
+    // Once it reads, the counts of a scan from the first sector.
+    let (_, next) = read(&mut disc, next);
+    assert_eq!((next.malformed_sectors(), next.counts_from()), (1, None));
+}

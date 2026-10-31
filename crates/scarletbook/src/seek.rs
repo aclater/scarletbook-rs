@@ -258,6 +258,10 @@ impl SpeculativeOptions {
 
 /// Whether a cursor's positions are this specification's, or provisional (specification
 /// 4, 4.2 item 8; see [`SeekPolicy`]).
+///
+/// A cursor chooses its start on its first read: check this after the first frame.
+/// Before it, a cursor allowed to read provisionally shows `Pending { lsn: 0, .. }`, even
+/// one that then finds an exact start better and reports [`Speculation::Exact`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Speculation {
@@ -331,7 +335,9 @@ pub(crate) fn locate<R: Read + Seek>(
         }
         .clamp(lo + 1, hi - 1);
         let before = hi - lo;
-        // One probe: up to PROBE_SPAN sectors from `guess`, `per` at a time, until a record.
+        // One probe: from `guess`, `per` sectors at a time, until a record, starting reads
+        // only below `guess + PROBE_SPAN` (the last may end up to `per - 1` past it) and
+        // below `hi`, so a record found lies in `[guess, hi)`.
         let mut found = None;
         let mut at = guess;
         while found.is_none() && at < hi.min(guess + PROBE_SPAN) && reads < max {
@@ -346,7 +352,7 @@ pub(crate) fn locate<R: Read + Seek>(
             at += count;
         }
         match found {
-            Some((m, t)) if t <= first && m < hi => (lo, lo_t) = (m, t),
+            Some((m, t)) if t <= first => (lo, lo_t) = (m, t),
             Some((_, t)) => (hi, hi_t) = (guess, t.max(lo_t.saturating_add(1))),
             None => hi = guess,
         }

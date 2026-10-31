@@ -1713,9 +1713,14 @@ impl TrackCursor {
             // and item 7 a start from the seek index (item 8 a provisional one, if allowed).
             (Opening::Continues | Opening::FromIndex, Some(index)) => {
                 let mut next = Self::start_with(area, (first, end), image_sectors, Some(index), policy);
-                if reusable && next.area.speculation() == Speculation::Exact {
+                if reusable
+                    && next.area.speculation() == Speculation::Exact
+                    && self.area.speculation() == Speculation::Exact
+                {
                     // Moved ahead of a scan that could have gone on: until it reads, it
-                    // reports what that scan reports (a pass from the first sector).
+                    // reports what that scan reports (a pass from the first sector). Not
+                    // from a provisional scan, whose counts begin at its `L` (4.4.5 items 4
+                    // and 5).
                     next.area.carry_counts(&self.area);
                 }
                 next
