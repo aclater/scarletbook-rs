@@ -22,6 +22,7 @@ SB_STATUS_BUFFER_TOO_SMALL = -11,
 SB_STATUS_IO = -12,
 SB_STATUS_INVALID_DST_FRAME = -13,
 SB_STATUS_PANIC = -14,
+SB_STATUS_FRAME_RANGE_INVALID = -15,
 } SbStatus;
 typedef enum SbFrameStatus {
 SB_FRAME_STATUS_DSD = 0,
@@ -155,6 +156,10 @@ enum SbStatus sb_disc_warning(const struct SbDisc *disc, uint32_t index, struct 
 enum SbStatus sb_track_check(const struct SbDisc *disc, uint32_t slot, uint32_t number);
 enum SbStatus sb_track_audio_open(const struct SbDisc *disc, uint32_t slot, uint32_t number, struct SbTrackAudio **out);
 enum SbStatus sb_track_audio_open_next(const struct SbDisc *disc, struct SbTrackAudio *prev, uint32_t slot, uint32_t number, struct SbTrackAudio **out);
+enum SbStatus sb_track_range_with_pause(const struct SbDisc *disc, uint32_t slot, uint32_t number, uint32_t *first, uint32_t *end);
+enum SbStatus sb_range_check(const struct SbDisc *disc, uint32_t slot, uint32_t first, uint32_t end);
+enum SbStatus sb_range_audio_open(const struct SbDisc *disc, uint32_t slot, uint32_t first, uint32_t end, struct SbTrackAudio **out);
+enum SbStatus sb_range_audio_open_next(const struct SbDisc *disc, struct SbTrackAudio *prev, uint32_t slot, uint32_t first, uint32_t end, struct SbTrackAudio **out);
 uint32_t sb_track_audio_channels(const struct SbTrackAudio *audio);
 enum SbStatus sb_track_audio_read(const struct SbTrackAudio *audio, const struct SbDisc *disc, uint8_t *buf, size_t cap, struct SbFrameInfo *info);
 enum SbStatus sb_track_audio_counts(const struct SbTrackAudio *audio, uint64_t *missing, uint64_t *invalid);
