@@ -903,6 +903,9 @@ fn struct_layouts() {
     });
     assert_layout!(SbFrameInfo, size 16, align 4, { number: 0, status: 4, dst_rule: 8, size: 12 });
     assert_layout!(SbRawFrameInfo, size 12, align 4, { number: 0, kind: 4, size: 8 });
+    assert_layout!(SbSpeculation, size 40, align align64, {
+        claim: 0, lsn: 8, slot: 16, state: 20, first: 24, last_returned: 28, exact_from: 32, reserved: 36,
+    });
     // SbWarning ends with its pointer: no padding where the pointer is 8 bytes (every
     // release target).
     assert_eq!(std::mem::align_of::<SbWarning>(), align64);

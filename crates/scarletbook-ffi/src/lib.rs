@@ -22,8 +22,8 @@ use scarletbook::log::{Level, Log};
 use scarletbook::toc::{AreaTextItem, DiscTextItem, TrackTextItem};
 use scarletbook::{
     Area, AreaCursor, AreaIndex, DecodeOn, Disc, Error, FrameContent, FrameKind, FrameStatus, IndexOptions,
-    LoudspeakerLayout, ReadAt, ReadAtReader, Slot, Speaker, TrackAudioCursor, TrackCursor, TrackFrame,
-    WarningCode,
+    LoudspeakerLayout, ReadAt, ReadAtReader, SeekPolicy, Slot, Speaker, Speculation, SpeculativeOptions,
+    TrackAudioCursor, TrackCursor, TrackFrame, WarningCode,
 };
 
 /// Result of every call: an `int32_t`, whose values are the `SB_STATUS_*` constants. In C
@@ -382,6 +382,9 @@ pub struct SbDisc {
     /// The C log callback the disc's log calls, if any; replaced only while `inner` can be
     /// borrowed mutably, and cleared when the disc is dropped.
     log: RefCell<Option<Arc<LogTarget>>>,
+    /// Verdicts on provisional readings taken from the disc's queue and not yet returned
+    /// by `sb_disc_seek_event_next`, per slot.
+    events: RefCell<[std::collections::VecDeque<scarletbook::SeekEvent>; 2]>,
 }
 
 impl Drop for SbDisc {
@@ -528,6 +531,8 @@ impl RawFrames {
 #[derive(Debug)]
 pub struct SbSeekIndex {
     inner: RefCell<AreaIndex>,
+    /// Verdicts taken from the index and not yet returned by `sb_seek_index_event_next`.
+    events: RefCell<std::collections::VecDeque<scarletbook::SeekEvent>>,
 }
 
 // Handles may be moved between threads (the conventions allow it); this must keep
@@ -791,6 +796,7 @@ unsafe fn open_reader(
         id: NEXT_DISC_ID.fetch_add(1, Ordering::Relaxed),
         source,
         log: RefCell::new(target),
+        events: RefCell::default(),
     });
     // SAFETY: `out` is non-NULL and valid for a write by this function's contract.
     unsafe { out.write(Box::into_raw(handle)) };
@@ -1269,8 +1275,13 @@ unsafe fn clone_into(
     };
     let d = handle.get().map_err(clear)?;
     let clone = d.share_with_log(reader, log).map_err(|e| clear(e.into()))?;
-    let clone =
-        Box::new(SbDisc { inner: RefCell::new(clone), id: handle.id, source, log: RefCell::new(target) });
+    let clone = Box::new(SbDisc {
+        inner: RefCell::new(clone),
+        id: handle.id,
+        source,
+        log: RefCell::new(target),
+        events: RefCell::default(),
+    });
     // SAFETY: non-NULL and valid for a write by this function's contract.
     unsafe { out.write(Box::into_raw(clone)) };
     Ok(SbStatus::Ok)
@@ -2994,7 +3005,7 @@ pub unsafe extern "C" fn sb_seek_index_new(
         let area = find_area(&d, slot)?;
         let options = IndexOptions::new().with_interval(interval).with_inline_budget(budget(inline_budget));
         let index = AreaIndex::new(area, d.toc().sectors, options)?;
-        let index = Box::new(SbSeekIndex { inner: RefCell::new(index) });
+        let index = Box::new(SbSeekIndex { inner: RefCell::new(index), events: RefCell::default() });
         // SAFETY: non-NULL and valid for a write by this function's contract.
         unsafe { out.write(Box::into_raw(index)) };
         Ok(SbStatus::Ok)
@@ -3182,7 +3193,7 @@ pub unsafe extern "C" fn sb_seek_index_load(
         let d = handle.get()?;
         let area = find_area(&d, slot)?;
         let index = AreaIndex::from_bytes(area, d.toc().sectors, bytes, budget(inline_budget))?;
-        let index = Box::new(SbSeekIndex { inner: RefCell::new(index) });
+        let index = Box::new(SbSeekIndex { inner: RefCell::new(index), events: RefCell::default() });
         // SAFETY: non-NULL and valid for a write by this function's contract.
         unsafe { out.write(Box::into_raw(index)) };
         Ok(SbStatus::Ok)
@@ -3285,7 +3296,7 @@ pub unsafe extern "C" fn sb_disc_seek_index_get(
             return Err(Failure::arg("NULL output pointer"));
         }
         let Some(index) = d.get()?.seek_index(slot_from(slot)?) else { return Ok(SbStatus::Absent) };
-        let index = Box::new(SbSeekIndex { inner: RefCell::new(index) });
+        let index = Box::new(SbSeekIndex { inner: RefCell::new(index), events: RefCell::default() });
         // SAFETY: non-NULL and valid for a write by this function's contract.
         unsafe { out.write(Box::into_raw(index)) };
         Ok(SbStatus::Ok)
@@ -3474,9 +3485,301 @@ pub unsafe extern "C" fn sb_raw_frames_absorb(raw: *const SbRawFrames, index: *m
     })
 }
 
+/// `sb_disc_seek_policy_set`: exact reads only (the default).
+pub const SB_SEEK_POLICY_EXACT: u32 = 0;
+/// `sb_disc_seek_policy_set`: provisional reading allowed (specification 4, 4.2 item 8).
+pub const SB_SEEK_POLICY_SPECULATIVE: u32 = 1;
+/// The default `min_gap_sectors` of `sb_disc_seek_policy_set` (4 MiB of sectors).
+pub const SB_SEEK_DEFAULT_MIN_GAP: u64 = 2048;
+
+/// `SbSpeculation.state`: exact positions, not a provisional reading.
+pub const SB_SPECULATION_EXACT: u32 = 0;
+/// `SbSpeculation.state`: provisional positions, not yet checked.
+pub const SB_SPECULATION_PENDING: u32 = 1;
+/// `SbSpeculation.state`: provisional positions confirmed: they are the specification's.
+pub const SB_SPECULATION_CONFIRMED: u32 = 2;
+/// `SbSpeculation.state`: provisional positions possibly different from the specification's
+/// below `exact_from`.
+pub const SB_SPECULATION_REFUTED: u32 = 3;
+/// `SbSpeculation.state`: provisional positions that will not be checked.
+pub const SB_SPECULATION_UNVERIFIED: u32 = 4;
+
+/// Whether a handle's positions are provisional (specification 4, 4.2 item 8, sacd-spec
+/// `82eac6c`), or the verdict an event reports (`sb_disc_seek_event_next`).
+///
+/// Layout: 40 bytes, aligned to 8, without padding (2 fields of 8 bytes, then 6 of 4).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SbSpeculation {
+    /// The provisional reading's number (0 for exact positions): events and handles name it
+    /// alike.
+    pub claim: u64,
+    /// `L`, the sector the provisional reading began at (0 before the handle's first read,
+    /// which is when it chooses, and for exact positions). The malformed count and warnings
+    /// of a provisional handle begin there (4.4.5 item 5).
+    pub lsn: u64,
+    /// The area's slot.
+    pub slot: u32,
+    /// `SB_SPECULATION_*`.
+    pub state: u32,
+    /// `u`, the first position read provisionally.
+    pub first: u32,
+    /// For `SB_SPECULATION_REFUTED`: the last position returned, `UINT32_MAX` if none.
+    pub last_returned: u32,
+    /// For `SB_SPECULATION_REFUTED`: positions from this frame on are exact (positions
+    /// `first` to `exact_from - 1` are possibly different, whether or not missing).
+    pub exact_from: u32,
+    /// 0.
+    pub reserved: u32,
+}
+
+impl SbSpeculation {
+    fn of(slot: Slot, claim: Option<u64>, s: Speculation) -> Self {
+        let slot = slot_index(slot);
+        let claim = claim.unwrap_or(0);
+        let none = u32::MAX;
+        let (state, lsn, first, last_returned, exact_from) = match s {
+            Speculation::Pending { lsn, first } => (SB_SPECULATION_PENDING, lsn, first, none, 0),
+            Speculation::Confirmed { lsn, first } => (SB_SPECULATION_CONFIRMED, lsn, first, none, 0),
+            Speculation::Refuted { lsn, first, last_returned, exact_from } => {
+                (SB_SPECULATION_REFUTED, lsn, first, last_returned.unwrap_or(none), exact_from)
+            }
+            Speculation::Unverified { lsn, first } => (SB_SPECULATION_UNVERIFIED, lsn, first, none, 0),
+            Speculation::Exact => (SB_SPECULATION_EXACT, 0, 0, none, 0),
+            // A state this interface does not know yet is never reported as exact.
+            _ => (SB_SPECULATION_UNVERIFIED, 0, 0, none, 0),
+        };
+        SbSpeculation { claim, lsn, slot, state, first, last_returned, exact_from, reserved: 0 }
+    }
+}
+
+/// Sets how `disc` starts ranges of the area from `slot` that its seek index (if any)
+/// cannot reach cheaply: `SB_SEEK_POLICY_EXACT` (the default) or
+/// `SB_SEEK_POLICY_SPECULATIVE`, which lets a handle begin a range far into the area after a
+/// short search of the frame timecodes instead of reading the area up to it
+/// (**provisional reading**, specification 4, 4.2 item 8, sacd-spec `82eac6c`).
+///
+/// Opting in is accepting provisional positions: they equal a straight read whenever no
+/// frame numbered at or after the range was accepted before the provisional start and the
+/// frame under assembly there is none or numbered below the range (always on a well-formed
+/// disc), but no reader can know that without reading the sectors before the range, and
+/// on hostile images they can differ. Query a handle with `sb_track_audio_speculation`
+/// after its first read; with a seek index kept (`sb_disc_seek_index_enable`), provisional
+/// readings are checked as the index is built (`sb_disc_seek_verify`) and their verdicts
+/// returned by `sb_disc_seek_event_next`.
+///
+/// A provisional start is used when the exact start lies more than `min_gap_sectors`
+/// (`SB_SEEK_DEFAULT_MIN_GAP`) before the range's estimated position; 0 allows one whenever
+/// the exact start lies before it at all. `min_gap_sectors` is ignored with
+/// `SB_SEEK_POLICY_EXACT`. The policy is the
+/// handle's own: clones (`sb_disc_clone`) start with a copy. Fails with
+/// `SB_STATUS_NO_SUCH_AREA`, or `SB_STATUS_INVALID_ARGUMENT` for another `policy`.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_disc_seek_policy_set(
+    disc: *const SbDisc,
+    slot: u32,
+    policy: u32,
+    min_gap_sectors: u64,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?;
+        let policy = match policy {
+            SB_SEEK_POLICY_EXACT => SeekPolicy::Exact,
+            SB_SEEK_POLICY_SPECULATIVE => {
+                SeekPolicy::Speculative(SpeculativeOptions::new().with_min_gap_sectors(min_gap_sectors))
+            }
+            _ => {
+                return Err(Failure::arg(
+                    "policy must be SB_SEEK_POLICY_EXACT or SB_SEEK_POLICY_SPECULATIVE",
+                ));
+            }
+        };
+        d.get_mut()?.set_seek_policy(slot_from(slot)?, policy)?;
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// Writes to `*out` whether `audio`'s positions are provisional (see
+/// `sb_disc_seek_policy_set`): `SB_SPECULATION_EXACT`, or the state of its provisional
+/// reading. A handle chooses its start on its first read: query it after that.
+///
+/// # Safety
+///
+/// `audio` must be NULL or a live handle; `out` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_track_audio_speculation(
+    audio: *const SbTrackAudio,
+    out: *mut SbSpeculation,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let a = unsafe { audio_handle(audio) }?;
+        let c = a.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
+        let slot = c.slot();
+        let value = SbSpeculation::of(slot, c.speculation_id(), c.speculation());
+        // SAFETY: forwarded contract.
+        unsafe { write_out(out, value) }?;
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// As `sb_track_audio_speculation`, for a raw frames handle (a stored frame list's are
+/// exact).
+///
+/// # Safety
+///
+/// `raw` must be NULL or a live handle; `out` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_raw_frames_speculation(
+    raw: *const SbRawFrames,
+    out: *mut SbSpeculation,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let r = unsafe { raw_handle(raw) }?;
+        let raw = r.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
+        let value = match &raw.source {
+            Source::Range(c) => SbSpeculation::of(c.slot(), c.speculation_id(), c.speculation()),
+            Source::List(..) => SbSpeculation::default(),
+        };
+        // SAFETY: forwarded contract.
+        unsafe { write_out(out, value) }?;
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// Builds the seek index `disc` keeps for the area from `slot` by about `max_sectors` more
+/// sectors and checks the provisional readings it then reaches: as
+/// `sb_disc_seek_index_extend`, whose verdicts `sb_disc_seek_event_next` returns. `*complete`
+/// (if not NULL) is 1 once the index covers the whole area: every provisional reading of
+/// the area has its verdict then. Call it on a clone in a thread of its own while other
+/// clones read. Fails as `sb_disc_seek_index_extend`.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle; `complete` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_disc_seek_verify(
+    disc: *const SbDisc,
+    slot: u32,
+    max_sectors: u64,
+    complete: *mut u8,
+) -> SbStatus {
+    // SAFETY: forwarded contract.
+    unsafe { sb_disc_seek_index_extend(disc, slot, max_sectors, complete) }
+}
+
+/// The next verdict on a provisional reading of the area from `slot` of `disc` or any of its
+/// clones, in `*out`: `SB_SPECULATION_CONFIRMED`, `SB_SPECULATION_REFUTED` (drop or re-read
+/// what was served from positions `first` to `exact_from - 1`; an exact read of them is now
+/// cheap) or `SB_SPECULATION_UNVERIFIED`. Returns `SB_STATUS_END` when there is none. The
+/// disc and its clones share one queue, which keeps the last 1 024 verdicts; each verdict
+/// is returned once, by whichever handle asks first. A call moves the verdicts queued so
+/// far to the asking handle, which returns them one by one: verdicts it has not returned
+/// when it is freed are lost (a handle's own reports, `sb_track_audio_speculation`, keep
+/// them).
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle; `out` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_disc_seek_event_next(
+    disc: *const SbDisc,
+    slot: u32,
+    out: *mut SbSpeculation,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?;
+        if out.is_null() {
+            return Err(Failure::arg("NULL output pointer"));
+        }
+        let slot = slot_from(slot)?;
+        let at = slot_index(slot) as usize;
+        let mut events = d.events.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))?;
+        if events[at].is_empty() {
+            events[at].extend(d.get()?.take_seek_events(slot));
+        }
+        let Some(e) = events[at].pop_front() else { return Ok(SbStatus::End) };
+        // SAFETY: non-NULL and valid for a write by this function's contract.
+        unsafe { out.write(SbSpeculation::of(e.slot, Some(e.claim), e.speculation)) };
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// Checks the provisional readings a caller-kept seek index has taken
+/// (`sb_track_audio_absorb`) and that its checkpoints now reach, reading through `disc` (a
+/// disc of the index's image); `*settled` (if not NULL) receives the number checked. Their
+/// verdicts are returned by `sb_seek_index_event_next`; `sb_seek_index_extend` checks them
+/// too. Fails with `SB_STATUS_INVALID_ARGUMENT` for a disc of another image (see
+/// `SbSeekIndex`), `SB_STATUS_IO` if a read fails.
+///
+/// # Safety
+///
+/// `disc` and `index` must be NULL or live handles; `settled` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_seek_index_verify(
+    disc: *const SbDisc,
+    index: *mut SbSeekIndex,
+    settled: *mut u32,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?;
+        // SAFETY: forwarded contract.
+        let i = unsafe { index_handle(index) }?;
+        let mut index = i.inner.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))?;
+        let mut disc = d.get_mut()?;
+        let n = index.verify(disc.image_mut())?;
+        if !settled.is_null() {
+            // SAFETY: non-NULL and valid for a write by this function's contract.
+            unsafe { settled.write(u32::try_from(n).unwrap_or(u32::MAX)) };
+        }
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// The next verdict on a provisional reading a caller-kept seek index has checked, in
+/// `*out` (see `sb_disc_seek_event_next`); `SB_STATUS_END` when there is none.
+///
+/// # Safety
+///
+/// `index` must be NULL or a live handle; `out` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_seek_index_event_next(
+    index: *const SbSeekIndex,
+    out: *mut SbSpeculation,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let i = unsafe { index_handle(index) }?;
+        if out.is_null() {
+            return Err(Failure::arg("NULL output pointer"));
+        }
+        let mut events = i.events.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))?;
+        if events.is_empty() {
+            events.extend(i.inner.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))?.take_events());
+        }
+        let Some(e) = events.pop_front() else { return Ok(SbStatus::End) };
+        // SAFETY: non-NULL and valid for a write by this function's contract.
+        unsafe { out.write(SbSpeculation::of(e.slot, Some(e.claim), e.speculation)) };
+        Ok(SbStatus::Ok)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_default_gap_is_the_librarys() {
+        assert_eq!(SB_SEEK_DEFAULT_MIN_GAP, scarletbook::SpeculativeOptions::default().min_gap_sectors);
+    }
 
     #[test]
     fn guard_turns_a_panic_into_a_status() {

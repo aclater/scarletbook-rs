@@ -1718,6 +1718,11 @@ impl TrackCursor {
         TrackCursor { area: AreaCursor::speculative(self.area, first, playtime, interval, options), ..self }
     }
 
+    /// The slot of this cursor's area.
+    pub fn slot(&self) -> Slot {
+        self.area_key.slot
+    }
+
     /// Whether this cursor's positions are provisional (see [`SeekPolicy`]).
     pub fn speculation(&self) -> Speculation {
         self.area.speculation()
@@ -2311,6 +2316,11 @@ impl TrackAudioCursor {
             index,
             options,
         )?))
+    }
+
+    /// The slot of this cursor's area.
+    pub fn slot(&self) -> Slot {
+        self.frames.slot()
     }
 
     /// Whether this cursor's positions are provisional (see [`SeekPolicy`]). Its missing

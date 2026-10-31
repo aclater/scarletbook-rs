@@ -542,3 +542,169 @@ fn an_index_is_of_one_image() {
     free(x);
     free(y);
 }
+
+fn speculation(audio: *const SbTrackAudio) -> SbSpeculation {
+    let mut s = SbSpeculation::default();
+    // SAFETY: a live handle and a valid out-pointer.
+    assert_eq!(unsafe { sb_track_audio_speculation(audio, &mut s) }, SbStatus::Ok);
+    s
+}
+
+fn policy(disc: *const SbDisc, slot: u32, policy: u32, gap: u64) -> SbStatus {
+    // SAFETY: a live handle.
+    unsafe { sb_disc_seek_policy_set(disc, slot, policy, gap) }
+}
+
+fn next_event(disc: *const SbDisc, slot: u32) -> Option<SbSpeculation> {
+    let mut e = SbSpeculation::default();
+    // SAFETY: a live handle and a valid out-pointer.
+    match unsafe { sb_disc_seek_event_next(disc, slot, &mut e) } {
+        SbStatus::Ok => Some(e),
+        SbStatus::End => None,
+        s => panic!("{s:?}: {}", last_error()),
+    }
+}
+
+/// Provisional reading through the C interface (#94; specification 4, 4.2 item 8): only
+/// once opted in; the handle reports it; with a seek index kept, it is checked and its
+/// verdict returned once; the positions equal a straight read on this well-formed image.
+#[test]
+#[cfg_attr(miri, ignore = "reads a corpus image")]
+fn provisional_reading_is_opt_in_marked_and_checked() {
+    let bytes = image("dst-features-2ch-6ch");
+    let plain = open(&bytes);
+    let disc = open(&bytes);
+    let p = playtime(disc, 0);
+    let (first, end) = (p / 2, p / 2 + 3);
+    // The default: exact.
+    let a = range_open(disc, 0, first, end);
+    read_all(a, disc);
+    let s = speculation(a);
+    assert_eq!((s.state, s.claim, s.lsn), (SB_SPECULATION_EXACT, 0, 0));
+    audio_free(a);
+    // Opted in (any gap), with a seek index kept to check the readings.
+    assert_eq!(policy(disc, 0, 7, 0), SbStatus::InvalidArgument);
+    assert_eq!(policy(disc, 9, SB_SEEK_POLICY_SPECULATIVE, 0), SbStatus::InvalidArgument);
+    assert_eq!(policy(disc, 0, SB_SEEK_POLICY_SPECULATIVE, 0), SbStatus::Ok);
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { sb_disc_seek_index_enable(disc, 0, 4, SB_SEEK_DEFAULT_INLINE_BUDGET) }, SbStatus::Ok);
+    let a = range_open(disc, 0, first, end);
+    let got = read_all(a, disc);
+    let s = speculation(a);
+    assert_eq!(s.state, SB_SPECULATION_PENDING);
+    assert!(s.claim > 0 && s.lsn > 0 && s.first == first && s.slot == 0, "{s:?}");
+    let b = range_open(plain, 0, first, end);
+    assert_eq!(read_all(b, plain).0, got.0);
+    audio_free(b);
+    assert!(next_event(disc, 0).is_none());
+    let mut done = 0u8;
+    // SAFETY: a live handle and a valid out-pointer.
+    while unsafe { sb_disc_seek_verify(disc, 0, 1 << 20, &mut done) } == SbStatus::Ok && done == 0 {}
+    assert_eq!(done, 1, "{}", last_error());
+    let e = next_event(disc, 0).unwrap();
+    assert_eq!((e.claim, e.state, e.lsn, e.first), (s.claim, SB_SPECULATION_CONFIRMED, s.lsn, first));
+    assert!(next_event(disc, 0).is_none(), "returned once");
+    assert_eq!(speculation(a).state, SB_SPECULATION_CONFIRMED);
+    audio_free(a);
+    free(disc);
+    free(plain);
+}
+
+/// A caller-kept index takes the reading with `sb_track_audio_absorb` and checks it with
+/// `sb_seek_index_verify`.
+#[test]
+#[cfg_attr(miri, ignore = "reads a corpus image")]
+fn caller_kept_index_checks_readings() {
+    let bytes = image("dst-features-2ch-6ch");
+    let disc = open(&bytes);
+    let p = playtime(disc, 0);
+    assert_eq!(policy(disc, 0, SB_SEEK_POLICY_SPECULATIVE, 0), SbStatus::Ok);
+    let index = index_new(disc, 0, 4).unwrap();
+    let a = open_indexed(disc, 0, (p / 2, p / 2 + 2), index).unwrap();
+    read_all(a, disc);
+    let s = speculation(a);
+    assert_eq!(s.state, SB_SPECULATION_PENDING, "{s:?}");
+    assert_eq!(absorb(a, index), SbStatus::Ok);
+    let mut e = SbSpeculation::default();
+    // SAFETY: a live handle and a valid out-pointer: nothing checked yet.
+    assert_eq!(unsafe { sb_seek_index_event_next(index, &mut e) }, SbStatus::End);
+    while !extend(disc, index, 1 << 20).unwrap() {}
+    let mut settled = u32::MAX;
+    // SAFETY: live handles and a valid out-pointer (extend checked it already).
+    assert_eq!(unsafe { sb_seek_index_verify(disc, index, &mut settled) }, SbStatus::Ok);
+    assert_eq!(settled, 0);
+    // SAFETY: a live handle and a valid out-pointer.
+    assert_eq!(unsafe { sb_seek_index_event_next(index, &mut e) }, SbStatus::Ok);
+    assert_eq!((e.claim, e.state), (s.claim, SB_SPECULATION_CONFIRMED));
+    assert_eq!(speculation(a).state, SB_SPECULATION_CONFIRMED);
+    audio_free(a);
+    index_free(index);
+    free(disc);
+}
+
+/// Arguments of the provisional reading functions. Small enough for Miri.
+#[test]
+fn provisional_reading_arguments() {
+    let bytes = small_image(5);
+    let disc = open(&bytes);
+    let a = range_open(disc, 0, 0, 1);
+    // SAFETY: NULL arguments are refused.
+    let st = unsafe { sb_track_audio_speculation(a, ptr::null_mut()) };
+    assert_eq!(st, SbStatus::InvalidArgument);
+    // SAFETY: as above.
+    let st = unsafe { sb_track_audio_speculation(ptr::null(), &mut SbSpeculation::default()) };
+    assert_eq!(st, SbStatus::InvalidArgument);
+    // SAFETY: as above.
+    let st = unsafe { sb_disc_seek_event_next(disc, 0, ptr::null_mut()) };
+    assert_eq!(st, SbStatus::InvalidArgument);
+    // SAFETY: as above.
+    let st = unsafe { sb_disc_seek_policy_set(ptr::null(), 0, SB_SEEK_POLICY_EXACT, 0) };
+    assert_eq!(st, SbStatus::InvalidArgument);
+    assert_eq!(speculation(a).state, SB_SPECULATION_EXACT);
+    assert!(next_event(disc, 0).is_none());
+    assert_eq!(policy(disc, 1, SB_SEEK_POLICY_EXACT, 0), SbStatus::NoSuchArea);
+    let mut done = 0;
+    // SAFETY: a live handle; no seek index is kept.
+    assert_eq!(unsafe { sb_disc_seek_verify(disc, 0, 10, &mut done) }, SbStatus::InvalidArgument);
+    audio_free(a);
+    free(disc);
+}
+
+/// Two images of the same size and layout, different contents (#102): a caller-kept index
+/// that took a provisional reading of one refuses to be extended or verified with the
+/// other, and the reading is not confirmed against it.
+#[test]
+#[cfg_attr(miri, ignore = "reads a corpus image")]
+fn a_reading_is_not_checked_against_another_image() {
+    let a_bytes = image("dst-features-2ch-6ch");
+    let a = open(&a_bytes);
+    let mut info = SbAreaInfo::default();
+    // SAFETY: a live handle and a valid out-pointer.
+    assert_eq!(unsafe { sb_disc_area(a, 0, &mut info) }, SbStatus::Ok);
+    // B: every audio sector of A with its bytes past the headers (at most 43 bytes) changed.
+    let mut b_bytes = a_bytes.clone();
+    for lsn in info.audio_start_lsn as usize..=info.audio_end_lsn as usize {
+        for byte in &mut b_bytes[lsn * 2048 + 64..(lsn + 1) * 2048] {
+            *byte ^= 0x5A;
+        }
+    }
+    let b = open(&b_bytes);
+    assert_eq!(policy(a, 0, SB_SEEK_POLICY_SPECULATIVE, 0), SbStatus::Ok);
+    let index = index_new(a, 0, 4).unwrap();
+    let p = playtime(a, 0);
+    let h = open_indexed(a, 0, (p / 2, p / 2 + 2), index).unwrap();
+    read_all(h, a);
+    assert_eq!(speculation(h).state, SB_SPECULATION_PENDING);
+    assert_eq!(absorb(h, index), SbStatus::Ok);
+    assert_eq!(extend(b, index, 1 << 20).unwrap_err(), SbStatus::InvalidArgument);
+    let mut settled = 0;
+    // SAFETY: live handles and a valid out-pointer.
+    assert_eq!(unsafe { sb_seek_index_verify(b, index, &mut settled) }, SbStatus::InvalidArgument);
+    assert_eq!(speculation(h).state, SB_SPECULATION_PENDING);
+    while !extend(a, index, 1 << 20).unwrap() {}
+    assert_eq!(speculation(h).state, SB_SPECULATION_CONFIRMED);
+    audio_free(h);
+    index_free(index);
+    free(a);
+    free(b);
+}
