@@ -9,6 +9,11 @@ is shared by every crate of the workspace; releases carry the `bench` program an
 
 ## [Unreleased]
 
+### Fixed
+
+- The `scarletbook` package carries the licence texts and the README; its `include`
+  patterns are anchored, so the test fixtures' READMEs no longer slip in (#48).
+
 ## [0.3.0] - 2026-10-31
 
 ### Added

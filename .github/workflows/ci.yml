@@ -51,6 +51,16 @@ jobs:
       - run: cargo doc --workspace --no-deps --all-features --locked
         env:
           RUSTDOCFLAGS: -D warnings
+      # The licences must ship inside the published crate (issue #48); its copies must match
+      # the repository's.
+      - name: The scarletbook package carries the licences and README
+        run: |
+          cmp LICENSE-MIT crates/scarletbook/LICENSE-MIT
+          cmp LICENSE-APACHE crates/scarletbook/LICENSE-APACHE
+          files=$(cargo package -p scarletbook --list --locked)
+          for f in LICENSE-MIT LICENSE-APACHE README.md; do
+            grep -qx "$f" <<< "$files" || { echo "::error::$f is missing from the scarletbook package"; exit 1; }
+          done
       # release.yml takes the release notes from CHANGELOG.md with this script.
       - name: CHANGELOG.md sections for the release notes
         run: |
