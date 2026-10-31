@@ -36,7 +36,7 @@ pub mod toc;
 pub use audio::DecodeOn;
 pub use audio::{
     AreaCursor, AreaFrame, AreaFrames, AudioFrame, Continuation, Demuxer, FrameContent, FrameKind,
-    FrameStatus, TrackAudio, TrackAudioCursor, TrackCursor, TrackFrame, TrackFrames,
+    FrameStatus, Opening, TrackAudio, TrackAudioCursor, TrackCursor, TrackFrame, TrackFrames,
 };
 pub use disc::Disc;
 pub use dst::{DstDecoder, DstError};
