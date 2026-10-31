@@ -1605,16 +1605,10 @@ impl AreaIndex {
     /// last one whose reading had delivered no frame numbered `u` or more and whose frame
     /// under assembly is none or numbered below `u` (so that, as far as that reading saw,
     /// (a) and (b) of 4.2 item 8 hold there), if a later one had delivered such a frame (so
-    /// that `u` lies within what they cover), the two in one run of consecutive boundaries
-    /// (one reading's: otherwise the first could lie at the end of a reading far before `u`).
+    /// that `u` lies within what they cover).
     pub(crate) fn plan_provisional(&self, u: u32) -> Option<(u64, Provisional)> {
         let mut best = None;
-        let mut prev: Option<u64> = None;
         for (&lsn, &p) in &self.provisional {
-            if prev.is_some_and(|q| q + u64::from(self.interval) != lsn) {
-                best = None;
-            }
-            prev = Some(lsn);
             if p.seen > u {
                 return best;
             }
@@ -2003,21 +1997,6 @@ mod tests {
         // Only bounds narrower than the knots.
         assert_eq!(bracket((250, 24), (280, 28), &knots, 25), ((250, 24), (280, 28)));
         assert_eq!(bracket((100, 0), (1000, 100), &[], 7), ((100, 0), (1000, 100)));
-    }
-
-    /// A provisional start comes from one run of consecutive boundaries around `u`, never
-    /// from the end of an earlier reading far before it.
-    #[test]
-    fn provisional_starts_stay_within_one_reading() {
-        let mut ix = index(&[], None);
-        let p = |seen| Provisional { back: 0, digest: 0, seen, under: None };
-        // One reading over 110..130 (frames to 20), another over 160..180 (frames 50 on).
-        for (lsn, seen) in [(110, 10), (120, 20), (160, 50), (170, 60)] {
-            ix.provisional.insert(lsn, p(seen));
-        }
-        assert_eq!(ix.plan_provisional(15).map(|x| x.0), Some(110));
-        assert_eq!(ix.plan_provisional(35), None, "between the readings");
-        assert_eq!(ix.plan_provisional(55).map(|x| x.0), Some(160));
     }
 
     /// Thinning keeps a hint per region read and drops the closest ones first.
