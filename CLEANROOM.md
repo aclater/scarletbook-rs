@@ -467,6 +467,15 @@ work uses only specification 8 from it, together with sections of 0, 2, 3 and 4 
 doesn't change. The corpus and the charset tables are unchanged
 (`git diff --stat 82eac6c 6db1251 -- corpus/ spec/charsets/` is empty).
 
+**Update to `eafaaba`** ("Merge pull request #38", answer to sacd-spec#37). Specification 4,
+4.2 item 8 gains an informative **suspect** mark: a reader MAY mark a provisional reading as
+suspect when it has reasons of its own to expect (a) or (b) to fail before a pass has settled
+them (examples: frame numbers that do not increase between the sectors read while choosing
+`L`; an area whose TOC places its audio past the image's end or over another area's TOC or
+audio sectors). The mark does not change the outcome, and a reader MAY read such areas or
+readings exactly instead. Only `PROVENANCE.md` and specification 4 change
+(`git diff --stat 6db1251 eafaaba`).
+
 ## Specification issues filed
 
 | Issue | Gap | Resolution | scarletbook-rs |
