@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+name: Miri (full)
+
+# The long Miri slices: the core unit tests (the fast-loop check, split by frame count) and the
+# long tests of the parallel path. They take 6 to 9 minutes, longer than merges are apart at
+# busy times, so they run here rather than in ci.yml, whose runs on main a newer push cancels.
+# This workflow never cancels a run in progress: a push while one runs waits, and of several
+# waiting pushes GitHub keeps only the newest, so after a burst of merges its newest commit is
+# always checked (#84). A nightly run covers quiet days, and a manual run checks any branch.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  miri:
+    uses: ./.github/workflows/miri.yml
+    with:
+      slices: '["core-lib","lanes-1-2","lanes-3","lanes-4","parallel-window","parallel-continuation"]'

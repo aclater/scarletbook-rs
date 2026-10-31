@@ -36,7 +36,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.diff.outputs.code }}
-      miri: ${{ steps.diff.outputs.miri }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -46,20 +45,13 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          # Miri slices, run as parallel jobs (#76): pull requests run the C interface, the
-          # core crate's integration tests and a short parallel-path set; main and manual runs
-          # add the core unit tests and the long parallel-path tests. Measured locally under
-          # Miri: the fast-loop checks take 64, 123, 180 and 241 s for 1 to 4 frames and the
-          # other unit tests 6 s in all; runners take about twice as long.
           if [[ "$GITHUB_EVENT_NAME" != pull_request ]]; then
-            echo 'miri=["ffi","core","parallel","parallel-window","parallel-continuation","lanes-1-2","lanes-3","lanes-4"]' >> "$GITHUB_OUTPUT"
             echo "code=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          echo 'miri=["ffi","core","parallel"]' >> "$GITHUB_OUTPUT"
           changed=$(git diff --name-only "$BASE_SHA" HEAD)
           printf '%s\n' "$changed"
-          if grep -qE '^(crates/|fuzz/|corpus/|Cargo\.(toml|lock)$|rust-toolchain|\.github/workflows/ci\.yml$)' <<< "$changed"; then
+          if grep -qE '^(crates/|fuzz/|corpus/|Cargo\.(toml|lock)$|rust-toolchain|\.github/workflows/(ci|miri)\.yml$)' <<< "$changed"; then
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
             echo "code=false" >> "$GITHUB_OUTPUT"
@@ -125,6 +117,15 @@ jobs:
           else
             python3 -I .github/scripts/fragments.py check
           fi
+      # miri.yml pins its own nightly (a called workflow does not inherit this file's env);
+      # keep the two the same.
+      - name: miri.yml uses the same nightly as this workflow
+        run: |
+          pinned=$(sed -n 's/^  RUST_NIGHTLY: //p' .github/workflows/miri.yml)
+          if [[ "$pinned" != "$RUST_NIGHTLY" ]]; then
+            echo "::error::miri.yml pins $pinned, ci.yml $RUST_NIGHTLY"
+            exit 1
+          fi
       # release.yml takes the release notes from CHANGELOG.md with this script.
       - name: CHANGELOG.md sections for the release notes
         run: |
@@ -160,88 +161,14 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo +"$RUST_MSRV" check -p scarletbook -p scarletbook-ffi --all-features --locked
 
-  # Miri in parallel slices (#76); the changes job lists them. `scarletbook` and
-  # `scarletbook-ffi` always run as separate commands: one command over both would enable
-  # `parallel` for both through feature unification, and the core then reaches rayon under
-  # Stacked Borrows (see the parallel slices below, and #71).
+  # Miri: the short slices here (#76); the long ones run in miri-full.yml, which queues
+  # instead of cancelling so that they always complete (#84).
   miri:
-    name: miri (${{ matrix.slice }})
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        slice: ${{ fromJSON(needs.changes.outputs.miri) }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - run: rustup toolchain install "$RUST_NIGHTLY" --profile minimal -c miri,rust-src
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          # One cache per feature set, shared by the slices (they build the same crates).
-          key: miri-${{ startsWith(matrix.slice, 'parallel') && 'parallel' || 'default' }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      # The `parallel` slices use Tree Borrows, not Miri's default Stacked Borrows: under
-      # Stacked Borrows Miri reports undefined behaviour inside crossbeam-epoch (rayon's
-      # deque), not in this repository's code, and -Zmiri-permissive-provenance does not
-      # change that (#28, #71). -Zmiri-ignore-leaks: rayon's threads outlive the tests. The
-      # tests they run are ignored under Miri otherwise, hence --include-ignored; property
-      # tests run 2 cases under Miri.
-      - name: Miri slice
-        env:
-          SLICE: ${{ matrix.slice }}
-        run: |
-          # Every named test must exist and run: a renamed test fails the slice instead of
-          # leaving it to pass with nothing run. `named N` checks the libtest summaries of the
-          # command just before it (the per-test lines can be split by Miri's warnings).
-          last=0
-          miri() {
-            local out rc
-            out=$(mktemp)
-            cargo +"$RUST_NIGHTLY" miri test --locked "$@" 2>&1 | tee "$out"
-            rc=${PIPESTATUS[0]}
-            last=$(grep -oE '^test result: ok\. [0-9]+ passed' "$out" | awk '{s += $4} END {print s + 0}')
-            return "$rc"
-          }
-          tb() { MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-ignore-leaks" miri "$@"; }
-          named() {
-            if [[ "$last" -lt "$1" ]]; then
-              echo "::error::slice $SLICE ran $last named tests, expected $1"
-              exit 1
-            fi
-          }
-          case "$SLICE" in
-            ffi) miri -p scarletbook-ffi ;;
-            core)
-              # Integration tests, and on main the unit tests other than the fast-loop checks.
-              miri -p scarletbook --test '*'
-              if [[ "$GITHUB_EVENT_NAME" != pull_request ]]; then
-                miri -p scarletbook --lib -- --skip fast_loop_matches_general
-              fi ;;
-            lanes-1-2)
-              miri -p scarletbook --lib -- --exact dst::tests::fast_loop_matches_general_1_frame \
-                dst::tests::fast_loop_matches_general_2_frames
-              named 2 ;;
-            lanes-3) miri -p scarletbook --lib -- --exact dst::tests::fast_loop_matches_general_3_frames; named 1 ;;
-            lanes-4) miri -p scarletbook --lib -- --exact dst::tests::fast_loop_matches_general_4_frames; named 1 ;;
-            parallel)
-              tb -p scarletbook-ffi --test ffi -- --include-ignored --exact pool_handles_of_a_small_image
-              named 1
-              tb -p scarletbook --features parallel --test demux_props -- --include-ignored --exact \
-                read_error_after_batches_follows_its_frames
-              named 1 ;;
-            parallel-window)
-              tb -p scarletbook --features parallel --lib -- --include-ignored --exact \
-                audio::tests::parallel_window_is_capped
-              named 1 ;;
-            parallel-continuation)
-              tb -p scarletbook --features parallel --test demux_props -- --include-ignored --exact \
-                continuation_across_batches_equals_fresh_scans
-              named 1 ;;
-            *) echo "::error::unknown Miri slice $SLICE"; exit 1 ;;
-          esac
+    uses: ./.github/workflows/miri.yml
+    with:
+      slices: '["ffi","core","parallel"]'
 
   ffi:
     name: ffi (${{ matrix.os }})
