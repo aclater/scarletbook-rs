@@ -759,3 +759,242 @@ fn range_refusals() {
     audio_free(c);
     free(disc);
 }
+
+/// What a log callback received, and how to misbehave.
+#[derive(Default)]
+struct LogUser {
+    lines: std::sync::Mutex<Vec<(std::thread::ThreadId, i32, String)>>,
+    /// If set, the callback tries to replace the log of this disc and records the status.
+    disc: std::sync::atomic::AtomicPtr<SbDisc>,
+    reentry: std::sync::Mutex<Vec<SbStatus>>,
+    /// If set, the callback tries to read and free this track handle (of `victim_disc`)
+    /// and records the status of the read.
+    victim: std::sync::atomic::AtomicPtr<SbTrackAudio>,
+    victim_disc: std::sync::atomic::AtomicPtr<SbDisc>,
+    victim_reads: std::sync::Mutex<Vec<SbStatus>>,
+}
+
+impl LogUser {
+    fn lines(&self) -> Vec<(i32, String)> {
+        self.lines.lock().unwrap().iter().map(|(_, l, m)| (*l, m.clone())).collect()
+    }
+
+    fn has(&self, level: i32, text: &str) -> bool {
+        self.lines().iter().any(|(l, m)| *l == level && m == text)
+    }
+}
+
+unsafe extern "C" fn cb_log(user: *mut c_void, level: i32, message: *const c_char) {
+    // SAFETY: `user` is the `LogUser` given with this callback, alive while the disc is.
+    let user = unsafe { &*user.cast::<LogUser>() };
+    // SAFETY: the library passes a valid NUL-terminated string for the call.
+    let m = unsafe { CStr::from_ptr(message) }.to_str().unwrap().to_owned();
+    user.lines.lock().unwrap().push((std::thread::current().id(), level, m));
+    let disc = user.disc.swap(ptr::null_mut(), std::sync::atomic::Ordering::Relaxed);
+    if !disc.is_null() {
+        // SAFETY: `disc` is the live disc whose call invoked this callback, on this thread.
+        let s = unsafe { sb_disc_set_log(disc, None, ptr::null_mut(), SB_LOG_OFF) };
+        user.reentry.lock().unwrap().push(s);
+    }
+    let victim = user.victim.swap(ptr::null_mut(), std::sync::atomic::Ordering::Relaxed);
+    if !victim.is_null() {
+        let disc = user.victim_disc.load(std::sync::atomic::Ordering::Relaxed);
+        let mut buf = vec![0u8; 2 * 4704];
+        let mut fi = SbFrameInfo::default();
+        // SAFETY: `victim` is the live `prev` handle of the call that invoked this callback
+        // (on this thread), `disc` its live disc; `buf` and `fi` are valid.
+        let s = unsafe { sb_track_audio_read(victim, disc, buf.as_mut_ptr(), buf.len(), &mut fi) };
+        user.victim_reads.lock().unwrap().push(s);
+        // SAFETY: as above; the library must ignore the free of a handle in use.
+        unsafe { sb_track_audio_free(victim) };
+    }
+}
+
+fn open_logged(bytes: &[u8], user: &LogUser, level: i32) -> Result<*mut SbDisc, SbStatus> {
+    let mut d: *mut SbDisc = ptr::dangling_mut();
+    let u = ptr::from_ref(user).cast_mut().cast::<c_void>();
+    // SAFETY: `bytes` is valid for its length; `cb_log` may be called with `u` from any
+    // thread while `user` lives, which outlives the disc in every test.
+    let s =
+        unsafe { sb_disc_open_memory_with_log(bytes.as_ptr(), bytes.len(), Some(cb_log), u, level, &mut d) };
+    match s {
+        SbStatus::Ok => Ok(d),
+        s => {
+            assert!(d.is_null());
+            Err(s)
+        }
+    }
+}
+
+fn set_log(disc: *const SbDisc, user: Option<&LogUser>, level: i32) -> SbStatus {
+    let (cb, u) = match user {
+        Some(u) => {
+            (Some(cb_log as unsafe extern "C" fn(_, _, _)), ptr::from_ref(u).cast_mut().cast::<c_void>())
+        }
+        None => (None, ptr::null_mut()),
+    };
+    // SAFETY: `disc` is a live handle; `cb_log` may be called with `u` while `user` lives.
+    unsafe { sb_disc_set_log(disc, cb, u, level) }
+}
+
+/// Small enough for Miri: the callback, its levels, replacing it and re-entering.
+#[test]
+fn log_callback_levels_and_replacement() {
+    let user = LogUser::default();
+    let disc = open_logged(&tiny_image(), &user, SB_LOG_INFO).unwrap();
+    assert!(user.has(SB_LOG_INFO, "master TOC at LSN 510 used, version 1.0"), "{:?}", user.lines());
+    assert!(user.lines().iter().all(|(l, _)| (SB_LOG_ERROR..=SB_LOG_INFO).contains(l)));
+    assert!(!user.lines().is_empty());
+
+    // Re-entering from the callback, on the calling thread, is refused cleanly.
+    user.disc.store(disc, std::sync::atomic::Ordering::Relaxed);
+    let a = audio_open(disc, 0, 1).unwrap();
+    assert_eq!(*user.reentry.lock().unwrap(), [SbStatus::InvalidArgument]);
+    let mut buf = vec![0u8; 2 * 4704];
+    assert_eq!(audio_read(a, disc, &mut buf).0, SbStatus::Ok);
+    assert!(user.has(SB_LOG_WARN, "area 2ch frame 0: missing, filled with 0x69 (4.6)"));
+
+    // Off: nothing more.
+    assert_eq!(set_log(disc, Some(&user), 6), SbStatus::InvalidArgument);
+    assert_eq!(set_log(disc, Some(&user), -1), SbStatus::InvalidArgument);
+    assert_eq!(set_log(disc, Some(&user), SB_LOG_OFF), SbStatus::Ok);
+    let before = user.lines().len();
+    assert_eq!(audio_read(a, disc, &mut buf).0, SbStatus::Ok);
+    assert_eq!(user.lines().len(), before);
+
+    // Replaced, at the trace level, by another callback's user data.
+    let other = LogUser::default();
+    assert_eq!(set_log(disc, Some(&other), SB_LOG_TRACE), SbStatus::Ok);
+    assert_eq!(audio_read(a, disc, &mut buf).0, SbStatus::End);
+    assert_eq!(user.lines().len(), before);
+    assert!(
+        other.lines().iter().all(|(l, _)| *l == SB_LOG_TRACE || *l == SB_LOG_DEBUG),
+        "{:?}",
+        other.lines()
+    );
+    assert_eq!(set_log(disc, None, SB_LOG_TRACE), SbStatus::Ok);
+    assert_eq!(set_log(ptr::null(), None, SB_LOG_OFF), SbStatus::InvalidArgument);
+    audio_free(a);
+    free(disc);
+
+    // A bad level fails the open; a NULL callback or SB_LOG_OFF opens without a log.
+    assert_eq!(open_logged(&tiny_image(), &user, 9).unwrap_err(), SbStatus::InvalidArgument);
+    let quiet = LogUser::default();
+    free(open_logged(&tiny_image(), &quiet, SB_LOG_OFF).unwrap());
+    assert!(quiet.lines().is_empty());
+    let rejected = LogUser::default();
+    assert_eq!(open_logged(&[0u8; 4096], &rejected, SB_LOG_INFO).unwrap_err(), SbStatus::NotScarletbook);
+    assert!(rejected.has(SB_LOG_INFO, "no sector format matches: not a Scarletbook image"));
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "reads whole corpus images")]
+fn log_callback_reports_reads_and_frame_problems() {
+    let user = LogUser::default();
+    let disc = open_logged(&image("dst-invalid-frames-2ch"), &user, SB_LOG_DEBUG).unwrap();
+    assert!(user.has(
+        SB_LOG_INFO,
+        "sector format Plain detected (signature at byte 1044480): 2048 bytes per sector, data at offset 0, 615 \
+         sectors"
+    ));
+    assert!(user.has(SB_LOG_DEBUG, "read 10 sectors at LSN 510: bytes 1044480..1064960"));
+    assert!(user.has(SB_LOG_INFO, "area 2ch: TOC-1 at LSN 540 used (TOC-2 identical)"));
+    let a = audio_open(disc, 0, 1).unwrap();
+    let mut buf = vec![0u8; 2 * 4704];
+    let mut expected = Vec::new();
+    loop {
+        let (s, fi) = audio_read(a, disc, &mut buf);
+        if s == SbStatus::End {
+            break;
+        }
+        assert_eq!(s, SbStatus::Ok);
+        if fi.status == SbFrameStatus::Invalid as u32 {
+            expected.push(fi.number);
+        }
+    }
+    let logged: Vec<u32> = user
+        .lines()
+        .iter()
+        .filter(|(l, m)| *l == SB_LOG_WARN && m.contains("invalid DST frame"))
+        .map(|(_, m)| m.split(' ').nth(3).unwrap().trim_end_matches(':').parse().unwrap())
+        .collect();
+    assert!(!expected.is_empty());
+    assert_eq!(logged, expected);
+    assert!(user.has(SB_LOG_DEBUG, "area 2ch: scanning audio sectors LSN 546..609"));
+    assert!(user.lines().iter().all(|(l, _)| *l != SB_LOG_TRACE));
+    audio_free(a);
+    free(disc);
+}
+
+/// With the `parallel` feature the callback also runs on the pool's threads, and no longer
+/// once the disc is freed, even with decoding jobs still in flight.
+#[cfg(feature = "parallel")]
+#[test]
+#[cfg_attr(miri, ignore = "reads whole corpus images")]
+fn log_callback_from_the_pool() {
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+    let user = LogUser::default();
+    let caller = pool.install(|| {
+        let disc = open_logged(&image("dst-features-2ch-6ch"), &user, SB_LOG_TRACE).unwrap();
+        let a = audio_open(disc, 1, 1).unwrap();
+        let mut buf = vec![0u8; 6 * 4704];
+        while audio_read(a, disc, &mut buf).0 == SbStatus::Ok {}
+        audio_free(a);
+        // Free with jobs in flight: open the next track, read one frame, free at once.
+        let a = audio_open(disc, 1, 2).unwrap();
+        assert_eq!(audio_read(a, disc, &mut buf).0, SbStatus::Ok);
+        audio_free(a);
+        free(disc);
+        std::thread::current().id()
+    });
+    let after_free = user.lines.lock().unwrap().len();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert_eq!(user.lines.lock().unwrap().len(), after_free, "callback after sb_disc_free");
+    let lines = user.lines.lock().unwrap();
+    let pooled =
+        lines.iter().filter(|(t, _, m)| m.starts_with("decoding DST frames") && *t != caller).count();
+    assert!(pooled > 0, "no message from a pool thread");
+    // Frame lines come from the calling thread, in order.
+    let frames: Vec<u32> = lines
+        .iter()
+        .filter(|(_, l, m)| {
+            *l == SB_LOG_TRACE && m.starts_with("area multichannel frame ") && !m.contains("(from")
+        })
+        .map(|(t, _, m)| {
+            assert_eq!(*t, caller);
+            m.split(' ').nth(3).unwrap().trim_end_matches(':').parse().unwrap()
+        })
+        .collect();
+    assert!(frames.windows(2).all(|w| w[0] < w[1]) && !frames.is_empty(), "{frames:?}");
+}
+
+/// A log callback that runs while `sb_track_audio_open_next` or `sb_range_audio_open_next`
+/// consumes `prev` cannot reach it: reading it fails and freeing it does nothing (Miri
+/// checks that nothing is freed twice or read after being moved).
+#[test]
+fn log_callback_cannot_reach_a_handle_being_consumed() {
+    let user = LogUser::default();
+    let disc = open_logged(&tiny_image(), &user, SB_LOG_INFO).unwrap();
+    user.victim_disc.store(disc, std::sync::atomic::Ordering::Relaxed);
+    let a = audio_open(disc, 0, 1).unwrap();
+    let mut buf = vec![0u8; 2 * 4704];
+    assert_eq!(audio_read(a, disc, &mut buf).0, SbStatus::Ok);
+    // Into a track.
+    user.victim.store(a, std::sync::atomic::Ordering::Relaxed);
+    let b = audio_open_next(disc, a, 0, 1).unwrap();
+    assert_eq!(*user.victim_reads.lock().unwrap(), [SbStatus::InvalidArgument]);
+    assert!(user.victim.load(std::sync::atomic::Ordering::Relaxed).is_null(), "the callback ran");
+    assert_eq!(read_frames(b, disc).len(), 2);
+    // Into a range.
+    user.victim.store(b, std::sync::atomic::Ordering::Relaxed);
+    let c = range_open_next(disc, b, 0, 0, 7).unwrap();
+    assert_eq!(*user.victim_reads.lock().unwrap(), [SbStatus::InvalidArgument; 2]);
+    assert_eq!(read_frames(c, disc).len(), 7);
+    // A refusal is logged while `prev` is still the caller's: it stays usable.
+    user.victim.store(c, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(range_open_next(disc, c, 0, 0, 11).unwrap_err(), SbStatus::FrameRangeInvalid);
+    assert_eq!(*user.victim_reads.lock().unwrap(), [SbStatus::InvalidArgument; 3]);
+    assert_eq!(audio_read(c, disc, &mut buf).0, SbStatus::End);
+    audio_free(c);
+    free(disc);
+}

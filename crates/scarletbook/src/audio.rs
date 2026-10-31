@@ -8,6 +8,7 @@ use std::io::{Read, Seek};
 use crate::dst::{DstDecoder, DstError};
 use crate::error::{Error, Slot, Warning, WarningCode};
 use crate::image::{Image, ReadOutcome, SECTOR_SIZE};
+use crate::log::{Level, Log, sb_log};
 use crate::toc::{Area, Track};
 
 /// DSD bytes per channel in one frame (specification 0, 0.5).
@@ -28,6 +29,65 @@ pub const MAX_CHANNELS: u8 = 6;
 /// Most `audio-sector-malformed` warnings kept per area cursor (specification 4, 4.4.5
 /// item 3); the count of malformed sectors is kept in full.
 pub const MAX_MALFORMED_WARNINGS: usize = 4096;
+
+/// Most log lines of each kind of problem a cursor writes: malformed sectors and discarded
+/// frames per area cursor, missing and invalid frames per track cursor. The first line
+/// past the cap says that further ones are suppressed; the counts are kept in full.
+pub const MAX_PROBLEM_LINES: usize = MAX_MALFORMED_WARNINGS;
+
+/// The number of log lines written for one kind of problem, against
+/// [`MAX_PROBLEM_LINES`].
+#[derive(Clone, Copy, Debug, Default)]
+struct LineCap(usize);
+
+impl LineCap {
+    /// Whether one more `level` line about `what` may be written to `log`. The first line
+    /// refused writes a line saying that further ones are suppressed. Counts only when
+    /// the level is enabled, so it costs one test without a log.
+    #[inline]
+    fn admit(&mut self, log: &Log, level: Level, slot: &str, what: &str) -> bool {
+        if !log.enabled(level) {
+            return false;
+        }
+        self.0 = self.0.saturating_add(1);
+        if self.0 == MAX_PROBLEM_LINES + 1 {
+            log.write(
+                level,
+                format_args!(
+                    "area {slot}: further {what} lines suppressed (at most {MAX_PROBLEM_LINES} per cursor)"
+                ),
+            );
+        }
+        self.0 <= MAX_PROBLEM_LINES
+    }
+}
+
+/// Why a sector is malformed (specification 4, 4.4.3), for the log.
+#[derive(Clone, Copy, Debug)]
+enum Malformed {
+    /// Packet `p` of `k`, `len` bytes at `pos`, runs past the sector.
+    Overrun { p: usize, k: usize, len: usize, pos: usize },
+    /// A frame starts in packet `p` but the sector has only `f` frame records.
+    NoRecord { p: usize, f: usize },
+    /// Frame `number` grew past [`MAX_FRAME_BYTES`] and was discarded.
+    Oversized { number: u32 },
+}
+
+impl std::fmt::Display for Malformed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Malformed::Overrun { p, k, len, pos } => {
+                write!(f, "packet {p} of {k} ({len} bytes at {pos}) overruns the sector")
+            }
+            Malformed::NoRecord { p, f: records } => {
+                write!(f, "frame start in packet {p} without a frame record ({records} records)")
+            }
+            Malformed::Oversized { number } => {
+                write!(f, "frame {number} exceeds {MAX_FRAME_BYTES} bytes and is discarded")
+            }
+        }
+    }
+}
 
 /// Most timeline positions a cursor of the `parallel` feature holds ahead of its caller.
 ///
@@ -92,6 +152,23 @@ struct Assembly {
     kind: FrameKind,
     data: Vec<u8>,
     remaining: i32,
+    /// The LSN of the sector it starts in, for the log.
+    start_lsn: u64,
+}
+
+/// Where the reassembler stands, for the log: the area and the LSN of the sector being
+/// processed (0 when unknown).
+#[derive(Clone, Copy)]
+struct At<'a> {
+    log: &'a Log,
+    slot: Option<Slot>,
+    lsn: u64,
+}
+
+impl At<'_> {
+    fn slot(&self) -> &'static str {
+        self.slot.map_or("?", Slot::name)
+    }
 }
 
 /// The frame reassembler and timeline of one area (specification 4, 4.4 and 4.5).
@@ -107,12 +184,31 @@ pub struct Demuxer {
     next_acceptable: u32,
     ready: VecDeque<AreaFrame>,
     malformed: u64,
+    /// The area, for the log.
+    slot: Option<Slot>,
+    /// Why the last sector pushed was malformed (its first reason), for the log.
+    reason: Option<Malformed>,
+    /// Lines written about discarded frames.
+    discarded_lines: LineCap,
 }
 
 impl Demuxer {
     /// A reassembler for an area of `channels` channels (the area TOC's channel count).
     pub fn new(channels: u8) -> Self {
-        Demuxer { channels, assembling: None, next_acceptable: 0, ready: VecDeque::new(), malformed: 0 }
+        Demuxer {
+            channels,
+            assembling: None,
+            next_acceptable: 0,
+            ready: VecDeque::new(),
+            malformed: 0,
+            slot: None,
+            reason: None,
+            discarded_lines: LineCap::default(),
+        }
+    }
+
+    fn at<'a>(&self, log: &'a Log, lsn: u64) -> At<'a> {
+        At { log, slot: self.slot, lsn }
     }
 
     /// Number of malformed sectors seen (specification 4, 4.4.5).
@@ -128,6 +224,11 @@ impl Demuxer {
     /// Processes one 2048-byte audio sector (specification 4, 4.4.3). Returns whether
     /// the sector was malformed.
     pub fn push_sector(&mut self, sector: &[u8; SECTOR_SIZE]) -> bool {
+        self.push_sector_at(sector, self.at(&Log::none(), 0))
+    }
+
+    /// [`Demuxer::push_sector`], reporting to `at.log` with the sector's LSN.
+    fn push_sector_at(&mut self, sector: &[u8; SECTOR_SIZE], at: At<'_>) -> bool {
         let header = sector[0];
         let dst = header & 1 != 0;
         let f = usize::from((header >> 2) & 7);
@@ -136,6 +237,7 @@ impl Demuxer {
         // H <= 1 + 14 + 28 = 43: every record lies inside the sector.
         let h = 1 + 2 * k + f * record;
         let byte = |i: usize| sector.get(i).copied().unwrap_or(0);
+        self.reason = None;
         let mut malformed = false;
         let mut x = 0usize;
         let mut pos = h;
@@ -145,26 +247,42 @@ impl Demuxer {
             let packet_type = (w >> 11) & 7;
             let len = usize::from(w & 0x07FF);
             let Some(payload) = sector.get(pos..pos + len) else {
+                self.reason.get_or_insert(Malformed::Overrun { p, k, len, pos });
                 malformed = true;
                 break;
             };
             if packet_type == 2 {
                 if start {
-                    self.deliver_if_complete();
+                    self.deliver_if_complete(at);
                     if x < f {
                         let r = 1 + 2 * k + x * record;
                         let number =
                             (u32::from(byte(r)) * 60 + u32::from(byte(r + 1))) * 75 + u32::from(byte(r + 2));
                         let remaining = if dst { i32::from((byte(r + 3) >> 2) & 0x1F) } else { 0 };
                         let kind = if dst { FrameKind::Dst } else { FrameKind::Dsd };
-                        self.assembling = Some(Assembly { number, kind, data: Vec::new(), remaining });
+                        self.assembling =
+                            Some(Assembly { number, kind, data: Vec::new(), remaining, start_lsn: at.lsn });
                         x += 1;
                     } else {
+                        self.reason.get_or_insert(Malformed::NoRecord { p, f });
                         malformed = true;
                     }
                 }
                 if let Some(a) = &mut self.assembling {
                     if a.data.len() + len > MAX_FRAME_BYTES {
+                        if self.discarded_lines.admit(at.log, Level::Warn, at.slot(), "discarded-frame") {
+                            sb_log!(
+                                at.log,
+                                Warn,
+                                "area {} frame {} (from LSN {}): discarded at LSN {}, more than {MAX_FRAME_BYTES} \
+                                 bytes (4.4.3)",
+                                at.slot(),
+                                a.number,
+                                a.start_lsn,
+                                at.lsn
+                            );
+                        }
+                        self.reason.get_or_insert(Malformed::Oversized { number: a.number });
                         self.assembling = None;
                         malformed = true;
                     } else {
@@ -186,10 +304,14 @@ impl Demuxer {
 
     /// Ends the area (specification 4, 4.4.4).
     pub fn finish(&mut self) {
-        self.deliver_if_complete();
+        self.finish_at(self.at(&Log::none(), 0));
     }
 
-    fn deliver_if_complete(&mut self) {
+    fn finish_at(&mut self, at: At<'_>) {
+        self.deliver_if_complete(at);
+    }
+
+    fn deliver_if_complete(&mut self, at: At<'_>) {
         let Some(a) = self.assembling.take() else { return };
         let complete = !a.data.is_empty()
             && match a.kind {
@@ -197,9 +319,49 @@ impl Demuxer {
                 FrameKind::Dsd => a.data.len() == usize::from(self.channels) * FRAME_BYTES_PER_CHANNEL,
             };
         if complete && a.number >= self.next_acceptable {
+            let (start_lsn, len) = (a.start_lsn, a.data.len());
             // Frame numbers are at most 1 166 880.
             self.next_acceptable = a.number + 1;
             self.ready.push_back(AreaFrame { number: a.number, kind: a.kind, data: a.data });
+            // Logged once the frame is queued, so that a sink that panics loses nothing.
+            sb_log!(
+                at.log,
+                Trace,
+                "area {} frame {} (from LSN {start_lsn}): accepted, {:?}, {len} bytes",
+                at.slot(),
+                a.number,
+                a.kind
+            );
+            return;
+        }
+        if !self.discarded_lines.admit(at.log, Level::Warn, at.slot(), "discarded-frame") {
+            return;
+        }
+        if !complete {
+            sb_log!(
+                at.log,
+                Warn,
+                "area {} frame {} (from LSN {}): discarded, incomplete ({:?}, {} bytes{}; 4.4.2)",
+                at.slot(),
+                a.number,
+                a.start_lsn,
+                a.kind,
+                a.data.len(),
+                match a.kind {
+                    FrameKind::Dst if a.remaining != 0 => ", sector count does not match",
+                    _ => "",
+                }
+            );
+        } else {
+            sb_log!(
+                at.log,
+                Warn,
+                "area {} frame {} (from LSN {}): discarded, not after the last accepted frame {} (4.5)",
+                at.slot(),
+                a.number,
+                a.start_lsn,
+                self.next_acceptable.saturating_sub(1)
+            );
         }
     }
 }
@@ -222,6 +384,8 @@ pub struct AreaCursor {
     buf_lsn: u64,
     buf_sectors: u64,
     finished: bool,
+    /// Lines written about malformed sectors.
+    malformed_lines: LineCap,
 }
 
 /// Sectors read per call to the reader.
@@ -231,8 +395,10 @@ impl AreaCursor {
     /// A cursor at the start of `area`'s audio, in an image of `image_sectors` sectors.
     pub fn new(area: &Area, image_sectors: u64) -> Self {
         let (start, end) = audio_sector_range(area, image_sectors);
+        let mut demux = Demuxer::new(area.channel_count);
+        demux.slot = Some(area.slot);
         AreaCursor {
-            demux: Demuxer::new(area.channel_count),
+            demux,
             image_id: None,
             slot: area.slot,
             warnings: Vec::new(),
@@ -242,6 +408,7 @@ impl AreaCursor {
             buf_lsn: 0,
             buf_sectors: 0,
             finished: false,
+            malformed_lines: LineCap::default(),
         }
     }
 
@@ -270,6 +437,12 @@ impl AreaCursor {
             // For the image the cursor was made for, the range lies below its sector
             // count; another image may be shorter, which is reported, not assumed.
             if image.read_into(lsn, &mut self.buf)? == ReadOutcome::OutOfRange {
+                sb_log!(
+                    image.log(),
+                    Error,
+                    "area {}: audio sectors from LSN {lsn} outside the image",
+                    self.slot
+                );
                 return Err(Error::InvalidArgument("audio sectors outside the image"));
             }
             self.buf_lsn = lsn;
@@ -289,7 +462,17 @@ impl AreaCursor {
     /// [`Error::InvalidArgument`] (and stays usable with its own image).
     pub fn next_frame<R: Read + Seek>(&mut self, image: &mut Image<R>) -> Option<Result<AreaFrame, Error>> {
         match self.image_id {
-            None => self.image_id = Some(image.id()),
+            None => {
+                self.image_id = Some(image.id());
+                sb_log!(
+                    image.log(),
+                    Debug,
+                    "area {}: scanning audio sectors LSN {}..{}",
+                    self.slot,
+                    self.next_lsn,
+                    self.end_lsn
+                );
+            }
             Some(id) if id != image.id() => {
                 return Some(Err(Error::InvalidArgument("audio cursor used with another image")));
             }
@@ -307,7 +490,21 @@ impl AreaCursor {
                 self.next_lsn += 1;
                 match self.sector(image, lsn) {
                     Ok(s) => {
-                        if self.demux.push_sector(&s) && self.warnings.len() < MAX_MALFORMED_WARNINGS {
+                        let at = self.demux.at(image.log(), lsn);
+                        let malformed = self.demux.push_sector_at(&s, at);
+                        if let Some(reason) = self.demux.reason.filter(|_| malformed) {
+                            let code = WarningCode::AudioSectorMalformed.code();
+                            let log = image.log();
+                            if self.malformed_lines.admit(log, Level::Warn, self.slot.name(), code) {
+                                sb_log!(
+                                    log,
+                                    Warn,
+                                    "area {} audio sector LSN {lsn}: {code}: {reason}",
+                                    self.slot
+                                );
+                            }
+                        }
+                        if malformed && self.warnings.len() < MAX_MALFORMED_WARNINGS {
                             // LSNs of audio sectors come from u32 fields.
                             let lsn = u32::try_from(lsn).ok();
                             self.warnings.push(Warning {
@@ -324,8 +521,16 @@ impl AreaCursor {
                     }
                 }
             } else {
-                self.demux.finish();
+                self.demux.finish_at(self.demux.at(image.log(), self.end_lsn));
                 self.finished = true;
+                sb_log!(
+                    image.log(),
+                    Debug,
+                    "area {}: scan ended at LSN {}, {} malformed sectors",
+                    self.slot,
+                    self.end_lsn,
+                    self.demux.malformed_sectors()
+                );
             }
         }
     }
@@ -461,17 +666,29 @@ pub struct Continuation<'a> {
     end: u32,
     image_sectors: u64,
     image_id: Option<u64>,
+    /// The disc's log, and the track number when this is a track, for the log.
+    log: &'a Log,
+    track: Option<u32>,
 }
 
 impl<'a> Continuation<'a> {
     pub(crate) fn new(
         area: &'a Area,
-        first: u32,
-        end: u32,
+        (first, end): (u32, u32),
         image_sectors: u64,
         image_id: Option<u64>,
+        log: &'a Log,
+        track: Option<u32>,
     ) -> Self {
-        Continuation { area, first, end, image_sectors, image_id }
+        Continuation { area, first, end, image_sectors, image_id, log, track }
+    }
+
+    /// Logs the opening, continuing the scan of a cursor or not.
+    fn log_open(&self, what: &str, continues: impl FnOnce() -> bool) {
+        if self.log.enabled(Level::Info) {
+            let how = if continues() { "continuing the earlier scan" } else { "new scan of the area" };
+            log_open(self.log, self.area, self.track, (self.first, self.end), what, how);
+        }
     }
 
     /// The frame range, `[first, end)`.
@@ -480,15 +697,65 @@ impl<'a> Continuation<'a> {
     }
 
     /// `prev` continued into this range (see [`TrackAudioCursor::continue_to_range`]),
-    /// or a fresh cursor when its state cannot be reused.
+    /// or a fresh cursor when its state cannot be reused. Logs the opening first
+    /// ([`Continuation::log_audio`]).
     pub fn audio(self, prev: TrackAudioCursor) -> TrackAudioCursor {
+        self.log_audio(&prev);
+        self.audio_unlogged(prev)
+    }
+
+    /// Logs (at [`Level::Info`]) the opening of this range's audio from `prev`: whether
+    /// its scan continues. [`Continuation::audio`] does this itself.
+    pub fn log_audio(&self, prev: &TrackAudioCursor) {
+        self.log_open("decoded audio", || {
+            prev.continues(self.area, self.first, self.image_sectors, self.image_id)
+        });
+    }
+
+    /// [`Continuation::audio`] without logging: no log sink runs during the call. For a
+    /// caller that must not run one while it hands `prev` over (the C interface, whose
+    /// callbacks could otherwise reach a handle being consumed); it calls
+    /// [`Continuation::log_audio`] first, while `prev` is still guarded.
+    pub fn audio_unlogged(self, prev: TrackAudioCursor) -> TrackAudioCursor {
         prev.continue_in(self.area, self.first, self.end, self.image_sectors, self.image_id)
     }
 
     /// `prev` continued into this range (see [`TrackCursor::continue_to_range`]), or a
-    /// fresh cursor when its state cannot be reused.
+    /// fresh cursor when its state cannot be reused. Logs the opening first
+    /// ([`Continuation::log_frames`]).
     pub fn frames(self, prev: TrackCursor) -> TrackCursor {
+        self.log_frames(&prev);
+        self.frames_unlogged(prev)
+    }
+
+    /// Logs (at [`Level::Info`]) the opening of this range's frames from `prev`.
+    pub fn log_frames(&self, prev: &TrackCursor) {
+        self.log_open("frames", || prev.reusable(self.area, self.first, self.image_sectors, self.image_id));
+    }
+
+    /// [`Continuation::frames`] without logging (see [`Continuation::audio_unlogged`]).
+    pub fn frames_unlogged(self, prev: TrackCursor) -> TrackCursor {
         prev.continue_in(self.area, self.first, self.end, self.image_sectors, self.image_id)
+    }
+}
+
+/// Logs the opening of a track (`track` is its number) or frame range `[first, end)` of
+/// `area`.
+pub(crate) fn log_open(
+    log: &Log,
+    area: &Area,
+    track: Option<u32>,
+    (first, end): (u32, u32),
+    what: &str,
+    how: &str,
+) {
+    let slot = area.slot;
+    let c = area.channel_count;
+    match track {
+        Some(n) => {
+            sb_log!(log, Info, "area {slot} track {n}: frames {first}..{end} ({c} channels), {what}, {how}")
+        }
+        None => sb_log!(log, Info, "area {slot} range: frames {first}..{end} ({c} channels), {what}, {how}"),
     }
 }
 
@@ -641,17 +908,21 @@ impl TrackCursor {
         image_sectors: u64,
         image_id: Option<u64>,
     ) -> Self {
-        let other_image = matches!((self.area.image_id, image_id), (Some(a), Some(b)) if a != b);
-        if self.failed
-            || other_image
-            || self.area_key != AreaKey::new(area, image_sectors)
-            || first < self.next
-        {
+        if !self.reusable(area, first, image_sectors, image_id) {
             // A range (or track) before this cursor's position, or in another area, scans
             // the area again: specification 4, 4.2 item 6 allows a pass per track or range.
             return Self::start(area, first, end, image_sectors);
         }
         TrackCursor { next: first, end, ..self }
+    }
+
+    /// Whether [`TrackCursor::continue_in`] keeps this cursor's reading state.
+    fn reusable(&self, area: &Area, first: u32, image_sectors: u64, image_id: Option<u64>) -> bool {
+        let other_image = matches!((self.area.image_id, image_id), (Some(a), Some(b)) if a != b);
+        !(self.failed
+            || other_image
+            || self.area_key != AreaKey::new(area, image_sectors)
+            || first < self.next)
     }
 
     /// The area's channel count `C` (1 to 6).
@@ -833,7 +1104,22 @@ fn decode_checked(decoder: &mut DstDecoder, frame: TrackFrame, channels: u8) -> 
 
 /// [`decode_checked`] for DST frames (`frames` all have `FrameContent::Dst`), together
 /// with [`DstDecoder::decode_many`]: the same frames as decoding them one by one.
-fn decode_dst_run(decoder: &mut DstDecoder, frames: Vec<TrackFrame>, channels: u8) -> Vec<AudioFrame> {
+fn decode_dst_run(
+    decoder: &mut DstDecoder,
+    frames: Vec<TrackFrame>,
+    channels: u8,
+    log: &Log,
+) -> Vec<AudioFrame> {
+    if let (Some(first), Some(last)) = (frames.first(), frames.last()) {
+        sb_log!(
+            log,
+            Trace,
+            "decoding DST frames {}..={} on thread {:?}",
+            first.number,
+            last.number,
+            std::thread::current().id()
+        );
+    }
     let size = usize::from(channels) * FRAME_BYTES_PER_CHANNEL;
     let mut outs = vec![vec![0u8; size]; frames.len()];
     let results = {
@@ -894,6 +1180,10 @@ pub struct TrackAudioCursor {
     pending_error: Option<Error>,
     missing: u64,
     invalid: u64,
+    /// Lines written about missing frames.
+    missing_lines: LineCap,
+    /// Lines written about invalid DST frames.
+    invalid_lines: LineCap,
 }
 
 /// A position demultiplexed ahead of the caller.
@@ -980,6 +1270,18 @@ impl TrackAudioCursor {
         Self::from_frames(frames.continue_in(area, first, end, image_sectors, image_id))
     }
 
+    /// Whether [`TrackAudioCursor::continue_in`] keeps this cursor's reading state (for the
+    /// log).
+    pub(crate) fn continues(
+        &self,
+        area: &Area,
+        first: u32,
+        image_sectors: u64,
+        image_id: Option<u64>,
+    ) -> bool {
+        self.pending_error.is_none() && self.frames.reusable(area, first, image_sectors, image_id)
+    }
+
     fn from_frames(frames: TrackCursor) -> Self {
         TrackAudioCursor {
             frames,
@@ -989,6 +1291,8 @@ impl TrackAudioCursor {
             pending_error: None,
             missing: 0,
             invalid: 0,
+            missing_lines: LineCap::default(),
+            invalid_lines: LineCap::default(),
         }
     }
 
@@ -1065,17 +1369,17 @@ impl TrackAudioCursor {
                 Some(Ok(f @ TrackFrame { content: FrameContent::Dst(_), .. })) if window > group => {
                     batch.push(f);
                     if batch.len() == group {
-                        self.spawn_batch(&mut batch, channels);
+                        self.spawn_batch(&mut batch, channels, image.log());
                     }
                 }
                 Some(Ok(f)) => {
                     #[cfg(feature = "parallel")]
-                    self.spawn_batch(&mut batch, channels);
+                    self.spawn_batch(&mut batch, channels, image.log());
                     self.ahead.push_back(Pending::Here(f));
                 }
                 Some(Err(e)) => {
                     #[cfg(feature = "parallel")]
-                    self.spawn_batch(&mut batch, channels);
+                    self.spawn_batch(&mut batch, channels, image.log());
                     self.pending_error = Some(e);
                 }
                 None => break,
@@ -1083,17 +1387,18 @@ impl TrackAudioCursor {
             room -= 1;
         }
         #[cfg(feature = "parallel")]
-        self.spawn_batch(&mut batch, channels);
+        self.spawn_batch(&mut batch, channels, image.log());
     }
 
-    /// Sends the DST frames of `batch` (consecutive positions) to the pool as one job.
+    /// Sends the DST frames of `batch` (consecutive positions) to the pool as one job,
+    /// which reports to `log`.
     #[cfg(feature = "parallel")]
-    fn spawn_batch(&mut self, batch: &mut Vec<TrackFrame>, channels: u8) {
+    fn spawn_batch(&mut self, batch: &mut Vec<TrackFrame>, channels: u8, log: &Log) {
         if batch.is_empty() {
             return;
         }
         let n = batch.len();
-        let job = pool::Job::spawn(std::mem::take(batch), channels);
+        let job = pool::Job::spawn(std::mem::take(batch), channels, log.clone());
         self.ahead.extend((0..n).map(|i| Pending::Pool(std::sync::Arc::clone(&job), i)));
     }
 
@@ -1104,7 +1409,7 @@ impl TrackAudioCursor {
     /// or when there are none, it blocks until the frame is decoded. A panic while decoding
     /// on the pool is resumed on the calling thread.
     pub fn next_frame<R: Read + Seek>(&mut self, image: &mut Image<R>) -> Option<Result<AudioFrame, Error>> {
-        let frame = if let Some(f) = self.ready.pop_front() {
+        let mut frame = if let Some(f) = self.ready.pop_front() {
             f
         } else {
             self.fill(image);
@@ -1124,7 +1429,8 @@ impl TrackAudioCursor {
                                 _ => break,
                             }
                         }
-                        let mut decoded = decode_dst_run(&mut self.decoder, run, channels).into_iter();
+                        let mut decoded =
+                            decode_dst_run(&mut self.decoder, run, channels, image.log()).into_iter();
                         let first = decoded.next()?;
                         self.ready.extend(decoded);
                         first
@@ -1137,8 +1443,41 @@ impl TrackAudioCursor {
                 None => return self.pending_error.take().map(Err),
             }
         };
-        // Counted as frames are returned, so the counts never run ahead of the caller,
-        // whatever the window.
+        // Logged and counted as frames are returned, so the counts never run ahead of the
+        // caller, whatever the window, and frame problems are logged in timeline order.
+        let log = image.log();
+        let level = match frame.status {
+            FrameStatus::Missing | FrameStatus::Invalid(_) => Level::Warn,
+            FrameStatus::Dsd | FrameStatus::Decoded => Level::Trace,
+        };
+        if log.enabled(level) {
+            // The frame stays in the cursor while the sink runs: if the sink panics, the
+            // next call returns (and logs) it again, and nothing is counted twice.
+            let (number, status, slot) = (frame.number, frame.status, self.frames.area.slot);
+            self.ready.push_front(frame);
+            match status {
+                FrameStatus::Missing => {
+                    if self.missing_lines.admit(log, level, slot.name(), "missing-frame") {
+                        sb_log!(log, Warn, "area {slot} frame {number}: missing, filled with 0x69 (4.6)");
+                    }
+                }
+                FrameStatus::Invalid(e) => {
+                    if self.invalid_lines.admit(log, level, slot.name(), "invalid-DST-frame") {
+                        sb_log!(
+                            log,
+                            Warn,
+                            "area {slot} frame {number}: invalid DST frame ({e}, rule {} of 5.6), filled with 0x55 \
+                             (4.6)",
+                            e.rule()
+                        );
+                    }
+                }
+                FrameStatus::Dsd | FrameStatus::Decoded => {
+                    sb_log!(log, Trace, "area {slot} frame {number}: {status:?}");
+                }
+            }
+            frame = self.ready.pop_front()?;
+        }
         match frame.status {
             FrameStatus::Missing => self.missing += 1,
             FrameStatus::Invalid(_) => self.invalid += 1,
@@ -1158,6 +1497,7 @@ mod pool {
 
     use super::{AudioFrame, TrackFrame, decode_dst_run};
     use crate::dst::DstDecoder;
+    use crate::log::{Log, sb_log};
 
     thread_local! {
         /// Each pool thread's decoder, reused from frame to frame.
@@ -1189,19 +1529,35 @@ mod pool {
             self.state.lock().unwrap_or_else(PoisonError::into_inner)
         }
 
-        /// Starts decoding `frames` (DST frames) on the current pool.
-        pub(super) fn spawn(frames: Vec<TrackFrame>, channels: u8) -> Arc<Job> {
+        /// Starts decoding `frames` (DST frames) on the current pool, reporting to `log`
+        /// from the pool's thread.
+        pub(super) fn spawn(frames: Vec<TrackFrame>, channels: u8, log: Log) -> Arc<Job> {
             let job = Arc::new(Job::default());
             let out = Arc::clone(&job);
             rayon::spawn(move || {
+                let range = (frames.first().map(|f| f.number), frames.last().map(|f| f.number));
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                     DECODER.with(|d| match d.try_borrow_mut() {
-                        Ok(mut d) => decode_dst_run(&mut d, frames, channels),
-                        // Not reached (decoding never yields to other jobs); stay correct.
-                        Err(_) => decode_dst_run(&mut DstDecoder::new(), frames, channels),
+                        Ok(mut d) => decode_dst_run(&mut d, frames, channels, &log),
+                        // Reached only if this thread's decoder is in use further up the stack:
+                        // a log sink called while it is borrowed ran other pool jobs (for
+                        // example by decoding on this pool itself, which waits in
+                        // rayon::yield_now). Stay correct with a fresh decoder.
+                        Err(_) => decode_dst_run(&mut DstDecoder::new(), frames, channels, &log),
                     })
                 }));
                 if result.is_err() {
+                    // A sink that panics again here is caught as well, and the job's panic
+                    // stays the one resumed.
+                    let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                        sb_log!(
+                            &log,
+                            Error,
+                            "panic while decoding DST frames {:?}..={:?} on a pool thread; resumed on the caller",
+                            range.0,
+                            range.1
+                        );
+                    }));
                     // Start afresh rather than reuse a decoder a panic left behind.
                     DECODER.with(|d| {
                         if let Ok(mut d) = d.try_borrow_mut() {
@@ -1422,6 +1778,176 @@ mod tests {
         // one frame of DST bytes and one of decoded audio, about 24 MB in all.
         let bound = MAX_PARALLEL_BATCH * (MAX_FRAME_BYTES + 6 * FRAME_BYTES_PER_CHANNEL);
         assert!(bound <= 24_100_000, "{bound}");
+    }
+
+    /// An area of `sectors` malformed audio sectors (a packet that overruns each one) at
+    /// LSN 0, with one track of `frames` frames, all missing.
+    fn malformed_area(sectors: u32, frames: u32) -> (Image<std::io::Cursor<Vec<u8>>>, Area, Track) {
+        // One packet (k = 1), audio, 2047 bytes: past the end of the sector.
+        area_of(sectors, frames, |_, s| s[..3].copy_from_slice(&[1 << 5, 0x17, 0xFF]))
+    }
+
+    /// An area of `sectors` well-formed audio sectors at LSN 0, each starting plain frame
+    /// `i` with 10 bytes only, so that every frame is discarded as incomplete; one track
+    /// of `frames` frames, all missing.
+    fn incomplete_frames_area(sectors: u32, frames: u32) -> (Image<std::io::Cursor<Vec<u8>>>, Area, Track) {
+        area_of(sectors, frames, |i, s| {
+            // k = 1 packet, f = 1 frame record, plain DSD; a start audio packet of 10 bytes;
+            // the record's timecode is frame i.
+            let (m, sec, f) = ((i / 4500) as u8, (i / 75 % 60) as u8, (i % 75) as u8);
+            s[..6].copy_from_slice(&[(1 << 5) | (1 << 2), 0x90, 10, m, sec, f]);
+        })
+    }
+
+    /// An area of `sectors` sectors at LSN 0, sector `i` written by `fill`, with one track
+    /// of `frames` frames.
+    fn area_of(
+        sectors: u32,
+        frames: u32,
+        fill: impl Fn(usize, &mut [u8]),
+    ) -> (Image<std::io::Cursor<Vec<u8>>>, Area, Track) {
+        use crate::toc::{AreaKind, AreaText, Timecode, TrackText, Version};
+        let mut bytes = vec![0u8; sectors as usize * SECTOR_SIZE];
+        for (i, s) in bytes.chunks_exact_mut(SECTOR_SIZE).enumerate() {
+            fill(i, s);
+        }
+        let image = Image::with_format(std::io::Cursor::new(bytes), crate::SectorFormat::Plain).unwrap();
+        let playtime = Timecode {
+            minutes: (frames / 4500) as u8,
+            seconds: (frames / 75 % 60) as u8,
+            frames: (frames % 75) as u8,
+        };
+        let track = Track {
+            number: 1,
+            start_lsn: 0,
+            length_sectors: sectors,
+            start_frame: 0,
+            duration_frames: frames,
+            start_flags: 0,
+            duration_flags: 0,
+            isrc: None,
+            genre: None,
+            text: TrackText::default(),
+        };
+        let area = Area {
+            slot: Slot::TwoChannel,
+            kind: AreaKind::TwoChannel,
+            version: Version { major: 1, minor: 20 },
+            toc_lsn: 0,
+            toc_sectors: 0,
+            max_byte_rate: 0,
+            sample_frequency_code: 4,
+            frame_format: 0,
+            channel_count: 2,
+            area_config: 0,
+            max_available_channels: 2,
+            area_mute_flags: 0,
+            track_attribute: 0,
+            playtime,
+            track_offset: 0,
+            audio_start_lsn: 0,
+            audio_end_lsn: sectors - 1,
+            text_channel_count: 0,
+            locales: Vec::new(),
+            text_charset: 0,
+            text: AreaText::default(),
+            tracks: vec![track.clone()],
+        };
+        (image, area, track)
+    }
+
+    type Lines = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
+
+    fn recorder(level: Level) -> (Log, Lines) {
+        let lines = Lines::default();
+        let sink = std::sync::Arc::clone(&lines);
+        (Log::new(level, move |_, m| sink.lock().unwrap().push(m.to_string())), lines)
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "decodes thousands of frames")]
+    fn problem_lines_are_capped() {
+        let n = MAX_PROBLEM_LINES + 100;
+        let (mut image, area, track) = malformed_area(n as u32, n as u32);
+        let (log, lines) = recorder(Level::Warn);
+        image.set_log(log);
+        let mut cursor = TrackAudioCursor::new(&area, &track, image.sector_count()).unwrap();
+        let mut frames = 0;
+        while let Some(f) = cursor.next_frame(&mut image) {
+            assert_eq!(f.unwrap().status, FrameStatus::Missing);
+            frames += 1;
+        }
+        assert_eq!((frames, cursor.missing_frames()), (n, n as u64));
+        assert_eq!(cursor.malformed_sectors(), n as u64);
+        let lines = lines.lock().unwrap();
+        let malformed: Vec<_> = lines.iter().filter(|m| m.contains(": audio-sector-malformed: ")).collect();
+        let missing = lines.iter().filter(|m| m.contains(": missing, filled")).count();
+        assert_eq!((malformed.len(), missing), (MAX_PROBLEM_LINES, MAX_PROBLEM_LINES));
+        // The lines are those of the warnings kept, which are capped alike.
+        let listed: Vec<_> = cursor
+            .warnings()
+            .iter()
+            .map(|w| {
+                format!(
+                    "area 2ch audio sector LSN {}: audio-sector-malformed: packet 0 of 1 (2047 bytes at 3) overruns the sector",
+                    w.lsn.unwrap()
+                )
+            })
+            .collect();
+        assert_eq!(malformed.into_iter().cloned().collect::<Vec<_>>(), listed);
+        for what in ["audio-sector-malformed", "missing-frame"] {
+            let suppressed =
+                format!("area 2ch: further {what} lines suppressed (at most {MAX_PROBLEM_LINES} per cursor)");
+            assert_eq!(lines.iter().filter(|m| **m == suppressed).count(), 1, "{what}");
+        }
+
+        // Frames the reassembler discards: capped alike, per area cursor.
+        let (mut image, area, track) = incomplete_frames_area(n as u32, n as u32);
+        let (log, lines) = recorder(Level::Warn);
+        image.set_log(log);
+        let mut cursor = TrackAudioCursor::new(&area, &track, image.sector_count()).unwrap();
+        while let Some(f) = cursor.next_frame(&mut image) {
+            assert_eq!(f.unwrap().status, FrameStatus::Missing);
+        }
+        assert_eq!(cursor.malformed_sectors(), 0);
+        let lines = lines.lock().unwrap();
+        let discarded: Vec<_> =
+            lines.iter().filter(|m| m.contains(": discarded, incomplete (Dsd, 10 bytes")).collect();
+        assert_eq!(discarded.len(), MAX_PROBLEM_LINES);
+        assert_eq!(
+            discarded[0],
+            "area 2ch frame 0 (from LSN 0): discarded, incomplete (Dsd, 10 bytes; 4.4.2)"
+        );
+        let suppressed = format!(
+            "area 2ch: further discarded-frame lines suppressed (at most {MAX_PROBLEM_LINES} per cursor)"
+        );
+        assert_eq!(lines.iter().filter(|m| **m == suppressed).count(), 1);
+        // Its first line comes right after the last discarded frame admitted.
+        let at = lines.iter().position(|m| *m == suppressed).unwrap();
+        assert!(lines[..at].iter().filter(|m| m.contains(": discarded,")).count() == MAX_PROBLEM_LINES);
+    }
+
+    #[test]
+    fn a_frame_survives_a_sink_that_panics() {
+        let (mut image, area, track) = malformed_area(1, 3);
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = std::sync::Arc::clone(&calls);
+        image.set_log(Log::new(Level::Warn, move |_, m| {
+            if m.to_string().contains("frame 1: missing")
+                && counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0
+            {
+                panic!("sink");
+            }
+        }));
+        let mut cursor = TrackAudioCursor::new(&area, &track, image.sector_count()).unwrap();
+        assert_eq!(cursor.next_frame(&mut image).unwrap().unwrap().number, 0);
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cursor.next_frame(&mut image)));
+        assert!(caught.is_err());
+        assert_eq!(cursor.missing_frames(), 1, "the frame whose line panicked is not counted");
+        let numbers: Vec<_> =
+            std::iter::from_fn(|| cursor.next_frame(&mut image)).map(|f| f.unwrap().number).collect();
+        assert_eq!(numbers, [1, 2]);
+        assert_eq!(cursor.missing_frames(), 3);
     }
 
     #[test]
