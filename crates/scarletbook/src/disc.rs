@@ -208,6 +208,13 @@ impl<R: Read + Seek> Disc<R> {
         &self.shared.toc
     }
 
+    /// The image's logical sector count, which bounds every area's capacity
+    /// (specification 4, 4.8 item 3).
+    #[cfg(feature = "output")]
+    pub(crate) fn image_sectors(&self) -> u64 {
+        self.image.sector_count()
+    }
+
     /// The log this disc reports to.
     pub fn log(&self) -> &Log {
         self.image.log()
