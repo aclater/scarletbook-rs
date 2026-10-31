@@ -453,6 +453,39 @@ class SbAreaDetails(C.Structure):
         "version_major", "version_minor", "max_available_channels", "mute_flags",
         "track_attribute", "track_offset", "text_channel_count", "text_charset")]
 
+# The layout of sb_disc_toc (format 1.0); see "The whole TOC in one call" below.
+class SbTocStr(C.Structure):
+    _fields_ = [("offset", C.c_uint32), ("length", C.c_uint32)]
+
+class SbTocHeader(C.Structure):
+    _fields_ = [("magic", C.c_uint8 * 8), ("major", C.c_uint16), ("minor", C.c_uint16), ("size", C.c_uint32),
+                ("disc_offset", C.c_uint32), ("disc_record_size", C.c_uint16),
+                ("area_record_size", C.c_uint16), ("track_record_size", C.c_uint16),
+                ("warning_record_size", C.c_uint16), ("areas_offset", C.c_uint32),
+                ("area_count", C.c_uint32), ("warnings_offset", C.c_uint32),
+                ("warning_count", C.c_uint32), ("strings_offset", C.c_uint32),
+                ("strings_size", C.c_uint32), ("reserved", C.c_uint32)]
+
+class SbTocDisc(C.Structure):
+    _fields_ = [("info", SbDiscInfo), ("album_genres", SbGenre * 4), ("disc_genres", SbGenre * 4),
+                ("text_channel_count", C.c_uint8), ("text_charset", C.c_uint8), ("disc_flags", C.c_uint8),
+                ("reserved", C.c_uint8), ("text_channels", SbTextChannel * 8), ("reserved2", C.c_uint32),
+                ("strings", SbTocStr * 18), ("catalog_numbers_stored", SbTocStr * 2),
+                ("manufacturer", SbTocStr)]
+
+class SbTocArea(C.Structure):
+    _fields_ = [("info", SbAreaInfo), ("details", SbAreaDetails), ("loudspeaker_layout", C.c_uint32),
+                ("channel_speakers", C.c_uint8 * 6), ("playtime_stored", SbTimecode),
+                ("reserved", C.c_uint8), ("reserved2", C.c_uint16), ("tracks_offset", C.c_uint32),
+                ("strings", SbTocStr * 4), ("text_channels", SbTextChannel * 10)]
+
+class SbTocTrack(C.Structure):
+    _fields_ = [("info", SbTrackInfo), ("start_stored", SbTimecode), ("duration_stored", SbTimecode),
+                ("reserved", C.c_uint8 * 2), ("strings", SbTocStr * 16), ("reserved2", C.c_uint32)]
+
+class SbTocWarning(C.Structure):
+    _fields_ = [("lsn", C.c_int64), ("slot", C.c_int32), ("track", C.c_uint32), ("code", SbTocStr)]
+
 class SbSpeculation(C.Structure):
     _fields_ = [("claim", C.c_uint64), ("lsn", C.c_uint64), ("slot", C.c_uint32), ("state", C.c_uint32),
                 ("first", C.c_uint32), ("last_returned", C.c_uint32), ("exact_from", C.c_uint32),
@@ -491,6 +524,7 @@ bind("sb_track_info", S, H, U32, U32, P(SbTrackInfo))
 bind("sb_area_playtime_stored", S, H, U32, P(SbTimecode))
 bind("sb_track_timecodes_stored", S, H, U32, U32, P(SbTimecode), P(SbTimecode))
 bind("sb_track_string", S, H, U32, U32, U32, C.c_char_p, SIZE, P(SIZE))
+bind("sb_disc_toc", S, H, U32, C.c_char_p, SIZE, P(SIZE))
 bind("sb_track_check", S, H, U32, U32)
 bind("sb_track_audio_open", S, H, U32, U32, P(H))
 bind("sb_track_audio_open_next", S, H, H, U32, U32, P(H))
@@ -575,6 +609,65 @@ is freed, and catch every exception inside them: ctypes only prints it, and the 
 an unspecified value (for a read callback, return -1 instead). A log callback can be
 called from a pool's threads (see `sb_disc_set_log`).
 `.github/scripts/clib-smoke.py` checks the first block above against the header and runs it.
+
+#### The whole TOC in one call
+
+Reading a TOC field by field takes about 100 to 160 calls for a typical disc. From Python,
+each call costs far more than the library spends on it. `sb_disc_toc` writes the whole TOC
+into one buffer instead: what the disc, area, track, string, genre, text channel,
+timecode and warning queries return, in a fixed, versioned layout (#132). It does no I/O,
+since it uses the TOC parsed at open.
+
+- **Layout.** `SbTocHeader` sits at offset 0. It gives the offset of the `SbTocDisc` record,
+  of the `SbTocArea` records (in `sb_disc_area` order) and of the `SbTocWarning` records,
+  with each kind's record size. Each area's `tracks_offset` points to its `SbTocTrack`
+  records, in track number order. Strings are `SbTocStr` refs (`offset`, `length`) into
+  the string area at the end. Each string is followed by a NUL that `length` does not
+  count. `offset == SB_TOC_ABSENT` (0xFFFFFFFF) marks an absent string, where the
+  per-field call would return `SB_STATUS_ABSENT`.
+- **Byte order and alignment.** Every integer is little-endian on every host. Every
+  field sits at a fixed offset that is a multiple of its size, and every record size is a
+  multiple of 8. So a buffer aligned to 8 bytes can be read through the structs on a
+  little-endian host, or parsed with `struct.unpack_from("<...")` anywhere.
+- **Versions.** The header carries the magic `SBTOC\0\0\0`, `major` (`SB_TOC_MAJOR`, 1)
+  and `minor` (`SB_TOC_MINOR`, 0). Refuse any other major version. A minor version only
+  appends fields to the end of records, so step through records by the header's record
+  sizes, not by `sizeof`. The format 1.0 sizes are 56, 256, 152, 168 and 24 bytes
+  (header, disc, area, track, warning).
+- **Size.** `flags` must be 0. `*len` receives the layout's size. If the buffer is NULL or
+  smaller than that, the call writes nothing and returns `SB_STATUS_BUFFER_TOO_SMALL`. The
+  recommended single-call pattern is to pass a 64 KiB buffer, which is enough for typical
+  discs (a few KB), and to call again with `*len` bytes only when that is too small. A disc
+  of 2 x 255 titled tracks needs about 97 KB.
+
+```python
+buf = C.create_string_buffer(64 * 1024)  # reuse it from disc to disc
+n = C.c_size_t()
+status = lib.sb_disc_toc(disc, 0, buf, len(buf), C.byref(n))
+if status == -11:  # SB_STATUS_BUFFER_TOO_SMALL
+    buf = C.create_string_buffer(n.value)
+    status = lib.sb_disc_toc(disc, 0, buf, len(buf), C.byref(n))
+check(status)
+raw = memoryview(buf)[:n.value]
+
+head = SbTocHeader.from_buffer(buf)  # create_string_buffer memory is malloc'd: 8-aligned
+if bytes(head.magic) != b"SBTOC\0\0\0" or head.major != 1:
+    raise RuntimeError("unknown sb_disc_toc layout")
+
+def text(ref):
+    return None if ref.offset == 0xFFFFFFFF else bytes(raw[ref.offset:ref.offset + ref.length]).decode()
+
+d = SbTocDisc.from_buffer(buf, head.disc_offset)
+album_title = text(d.strings[0])  # SB_DISC_STRING_ALBUM_TITLE
+for i in range(head.area_count):
+    a = SbTocArea.from_buffer(buf, head.areas_offset + i * head.area_record_size)
+    for k in range(a.info.track_count):
+        t = SbTocTrack.from_buffer(buf, a.tracks_offset + k * head.track_record_size)
+        title = text(t.strings[0])  # SB_TRACK_STRING_TITLE
+```
+
+The overlay above assumes a little-endian host. On any host, `struct.unpack_from("<I", raw,
+offset)` reads the same fields at the offsets documented in `scarletbook.h`.
 
 ### ABI compatibility
 
