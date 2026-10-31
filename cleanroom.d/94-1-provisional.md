@@ -1,1 +1,0 @@
-| 2026-10-31 | #94 provisional reading, core | `SeekPolicy`, the timecode search and provisional starts, marking. Specification 4, 4.2 item 8, 4.4.5 item 5, 4.7.1 item 6, and 7.1 item 3, at sacd-spec `82eac6c` (see "Specification version"); corpus README updated from it. No new sources consulted. |

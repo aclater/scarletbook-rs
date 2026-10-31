@@ -111,6 +111,37 @@ is shared by every crate of the workspace; releases carry the `bench` program an
 - `sb_disc_clone` and `sb_disc_clone_with_log` (#74): a clone of a disc opened from a file or from memory, with a reading position of its own, for reads of one image on several threads at once; track and raw frames handles may be read and continued through any clone of their disc. Discs opened from a file now read it at offsets through one shared handle. Additive: the ABI version stays 1.
 - `sb_disc_open_callbacks_at[_with_log]` and `sb_disc_clone_callbacks[_with_log]` (#74): discs read through a positional read callback (`SbReadAtFn`, which may be called from several threads at once), which can be cloned, and clones of any disc through new read and seek callbacks. Additive: the ABI version stays 1.
 - Loudspeaker layouts through the C interface: `sb_area_loudspeaker_layout` gives an area's `SB_LAYOUT_*` (stereo, 3/2, 5.1, or `SB_LAYOUT_UNSPECIFIED` for a combination specification 3, 3.4.1 does not define) and `sb_area_channel_speaker` the `SB_SPEAKER_*` of each channel in decoded-frame order (`SB_SPEAKER_UNSPECIFIED` without a defined layout). Additive: the ABI version stays 1 (#75).
+- Provisional reading, cold seeks without a prior pass (#94, part 1; specification 4, 4.2
+  item 8, 4.4.5 item 5 and 7.1 item 3, sacd-spec `82eac6c`): `SeekPolicy` (`Exact`, the
+  default, or `Speculative(SpeculativeOptions)`), set per disc handle with
+  `Disc::set_seek_policy` (clones and shares start with a copy), and the caller-kept forms
+  `TrackCursor::for_range_speculative` and `TrackAudioCursor::for_range_speculative`. When
+  an exact start would read more than `min_gap_sectors` before a range, a cursor allowed to
+  searches the frame records' timecodes (interpolation with a bisection safeguard, a few
+  small reads, at most a constant times `log2(n + 1)` sectors) and begins at a checkpoint
+  boundary before the range's first frame `u`, with no frame under assembly and `u` as the
+  next acceptable frame number. Its positions are marked provisional
+  (`ResumedFrom::Speculative`, `Speculation::Pending`): they are exact when no frame numbered
+  `u` or more was accepted before `L` and the frame under assembly at `L` is none or numbered
+  below `u`, which holds on well-formed discs but cannot be established without reading the
+  sectors before `L`. Its malformed count and warnings begin at `L` (`counts_from`).
+  Verification and confirmation come in part 2.
+- Checking provisional readings (#94, part 2; specification 4, 4.2 item 8, sacd-spec
+  `82eac6c`). A seek index takes the provisional readings of cursors made from it (through a
+  disc's iterators and continuations, `Disc::absorb_seek_checkpoints` or
+  `AreaIndex::absorb`) and checks them once its exact checkpoints reach their `L`
+  (`AreaIndex::verify`, which `AreaIndex::extend`, `Disc::extend_seek_index` and the new
+  `Disc::verify_speculation` run): a reading is `Speculation::Confirmed` when (a) and (b)
+  hold, and `Speculation::Refuted` ("possibly different") otherwise, with the frame from
+  which its positions are exact in any case (at least the specification's `a*`). Verdicts
+  reach the cursors at once (`speculation()`, `speculation_id()`) and an event queue
+  (`Disc::take_seek_events`, shared by a disc's clones and shares; `AreaIndex::take_events`),
+  and refutations are logged as warnings. At most `MAX_CLAIMS` (256) readings wait per
+  index (in `merge` too); older ones are dropped as `Speculation::Unverified`, as is a reading
+  whose checkpoint's sector digest does not match the image (a stale or foreign index never
+  confirms). At most `MAX_EVENTS` (1 024) verdicts wait per queue. A provisional reading records
+  provisional checkpoints, kept apart from the exact ones (not saved, used only by
+  provisional starts), from which later provisional starts nearby begin without a search.
 
 ### Changed
 
@@ -138,6 +169,11 @@ is shared by every crate of the workspace; releases carry the `bench` program an
   `AreaIndex::absorb` takes the cursor by `&mut` and drops what it took from it;
   `sb_track_audio_absorb` and `sb_raw_frames_absorb` do likewise. Docs: keep one index per
   image; loading is safe, not exact.
+- **Breaks the C ABI: `SB_ABI_VERSION` 2** (#39). Every declaration now has the same size and layout on every target: functions return `SbStatus` as an `int32_t` (in C23 and C++ an enumeration with that underlying type) instead of `enum SbStatus`, and the other enumerations are `uint32_t`; the flags `SbDiscInfo.hybrid`, `SbDiscInfo.manufacturer_sector`, `SbTrackInfo.has_genre` and the `*complete` out-parameters of the seek index functions are `uint8_t` instead of `bool`; `SbFrameInfo.size` and `SbRawFrameInfo.size` are `uint32_t`, and the seek index's `inline_budget` arguments, `SB_SEEK_DEFAULT_INLINE_BUDGET` and `sb_seek_index_memory`'s `*bytes` are `uint64_t`, instead of `size_t`, which remains only for caller buffer lengths; no struct has padding (`SbDiscInfo` starts with `sectors` and is 32 bytes, `SbTrackInfo` gains `reserved[3]`, `SbWarning` is ordered `lsn`, `slot`, `track`, `code`, `SbFrameInfo` is 16 bytes and `SbRawFrameInfo` 12). `sb_dst_decode` refuses input longer than `SB_MAX_FRAME_BYTES` with `SB_STATUS_INVALID_ARGUMENT`. README, "ABI compatibility", has the migration notes from ABI 1.
+
+### Removed
+
+- `scarletbook.h` no longer includes `<stdbool.h>`, since no declaration uses `bool` (C ABI 2, #39).
 
 ### Fixed
 
