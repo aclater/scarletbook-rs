@@ -13,7 +13,7 @@ mod output_common;
 use std::io::Cursor;
 
 use common::TrackSpec;
-use output_common::{Lcg, check, contents, corpus, plain, synthetic};
+use output_common::{Lcg, check, contents, corpus, corpus_ranges, enough, plain, synthetic, variants};
 use proptest::prelude::*;
 use scarletbook::output::{Format, OutputOptions, PropertyChunk};
 use scarletbook::{Disc, Error, Slot};
@@ -79,14 +79,7 @@ fn corpus_layouts_equal_sequential_writes() {
                 Some(6) => (&[b"MLFT", b"MRGT", b"C   ", b"LFE ", b"LS  ", b"RS  "], 4),
                 _ => continue,
             };
-            let mut ranges: Vec<(u32, u32)> = vec![(0, area.playtime_frames())];
-            for t in &area.tracks {
-                ranges.push((t.start_frame, t.end_frame()));
-                ranges.push(disc.track_range_with_pause(area.slot, u32::from(t.number)).unwrap());
-            }
-            ranges.sort_unstable();
-            ranges.dedup();
-            for (first, end) in ranges {
+            for (first, end) in corpus_ranges(&disc, area.slot) {
                 if let Err(e) = disc.check_range(area.slot, first, end) {
                     let o = disc.output_layout(
                         area.slot,
@@ -99,7 +92,7 @@ fn corpus_layouts_equal_sequential_writes() {
                     continue;
                 }
                 let content = contents(&mut disc, area.slot, first, end);
-                for (lsco_on, abss) in [(true, None), (false, Some(first))] {
+                for (lsco_on, abss) in variants(&[(true, None), (false, Some(first))], checked) {
                     let options = OutputOptions::default()
                         .with_dsdiff_loudspeaker_configuration(lsco_on)
                         .with_dsdiff_absolute_start(abss);
@@ -112,7 +105,7 @@ fn corpus_layouts_equal_sequential_writes() {
             }
         }
     }
-    assert!(checked > 100, "only {checked} layouts checked");
+    assert!(checked > enough(), "only {checked} layouts checked");
 }
 
 #[test]

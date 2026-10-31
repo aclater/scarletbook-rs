@@ -33,6 +33,38 @@ impl PositionSource for Held<'_> {
     }
 }
 
+/// Whether the run is instrumented (Miri, or coverage, whose test processes have
+/// `LLVM_PROFILE_FILE` set): the corpus tests then check a sample of their cases.
+pub fn sampled() -> bool {
+    cfg!(miri) || std::env::var_os("LLVM_PROFILE_FILE").is_some()
+}
+
+/// The ranges the corpus tests check in an area: the play range, and each track and track
+/// with pause, sorted, without repeats; when [`sampled`], the play range and track 1's.
+pub fn corpus_ranges<R: Read + Seek>(disc: &Disc<R>, slot: Slot) -> Vec<(u32, u32)> {
+    let area = disc.toc().area(slot).unwrap();
+    let mut ranges: Vec<(u32, u32)> = vec![(0, area.playtime_frames())];
+    let tracks = if sampled() { &area.tracks[..area.tracks.len().min(1)] } else { &area.tracks[..] };
+    for t in tracks {
+        ranges.push((t.start_frame, t.end_frame()));
+        ranges.push(disc.track_range_with_pause(slot, u32::from(t.number)).unwrap());
+    }
+    ranges.sort_unstable();
+    ranges.dedup();
+    ranges
+}
+
+/// The variants of options to check for case number `case`: all, or one in turn when
+/// [`sampled`].
+pub fn variants<T: Clone>(all: &[T], case: usize) -> Vec<T> {
+    if sampled() { vec![all[case % all.len()].clone()] } else { all.to_vec() }
+}
+
+/// The fewest layouts a corpus test must check.
+pub fn enough() -> usize {
+    if sampled() { 20 } else { 100 }
+}
+
 /// A small deterministic generator for read ranges.
 pub struct Lcg(pub u64);
 
@@ -77,7 +109,7 @@ pub fn check<R: Read + Seek>(
         reads.push((r.offset - 1, 2));
         reads.push((r.offset.saturating_sub(span / 2), span));
     }
-    for _ in 0..if cfg!(miri) { 2 } else { 24 } {
+    for _ in 0..if sampled() { 2 } else { 24 } {
         let at = rng.below(size);
         let len = 1 + rng.below((size - at).min(3 * span));
         reads.push((at, len));

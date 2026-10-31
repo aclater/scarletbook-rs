@@ -14,7 +14,7 @@ mod output_common;
 use std::io::Cursor;
 
 use common::TrackSpec;
-use output_common::{Held, Lcg, check, contents, corpus, plain, synthetic};
+use output_common::{Held, Lcg, check, contents, corpus, corpus_ranges, enough, plain, synthetic, variants};
 use proptest::prelude::*;
 use scarletbook::audio::FRAME_BYTES_PER_CHANNEL;
 use scarletbook::output::{DsfBitsPerSample, Format, OutputOptions, RegionKind};
@@ -78,14 +78,7 @@ fn corpus_layouts_equal_sequential_writes() {
                 Some(6) => 7,
                 _ => continue,
             };
-            let mut ranges: Vec<(u32, u32)> = vec![(0, area.playtime_frames())];
-            for t in &area.tracks {
-                ranges.push((t.start_frame, t.end_frame()));
-                ranges.push(disc.track_range_with_pause(area.slot, u32::from(t.number)).unwrap());
-            }
-            ranges.sort_unstable();
-            ranges.dedup();
-            for (first, end) in ranges {
+            for (first, end) in corpus_ranges(&disc, area.slot) {
                 if disc.check_range(area.slot, first, end).is_err() {
                     let e = disc.output_layout(area.slot, first, end, Format::Dsf, &OutputOptions::default());
                     assert_eq!(
@@ -95,7 +88,7 @@ fn corpus_layouts_equal_sequential_writes() {
                     continue;
                 }
                 let content = contents(&mut disc, area.slot, first, end);
-                for bits in [DsfBitsPerSample::One, DsfBitsPerSample::Eight] {
+                for bits in variants(&[DsfBitsPerSample::One, DsfBitsPerSample::Eight], checked) {
                     let options = OutputOptions::default().with_dsf_bits_per_sample(bits);
                     let layout = disc.output_layout(area.slot, first, end, Format::Dsf, &options).unwrap();
                     let bits = if bits == DsfBitsPerSample::One { 1 } else { 8 };
@@ -108,7 +101,7 @@ fn corpus_layouts_equal_sequential_writes() {
             }
         }
     }
-    assert!(checked > 100, "only {checked} layouts checked");
+    assert!(checked > enough(), "only {checked} layouts checked");
 }
 
 #[test]
