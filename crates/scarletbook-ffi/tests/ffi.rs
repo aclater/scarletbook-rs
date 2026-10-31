@@ -354,6 +354,8 @@ unsafe extern "C" fn cb_read(user: *mut c_void, buf: *mut u8, len: usize) -> i64
         u.probes.push(info(u.disc).0);
         u.probes.push(audio_read(u.audio, u.disc, &mut [0u8; 2 * 4704]).0);
         u.probes.push(audio_open_next(u.disc, u.audio, 0, 1).map_or_else(|s| s, |_| SbStatus::Ok));
+        // SAFETY: `u.audio` is a live handle; a NULL pool is allowed.
+        u.probes.push(unsafe { sb_track_audio_set_pool(u.audio, ptr::null()) });
         if !u.raw.is_null() {
             u.probes.push(raw_read(u.raw, u.disc, &mut [0u8; 2 * 4704]).0);
             u.probes.push(cb_read_dst_equivalent(u.raw, u.disc));

@@ -31,15 +31,17 @@
  *   when a pool decodes. A log callback (sb_disc_set_log) also runs there and on the
  *   threads of the pools decoding for the disc's track handles (sb_track_audio_set_pool;
  *   in a library built with the parallel feature, rayon's global pool by default). The
- *   library has no other threads and no global state besides the per-thread error
- *   message.
+ *   library has no other threads, and no global state besides the per-thread error
+ *   message and an atomic counter that numbers the discs opened (so that a handle can
+ *   tell the disc it belongs to).
  *
  * - Callbacks and re-entrancy. While a disc's callback runs, that disc and its track
  *   and raw frames handles are in use: calling into this library with them from the
  *   callback returns SB_STATUS_INVALID_ARGUMENT, and their _free functions do
  *   nothing. Other handles may be used. (A log callback invoked by a call that only
- *   reads the disc, such as sb_track_check, may read it too; one running on a worker
- *   thread must not use the disc or its track or raw frames handles at all.)
+ *   reads the disc, such as sb_track_check, may read it too; one running on a pool
+ *   thread must not use the disc or its track or raw frames handles at all, with any
+ *   call, sb_track_audio_set_pool and the _free functions included.)
  *
  * - Panics. No panic crosses the boundary: an internal error returns SB_STATUS_PANIC.
  *   The handles involved should then be freed and not used further. If the library is
@@ -814,7 +816,7 @@ enum SbStatus sb_disc_open_callbacks_with_log(SbReadFn read,
  thread, in frame order. Once sb_disc_set_log or sb_disc_free returns, the previous
  callback is not called again (they wait for calls on other threads to return).
 
- A worker's message can also be delivered on a thread that waits for a frame inside
+ A pool thread's message can also be delivered on a thread that waits for a frame inside
  `sb_track_audio_read` when that thread is one of a pool's (the pool runs pending work
  there; for example a callback on a pool thread that reads another handle), and the callback
  can be entered again on a thread that is already inside it (when the callback itself
@@ -830,8 +832,9 @@ enum SbStatus sb_disc_open_callbacks_with_log(SbReadFn read,
  The message is valid only during the call. The callback must not unwind. It may call
  this library with other handles. With this disc or its track handles, it may do so only
  when it runs on the thread of the call that invoked it, where a call that conflicts
- with the running one fails with `SB_STATUS_INVALID_ARGUMENT`; from a worker thread that
- would use the handle from two threads at once.
+ with the running one fails with `SB_STATUS_INVALID_ARGUMENT`; from a pool thread that
+ would use the handle from two threads at once (`sb_track_audio_set_pool` and the
+ `_free` functions included).
 
  Returns `SB_STATUS_INVALID_ARGUMENT` for a level outside `SB_LOG_OFF` to
  `SB_LOG_TRACE`, or when called from one of this disc's callbacks; the log is then
