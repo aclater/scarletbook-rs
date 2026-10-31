@@ -182,6 +182,8 @@ enum SbStatus sb_disc_open_memory(const uint8_t *data, size_t len, struct SbDisc
 enum SbStatus sb_disc_open_memory_with_log(const uint8_t *data, size_t len, SbLogFn log, void *log_user, int32_t level, struct SbDisc **out);
 enum SbStatus sb_disc_open_callbacks(SbReadFn read, SbSeekFn seek, void *user, struct SbDisc **out);
 enum SbStatus sb_disc_open_callbacks_with_log(SbReadFn read, SbSeekFn seek, void *user, SbLogFn log, void *log_user, int32_t level, struct SbDisc **out);
+enum SbStatus sb_disc_clone(const struct SbDisc *disc, struct SbDisc **out);
+enum SbStatus sb_disc_clone_with_log(const struct SbDisc *disc, SbLogFn log, void *log_user, int32_t level, struct SbDisc **out);
 enum SbStatus sb_disc_set_log(const struct SbDisc *disc, SbLogFn log, void *user, int32_t level);
 void sb_disc_free(struct SbDisc *disc);
 enum SbStatus sb_disc_info(const struct SbDisc *disc, struct SbDiscInfo *out);

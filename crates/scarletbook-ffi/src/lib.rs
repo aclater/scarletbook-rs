@@ -10,7 +10,9 @@
 use std::cell::{Ref, RefCell, RefMut};
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::fs::File;
-use std::io::{self, BufReader, Cursor, Read, Seek, SeekFrom};
+#[cfg(not(any(unix, windows)))]
+use std::io::BufReader;
+use std::io::{self, Read, Seek, SeekFrom};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -18,8 +20,8 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use scarletbook::log::{Level, Log};
 use scarletbook::toc::{AreaTextItem, DiscTextItem, TrackTextItem};
 use scarletbook::{
-    Area, AreaCursor, DecodeOn, Disc, Error, FrameContent, FrameKind, FrameStatus, LoudspeakerLayout, Slot,
-    Speaker, TrackAudioCursor, TrackCursor, TrackFrame, WarningCode,
+    Area, AreaCursor, DecodeOn, Disc, Error, FrameContent, FrameKind, FrameStatus, LoudspeakerLayout,
+    ReadAtReader, Slot, Speaker, TrackAudioCursor, TrackCursor, TrackFrame, WarningCode,
 };
 
 /// Result of every call.
@@ -363,7 +365,11 @@ type Reader = Box<dyn ReadSeek + Send>;
 /// state borrowed and fails cleanly instead of aliasing it.
 pub struct SbDisc {
     inner: RefCell<Disc<Reader>>,
+    /// The disc's number, shared by its clones (`sb_disc_clone`): they read the same image,
+    /// so a track or raw frames handle of one may be read through any of them.
     id: u64,
+    /// What a clone reads through.
+    source: DiscSource,
     /// The C log callback the disc's log calls, if any; replaced only while `inner` can be
     /// borrowed mutably, and cleared when the disc is dropped.
     log: RefCell<Option<Arc<LogTarget>>>,
@@ -386,7 +392,7 @@ impl std::fmt::Debug for SbDisc {
 }
 
 /// The decoding state of one track or frame range. Each `sb_track_audio_read` call reads through the
-/// disc it was opened from; the disc must be live for those calls (it may be freed
+/// disc it was opened from or a clone of it; that disc must be live for those calls (it may be freed
 /// before the track handle, which can then only be freed).
 #[derive(Debug)]
 pub struct SbTrackAudio {
@@ -419,7 +425,7 @@ pub struct SbPool {
 
 /// The reading state of one frame range's stored content, or of an area's stored frame
 /// list, without decoding. Each `sb_raw_frames_read` call reads through the disc it was
-/// opened from, as for `SbTrackAudio`.
+/// opened from or a clone of it, as for `SbTrackAudio`.
 #[derive(Debug)]
 pub struct SbRawFrames {
     inner: RefCell<RawFrames>,
@@ -510,6 +516,30 @@ const _: () = {
 
 trait ReadSeek: Read + Seek {}
 impl<T: Read + Seek> ReadSeek for T {}
+
+/// What a disc reads through, as far as a clone (`sb_disc_clone`) can share it.
+#[derive(Clone)]
+enum DiscSource {
+    /// A file read at offsets: the disc and its clones each read with a position of their own.
+    #[cfg(any(unix, windows))]
+    File(Arc<File>),
+    /// An image copied into memory by `sb_disc_open_memory`.
+    Memory(Arc<Vec<u8>>),
+    /// A reader with a single position (read and seek callbacks): not shared.
+    Single,
+}
+
+impl DiscSource {
+    /// A new reader of the source, for a clone; `None` for a single-position reader.
+    fn reader(&self) -> Option<Reader> {
+        match self {
+            #[cfg(any(unix, windows))]
+            DiscSource::File(file) => Some(Box::new(ReadAtReader::new(Arc::clone(file)))),
+            DiscSource::Memory(bytes) => Some(Box::new(ReadAtReader::new(Arc::clone(bytes)))),
+            DiscSource::Single => None,
+        }
+    }
+}
 
 static NEXT_DISC_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -694,7 +724,12 @@ fn find_area(disc: &Disc<Reader>, slot: u32) -> Result<&Area, Failure> {
 /// # Safety
 ///
 /// `out` must be NULL or valid for a write.
-unsafe fn open_reader(reader: Reader, log: DiscLog, out: *mut *mut SbDisc) -> Result<SbStatus, Failure> {
+unsafe fn open_reader(
+    reader: Reader,
+    source: DiscSource,
+    log: DiscLog,
+    out: *mut *mut SbDisc,
+) -> Result<SbStatus, Failure> {
     if out.is_null() {
         return Err(Failure::arg("NULL output pointer"));
     }
@@ -711,6 +746,7 @@ unsafe fn open_reader(reader: Reader, log: DiscLog, out: *mut *mut SbDisc) -> Re
     let handle = Box::new(SbDisc {
         inner: RefCell::new(disc),
         id: NEXT_DISC_ID.fetch_add(1, Ordering::Relaxed),
+        source,
         log: RefCell::new(target),
     });
     // SAFETY: `out` is non-NULL and valid for a write by this function's contract.
@@ -822,8 +858,16 @@ pub unsafe extern "C" fn sb_disc_open_file_with_log(
             log.0.write(Level::Error, format_args!("{path}: {e}"));
             Failure(SbStatus::Io, format!("{path}: {e}"))
         })?;
+        // Read at offsets where the system offers it, so that clones share the file.
+        #[cfg(any(unix, windows))]
+        let (reader, source): (Reader, DiscSource) = {
+            let file = Arc::new(file);
+            (Box::new(ReadAtReader::new(Arc::clone(&file))), DiscSource::File(file))
+        };
+        #[cfg(not(any(unix, windows)))]
+        let (reader, source): (Reader, DiscSource) = (Box::new(BufReader::new(file)), DiscSource::Single);
         // SAFETY: forwarded contract.
-        unsafe { open_reader(Box::new(BufReader::new(file)), log, out) }
+        unsafe { open_reader(reader, source, log, out) }
     })
 }
 
@@ -877,8 +921,11 @@ pub unsafe extern "C" fn sb_disc_open_memory_with_log(
             bytes.extend_from_slice(src);
             bytes
         };
+        let bytes = Arc::new(bytes);
         // SAFETY: forwarded contract.
-        unsafe { open_reader(Box::new(Cursor::new(bytes)), log, out) }
+        unsafe {
+            open_reader(Box::new(ReadAtReader::new(Arc::clone(&bytes))), DiscSource::Memory(bytes), log, out)
+        }
     })
 }
 
@@ -978,7 +1025,82 @@ pub unsafe extern "C" fn sb_disc_open_callbacks_with_log(
             return Err(Failure::arg("NULL callback"));
         };
         // SAFETY: forwarded contract.
-        unsafe { open_reader(Box::new(Callbacks { read, seek, user }), log, out) }
+        unsafe { open_reader(Box::new(Callbacks { read, seek, user }), DiscSource::Single, log, out) }
+    })
+}
+
+/// Opens a clone of a disc: the same image with a reading position of its own, sharing
+/// the disc's parsed TOC, warnings and sector format, without the log callback (see
+/// `sb_disc_clone_with_log`). For reads of one image on several threads at once, give each
+/// thread a clone: each is a handle of its own, used by one thread at a time as any handle.
+/// On failure `*out` is set to NULL.
+///
+/// A disc and its clones read the same image: a track audio or raw frames handle opened
+/// from any of them may be read through any other (`sb_track_audio_read`,
+/// `sb_raw_frames_read`), and continued through any other (`_open_next`). Each may be freed
+/// before or after the others.
+///
+/// Discs opened from a file or from memory can be cloned; reads through a file use the
+/// same file handle, at their own offsets (on Windows, the system may serialise reads
+/// through one handle). A disc opened with read and seek callbacks has a single position:
+/// cloning it fails with `SB_STATUS_INVALID_ARGUMENT`. The clone checks the image again
+/// (its length and TOC sectors): `SB_STATUS_IO` if that read fails.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle; `out` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_disc_clone(disc: *const SbDisc, out: *mut *mut SbDisc) -> SbStatus {
+    // SAFETY: forwarded contract; no log.
+    unsafe { sb_disc_clone_with_log(disc, None, std::ptr::null_mut(), SB_LOG_OFF, out) }
+}
+
+/// `sb_disc_clone`, with the clone reporting to a log callback of its own from the check
+/// of the image on (see `sb_disc_set_log`). The callback is the clone's: replacing or
+/// freeing the original's does not affect it.
+///
+/// # Safety
+///
+/// As `sb_disc_clone` and `sb_disc_set_log`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_disc_clone_with_log(
+    disc: *const SbDisc,
+    log: SbLogFn,
+    log_user: *mut c_void,
+    level: i32,
+    out: *mut *mut SbDisc,
+) -> SbStatus {
+    // SAFETY: forwarded contract.
+    unsafe { clear_out(out) };
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let DiscLog(log, target) = unsafe { DiscLog::new(log, log_user, level) }?;
+        // The new callback is called only by the clone: stop it on every failure.
+        let clear = |e: Failure| {
+            if let Some(t) = &target {
+                t.clear();
+            }
+            e
+        };
+        // SAFETY: forwarded contract.
+        let handle = unsafe { disc_handle(disc) }.map_err(clear)?;
+        if out.is_null() {
+            return Err(clear(Failure::arg("NULL output pointer")));
+        }
+        let Some(reader) = handle.source.reader() else {
+            return Err(clear(Failure::arg("a disc opened with read and seek callbacks cannot be cloned")));
+        };
+        let d = handle.get().map_err(clear)?;
+        let clone = d.share_with_log(reader, log).map_err(|e| clear(e.into()))?;
+        let clone = Box::new(SbDisc {
+            inner: RefCell::new(clone),
+            id: handle.id,
+            source: handle.source.clone(),
+            log: RefCell::new(target),
+        });
+        // SAFETY: non-NULL and valid for a write by this function's contract.
+        unsafe { out.write(Box::into_raw(clone)) };
+        Ok(SbStatus::Ok)
     })
 }
 
@@ -1173,7 +1295,8 @@ pub unsafe extern "C" fn sb_disc_set_log(
 }
 
 /// Frees a disc. NULL is ignored, and so is a disc whose callback is running (the call is
-/// then a no-op). Track audio handles opened from it can afterwards only be freed.
+/// then a no-op). Track audio handles opened from it can afterwards only be freed, or
+/// read through a clone of it (`sb_disc_clone`). Its clones stay usable.
 ///
 /// # Safety
 ///
@@ -1574,7 +1697,7 @@ pub unsafe extern "C" fn sb_track_audio_open(
 }
 
 /// Opens the decoded audio of track `number` of the area from `slot`, continuing `prev`
-/// (an earlier track's or range's handle from the same disc) without rescanning the area
+/// (an earlier track's or range's handle from the same disc or a clone of it) without rescanning the area
 /// where the result is the same. Reading an area's tracks in increasing order this way
 /// reads each audio sector once. With `prev` NULL this is `sb_track_audio_open`.
 ///
@@ -1749,7 +1872,7 @@ pub unsafe extern "C" fn sb_range_audio_open(
 }
 
 /// Opens the decoded audio of the frame range `[first, end)` of the area from `slot`,
-/// continuing `prev` (an earlier track's or range's handle from the same disc) as
+/// continuing `prev` (an earlier track's or range's handle from the same disc or a clone of it) as
 /// `sb_track_audio_open_next` does, with the same ownership rules. With `prev` NULL this
 /// is `sb_range_audio_open`.
 ///
@@ -1783,7 +1906,8 @@ pub unsafe extern "C" fn sb_track_audio_channels(audio: *const SbTrackAudio) -> 
 
 /// Decodes the next frame of a track into `buf` (interleaved, channels x 4704 bytes).
 /// Returns `SB_STATUS_END` after the last frame. `disc` must be the live disc the track
-/// was opened from. The disc's read callbacks, if any, run during this call.
+/// was opened from or a clone of it (`sb_disc_clone`). The disc's read callbacks, if any,
+/// run during this call.
 ///
 /// # Safety
 ///
@@ -2219,8 +2343,8 @@ pub unsafe extern "C" fn sb_raw_frames_channels(raw: *const SbRawFrames) -> u32 
 /// its number, its `SbFrameKind` and its size (`channels x 4704` for a plain frame, the
 /// DST frame's length for a DST frame, 0 for a missing position, never more than
 /// `SB_MAX_FRAME_BYTES`). Returns `SB_STATUS_END` after the last position. `disc` must be
-/// the live disc the handle was opened from; its read callbacks, if any, run during this
-/// call. Invalid DST frames are not reported: validity is known only by decoding
+/// the live disc the handle was opened from or a clone of it; its read callbacks, if any,
+/// run during this call. Invalid DST frames are not reported: validity is known only by decoding
 /// (`sb_dst_decode`).
 ///
 /// The kind is fixed by the DST flag of the sector the frame starts in (specification 4,
@@ -2230,7 +2354,8 @@ pub unsafe extern "C" fn sb_raw_frames_channels(raw: *const SbRawFrames) -> u32 
 /// frame of a plain sector, without a prefix.
 ///
 /// On any failure other than `SB_STATUS_BUFFER_TOO_SMALL` (an I/O error, a handle in use,
-/// a handle of another disc) and on `SB_STATUS_END`, `*info` is not written.
+/// a handle of a disc that is not this one or a clone of it) and on `SB_STATUS_END`,
+/// `*info` is not written.
 ///
 /// If `buf` is NULL or `cap` is below the frame's size, nothing is copied, `*info` (if not
 /// NULL) still receives the number, kind and needed size, and the call returns
