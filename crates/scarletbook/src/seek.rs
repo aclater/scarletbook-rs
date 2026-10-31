@@ -1045,8 +1045,15 @@ const _: () = {
 ///
 /// # Saved confirmations
 ///
+/// Saved confirmations are used and kept only by an index whose TOC fingerprint a disc of
+/// this process has checked against its own TOC ([`crate::Disc::enable_seek_index`],
+/// [`crate::Disc::set_seek_index`]; not saved): an index loaded with
+/// [`AreaIndex::from_bytes`] and used directly (`for_range_speculative`,
+/// `for_range_indexed`, [`AreaIndex::extend`]) keeps its readings provisional and records
+/// no confirmation, whatever image it reads.
+///
 /// When verification ([`AreaIndex::verify`]) confirms a provisional reading from `L` for
-/// positions `u_L` or more, an index with a TOC fingerprint keeps (`L`, `u_L`) and the
+/// positions `u_L` or more, such an index keeps (`L`, `u_L`) and the
 /// digest of sector `L`, and saves them (16 bytes each, at most
 /// [`IndexOptions::max_hints`]). What that pass established, (a) and (b) of 4.2 item 8 at
 /// `L`, holds for every later reading from `L` with `u >= u_L`, and stays established after
@@ -1098,6 +1105,10 @@ pub struct AreaIndex {
     max_hints: usize,
     /// The disc's TOC fingerprint ([`toc_fingerprint`]), once a disc kept the index.
     fingerprint: Option<u64>,
+    /// Whether a disc of this process checked the fingerprint against its own TOC
+    /// ([`AreaIndex::bind_fingerprint`]): only then are confirmations used or kept (4.2
+    /// item 9). Not saved: a loaded index has it only once a disc has checked it.
+    fingerprint_checked: bool,
     /// Established provisional starts (specification 4, 4.2 item 9): (`L`, `u_L`, digest of
     /// sector `L`), by increasing `L`, for an index with a fingerprint.
     confirmed: Vec<(u32, u32, u64)>,
@@ -1148,6 +1159,7 @@ impl AreaIndex {
             hint_spacing: options.hint_spacing,
             max_hints: options.max_hints.min(MAX_HINTS),
             fingerprint: None,
+            fingerprint_checked: false,
             confirmed: Vec::new(),
         })
     }
@@ -1220,6 +1232,7 @@ impl AreaIndex {
             hint_spacing: self.hint_spacing,
             max_hints: self.max_hints,
             fingerprint: self.fingerprint,
+            fingerprint_checked: self.fingerprint_checked,
             confirmed: Vec::new(),
         }
     }
@@ -1236,7 +1249,7 @@ impl AreaIndex {
     /// index bound to a disc's TOC.
     fn keep_confirmation(&mut self, lsn: u64, u: u32, digest: u64) {
         let Ok(lsn) = u32::try_from(lsn) else { return };
-        if self.fingerprint.is_none() || self.max_hints == 0 {
+        if !self.fingerprint_checked || self.max_hints == 0 {
             return;
         }
         match self.confirmed.binary_search_by_key(&lsn, |c| c.0) {
@@ -1252,7 +1265,9 @@ impl AreaIndex {
     /// The saved confirmation of a provisional start at `lsn` for positions `u` or more:
     /// the digest sector `lsn` must have (4.2 item 9: established for `u_L <= u`).
     pub(crate) fn confirmation(&self, lsn: u64, u: u32) -> Option<u64> {
-        self.fingerprint?;
+        if !self.fingerprint_checked {
+            return None;
+        }
         let lsn = u32::try_from(lsn).ok()?;
         let i = self.confirmed.binary_search_by_key(&lsn, |c| c.0).ok()?;
         let (_, u_l, digest) = self.confirmed[i];
@@ -1381,6 +1396,7 @@ impl AreaIndex {
             }
             _ => {
                 self.fingerprint = Some(fingerprint);
+                self.fingerprint_checked = true;
                 Ok(())
             }
         }
@@ -1784,7 +1800,7 @@ impl AreaIndex {
                 Some((a, held, _)) => {
                     let u = claim.first;
                     if a <= u && held.is_none_or(|g| g < u) {
-                        if self.fingerprint.is_some() && lsn < self.end {
+                        if self.fingerprint_checked && lsn < self.end {
                             let d = digest(&crate::audio::read_sector(image, lsn)?);
                             self.keep_confirmation(lsn, u, d);
                         }
@@ -2060,6 +2076,7 @@ mod tests {
             hint_spacing: DEFAULT_HINT_SPACING,
             max_hints: DEFAULT_MAX_HINTS,
             fingerprint: None,
+            fingerprint_checked: false,
             confirmed: Vec::new(),
         }
     }
