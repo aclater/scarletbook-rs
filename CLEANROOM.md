@@ -142,6 +142,11 @@ machine.
 | criterion 0.7.0 (published 2025-07-25) | crates.io dev-dependency, no default features | the benchmark suite (#30); only its `--help` output and result files were used |
 | inferno 0.12.8 (published 2026-07-18) | crates.io (`cargo install --locked`) | flame graphs (#30) |
 | `llvm-tools-preview` for rustc 1.99.1 (LLVM 23.1.1) | rustup component | `llvm-profdata` for the PGO measurements (#32) |
+| podman 5.8.1 (already installed, first used 2026-10-30) | Fedora 44 package `podman-5.8.1-1.fc44` | running the C library's Linux builds locally in the release build images (#42) |
+| `quay.io/pypa/manylinux2014_x86_64@sha256:296069bc05d85275248f168f6e3b34ba8aa06181b67e40cd7447c64d56d3a851` and `quay.io/pypa/musllinux_1_2_x86_64@sha256:04e877afa939007f6784f9076d2aa797d1156f31281cfe19f203945d7b624970` (pulled 2026-10-30) | quay.io (PyPA) | the glibc 2.17 and musl 1.2 build images of `clib.yml`; the aarch64 images (`manylinux2014_aarch64@sha256:ec445e26...`, `musllinux_1_2_aarch64@sha256:1db34753...`) run only on CI (#42) |
+| `docker.io/library/rust:1.99.1-alpine` (index `sha256:7e9e2d068a107a2adafd19930011178d14a78326053cd4c3a9f7ad3fd049557d`, pulled 2026-10-30) | Docker Hub | pulled while choosing a musl build image; not used (#42) |
+| rustup-init 1.29.2 (x86_64-unknown-linux-gnu and -musl, inside the images above, 2026-10-30) | static.rust-lang.org `rustup/archive/1.29.2/`, checked against its pinned SHA-256 | installing Rust 1.99.1 in the build images (#42) |
+| GNU binutils 2.46.1 (`objdump`, `readelf`, `nm`; already installed) and binutils of the PyPA images | Fedora 44 package `binutils-2.46.1-1.fc44`; the images | checking glibc symbol versions, SONAME, dependencies and exports of our libraries (#42). `otool`, `nm` and MinGW `objdump` ran only on the GitHub runners. |
 
 ## Sources consulted
 
@@ -155,6 +160,7 @@ machine.
 | Rust standard library documentation (from memory of its API) | the implementation |
 | apache.org `LICENSE-2.0.txt` | licence text |
 | GitHub API (`gh api repos/<action>/releases`, `.../commits/<tag>`) | resolving action SHAs to pin |
+| C library release (#34, #42), all 2026-10-30: the rustc book *Platform Support* (https://doc.rust-lang.org/nightly/rustc/platform-support.html: minimum glibc, musl, macOS and Windows versions per target); GitHub changelog *macOS 13 runner image is closing down* (https://github.blog/changelog/2025-09-19-github-actions-macos-13-runner-image-is-closing-down/: `macos-15-intel`) and a web search on that; actions/runner-images *Windows2025-Readme.md* (https://github.com/actions/runner-images/blob/main/images/windows/Windows2025-Readme.md: GCC and Python on `windows-latest`); the quay.io and Docker Hub registry APIs (image digests); https://static.rust-lang.org/rustup/release-stable.toml and `rustup/archive/1.29.2/<host>/rustup-init.sha256` | build targets, runners and pins of `clib.yml` |
 | crates.io (`cargo search`, `GET /api/v1/crates/scarletbook`) | dependency versions; the crate name check |
 
 The crate name check used `cargo search scarletbook` and the crates.io API only.
@@ -413,3 +419,4 @@ on 2026-10-30: the name `scarletbook` is not taken on crates.io. Nothing was pub
 | 2026-10-30 | round 3 | interleaved DST decoding (#31), performance tooling (#30) and build configuration (#32), see "Round 3"; general references under the owner's round 3 allowance and decision B, see "General references consulted"; patent-hygiene table with every flag cleared on full texts read (#40). |
 | 2026-10-30 | specification `34f78a3`, `fa602f9` and `e52a42b` | answers to sacd-spec#14 and #18 applied (the x86-64-v3 `bench` asset renamed outside the benchmark asset patterns); corpus of `fa602f9` vendored (136 cases, all passing); see "Specification version". No new sources consulted beyond sacd-spec. |
 | 2026-10-30 | #35 frame ranges (#44) | decoded audio of any frame range, tracks with pauses. Specification 4, 4.2 item 6, 4.7, 4.7.1 and 4.8, and 7.1 item 3, at sacd-spec `e52a42b`. No new sources consulted. |
+| 2026-10-30 | C library release (#34, #42) | `clib.yml` builds and tests the C library for Linux (glibc 2.17, musl 1.2), macOS and Windows (MinGW-w64), and the release publishes it with checksums and the attestation; ABI policy and its check (`abi-check.py`, baselines in `crates/scarletbook-ffi/abi/`). No SACD or DST source; general sources and tools as recorded above. |

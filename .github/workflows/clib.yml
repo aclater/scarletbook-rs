@@ -1,0 +1,150 @@
+name: C library
+
+# Builds the C library (scarletbook-ffi: shared and static library plus scarletbook.h) for
+# every release target, tests each build on a machine that can run it, and uploads the
+# packages as workflow artifacts. The release workflow calls this and publishes the
+# packages; pull requests and manual runs exercise the same matrix without publishing.
+#
+# Every target is built natively, so every build is tested where it is built: the shared
+# library through Python's ctypes and a C program, the static library through the C
+# program (.github/scripts/clib-test.sh, clib-smoke.py).
+#
+# - Linux (glibc): built in the manylinux2014 image (glibc 2.17), so the shared library
+#   needs nothing newer than glibc 2.17, which clib-linux.sh checks.
+# - Linux (musl): built in the musllinux_1_2 image (musl 1.2), linking musl dynamically.
+# - macOS: built with MACOSX_DEPLOYMENT_TARGET at Rust's minimum for the target, 10.12
+#   for x86_64 and 11.0 for arm64; the step checks the minimum recorded in the library.
+# - Windows: x86_64-pc-windows-gnu, the MinGW-w64 target. Its static library is a GNU ar
+#   archive and its import library a .dll.a, both of which MinGW-w64 GCC links; the MSVC
+#   target's .lib files are not meant for GCC. The DLL exports the sb_* functions and
+#   loads through ctypes like any DLL. Tested with the runner's MinGW-w64 GCC.
+#
+# The PyPA images are pinned by digest. To move to a newer image, read the digest of its
+# `latest` tag (`docker buildx imagetools inspect quay.io/pypa/manylinux2014_x86_64`, or
+# `curl -sI -H 'Accept: application/vnd.docker.distribution.manifest.v2+json'
+# https://quay.io/v2/pypa/manylinux2014_x86_64/manifests/latest`, header
+# docker-content-digest), replace it below for each of the four images, and let this
+# workflow run on the pull request.
+#
+# Pull requests run it only when something that goes into the library or its packaging
+# changes; manual runs and the release workflow always run it.
+
+on:
+  pull_request:
+    paths:
+      - "crates/**"
+      - Cargo.toml
+      - Cargo.lock
+      - "rust-toolchain*"
+      - .github/workflows/clib.yml
+      - .github/workflows/release.yml
+      - ".github/scripts/clib-*"
+      # clib-smoke.py reads the header through its normalisation.
+      - .github/scripts/abi-check.py
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_STABLE: 1.99.1
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            image: quay.io/pypa/manylinux2014_x86_64@sha256:296069bc05d85275248f168f6e3b34ba8aa06181b67e40cd7447c64d56d3a851
+            platform: Linux x86_64 with glibc 2.17 or later (manylinux2014)
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            image: quay.io/pypa/manylinux2014_aarch64@sha256:ec445e2688785976c727d304f421ae8af5489715c19508526a749716e240541a
+            platform: Linux aarch64 with glibc 2.17 or later (manylinux2014)
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            image: quay.io/pypa/musllinux_1_2_x86_64@sha256:04e877afa939007f6784f9076d2aa797d1156f31281cfe19f203945d7b624970
+            platform: Linux x86_64 with musl 1.2 or later (musllinux_1_2), and libgcc_s.so.1
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+            image: quay.io/pypa/musllinux_1_2_aarch64@sha256:1db347533f8a7ea39aa20b0203f4e4af00630cdb621216a2b43771523c9983c5
+            platform: Linux aarch64 with musl 1.2 or later (musllinux_1_2), and libgcc_s.so.1
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+            macos: "10.12"
+            platform: macOS 10.12 or later on x86_64
+          - target: aarch64-apple-darwin
+            os: macos-15
+            macos: "11.0"
+            platform: macOS 11.0 or later on arm64
+          - target: x86_64-pc-windows-gnu
+            os: windows-latest
+            platform: Windows 10 or later on x86_64 (MinGW-w64)
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build, package and test (in the ${{ contains(matrix.target, 'musl') && 'musllinux' || 'manylinux' }} image)
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm -v "$PWD:/io" -w /io -e RUST_STABLE -e GITHUB_SHA "${{ matrix.image }}" \
+            bash .github/scripts/clib-linux.sh "${{ matrix.target }}" "${{ matrix.platform }}"
+      - name: Build and package
+        if: runner.os != 'Linux'
+        env:
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos }}
+        run: |
+          rustup toolchain install "$RUST_STABLE" --profile minimal --target "${{ matrix.target }}"
+          rustup default "$RUST_STABLE"
+          bash .github/scripts/clib-package.sh "${{ matrix.target }}" "${{ matrix.platform }}"
+      - name: Check the install name and the minimum macOS version
+        if: runner.os == 'macOS'
+        run: |
+          lib=$(echo dist/*/lib/libscarletbook_ffi.dylib)
+          # A program linked against it looks for it on its rpath, not at the build path.
+          install_name=$(otool -D "$lib" | tail -n 1)
+          echo "install name: $install_name"
+          if [[ "$install_name" != @rpath/libscarletbook_ffi.dylib ]]; then
+            echo "::error::install name is $install_name"
+            exit 1
+          fi
+          # LC_BUILD_VERSION (minos) from macOS 10.14 on, LC_VERSION_MIN_MACOSX (version) before.
+          minos=$(otool -l "$lib" | awk '/LC_BUILD_VERSION/ { f = "minos" } /LC_VERSION_MIN_MACOSX/ { f = "version" }
+            f && $1 == f { print $2; exit }')
+          echo "minos: $minos"
+          if [[ "$minos" != "${{ matrix.macos }}" ]]; then
+            echo "::error::minimum macOS version is $minos, expected ${{ matrix.macos }}"
+            exit 1
+          fi
+      - name: Check the DLL's dependencies and exports
+        if: runner.os == 'Windows'
+        run: |
+          dll=$(echo dist/*/lib/scarletbook_ffi.dll)
+          objdump -p "$dll" | grep 'DLL Name' | tee dlls.txt
+          # Only Windows system DLLs: no MinGW runtime DLL (libgcc_s, libwinpthread) to ship.
+          if grep -Eiv 'DLL Name: (kernel32|ntdll|advapi32|bcryptprimitives|userenv|ws2_32|msvcrt|api-ms-win-[a-z0-9-]+)\.dll' dlls.txt; then
+            echo "::error::the DLL depends on a non-system DLL"
+            exit 1
+          fi
+          echo "sb_* functions in the export table: $(objdump -p "$dll" | grep -c ' sb_')"
+      - name: Test
+        if: runner.os != 'Linux'
+        env:
+          CC: ${{ runner.os == 'Windows' && 'gcc' || 'cc' }}
+          PYTHON: ${{ runner.os == 'Windows' && 'python' || 'python3' }}
+        run: bash .github/scripts/clib-test.sh "$(echo dist/*/ | sed 's|/$||')"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: clib-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
