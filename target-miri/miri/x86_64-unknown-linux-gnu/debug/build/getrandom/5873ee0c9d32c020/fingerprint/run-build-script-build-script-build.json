@@ -1,0 +1,1 @@
+{"rustc":10843232305262866540,"features":"","declared_features":"","target":0,"profile":0,"path":0,"deps":[[18408407127522236545,"build_script_build",false,15033706320801385501]],"local":[{"RerunIfChanged":{"output":"x86_64-unknown-linux-gnu/debug/build/getrandom/5873ee0c9d32c020/run/stdout","paths":["build.rs"]}}],"rustflags":[],"config":0,"compile_kind":0}
