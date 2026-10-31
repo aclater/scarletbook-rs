@@ -1,0 +1,2 @@
+Changed
+- `Locale::language_code` and `MasterToc::album_catalog_number_stored` and `disc_catalog_number_stored` hold the stored bytes behind the trimmed language and catalogue numbers, and `text::fixed_bytes` gives a fixed text field's bytes up to the first 0x00 (#104, #114). `Locale` and `MasterToc` are not `#[non_exhaustive]`, so the new public fields are a breaking change for code that constructs them as struct literals; code that only reads them is unaffected.
