@@ -341,6 +341,7 @@ struct User {
     cursor: Cursor<Vec<u8>>,
     disc: *mut SbDisc,
     audio: *mut SbTrackAudio,
+    raw: *mut SbRawFrames,
     probes: Vec<SbStatus>,
 }
 
@@ -353,12 +354,30 @@ unsafe extern "C" fn cb_read(user: *mut c_void, buf: *mut u8, len: usize) -> i64
         u.probes.push(info(u.disc).0);
         u.probes.push(audio_read(u.audio, u.disc, &mut [0u8; 2 * 4704]).0);
         u.probes.push(audio_open_next(u.disc, u.audio, 0, 1).map_or_else(|s| s, |_| SbStatus::Ok));
+        if !u.raw.is_null() {
+            u.probes.push(raw_read(u.raw, u.disc, &mut [0u8; 2 * 4704]).0);
+            u.probes.push(cb_read_dst_equivalent(u.raw, u.disc));
+            let mut n = 0u64;
+            // SAFETY: `u.raw` is a live handle; `&mut n` is a valid out-pointer.
+            u.probes.push(unsafe { sb_raw_frames_missing(u.raw, &mut n) });
+            // SAFETY: as above.
+            u.probes.push(unsafe { sb_raw_frames_malformed_sectors(u.raw, &mut n) });
+            u.probes.push(raw_open_next(u.disc, u.raw, 0, 0, 1).map_or_else(|s| s, |_| SbStatus::Ok));
+            raw_free(u.raw); // must be a no-op
+        }
         free(u.disc); // must be a no-op
         audio_free(u.audio); // must be a no-op
     }
     // SAFETY: the library passes a buffer valid for `len` bytes of writes.
     let out = unsafe { std::slice::from_raw_parts_mut(buf, len) };
     u.cursor.read(out).map_or(-1, |n| n as i64)
+}
+
+fn cb_read_dst_equivalent(raw: *mut SbRawFrames, disc: *mut SbDisc) -> SbStatus {
+    let mut buf = [0u8; 16];
+    let mut fi = SbRawFrameInfo::default();
+    // SAFETY: the handles are live; `buf` is valid for its length; `&mut fi` is valid.
+    unsafe { sb_raw_frames_read_dst_equivalent(raw, disc, buf.as_mut_ptr(), buf.len(), &mut fi) }
 }
 
 unsafe extern "C" fn cb_seek(user: *mut c_void, offset: i64, whence: i32) -> i64 {
@@ -398,6 +417,7 @@ fn callbacks() {
         cursor: Cursor::new(image("dsd-stereo-mch-2064")),
         disc: ptr::null_mut(),
         audio: ptr::null_mut(),
+        raw: ptr::null_mut(),
         probes: Vec::new(),
     };
     let disc = open_callbacks(Some(cb_read), &mut user).unwrap();
@@ -420,6 +440,25 @@ fn callbacks() {
     // The handles survived the attempted frees.
     assert_eq!(info(disc).0, SbStatus::Ok);
     assert_eq!(audio_read(a, disc, &mut frame).0, SbStatus::Ok);
+
+    // The same from inside a raw frames read: the raw handle and the disc are in use.
+    // The track handle is not (only its disc is), so the callback must not be given it: it
+    // would really free it.
+    let r = raw_open(disc, 1, 0, 4).unwrap();
+    user.probes.clear();
+    user.disc = disc;
+    user.audio = ptr::null_mut();
+    user.raw = r;
+    let mut big = vec![0u8; SB_MAX_FRAME_BYTES];
+    let (s, fi) = raw_read(r, disc, &mut big);
+    user.disc = ptr::null_mut();
+    user.raw = ptr::null_mut();
+    assert_eq!((s, fi.number, fi.kind), (SbStatus::Ok, 0, SbFrameKind::Dsd as u32));
+    assert!(user.probes.len() >= 8, "{:?}", user.probes);
+    assert!(user.probes.iter().all(|&s| s == SbStatus::InvalidArgument), "{:?}", user.probes);
+    // The raw handle survived the attempted free and reads on.
+    assert_eq!(raw_read(r, disc, &mut big).0, SbStatus::Ok);
+    raw_free(r);
     audio_free(a);
     free(disc);
 
@@ -600,8 +639,10 @@ fn abi_version_and_layouts() {
     {
         assert_eq!(std::mem::size_of::<SbWarning>(), 24);
         assert_eq!(std::mem::size_of::<SbFrameInfo>(), 24);
+        assert_eq!(std::mem::size_of::<SbRawFrameInfo>(), 16);
     }
     assert_eq!(std::mem::size_of::<SbStatus>(), 4);
+    assert_eq!(SB_MAX_FRAME_BYTES, 65_536);
 }
 
 #[test]
@@ -777,6 +818,8 @@ struct LogUser {
     victim: std::sync::atomic::AtomicPtr<SbTrackAudio>,
     victim_disc: std::sync::atomic::AtomicPtr<SbDisc>,
     victim_reads: std::sync::Mutex<Vec<SbStatus>>,
+    /// As `victim`, for a raw frames handle.
+    raw_victim: std::sync::atomic::AtomicPtr<SbRawFrames>,
 }
 
 impl LogUser {
@@ -812,6 +855,18 @@ unsafe extern "C" fn cb_log(user: *mut c_void, level: i32, message: *const c_cha
         user.victim_reads.lock().unwrap().push(s);
         // SAFETY: as above; the library must ignore the free of a handle in use.
         unsafe { sb_track_audio_free(victim) };
+    }
+    let raw = user.raw_victim.swap(ptr::null_mut(), std::sync::atomic::Ordering::Relaxed);
+    if !raw.is_null() {
+        let disc = user.victim_disc.load(std::sync::atomic::Ordering::Relaxed);
+        let mut buf = vec![0u8; 2 * 4704];
+        let mut fi = SbRawFrameInfo::default();
+        // SAFETY: `raw` is the live `prev` handle of the call that invoked this callback
+        // (on this thread), `disc` its live disc; `buf` and `fi` are valid.
+        let s = unsafe { sb_raw_frames_read(raw, disc, buf.as_mut_ptr(), buf.len(), &mut fi) };
+        user.victim_reads.lock().unwrap().push(s);
+        // SAFETY: as above; the library must ignore the free of a handle in use.
+        unsafe { sb_raw_frames_free(raw) };
     }
 }
 
@@ -1001,5 +1056,394 @@ fn log_callback_cannot_reach_a_handle_being_consumed() {
     assert_eq!(*user.victim_reads.lock().unwrap(), [SbStatus::InvalidArgument; 3]);
     assert_eq!(audio_read(c, disc, &mut buf).0, SbStatus::End);
     audio_free(c);
+    free(disc);
+}
+
+fn raw_open_next(
+    disc: *const SbDisc,
+    prev: *mut SbRawFrames,
+    slot: u32,
+    first: u32,
+    end: u32,
+) -> Result<*mut SbRawFrames, SbStatus> {
+    let mut r: *mut SbRawFrames = ptr::dangling_mut();
+    // SAFETY: `disc` is NULL or a live handle; `prev` is NULL or a live handle that the
+    // caller does not use again if the call succeeds; `&mut r` is a valid out-pointer.
+    match unsafe { sb_raw_frames_open_next(disc, prev, slot, first, end, &mut r) } {
+        SbStatus::Ok => Ok(r),
+        s => {
+            assert!(r.is_null(), "*out not cleared on failure");
+            Err(s)
+        }
+    }
+}
+
+fn raw_open(disc: *const SbDisc, slot: u32, first: u32, end: u32) -> Result<*mut SbRawFrames, SbStatus> {
+    let mut r: *mut SbRawFrames = ptr::dangling_mut();
+    // SAFETY: `disc` is NULL or a live handle; `&mut r` is a valid out-pointer.
+    match unsafe { sb_raw_frames_open(disc, slot, first, end, &mut r) } {
+        SbStatus::Ok => Ok(r),
+        s => {
+            assert!(r.is_null(), "*out not cleared on failure");
+            Err(s)
+        }
+    }
+}
+
+fn raw_read(raw: *const SbRawFrames, disc: *const SbDisc, buf: &mut [u8]) -> (SbStatus, SbRawFrameInfo) {
+    let mut fi = SbRawFrameInfo::default();
+    // SAFETY: the handles are NULL or live; `buf` is valid for its length; `&mut fi` is a
+    // valid out-pointer.
+    (unsafe { sb_raw_frames_read(raw, disc, buf.as_mut_ptr(), buf.len(), &mut fi) }, fi)
+}
+
+fn raw_missing(raw: *const SbRawFrames) -> u64 {
+    let mut n = u64::MAX;
+    // SAFETY: `raw` is a live handle; `&mut n` is a valid out-pointer.
+    assert_eq!(unsafe { sb_raw_frames_missing(raw, &mut n) }, SbStatus::Ok);
+    n
+}
+
+fn raw_free(raw: *mut SbRawFrames) {
+    // SAFETY: `raw` is NULL or a live handle that the caller does not use again.
+    unsafe { sb_raw_frames_free(raw) };
+}
+
+/// Reads the rest of a raw handle: each position's number, kind and bytes.
+fn read_raw(raw: *mut SbRawFrames, disc: *const SbDisc) -> Vec<(u32, u32, Vec<u8>)> {
+    let mut buf = vec![0u8; SB_MAX_FRAME_BYTES];
+    let mut out = Vec::new();
+    loop {
+        let (s, fi) = raw_read(raw, disc, &mut buf);
+        match s {
+            SbStatus::End => return out,
+            SbStatus::Ok => out.push((fi.number, fi.kind, buf[..fi.size].to_vec())),
+            s => panic!("{s:?}: {}", last_error()),
+        }
+    }
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "reads whole corpus images")]
+fn raw_dst_frames_decode_to_the_decoded_read() {
+    let mut dst = 0;
+    for id in ["dst-features-2ch-6ch", "dst-invalid-frames-5ch", "dst-stereo-5ch-2064", "dsd-stereo-mch-2054"]
+    {
+        let disc = open(&image(id)).unwrap();
+        let (_, i) = info(disc);
+        for index in 0..i.area_count {
+            let (_, a) = area(disc, index);
+            let (slot, playtime) = (a.slot, a.playtime_frames);
+            let r = raw_open(disc, slot, 0, playtime).unwrap();
+            let ch = sb_raw_channels(r);
+            assert_eq!(ch, a.channel_count);
+            let raw = read_raw(r, disc);
+            let e = raw_open(disc, slot, 0, playtime).unwrap();
+            let equivalents = read_equivalents(e, disc);
+            raw_free(e);
+            let h = range_open(disc, slot, 0, playtime).unwrap();
+            let decoded = read_frames(h, disc);
+            let (mut missing, mut invalid) = (0u64, 0u64);
+            // SAFETY: `h` is a live handle; both out-pointers are valid.
+            assert_eq!(unsafe { sb_track_audio_counts(h, &mut missing, &mut invalid) }, SbStatus::Ok);
+            assert_eq!(raw_missing(r), missing);
+            audio_free(h);
+            raw_free(r);
+            assert_eq!(raw.len(), decoded.len());
+            let mut out = vec![0u8; ch as usize * 4704];
+            for (((n, kind, bytes), (dn, status, data)), (en, ekind, equivalent)) in
+                raw.iter().zip(&decoded).zip(&equivalents)
+            {
+                assert_eq!((n, kind), (en, ekind));
+                assert_eq!(n, dn);
+                // The DST equivalent decodes to the position's audio, whatever its kind.
+                let mut rule = 0;
+                // SAFETY: `equivalent` and `out` are valid for their lengths and do not
+                // overlap; `&mut rule` is a valid out-pointer.
+                let s = unsafe {
+                    sb_dst_decode(
+                        equivalent.as_ptr(),
+                        equivalent.len(),
+                        ch,
+                        out.as_mut_ptr(),
+                        out.len(),
+                        &mut rule,
+                    )
+                };
+                if s == SbStatus::Ok {
+                    assert_eq!(&out, data, "{id} {n}");
+                } else {
+                    assert_eq!(*status, SbFrameStatus::Invalid as u32, "{id} {n}");
+                }
+                if *kind != SbFrameKind::Dst as u32 {
+                    assert_eq!(equivalent.len(), 1 + ch as usize * 4704);
+                    assert_eq!(equivalent[0], 0);
+                }
+                match *kind {
+                    k if k == SbFrameKind::Dsd as u32 => {
+                        assert_eq!((status, bytes), (&(SbFrameStatus::Dsd as u32), data));
+                    }
+                    k if k == SbFrameKind::Missing as u32 => {
+                        assert!(bytes.is_empty());
+                        assert_eq!(*status, SbFrameStatus::Missing as u32);
+                    }
+                    k => {
+                        assert_eq!(k, SbFrameKind::Dst as u32);
+                        let mut rule = 0;
+                        // SAFETY: `bytes` and `out` are valid for their lengths and do not
+                        // overlap; `&mut rule` is a valid out-pointer.
+                        let s = unsafe {
+                            sb_dst_decode(
+                                bytes.as_ptr(),
+                                bytes.len(),
+                                ch,
+                                out.as_mut_ptr(),
+                                out.len(),
+                                &mut rule,
+                            )
+                        };
+                        if s == SbStatus::Ok {
+                            assert_eq!((status, &out), (&(SbFrameStatus::Decoded as u32), data), "{id} {n}");
+                        } else {
+                            assert_eq!(s, SbStatus::InvalidDstFrame);
+                            assert_eq!(*status, SbFrameStatus::Invalid as u32, "{id} {n}");
+                            assert!(data.iter().all(|&b| b == 0x55));
+                        }
+                        dst += 1;
+                    }
+                }
+            }
+        }
+        free(disc);
+    }
+    assert!(dst > 50, "{dst}");
+}
+
+/// Reads the rest of a raw handle as DST equivalents.
+fn read_equivalents(raw: *mut SbRawFrames, disc: *const SbDisc) -> Vec<(u32, u32, Vec<u8>)> {
+    let mut buf = vec![0u8; SB_MAX_FRAME_BYTES];
+    let mut out = Vec::new();
+    loop {
+        let mut fi = SbRawFrameInfo::default();
+        // SAFETY: the handles are live; `buf` is valid for its length; `&mut fi` is a valid
+        // out-pointer.
+        let s = unsafe { sb_raw_frames_read_dst_equivalent(raw, disc, buf.as_mut_ptr(), buf.len(), &mut fi) };
+        match s {
+            SbStatus::End => return out,
+            SbStatus::Ok => out.push((fi.number, fi.kind, buf[..fi.size].to_vec())),
+            s => panic!("{s:?}: {}", last_error()),
+        }
+    }
+}
+
+fn sb_raw_channels(r: *const SbRawFrames) -> u32 {
+    // SAFETY: `r` is a live handle.
+    unsafe { sb_raw_frames_channels(r) }
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "reads whole corpus images")]
+fn raw_frames_buffers_and_continuation() {
+    let id = "dst-features-2ch-6ch";
+    let disc = open(&image(id)).unwrap();
+    let other = open(&image(id)).unwrap();
+    let r = raw_open(disc, 0, 0, 35).unwrap();
+    // Too small: the frame is described, not copied, and returned again by the next call.
+    let mut small = [0u8; 4];
+    let (s, fi) = raw_read(r, disc, &mut small);
+    assert_eq!((s, fi.number, fi.kind), (SbStatus::BufferTooSmall, 0, SbFrameKind::Dst as u32));
+    assert!(fi.size > 4 && fi.size <= SB_MAX_FRAME_BYTES);
+    let mut fi2 = SbRawFrameInfo::default();
+    // SAFETY: `r` and `disc` are live handles; a NULL buffer is a size query.
+    let s = unsafe { sb_raw_frames_read(r, disc, ptr::null_mut(), 0, &mut fi2) };
+    assert_eq!(s, SbStatus::BufferTooSmall);
+    assert_eq!((fi2.number, fi2.size), (0, fi.size));
+    let mut buf = vec![0u8; fi.size];
+    assert_eq!(raw_read(r, disc, &mut buf).0, SbStatus::Ok);
+    assert_eq!(raw_read(r, other, &mut buf).0, SbStatus::InvalidArgument);
+    assert_eq!(raw_read(ptr::null(), disc, &mut buf).0, SbStatus::InvalidArgument);
+    // Frame 1 is an uncoded frame inside the DST area: a DST frame of 1 + 2 x 4704 bytes,
+    // returned as stored.
+    let mut big = vec![0u8; SB_MAX_FRAME_BYTES];
+    let (s, fi) = raw_read(r, disc, &mut big);
+    assert_eq!((s, fi.number, fi.kind, fi.size), (SbStatus::Ok, 1, SbFrameKind::Dst as u32, 1 + 2 * 4704));
+
+    // Refusals leave `prev` untouched; a continued handle reads what a fresh one does.
+    assert_eq!(raw_open_next(disc, r, 0, 5, 5).unwrap_err(), SbStatus::TrackEmpty);
+    assert_eq!(raw_open_next(disc, r, 0, 0, 36).unwrap_err(), SbStatus::FrameRangeInvalid);
+    assert_eq!(raw_open_next(other, r, 0, 2, 11).unwrap_err(), SbStatus::InvalidArgument);
+    assert_eq!(raw_open_next(disc, r, 7, 2, 11).unwrap_err(), SbStatus::InvalidArgument);
+    let fresh = raw_open(disc, 0, 2, 11).unwrap();
+    let expected = read_raw(fresh, disc);
+    raw_free(fresh);
+    let c = raw_open_next(disc, r, 0, 2, 11).unwrap();
+    assert_eq!(read_raw(c, disc), expected);
+    let d = raw_open_next(disc, c, 0, 11, 22).unwrap();
+    assert_eq!(read_raw(d, disc).first().map(|f| f.0), Some(11));
+    raw_free(d);
+    raw_free(ptr::null_mut());
+    free(disc);
+    free(other);
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "reads whole corpus images")]
+fn raw_frames_report_malformed_sectors_as_decoded_reads() {
+    let disc = open(&image("audio-random")).unwrap();
+    let (_, a) = area(disc, 0);
+    let r = raw_open(disc, a.slot, 0, a.playtime_frames).unwrap();
+    let h = range_open(disc, a.slot, 0, a.playtime_frames).unwrap();
+    let raw = read_raw(r, disc);
+    let decoded = read_frames(h, disc);
+    assert_eq!(raw.iter().map(|f| f.0).collect::<Vec<_>>(), decoded.iter().map(|f| f.0).collect::<Vec<_>>());
+    let (mut rc, mut dc) = (0u64, 0u64);
+    // SAFETY: the handles are live; the out-pointers are valid.
+    assert_eq!(unsafe { sb_raw_frames_malformed_sectors(r, &mut rc) }, SbStatus::Ok);
+    // SAFETY: as above.
+    assert_eq!(unsafe { sb_track_audio_malformed_sectors(h, &mut dc) }, SbStatus::Ok);
+    assert!(rc > 0);
+    assert_eq!(rc, dc);
+    let mut w = SbWarning { code: ptr::null(), slot: 0, track: 0, lsn: 0 };
+    let mut v = w;
+    // SAFETY: as above.
+    assert_eq!(unsafe { sb_raw_frames_warning(r, 0, &mut w) }, SbStatus::Ok);
+    // SAFETY: as above.
+    assert_eq!(unsafe { sb_track_audio_warning(h, 0, &mut v) }, SbStatus::Ok);
+    assert_eq!((w.code, w.slot, w.lsn), (v.code, v.slot, v.lsn));
+    // SAFETY: as above; the index is past the end.
+    assert_eq!(unsafe { sb_raw_frames_warning(r, u32::MAX, &mut w) }, SbStatus::InvalidArgument);
+    raw_free(r);
+    audio_free(h);
+    free(disc);
+}
+
+#[test]
+fn raw_frames_of_the_tiny_image() {
+    let disc = open(&tiny_image()).unwrap();
+    assert_eq!(raw_open(disc, 0, 0, 10).unwrap_err(), SbStatus::TrackExceedsCapacity);
+    assert_eq!(raw_open(disc, 0, 3, 3).unwrap_err(), SbStatus::TrackEmpty);
+    assert_eq!(raw_open(disc, 0, 3, 2).unwrap_err(), SbStatus::FrameRangeInvalid);
+    assert_eq!(raw_open(disc, 1, 0, 1).unwrap_err(), SbStatus::NoSuchArea);
+    // SAFETY: `disc` is a live handle; a NULL out-pointer is rejected.
+    assert_eq!(unsafe { sb_raw_frames_open(disc, 0, 0, 1, ptr::null_mut()) }, SbStatus::InvalidArgument);
+    let r = raw_open(disc, 0, 1, 4).unwrap();
+    assert_eq!(sb_raw_channels(r), 2);
+    // Missing positions have no bytes: a NULL buffer is enough.
+    for n in 1..4 {
+        let mut fi = SbRawFrameInfo::default();
+        // SAFETY: `r` and `disc` are live handles; `&mut fi` is a valid out-pointer.
+        assert_eq!(unsafe { sb_raw_frames_read(r, disc, ptr::null_mut(), 0, &mut fi) }, SbStatus::Ok);
+        assert_eq!((fi.number, fi.kind, fi.size), (n, SbFrameKind::Missing as u32, 0));
+        assert_eq!(raw_missing(r), u64::from(n));
+    }
+    assert_eq!(raw_read(r, disc, &mut [0u8; 1]).0, SbStatus::End);
+    // The DST equivalent of a missing position: 0x00, then 2 x 4704 bytes of 0x69. A
+    // buffer one byte short keeps the position for the next call.
+    let e = raw_open(disc, 0, 0, 1).unwrap();
+    let mut buf = vec![0u8; 2 * 4704];
+    let mut fi = SbRawFrameInfo::default();
+    // SAFETY: `e` and `disc` are live handles; `buf` is valid for its length; `&mut fi` is
+    // a valid out-pointer.
+    let s = unsafe { sb_raw_frames_read_dst_equivalent(e, disc, buf.as_mut_ptr(), buf.len(), &mut fi) };
+    assert_eq!((s, fi.size), (SbStatus::BufferTooSmall, 1 + 2 * 4704));
+    assert_eq!(raw_missing(e), 0);
+    let all = read_equivalents(e, disc);
+    assert_eq!(all.len(), 1);
+    assert_eq!((all[0].0, all[0].1), (0, SbFrameKind::Missing as u32));
+    assert_eq!(all[0].2[0], 0);
+    assert!(all[0].2[1..].iter().all(|&b| b == 0x69));
+    assert_eq!(raw_missing(e), 1);
+    raw_free(e);
+    let mut count = 9u64;
+    // SAFETY: `r` is a live handle; `&mut count` is a valid out-pointer.
+    assert_eq!(unsafe { sb_raw_frames_malformed_sectors(r, &mut count) }, SbStatus::Ok);
+    assert_eq!(count, 0);
+    // The disc may be freed first.
+    free(disc);
+    raw_free(r);
+}
+
+fn list_open(disc: *const SbDisc, slot: u32) -> Result<*mut SbRawFrames, SbStatus> {
+    let mut r: *mut SbRawFrames = ptr::dangling_mut();
+    // SAFETY: `disc` is NULL or a live handle; `&mut r` is a valid out-pointer.
+    match unsafe { sb_stored_frame_list_open(disc, slot, &mut r) } {
+        SbStatus::Ok => Ok(r),
+        s => {
+            assert!(r.is_null(), "*out not cleared on failure");
+            Err(s)
+        }
+    }
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "reads whole corpus images")]
+fn stored_frame_list() {
+    let id = "dst-features-2ch-6ch";
+    let disc = open(&image(id)).unwrap();
+    // The list holds every accepted frame: here every position of the play range.
+    let l = list_open(disc, 0).unwrap();
+    assert_eq!(sb_raw_channels(l), 2);
+    let list = read_raw(l, disc);
+    let r = raw_open(disc, 0, 0, 35).unwrap();
+    let range = read_raw(r, disc);
+    raw_free(r);
+    let stored: Vec<_> = range.into_iter().filter(|f| f.1 != SbFrameKind::Missing as u32).collect();
+    assert_eq!(list, stored);
+    assert_eq!(raw_missing(l), 0);
+    // No DST equivalents for the list (4.6.1 item 4).
+    let mut buf = vec![0u8; SB_MAX_FRAME_BYTES];
+    let mut fi = SbRawFrameInfo::default();
+    // SAFETY: `l` and `disc` are live handles; `buf` is valid for its length; `&mut fi` is
+    // a valid out-pointer.
+    let s = unsafe { sb_raw_frames_read_dst_equivalent(l, disc, buf.as_mut_ptr(), buf.len(), &mut fi) };
+    assert_eq!(s, SbStatus::InvalidArgument);
+    // A list handle continues into a range, afresh.
+    let c = raw_open_next(disc, l, 0, 3, 5).unwrap();
+    assert_eq!(read_raw(c, disc).iter().map(|f| f.0).collect::<Vec<_>>(), vec![3, 4]);
+    raw_free(c);
+    assert_eq!(list_open(disc, 7).unwrap_err(), SbStatus::InvalidArgument);
+    free(disc);
+
+    let disc = open(&image("area-channels-0")).unwrap();
+    assert_eq!(list_open(disc, 0).unwrap_err(), SbStatus::ChannelCountUnsupported);
+    free(disc);
+    let disc = open(&tiny_image()).unwrap();
+    assert_eq!(list_open(disc, 1).unwrap_err(), SbStatus::NoSuchArea);
+    let l = list_open(disc, 0).unwrap();
+    assert!(read_raw(l, disc).is_empty());
+    raw_free(l);
+    free(disc);
+}
+
+/// As `log_callback_cannot_reach_a_handle_being_consumed`, for `sb_raw_frames_open_next`:
+/// a log callback that runs while it consumes `prev` (a range's or a stored frame list's
+/// handle) cannot read or free it.
+#[test]
+fn log_callback_cannot_reach_a_raw_handle_being_consumed() {
+    let user = LogUser::default();
+    let disc = open_logged(&tiny_image(), &user, SB_LOG_INFO).unwrap();
+    user.victim_disc.store(disc, std::sync::atomic::Ordering::Relaxed);
+    let a = raw_open(disc, 0, 0, 3).unwrap();
+    let mut buf = vec![0u8; SB_MAX_FRAME_BYTES];
+    assert_eq!(raw_read(a, disc, &mut buf).0, SbStatus::Ok);
+    // A range into a range.
+    user.raw_victim.store(a, std::sync::atomic::Ordering::Relaxed);
+    let b = raw_open_next(disc, a, 0, 1, 5).unwrap();
+    assert_eq!(*user.victim_reads.lock().unwrap(), [SbStatus::InvalidArgument]);
+    assert!(user.raw_victim.load(std::sync::atomic::Ordering::Relaxed).is_null(), "the callback ran");
+    assert_eq!(read_raw(b, disc).len(), 4);
+    // A refusal is logged while `prev` is still the caller's: it stays usable.
+    user.raw_victim.store(b, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(raw_open_next(disc, b, 0, 0, 11).unwrap_err(), SbStatus::FrameRangeInvalid);
+    assert_eq!(*user.victim_reads.lock().unwrap(), [SbStatus::InvalidArgument; 2]);
+    assert_eq!(raw_read(b, disc, &mut buf).0, SbStatus::End);
+    // A stored frame list into a range.
+    let l = list_open(disc, 0).unwrap();
+    user.raw_victim.store(l, std::sync::atomic::Ordering::Relaxed);
+    let c = raw_open_next(disc, l, 0, 0, 2).unwrap();
+    assert_eq!(*user.victim_reads.lock().unwrap(), [SbStatus::InvalidArgument; 3]);
+    assert_eq!(read_raw(c, disc).len(), 2);
+    raw_free(b);
+    raw_free(c);
     free(disc);
 }

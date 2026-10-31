@@ -11,7 +11,7 @@ use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 
 use scarletbook::audio::{self, FRAME_BYTES_PER_CHANNEL};
-use scarletbook::{Disc, ErrorClass, Slot, WarningCode};
+use scarletbook::{Disc, ErrorClass, FrameContent, Slot, WarningCode};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -68,6 +68,8 @@ pub struct CaseReport {
     pub tracks_compared: usize,
     /// Frame ranges (play ranges, tracks with pauses) whose audio was compared.
     pub ranges_compared: usize,
+    /// Stored frame lists and tracks' stored content compared.
+    pub stored_compared: usize,
 }
 
 /// The decoded audio of one track: per-channel SHA-256 and the frame counts.
@@ -172,6 +174,138 @@ fn check_ranges<R: std::io::Read + std::io::Seek>(
                     Ok(range) => check_range(disc, slot, range, er, &what, report),
                     Err(e) => report.failures.push(format!("{what}: {e}")),
                 }
+            }
+        }
+    }
+}
+
+/// One stored frame as the manifest lists it: number, `dst` or `plain`, length and hash.
+type Stored = (u64, &'static str, u64, String);
+
+fn stored(number: u32, content: &FrameContent) -> Option<Stored> {
+    let (kind, bytes) = match content {
+        FrameContent::Dst(b) => ("dst", b),
+        FrameContent::Dsd(b) => ("plain", b),
+        FrameContent::Missing => return None,
+    };
+    Some((u64::from(number), kind, bytes.len() as u64, sha256_hex(bytes)))
+}
+
+/// Stored content (specification 4, 4.6.1; corpus README step 7), for manifests that
+/// carry `stored_frames`: the area's stored frame list must equal it, and so must the
+/// stored content of each track with audio, restricted to the track's range.
+fn check_stored<R: std::io::Read + std::io::Seek>(
+    disc: &mut Disc<R>,
+    expected: &Value,
+    report: &mut CaseReport,
+) {
+    for ea in expected.as_array().map(Vec::as_slice).unwrap_or_default() {
+        let Some(slot) = ea["area"].as_str().and_then(slot_from) else { continue };
+        let Some(area) = disc.toc().area(slot).cloned() else { continue };
+        let Some(exp) = ea.get("stored_frames").and_then(Value::as_array) else {
+            // Manifests with frame ranges leave `stored_frames` out only for areas whose
+            // channel count is not 1 to 6 (4.6.1 item 1); older manifests have neither.
+            if ea.get("play_range").is_some() {
+                match disc.stored_frame_list(slot) {
+                    Err(scarletbook::Error::ChannelCountUnsupported { .. }) => report.stored_compared += 1,
+                    Err(e) => report
+                        .failures
+                        .push(format!("{slot}: stored frame list: {e}, expected channel-count-unsupported")),
+                    Ok(_) => report
+                        .failures
+                        .push(format!("{slot}: stored frame list offered, the manifest has none")),
+                }
+            }
+            continue;
+        };
+        let exp: Vec<(u64, String, u64, String)> = exp
+            .iter()
+            .map(|f| {
+                let text = |k: &str| f[k].as_str().unwrap_or_default().to_owned();
+                (
+                    f["frame"].as_u64().unwrap_or(u64::MAX),
+                    text("stored"),
+                    f["bytes"].as_u64().unwrap_or(0),
+                    text("sha256"),
+                )
+            })
+            .collect();
+        let same = |got: &[Stored], want: &[(u64, String, u64, String)]| {
+            got.len() == want.len()
+                && got.iter().zip(want).all(|(g, w)| g.0 == w.0 && g.1 == w.1 && g.2 == w.2 && g.3 == w.3)
+        };
+        // Form 1: the area's stored frame list.
+        let list: Result<Vec<Stored>, scarletbook::Error> = match disc.stored_frame_list(slot) {
+            Ok(frames) => frames
+                .map(|f| {
+                    f.map(|f| {
+                        let content = match f.kind {
+                            scarletbook::FrameKind::Dst => FrameContent::Dst(f.data),
+                            scarletbook::FrameKind::Dsd => FrameContent::Dsd(f.data),
+                        };
+                        stored(f.number, &content).unwrap_or_default()
+                    })
+                })
+                .collect(),
+            Err(e) => Err(e),
+        };
+        match list {
+            Ok(list) if same(&list, &exp) => report.stored_compared += 1,
+            Ok(_) => report.failures.push(format!("{slot}: stored frame list differs")),
+            Err(e) => report.failures.push(format!("{slot}: stored frame list: {e}")),
+        }
+        // Form 2: the stored content of each track, play range and track with pause that
+        // has audio: the listed frames inside its range, every other position missing, and
+        // the missing count of its manifest entry.
+        let mut targets: Vec<(String, Option<u32>, &Value)> = Vec::new();
+        let tracks = ea["tracks"].as_array().map(Vec::as_slice).unwrap_or_default();
+        for (et, track) in tracks.iter().zip(&area.tracks) {
+            targets.push((format!("{slot} track {}", track.number), Some(u32::from(track.number)), et));
+        }
+        if let Some(er) = ea.get("play_range") {
+            targets.push((format!("{slot} play range"), None, er));
+        }
+        for er in
+            ea.get("tracks_with_pauses").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default()
+        {
+            targets.push((format!("{slot} track {} with pause", er["number"]), None, er));
+        }
+        for (what, track, entry) in targets {
+            if entry["outcome"] != "ok" {
+                continue;
+            }
+            let (Some(first), Some(end)) = (entry["first_frame"].as_u64(), entry["end_frame"].as_u64())
+            else {
+                report.failures.push(format!("{what}: no frame range in the manifest"));
+                continue;
+            };
+            let want: Vec<_> = exp.iter().filter(|f| (first..end).contains(&f.0)).cloned().collect();
+            let opened = match track {
+                Some(n) => disc.track_frames(slot, n),
+                None => match (u32::try_from(first), u32::try_from(end)) {
+                    (Ok(a), Ok(b)) => disc.range_frames(slot, a, b),
+                    _ => Err(scarletbook::Error::InvalidArgument("frame range out of range")),
+                },
+            };
+            let got = opened.and_then(|mut frames| {
+                let listed: Result<Vec<Option<Stored>>, _> =
+                    frames.by_ref().map(|f| f.map(|f| stored(f.number, &f.content))).collect();
+                Ok((listed?.into_iter().flatten().collect::<Vec<_>>(), frames.missing_frames()))
+            });
+            match got {
+                Ok((got, missing)) => {
+                    if !same(&got, &want) {
+                        report.failures.push(format!("{what}: stored content differs"));
+                    } else if entry["missing_frames"].as_u64() != Some(missing) {
+                        report.failures.push(format!(
+                            "{what}: {missing} missing positions, expected {}",
+                            entry["missing_frames"]
+                        ));
+                    } else {
+                        report.stored_compared += 1;
+                    }
+                }
+                Err(e) => report.failures.push(format!("{what}: stored content: {e}")),
             }
         }
     }
@@ -398,6 +532,7 @@ fn check_case_inner(corpus: &Path, case: &Value, report: &mut CaseReport) -> Vec
             }
             check_audio(&mut disc, &expected["audio"], report);
             check_ranges(&mut disc, &expected["audio"], report);
+            check_stored(&mut disc, &expected["audio"], report);
             fails.append(&mut report.failures);
         }
     }

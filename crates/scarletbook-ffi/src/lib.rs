@@ -17,7 +17,10 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 use scarletbook::log::{Level, Log};
 use scarletbook::toc::{AreaTextItem, DiscTextItem, TrackTextItem};
-use scarletbook::{Area, Disc, Error, FrameStatus, Slot, TrackAudioCursor, WarningCode};
+use scarletbook::{
+    Area, AreaCursor, Disc, Error, FrameContent, FrameKind, FrameStatus, Slot, TrackAudioCursor, TrackCursor,
+    TrackFrame, WarningCode,
+};
 
 /// Result of every call.
 #[repr(C)]
@@ -83,6 +86,18 @@ pub enum SbFrameStatus {
     Missing = 2,
     /// An invalid DST frame: filled with 0x55.
     Invalid = 3,
+}
+
+/// What a timeline position holds, undecoded (`SbRawFrameInfo.kind`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub enum SbFrameKind {
+    /// A plain DSD frame: channels x 4704 bytes, interleaved.
+    Dsd = 0,
+    /// A DST-coded frame: its bytes as stored (the DST frame, 1 to 65 536 bytes).
+    Dst = 1,
+    /// No frame fills the position: no bytes (decoded reads fill it with 0x69).
+    Missing = 2,
 }
 
 /// Disc-level strings for `sb_disc_string`: the 16 disc text items of specification 2,
@@ -297,6 +312,26 @@ pub struct SbFrameInfo {
     pub size: usize,
 }
 
+/// The largest frame `sb_raw_frames_read` returns, in bytes (specification 4, 4.4.3): a
+/// buffer of this size always suffices.
+pub const SB_MAX_FRAME_BYTES: usize = 65_536;
+
+// A literal, so that cbindgen can emit it; it must stay the core crate's bound.
+const _: () = assert!(SB_MAX_FRAME_BYTES == scarletbook::audio::MAX_FRAME_BYTES);
+
+/// Information about one undecoded timeline position.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SbRawFrameInfo {
+    /// The frame number.
+    pub number: u32,
+    /// `SbFrameKind`.
+    pub kind: u32,
+    /// The frame's size in bytes (0 for a missing position): the bytes written, or with
+    /// `SB_STATUS_BUFFER_TOO_SMALL` the bytes needed. At most `SB_MAX_FRAME_BYTES`.
+    pub size: usize,
+}
+
 type Reader = Box<dyn ReadSeek + Send>;
 
 /// An opened disc image.
@@ -337,12 +372,92 @@ pub struct SbTrackAudio {
     disc_id: u64,
 }
 
+/// The reading state of one frame range's stored content, or of an area's stored frame
+/// list, without decoding. Each `sb_raw_frames_read` call reads through the disc it was
+/// opened from, as for `SbTrackAudio`.
+#[derive(Debug)]
+pub struct SbRawFrames {
+    inner: RefCell<RawFrames>,
+    disc_id: u64,
+}
+
+#[derive(Debug)]
+struct RawFrames {
+    source: Source,
+    /// A frame the caller's buffer was too small for, returned by the next read.
+    held: Option<TrackFrame>,
+}
+
+/// Where a raw frames handle's positions come from (specification 4, 4.6.1 item 2).
+#[derive(Debug)]
+enum Source {
+    /// The stored content of a frame range: every position, missing ones included.
+    Range(TrackCursor),
+    /// The area's stored frame list, of an area of this many channels: every accepted
+    /// frame, no missing positions.
+    List(AreaCursor, u8),
+}
+
+impl RawFrames {
+    fn channels(&self) -> u8 {
+        match &self.source {
+            Source::Range(c) => c.channels(),
+            Source::List(_, channels) => *channels,
+        }
+    }
+
+    fn next_frame(&mut self, image: &mut scarletbook::Image<Reader>) -> Option<Result<TrackFrame, Error>> {
+        match &mut self.source {
+            Source::Range(c) => c.next_frame(image),
+            Source::List(c, _) => c.next_frame(image).map(|f| {
+                f.map(|f| {
+                    let content = match f.kind {
+                        FrameKind::Dst => FrameContent::Dst(f.data),
+                        FrameKind::Dsd => FrameContent::Dsd(f.data),
+                    };
+                    TrackFrame { number: f.number, content }
+                })
+            }),
+        }
+    }
+
+    /// The DST equivalent of a position of a range (stored frame lists have none).
+    fn dst_equivalent<'c>(&self, content: &'c FrameContent) -> Option<std::borrow::Cow<'c, [u8]>> {
+        match &self.source {
+            Source::Range(c) => Some(c.dst_equivalent(content)),
+            Source::List(..) => None,
+        }
+    }
+
+    fn missing_frames(&self) -> u64 {
+        match &self.source {
+            Source::Range(c) => c.missing_frames(),
+            Source::List(..) => 0,
+        }
+    }
+
+    fn malformed_sectors(&self) -> u64 {
+        match &self.source {
+            Source::Range(c) => c.malformed_sectors(),
+            Source::List(c, _) => c.malformed_sectors(),
+        }
+    }
+
+    fn warnings(&self) -> &[scarletbook::Warning] {
+        match &self.source {
+            Source::Range(c) => c.warnings(),
+            Source::List(c, _) => c.warnings(),
+        }
+    }
+}
+
 // Handles may be moved between threads (the conventions allow it); this must keep
 // compiling.
 const _: () = {
     const fn assert_send<T: Send>() {}
     assert_send::<SbDisc>();
     assert_send::<SbTrackAudio>();
+    assert_send::<SbRawFrames>();
 };
 
 trait ReadSeek: Read + Seek {}
@@ -453,6 +568,17 @@ unsafe fn audio_handle<'a>(audio: *const SbTrackAudio) -> Result<&'a SbTrackAudi
     // SAFETY: NULL or a live handle by this function's contract; only shared references
     // to it are ever made.
     unsafe { audio.as_ref() }.ok_or_else(|| Failure::arg("NULL track audio handle"))
+}
+
+/// Borrows a raw frames handle.
+///
+/// # Safety
+///
+/// `raw` must be NULL or a live handle from `sb_raw_frames_open`.
+unsafe fn raw_handle<'a>(raw: *const SbRawFrames) -> Result<&'a SbRawFrames, Failure> {
+    // SAFETY: NULL or a live handle by this function's contract; only shared references
+    // to it are ever made.
+    unsafe { raw.as_ref() }.ok_or_else(|| Failure::arg("NULL raw frames handle"))
 }
 
 impl SbDisc {
@@ -742,10 +868,11 @@ impl Seek for Callbacks {
 
 /// Opens a disc image read through callbacks. On failure `*out` is set to NULL.
 ///
-/// The callbacks run during this call and during `sb_track_audio_read`, on the calling
-/// thread. A callback that calls back into this library with this disc or one of its
-/// track handles gets `SB_STATUS_INVALID_ARGUMENT` (and `sb_disc_free` /
-/// `sb_track_audio_free` do nothing); other handles may be used.
+/// The callbacks run during this call and during `sb_track_audio_read` and
+/// `sb_raw_frames_read`, on the calling thread. A callback that calls back into this
+/// library with this disc or one of its track audio or raw frames handles gets
+/// `SB_STATUS_INVALID_ARGUMENT` (and their _free functions do nothing); other handles may
+/// be used.
 ///
 /// # Safety
 ///
@@ -1645,6 +1772,379 @@ pub unsafe extern "C" fn sb_track_audio_free(audio: *mut SbTrackAudio) {
         }
         // SAFETY: a live handle created by Box::into_raw and not in use, freed only once.
         drop(unsafe { Box::from_raw(audio) });
+        Ok(SbStatus::Ok)
+    });
+}
+
+/// Opens the frames of the frame range `[first, end)` of the area from `slot` without
+/// decoding them (for example to copy DST frames unchanged into a DSDIFF file): for each
+/// position from `first` to `end - 1`, its number, its kind and its bytes as stored. The
+/// positions, missing frames and malformed sectors are exactly those of
+/// `sb_range_audio_open` on the same range; decoding a DST frame's bytes with
+/// `sb_dst_decode` gives that position's decoded audio. A track's frames are the range
+/// `[start_frame, start_frame + duration_frames)` of its `SbTrackInfo`; `[0, P)`, with
+/// `P` the area's play time, is the whole area. Fails as `sb_range_check` does; on
+/// failure `*out` is set to NULL.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle; `out` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_raw_frames_open(
+    disc: *const SbDisc,
+    slot: u32,
+    first: u32,
+    end: u32,
+    out: *mut *mut SbRawFrames,
+) -> SbStatus {
+    // SAFETY: forwarded contract (a NULL `prev` opens afresh).
+    unsafe { sb_raw_frames_open_next(disc, std::ptr::null_mut(), slot, first, end, out) }
+}
+
+/// Opens the frames of the frame range `[first, end)` of the area from `slot` without
+/// decoding them, continuing `prev` (an earlier range's raw frames handle from the same
+/// disc) without rescanning the area where the result is the same: reading an area's
+/// ranges in increasing order this way reads each audio sector once. The ownership rules
+/// are those of `sb_track_audio_open_next`: on success `prev` is consumed, on failure it
+/// is left untouched (except after `SB_STATUS_PANIC`). With `prev` NULL this is
+/// `sb_raw_frames_open`.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle; `prev` NULL or a live handle, not used again
+/// after a successful call; `out` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_raw_frames_open_next(
+    disc: *const SbDisc,
+    prev: *mut SbRawFrames,
+    slot: u32,
+    first: u32,
+    end: u32,
+    out: *mut *mut SbRawFrames,
+) -> SbStatus {
+    // SAFETY: forwarded contract.
+    unsafe { clear_out(out) };
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let handle = unsafe { disc_handle(disc) }?;
+        if out.is_null() {
+            return Err(Failure::arg("NULL output pointer"));
+        }
+        let slot = slot_from(slot)?;
+        let d = handle.get()?;
+        let cursor = if prev.is_null() {
+            d.range_frames_cursor(slot, first, end)?
+        } else {
+            // Every check that can fail comes before `prev` is taken, so a failure leaves
+            // it untouched; continuing into a checked range cannot fail.
+            // SAFETY: forwarded contract.
+            let p = unsafe { raw_handle(prev) }?;
+            if p.disc_id != handle.id {
+                return Err(Failure::arg("the previous raw frames handle belongs to another disc"));
+            }
+            // `prev` stays borrowed while a log callback can run (the check and the opening
+            // are logged): a callback that reaches it then gets SB_STATUS_INVALID_ARGUMENT,
+            // or a no-op from sb_raw_frames_free, instead of freeing or reading it.
+            let borrowed = p.inner.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))?;
+            let next = d.range_continuation(slot, first, end)?;
+            match &borrowed.source {
+                Source::Range(c) => next.log_frames(c),
+                Source::List(..) => next.log_fresh_frames(),
+            }
+            drop(borrowed);
+            // From here to the end, nothing logs: no callback runs while `prev` is consumed.
+            // SAFETY: a live handle created by Box::into_raw and not in use (no borrow is
+            // active, and no callback runs before it is freed); the caller does not use it
+            // again after this successful call.
+            let prev_box = unsafe { Box::from_raw(prev) };
+            // A frame held for a too small buffer is dropped: the cursor stands after it,
+            // so a range that starts at or before it scans afresh. A stored frame list's
+            // scan is not a range's: the range then starts afresh.
+            match prev_box.inner.into_inner().source {
+                Source::Range(c) => next.frames_unlogged(c),
+                Source::List(..) => next.fresh_frames(),
+            }
+        };
+        let raw = Box::new(SbRawFrames {
+            inner: RefCell::new(RawFrames { source: Source::Range(cursor), held: None }),
+            disc_id: handle.id,
+        });
+        // SAFETY: non-NULL and valid for a write by this function's contract.
+        unsafe { out.write(Box::into_raw(raw)) };
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// Opens the **stored frame list** of the area from `slot` (specification 4, 4.6.1 item
+/// 2): every accepted frame of the area in frame number order, including frames numbered
+/// at or past the play time, read with `sb_raw_frames_read` (each as stored, never
+/// `SB_FRAME_KIND_MISSING`: positions not listed are missing). Every audio sector is
+/// processed. `sb_raw_frames_missing` gives 0 and `sb_raw_frames_read_dst_equivalent`
+/// refuses: DST equivalents are written only for tracks and ranges (4.6.1 item 4). Fails
+/// with `SB_STATUS_NO_SUCH_AREA` or `SB_STATUS_CHANNEL_COUNT_UNSUPPORTED` (4.6.1 item 1);
+/// on failure `*out` is set to NULL. The handle may be passed as `prev` to
+/// `sb_raw_frames_open_next`, which then opens its range afresh.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle; `out` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_stored_frame_list_open(
+    disc: *const SbDisc,
+    slot: u32,
+    out: *mut *mut SbRawFrames,
+) -> SbStatus {
+    // SAFETY: forwarded contract.
+    unsafe { clear_out(out) };
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let handle = unsafe { disc_handle(disc) }?;
+        if out.is_null() {
+            return Err(Failure::arg("NULL output pointer"));
+        }
+        let d = handle.get()?;
+        let slot = slot_from(slot)?;
+        let cursor = d.stored_frame_list_cursor(slot)?;
+        let channels = d.toc().area(slot).map_or(0, |a| a.channel_count);
+        let raw = Box::new(SbRawFrames {
+            inner: RefCell::new(RawFrames { source: Source::List(cursor, channels), held: None }),
+            disc_id: handle.id,
+        });
+        // SAFETY: non-NULL and valid for a write by this function's contract.
+        unsafe { out.write(Box::into_raw(raw)) };
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// The channel count of a raw frames handle's area (1 to 6), or 0 for NULL or a handle
+/// in use.
+///
+/// # Safety
+///
+/// `raw` must be NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_raw_frames_channels(raw: *const SbRawFrames) -> u32 {
+    // SAFETY: forwarded contract.
+    let Ok(r) = (unsafe { raw_handle(raw) }) else { return 0 };
+    r.inner.try_borrow().map_or(0, |r| u32::from(r.channels()))
+}
+
+/// Copies the next position's frame, as stored, into `buf` and describes it in `*info`:
+/// its number, its `SbFrameKind` and its size (`channels x 4704` for a plain frame, the
+/// DST frame's length for a DST frame, 0 for a missing position, never more than
+/// `SB_MAX_FRAME_BYTES`). Returns `SB_STATUS_END` after the last position. `disc` must be
+/// the live disc the handle was opened from; its read callbacks, if any, run during this
+/// call. Invalid DST frames are not reported: validity is known only by decoding
+/// (`sb_dst_decode`).
+///
+/// The kind is fixed by the DST flag of the sector the frame starts in (specification 4,
+/// 4.3.1). A frame of a DST area stored as an uncoded DST frame (the byte 0x00, a plain DST
+/// frame header, then `channels x 4704` bytes; specification 5, 5.2.1) is
+/// `SB_FRAME_KIND_DST`, returned with its 0x00 prefix as stored; `SB_FRAME_KIND_DSD` is a
+/// frame of a plain sector, without a prefix.
+///
+/// On any failure other than `SB_STATUS_BUFFER_TOO_SMALL` (an I/O error, a handle in use,
+/// a handle of another disc) and on `SB_STATUS_END`, `*info` is not written.
+///
+/// If `buf` is NULL or `cap` is below the frame's size, nothing is copied, `*info` (if not
+/// NULL) still receives the number, kind and needed size, and the call returns
+/// `SB_STATUS_BUFFER_TOO_SMALL`: the same frame is returned by the next call. A buffer of
+/// `SB_MAX_FRAME_BYTES` bytes always suffices; a missing position needs none.
+///
+/// # Safety
+///
+/// `raw` and `disc` must be NULL or live handles; `buf` NULL or valid for `cap` bytes of
+/// writes; `info` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_raw_frames_read(
+    raw: *const SbRawFrames,
+    disc: *const SbDisc,
+    buf: *mut u8,
+    cap: usize,
+    info: *mut SbRawFrameInfo,
+) -> SbStatus {
+    // SAFETY: forwarded contract.
+    unsafe { raw_read(raw, disc, buf, cap, info, false) }
+}
+
+/// As `sb_raw_frames_read`, but copies the position's **DST equivalent** (specification 4,
+/// 4.6.1 item 3): a DST frame that decodes to exactly the position's audio. For a DST
+/// frame its stored bytes; for a plain frame the byte 0x00 followed by its
+/// `channels x 4704` bytes; for a missing position 0x00 followed by `channels x 4704`
+/// bytes of 0x69. `*info` gives the stored kind and the equivalent's size (at most
+/// `SB_MAX_FRAME_BYTES`, so a buffer of that size always suffices; every position needs
+/// one). An uncoded DST frame (`SB_FRAME_KIND_DST` with its 0x00 prefix) is already its
+/// own equivalent and is passed through unchanged, like every DST frame. Positions may be
+/// read with either function in any mix. `*info` is written as for `sb_raw_frames_read`;
+/// a stored frame list handle gets `SB_STATUS_INVALID_ARGUMENT`.
+///
+/// # Safety
+///
+/// As `sb_raw_frames_read`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_raw_frames_read_dst_equivalent(
+    raw: *const SbRawFrames,
+    disc: *const SbDisc,
+    buf: *mut u8,
+    cap: usize,
+    info: *mut SbRawFrameInfo,
+) -> SbStatus {
+    // SAFETY: forwarded contract.
+    unsafe { raw_read(raw, disc, buf, cap, info, true) }
+}
+
+/// The body of `sb_raw_frames_read` and `sb_raw_frames_read_dst_equivalent`.
+///
+/// # Safety
+///
+/// As `sb_raw_frames_read`.
+unsafe fn raw_read(
+    raw: *const SbRawFrames,
+    disc: *const SbDisc,
+    buf: *mut u8,
+    cap: usize,
+    info: *mut SbRawFrameInfo,
+    equivalent: bool,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let r = unsafe { raw_handle(raw) }?;
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?;
+        if r.disc_id != d.id {
+            return Err(Failure::arg("the raw frames handle belongs to another disc"));
+        }
+        let mut state = r.inner.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))?;
+        if equivalent && matches!(state.source, Source::List(..)) {
+            return Err(Failure::arg("DST equivalents are written only for tracks and frame ranges"));
+        }
+        let frame = match state.held.take() {
+            Some(f) => f,
+            None => {
+                let mut disc = d.get_mut()?;
+                match state.next_frame(disc.image_mut()) {
+                    None => return Ok(SbStatus::End),
+                    Some(f) => f?,
+                }
+            }
+        };
+        // Stored content and DST equivalents: specification 4, 4.6.1 items 1 to 4.
+        let kind = match &frame.content {
+            FrameContent::Dsd(_) => SbFrameKind::Dsd,
+            FrameContent::Dst(_) => SbFrameKind::Dst,
+            FrameContent::Missing => SbFrameKind::Missing,
+        };
+        let bytes: std::borrow::Cow<'_, [u8]> = match (&frame.content, equivalent) {
+            (_, true) => state.dst_equivalent(&frame.content).ok_or_else(|| {
+                Failure::arg("DST equivalents are written only for tracks and frame ranges")
+            })?,
+            (FrameContent::Dsd(b) | FrameContent::Dst(b), false) => std::borrow::Cow::Borrowed(b),
+            (FrameContent::Missing, false) => std::borrow::Cow::Borrowed(&[]),
+        };
+        let size = bytes.len();
+        let fi = SbRawFrameInfo { number: frame.number, kind: kind as u32, size };
+        if !info.is_null() {
+            // SAFETY: non-NULL and valid for a write by this function's contract.
+            unsafe { info.write(fi) };
+        }
+        if size > 0 {
+            if buf.is_null() || cap < size {
+                let msg = format!("frame {} needs {size} bytes", frame.number);
+                drop(bytes);
+                state.held = Some(frame);
+                return Err(Failure(SbStatus::BufferTooSmall, msg));
+            }
+            // SAFETY: buf is valid for cap >= size bytes of writes; `bytes` is owned by
+            // this library, so the regions do not overlap.
+            unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, size) };
+        }
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// The number of missing positions returned so far by `sb_raw_frames_read` (those
+/// decoded reads fill with 0x69).
+///
+/// # Safety
+///
+/// `raw` must be NULL or a live handle; `missing` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_raw_frames_missing(raw: *const SbRawFrames, missing: *mut u64) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let r = unsafe { raw_handle(raw) }?;
+        let state = r.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
+        // A held missing position has been counted by the cursor but not yet returned.
+        let held = state.held.as_ref().is_some_and(|f| f.content == FrameContent::Missing);
+        // SAFETY: forwarded contract.
+        unsafe { write_out(missing, state.missing_frames() - u64::from(held)) }?;
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// The number of malformed audio sectors processed so far by this handle's scan of its
+/// area, as `sb_track_audio_malformed_sectors`. The scan stops at the first frame at or
+/// after the position asked for, so it may count sectors of that next frame before the
+/// frame is returned (no further: a raw frames handle does not read ahead in groups).
+///
+/// # Safety
+///
+/// `raw` must be NULL or a live handle; `count` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_raw_frames_malformed_sectors(
+    raw: *const SbRawFrames,
+    count: *mut u64,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let r = unsafe { raw_handle(raw) }?;
+        let state = r.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
+        // SAFETY: forwarded contract.
+        unsafe { write_out(count, state.malformed_sectors()) }?;
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// `audio-sector-malformed` warning `index` of this handle's scan of its area so far, as
+/// `sb_track_audio_warning`. Returns `SB_STATUS_INVALID_ARGUMENT` past the last one.
+///
+/// # Safety
+///
+/// `raw` must be NULL or a live handle; `out` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_raw_frames_warning(
+    raw: *const SbRawFrames,
+    index: u32,
+    out: *mut SbWarning,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let r = unsafe { raw_handle(raw) }?;
+        let state = r.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
+        let w =
+            state.warnings().get(index as usize).ok_or_else(|| Failure::arg("warning index out of range"))?;
+        // SAFETY: forwarded contract.
+        unsafe { write_out(out, sb_warning(w)) }?;
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// Frees a raw frames handle. NULL is ignored, and so is a handle whose read is running
+/// (the call is then a no-op).
+///
+/// # Safety
+///
+/// `raw` must be NULL or a live handle, freed only once.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_raw_frames_free(raw: *mut SbRawFrames) {
+    let _ = guard(|| {
+        // SAFETY: forwarded contract.
+        let handle = unsafe { raw_handle(raw) }?;
+        if handle.inner.try_borrow_mut().is_err() {
+            return Err(Failure::arg(REENTRANT));
+        }
+        // SAFETY: a live handle created by Box::into_raw and not in use, freed only once.
+        drop(unsafe { Box::from_raw(raw) });
         Ok(SbStatus::Ok)
     });
 }

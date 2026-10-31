@@ -549,6 +549,10 @@ impl<'a, R: Read + Seek> AreaFrames<'a, R> {
         AreaFrames { image, cursor }
     }
 
+    pub(crate) fn with_cursor(image: &'a mut Image<R>, cursor: AreaCursor) -> Self {
+        AreaFrames { image, cursor }
+    }
+
     /// Number of malformed sectors processed so far by this cursor's scan of its area. The
     /// scan starts at the area's first audio sector, not at the track, and a continued
     /// cursor keeps counting from where the earlier tracks left off.
@@ -623,7 +627,7 @@ pub fn check_range(area: &Area, first: u32, end: u32, image_sectors: u64) -> Res
 }
 
 /// Specification 4, 4.8 item 1.
-fn check_channels(area: &Area) -> Result<(), Error> {
+pub(crate) fn check_channels(area: &Area) -> Result<(), Error> {
     if !(1..=MAX_CHANNELS).contains(&area.channel_count) {
         return Err(Error::ChannelCountUnsupported { channels: area.channel_count });
     }
@@ -737,6 +741,18 @@ impl<'a> Continuation<'a> {
     pub fn frames_unlogged(self, prev: TrackCursor) -> TrackCursor {
         prev.continue_in(self.area, self.first, self.end, self.image_sectors, self.image_id)
     }
+
+    /// Logs (at [`Level::Info`]) the opening of this range's frames on a new scan, as
+    /// [`Continuation::fresh_frames`] does not.
+    pub fn log_fresh_frames(&self) {
+        self.log_open("frames", || false);
+    }
+
+    /// A fresh cursor of this range's positions (see [`TrackCursor::for_range`]), without
+    /// logging (see [`Continuation::log_fresh_frames`]).
+    pub fn fresh_frames(self) -> TrackCursor {
+        TrackCursor::start(self.area, self.first, self.end, self.image_sectors)
+    }
 }
 
 /// Logs the opening of a track (`track` is its number) or frame range `[first, end)` of
@@ -770,6 +786,47 @@ pub enum FrameContent {
     Missing,
 }
 
+impl FrameContent {
+    /// The position's **DST equivalent** (specification 4, 4.6.1 item 3): a DST frame that
+    /// decodes, with `channels` channels, to exactly the position's content of 4.6. For a
+    /// DST frame its stored bytes; for a plain frame the byte 0x00 (a plain DST frame
+    /// header, 5.2.1) followed by its bytes; for a missing position 0x00 followed by
+    /// `channels x 4704` bytes of 0x69. At most `1 + 6 x 4704` bytes for a plain or missing
+    /// position, [`MAX_FRAME_BYTES`] for a DST frame.
+    ///
+    /// `channels` is the area's channel count (the cursors' `channels()`); it sizes only
+    /// the missing fill. [`TrackFrames::dst_equivalent`] and
+    /// [`TrackCursor::dst_equivalent`] pass it for you.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidArgument`] if `channels` is not 1 to 6.
+    pub fn dst_equivalent(&self, channels: u8) -> Result<std::borrow::Cow<'_, [u8]>, Error> {
+        if !(1..=MAX_CHANNELS).contains(&channels) {
+            return Err(Error::InvalidArgument("channel count must be 1 to 6"));
+        }
+        Ok(self.equivalent_checked(channels))
+    }
+
+    /// [`FrameContent::dst_equivalent`] for a channel count already checked (1 to 6).
+    fn equivalent_checked(&self, channels: u8) -> std::borrow::Cow<'_, [u8]> {
+        let plain = |bytes: &[u8]| {
+            let mut v = Vec::with_capacity(1 + bytes.len());
+            v.push(0x00);
+            v.extend_from_slice(bytes);
+            v
+        };
+        match self {
+            FrameContent::Dst(bytes) => std::borrow::Cow::Borrowed(bytes),
+            FrameContent::Dsd(bytes) => std::borrow::Cow::Owned(plain(bytes)),
+            FrameContent::Missing => {
+                let fill = fill_frame(channels, MISSING_FILL);
+                std::borrow::Cow::Owned(plain(&fill))
+            }
+        }
+    }
+}
+
 /// One timeline position of a track or frame range.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrackFrame {
@@ -797,6 +854,8 @@ pub struct TrackCursor {
     peeked: Option<AreaFrame>,
     exhausted: bool,
     failed: bool,
+    /// Missing positions returned since the cursor was made or continued.
+    missing: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -854,6 +913,7 @@ impl TrackCursor {
             peeked: None,
             exhausted: false,
             failed: false,
+            missing: 0,
         }
     }
 
@@ -913,7 +973,7 @@ impl TrackCursor {
             // the area again: specification 4, 4.2 item 6 allows a pass per track or range.
             return Self::start(area, first, end, image_sectors);
         }
-        TrackCursor { next: first, end, ..self }
+        TrackCursor { next: first, end, missing: 0, ..self }
     }
 
     /// Whether [`TrackCursor::continue_in`] keeps this cursor's reading state.
@@ -928,6 +988,19 @@ impl TrackCursor {
     /// The area's channel count `C` (1 to 6).
     pub fn channels(&self) -> u8 {
         self.channels
+    }
+
+    /// The DST equivalent of a position of this cursor's area (specification 4, 4.6.1 item
+    /// 3; see [`FrameContent::dst_equivalent`]), with the area's channel count.
+    pub fn dst_equivalent<'c>(&self, content: &'c FrameContent) -> std::borrow::Cow<'c, [u8]> {
+        // The channel count passed the checks of 4.8 item 1 when the cursor was made.
+        content.equivalent_checked(self.channels)
+    }
+
+    /// Positions returned so far that no accepted frame fills ([`FrameContent::Missing`]);
+    /// 0 again after [`TrackCursor::continue_to`] or [`TrackCursor::continue_to_range`].
+    pub fn missing_frames(&self) -> u64 {
+        self.missing
     }
 
     /// The frame range still to come, `[next, end)`.
@@ -979,13 +1052,26 @@ impl TrackCursor {
                 FrameKind::Dsd => FrameContent::Dsd(f.data),
                 FrameKind::Dst => FrameContent::Dst(f.data),
             },
-            None => FrameContent::Missing,
+            None => {
+                self.missing += 1;
+                FrameContent::Missing
+            }
         };
         Some(Ok(TrackFrame { number: t, content }))
     }
 }
 
-/// The timeline positions of one track or frame range, in order (specification 4, 4.7).
+/// The timeline positions of one track or frame range, in order (specification 4, 4.7),
+/// without decoding: each position's frame as stored, a DST frame's bytes (its length is
+/// the frame length `FB` of specification 5) or a plain frame's `C x 4704` bytes, or
+/// [`FrameContent::Missing`]. Decoding a DST frame's bytes with [`DstDecoder`] gives the
+/// position's decoded audio; frame numbers, the timeline, missing positions and malformed
+/// sectors are exactly those of the decoded reads ([`TrackAudio`]).
+///
+/// A frame is at most [`MAX_FRAME_BYTES`] bytes: nothing larger is ever assembled.
+// Specification 4, 4.6.1 items 1 and 2 (the stored content of a track or frame range):
+// positions are DST, plain or missing as stored, missing positions are counted and
+// invalid DST frames are not reported, since validity is known only by decoding.
 #[derive(Debug)]
 pub struct TrackFrames<'a, R> {
     image: &'a mut Image<R>,
@@ -997,9 +1083,27 @@ impl<'a, R: Read + Seek> TrackFrames<'a, R> {
         TrackFrames { image, cursor }
     }
 
+    /// The reading state, to continue into a later track or range with
+    /// [`crate::Disc::continue_track_frames`] or [`crate::Disc::continue_range_frames`].
+    pub fn into_cursor(self) -> TrackCursor {
+        self.cursor
+    }
+
     /// The area's channel count `C` (1 to 6).
     pub fn channels(&self) -> u8 {
         self.cursor.channels()
+    }
+
+    /// Positions returned so far that no accepted frame fills (see
+    /// [`TrackCursor::missing_frames`]).
+    pub fn missing_frames(&self) -> u64 {
+        self.cursor.missing_frames()
+    }
+
+    /// The DST equivalent of a position of this track or range (specification 4, 4.6.1
+    /// item 3; see [`FrameContent::dst_equivalent`]), with the area's channel count.
+    pub fn dst_equivalent<'c>(&self, content: &'c FrameContent) -> std::borrow::Cow<'c, [u8]> {
+        self.cursor.dst_equivalent(content)
     }
 
     /// The frame range still to come, `[next, end)`.
@@ -1961,6 +2065,22 @@ mod tests {
         assert!(matches!(decode_frame(&mut d, short, 2), Err(Error::InvalidArgument(_))));
         let ok = decode_frame(&mut d, missing(), 2).unwrap();
         assert_eq!((ok.status, ok.data.len()), (FrameStatus::Missing, 2 * 4704));
+    }
+
+    #[test]
+    fn dst_equivalents() {
+        let missing = FrameContent::Missing.dst_equivalent(3).unwrap();
+        assert_eq!(missing.len(), 1 + 3 * FRAME_BYTES_PER_CHANNEL);
+        assert_eq!(missing[0], 0);
+        assert!(missing[1..].iter().all(|&b| b == MISSING_FILL));
+        let plain = FrameContent::Dsd(vec![7; FRAME_BYTES_PER_CHANNEL]);
+        let plain = plain.dst_equivalent(1).unwrap();
+        assert_eq!((plain.len(), plain[0], plain[1]), (1 + FRAME_BYTES_PER_CHANNEL, 0, 7));
+        let dst = FrameContent::Dst(vec![1, 2, 3]);
+        assert_eq!(&*dst.dst_equivalent(6).unwrap(), &[1, 2, 3]);
+        for channels in [0, 7, 255] {
+            assert!(matches!(FrameContent::Missing.dst_equivalent(channels), Err(Error::InvalidArgument(_))));
+        }
     }
 
     #[test]
