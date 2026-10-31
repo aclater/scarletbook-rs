@@ -7,12 +7,13 @@ EXPORTS lists the sb_* symbols of the shared library's export table, one per lin
 (clib-test.sh writes it with nm or objdump). Loads the package's shared library, checks
 that the functions the header declares are exactly the exported ones and can be looked up,
 that sb_abi_version() equals the header's SB_ABI_VERSION and sb_version() the
-package version, that the README's ctypes bindings run and match the header, then opens
-corpus image dst-features-2ch-6ch, compares its TOC with the
-conformance manifest and decodes track 1 of each area against the manifest's per-channel
-SHA-256, checks the TOC fields of #104 and reads its master TOC sector (#105). Last,
-through the README's bindings, reads ranges of it provisionally (#94) and checks the
-readings with a disc-kept seek index and with a caller-kept one.
+package version, that sb_build_info() names that version and the package's target, that
+the README's ctypes bindings run and match the header, then opens corpus image
+dst-features-2ch-6ch, compares its TOC with the conformance manifest and decodes track 1
+of each area against the manifest's per-channel SHA-256, checks the TOC fields of #104 and
+reads its master TOC sector (#105). Last, through the README's bindings, reads ranges of it
+provisionally (#94) and checks the readings with a disc-kept seek index and with a
+caller-kept one.
 """
 import ctypes as C
 import hashlib
@@ -58,6 +59,12 @@ check("sb_abi_version()", lib.sb_abi_version(), abi)
 version = re.fullmatch(r"scarletbook-ffi-(.+)-(x86_64|aarch64)-[a-z0-9_]+-[a-z0-9_]+(-[a-z0-9_]+)?", pkg.name).group(1)
 check("sb_version()", lib.sb_version().decode(), version)
 print(f"sb_version() {lib.sb_version().decode()}, sb_abi_version() {lib.sb_abi_version()}")
+# How the library was built (#108): names the package's target and sb_version()'s version.
+lib.sb_build_info.restype = C.c_char_p
+build = dict(kv.split("=", 1) for kv in lib.sb_build_info().decode().split(" "))
+check("sb_build_info() version", build.get("version"), lib.sb_version().decode())
+check("sb_build_info() target", build.get("target"), pkg.name[len(f"scarletbook-ffi-{version}-"):])
+print(f"sb_build_info() {lib.sb_build_info().decode()}")
 
 
 # The bindings of README.md ("Using from Python (ctypes)"), run against this library: they

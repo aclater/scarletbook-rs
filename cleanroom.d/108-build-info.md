@@ -1,0 +1,1 @@
+| 2026-10-31 | build information through the C interface (#108) | build script of the FFI crate, from Cargo's documented build script environment; no specification involved. No new sources consulted. |

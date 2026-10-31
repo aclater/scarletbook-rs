@@ -1130,6 +1130,27 @@ uint32_t sb_abi_version(void);
 const char *sb_version(void);
 
 /*
+ How the library was built, a static NUL-terminated string of space-separated
+ `key=value` pairs, values without spaces, in this order:
+
+ - `version`: as `sb_version()`;
+ - `target`: the target triple, for example `x86_64-unknown-linux-gnu`;
+ - `profile`: the Cargo profile (`dist` for the release assets, `release`, `dev`) and
+   `opt-level` its optimisation level;
+ - `features`: the library's enabled Cargo features, comma-separated (`parallel`), or
+   `none`;
+ - `target-features`: the CPU features the code was compiled for, comma-separated, as
+   the compiler names them (a generic x86-64 build lists `fxsr,sse,sse2`), or `none`;
+ - `rustc`: the compiler version;
+ - `commit`: the commit built, from the environment at build time
+   (`SCARLETBOOK_COMMIT`, else `GITHUB_SHA`) or else `git rev-parse HEAD`, or `unknown`.
+
+ More keys may be added; parse by key, not by position. The call allocates nothing and
+ does no I/O.
+ */
+const char *sb_build_info(void);
+
+/*
  The message of the calling thread's last failed call (empty if the last call
  succeeded). Valid until the thread's next call into this library.
  */

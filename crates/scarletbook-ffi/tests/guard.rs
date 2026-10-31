@@ -20,6 +20,7 @@ const HEADER: &str = include_str!("../include/scarletbook.h");
 const PANIC_FREE: &[(&str, &str)] = &[
     ("sb_abi_version", "returns a constant"),
     ("sb_version", "returns a static string"),
+    ("sb_build_info", "returns a static string"),
     (
         "sb_last_error_message",
         "reads the thread-local message with try_with and a shared borrow it never holds mutably across a call",
