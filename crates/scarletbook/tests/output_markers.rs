@@ -322,9 +322,21 @@ fn custom_markers_absolute_start_and_padding() {
     let ids: Vec<Vec<u8>> =
         locals(&whole(&mut disc, Slot::TwoChannel, 1, 4, &o)).into_iter().map(|(id, _)| id).collect();
     assert_eq!(ids, [b"FVER".to_vec(), b"PROP".to_vec(), b"DSD ".to_vec(), b"DIIN".to_vec()]);
-    let dsf =
-        disc.output_layout(Slot::TwoChannel, 1, 4, Format::Dsf, &o.with_dsdiff_edited_master(true)).unwrap();
+    let dsf = disc
+        .output_layout(
+            Slot::TwoChannel,
+            1,
+            4,
+            Format::Dsf,
+            &o.clone().with_tags(scarletbook::output::Tags::None),
+        )
+        .unwrap();
     assert_eq!(dsf.size(), 92 + 4096 * 4 * 2);
+    // An edited master is a DSDIFF file.
+    let e = disc
+        .output_layout(Slot::TwoChannel, 1, 4, Format::Dsf, &o.with_dsdiff_edited_master(true))
+        .unwrap_err();
+    assert!(matches!(e, Error::InvalidArgument(_)), "{e}");
 }
 
 #[test]
@@ -378,6 +390,10 @@ fn edited_master_refusals() {
                 let area = disc.toc().area(Slot::TwoChannel).unwrap().clone();
                 let f = whole(&mut disc, Slot::TwoChannel, 0, *p, &master);
                 assert_eq!(without_diin(&f).1.unwrap(), diin(b"", &play_program(&area), 0, 0));
+                // The whole area has no source track, whatever the options name.
+                let named = master.clone().with_source_track(SourceTrack::Track(1));
+                let l = disc.output_layout(Slot::TwoChannel, 0, *p, Format::DsdiffDsd, &named).unwrap();
+                assert_eq!(l.source_track(), None);
             }
             (Some(w), Err(Error::OutputRefused(OutputRefusal::NotEditedMaster(g)))) => assert_eq!(&g, w),
             (w, g) => panic!("{t:?}: {w:?} but {:?}", g.map(|l| l.size())),

@@ -70,16 +70,23 @@ fn channel_type(area: &Area, options: &OutputOptions) -> Result<u32, Error> {
     }
 }
 
-/// Builds the regions of a DSF file without a tag (8.2.1, 8.2.5).
-pub(super) fn build(layout: &mut Layout, area: &Area, options: &OutputOptions) -> Result<(), Error> {
+/// Builds the regions of a DSF file with tag `tag` (8.2.1, 8.2.5, 8.2.6).
+pub(super) fn build(
+    layout: &mut Layout,
+    area: &Area,
+    options: &OutputOptions,
+    tag: Option<Vec<u8>>,
+) -> Result<(), Error> {
     let channel_type = channel_type(area, options)?;
     let c = u64::from(layout.channels);
     let positions = u64::from(layout.end - layout.first);
     let stream = positions * FRAME_BYTES_PER_CHANNEL as u64;
     let blocks = stream.div_ceil(BLOCK);
     let n = BLOCK * blocks * c;
-    // No tag: m = 0 and the metadata pointer is 0 (8.2.6 item 2).
-    let total = HEADER as u64 + n;
+    // Without a tag, m = 0 and the metadata pointer is 0 (8.2.6 item 2).
+    let m = tag.as_ref().map_or(0, |t| t.len() as u64);
+    let total = HEADER as u64 + n + m;
+    let pointer = if m > 0 { HEADER as u64 + n } else { 0 };
     let bits = match options.dsf_bits_per_sample {
         DsfBitsPerSample::One => 1,
         DsfBitsPerSample::Eight => 8,
@@ -89,7 +96,7 @@ pub(super) fn build(layout: &mut Layout, area: &Area, options: &OutputOptions) -
     h.extend_from_slice(b"DSD ");
     h.extend_from_slice(&28u64.to_le_bytes());
     h.extend_from_slice(&total.to_le_bytes());
-    h.extend_from_slice(&0u64.to_le_bytes());
+    h.extend_from_slice(&pointer.to_le_bytes());
     h.extend_from_slice(b"fmt ");
     h.extend_from_slice(&52u64.to_le_bytes());
     h.extend_from_slice(&1u32.to_le_bytes());
@@ -108,6 +115,9 @@ pub(super) fn build(layout: &mut Layout, area: &Area, options: &OutputOptions) -
     layout.push(RegionKind::Header, HEADER as u64, Part::Bytes(h));
     let data = DsfData { channels: layout.channels, stream, reverse: bits == 1 };
     layout.push(RegionKind::SoundData, n, Part::Dsf(data));
+    if let Some(tag) = tag.filter(|t| !t.is_empty()) {
+        layout.push(RegionKind::Trailer, tag.len() as u64, Part::Bytes(tag));
+    }
     Ok(())
 }
 
