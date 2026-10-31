@@ -36,15 +36,17 @@ header = """/* SPDX-License-Identifier: MIT OR Apache-2.0 */
  *   when a pool decodes. A log callback (sb_disc_set_log) also runs there and on the
  *   threads of the pools decoding for the disc's track handles (sb_track_audio_set_pool;
  *   in a library built with the parallel feature, rayon's global pool by default). The
- *   library has no other threads and no global state besides the per-thread error
- *   message.
+ *   library has no other threads, and no global state besides the per-thread error
+ *   message and an atomic counter that numbers the discs opened (so that a handle can
+ *   tell the disc it belongs to).
  *
  * - Callbacks and re-entrancy. While a disc's callback runs, that disc and its track
  *   and raw frames handles are in use: calling into this library with them from the
  *   callback returns SB_STATUS_INVALID_ARGUMENT, and their _free functions do
  *   nothing. Other handles may be used. (A log callback invoked by a call that only
- *   reads the disc, such as sb_track_check, may read it too; one running on a worker
- *   thread must not use the disc or its track or raw frames handles at all.)
+ *   reads the disc, such as sb_track_check, may read it too; one running on a pool
+ *   thread must not use the disc or its track or raw frames handles at all, with any
+ *   call, sb_track_audio_set_pool and the _free functions included.)
  *
  * - Panics. No panic crosses the boundary: an internal error returns SB_STATUS_PANIC.
  *   The handles involved should then be freed and not used further. If the library is
