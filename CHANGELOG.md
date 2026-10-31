@@ -9,6 +9,36 @@ is shared by every crate of the workspace; releases carry the `bench` program an
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-31
+
+### Added
+
+- TOC timecodes as stored: `Disc::track_timecodes_stored` gives a track's start and
+  duration timecodes as stored in `SACDTRL2` (specification 3, 3.7.2), before the clamping
+  of 3.9.2 and whatever their range (`Area::playtime` is already the stored play time). In
+  the C interface, `SbTimecode` (3 bytes, no padding), `sb_area_playtime_stored` and
+  `sb_track_timecodes_stored`. Frame counts are unchanged. Additive on ABI 2, no change to
+  public Rust structs. README ctypes bindings (#127, #128).
+
+### Changed
+
+- Cheaper provisional (cold) seeks: a provisional reading (`SeekPolicy::Speculative`,
+  specification 4, 4.2 item 8) now begins at the sector its search found, the last whose
+  first frame record is numbered below the range's first frame, instead of a checkpoint
+  boundary 32 to 95 sectors before it; the search interpolates between the area's track
+  starts and then at the density of the frames it last read, uses every frame record of a
+  probe, and stops once close; the cursor reads on from its last probe, and then up to the
+  range's estimated end in reads sized to it, of at most the new `seek::MAX_READ_SECTORS`
+  (512 sectors, 1 MiB) each, instead of 32. On a 50-minute 2-channel DST area of uneven
+  bit rate, a 14-frame range costs 3.4 read calls and 81 KiB to its first frame (was 9.1 and
+  266 KiB). `ResumedFrom::Speculative` and `Speculation` report that `L`, which is no longer
+  a multiple of the index interval from the area's first sector. **Changed bound:** a
+  cancellation request, and the progress counts, now wait for the read in progress, which
+  is at most 32 sectors as before, or at most 512 for those reads sized to a provisional
+  range (`CancelToken`, `Progress`, `sb_disc_cancel_token`, `sb_progress_get`).
+  `scarletbook-seekcost` measures cold seeks on newly opened discs (`--positions`), and
+  `scarletbook-synth --dst-frames uneven` writes an area of uneven bit rate (#123, #126).
+
 ## [0.5.0] - 2026-10-31
 
 ### Added
@@ -376,7 +406,8 @@ First release: a clean-room reader for SACD images, written from sacd-spec, pass
 - DST decoding about 3.8 times faster on one thread, and parallel decoding that overlaps
   demultiplexing with decoding within a bounded memory (#16, #17, #19).
 
-[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/aclater/scarletbook-rs/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/aclater/scarletbook-rs/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/aclater/scarletbook-rs/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/aclater/scarletbook-rs/compare/v0.3.0...v0.4.0
