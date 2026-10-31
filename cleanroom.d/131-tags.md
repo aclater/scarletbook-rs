@@ -1,0 +1,1 @@
+| 2026-10-31 | #131 DSF tags (#149) | `output::TagSet`, `TagItem`, `Tags`, `Id3Options` and the ID3v2.4 writer, with a test reader written from 8.3. Specification 8, 8.1 items 6 and 7, 8.2.1, 8.2.6, 8.3.1 to 8.3.8 and 8.6 rows 3 to 12, at sacd-spec `6db1251`, with specification 2, 2.3.1, 2.3.2, 2.4, 2.5.4 and specification 3, 3.7.3, 3.8. No new sources consulted. |

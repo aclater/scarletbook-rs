@@ -33,7 +33,9 @@
 mod dsdiff;
 mod dsdiff_dst;
 mod dsf;
+mod id3;
 mod markers;
+mod tags;
 
 use std::borrow::Cow;
 use std::collections::VecDeque;
@@ -46,18 +48,20 @@ use crate::audio::{
 use crate::disc::Disc;
 use crate::dst::DstDecoder;
 use crate::error::{Error, Slot};
-use crate::toc::{Area, TocDigests, Track};
+use crate::toc::{Area, Toc, TocDigests, Track};
 
 pub use dsdiff::{LocalChunk, PropertyChunk};
 pub use dsdiff_dst::{DstIndexOffset, DstLengths, InvalidDst};
 pub use dsf::DsfBitsPerSample;
+pub use id3::{AlbumArtistFrame, ArrangerFrame, DateFrame, Id3Encoding, Id3Options, MAX_TAG_BYTES};
 pub use markers::{Marker, MarkerKind, Markers};
+pub use tags::{GenreSources, TagItem, TagSet, TextSource};
 
 /// An output file format (specification 8).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Format {
-    /// DSF (8.2), without a tag.
+    /// DSF (8.2), with the ID3v2.4 tag of [`OutputOptions::tags`] (8.2.6, 8.3).
     Dsf,
     /// DSDIFF with plain DSD sound data (8.4.5).
     DsdiffDsd,
@@ -79,6 +83,21 @@ pub enum SourceTrack {
     None,
     /// The track with this number, which must overlap the range.
     Track(u8),
+}
+
+/// The tag of a file (specification 8, 8.2.6 and 8.3; W3).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Tags {
+    /// The items of [`TagSet::from_toc`] for the file.
+    FromToc,
+    /// These items: for example [`TagSet::from_toc`]'s, changed.
+    Set(TagSet),
+    /// This tag, written as it is: for DSF an ID3v2.4 tag, checked only for its header,
+    /// its size and [`MAX_TAG_BYTES`].
+    Raw(Vec<u8>),
+    /// No tag.
+    None,
 }
 
 /// The writer's choices of specification 8, 8.6 ("W" numbers below are its rows), each
@@ -128,7 +147,8 @@ pub struct OutputOptions {
     /// [`DstIndexOffset::ChunkHeader`], the `DSTF` chunk's first byte; the other reading,
     /// [`DstIndexOffset::FrameData`], is 12 bytes later.
     pub dsdiff_dst_index_offset: DstIndexOffset,
-    /// W29, the file's source track (8.1 item 7). Default [`SourceTrack::Auto`].
+    /// W29, the file's source track (8.1 item 7). Default [`SourceTrack::Auto`]. An edited
+    /// master, which holds the whole area, has none.
     pub source_track: SourceTrack,
     /// Whether a DSDIFF file is an edited master (8.4.11). One is the play range `[0, P)` of
     /// an area with a defined layout and 1 to 255 tracks of at least 75 frames, in order,
@@ -137,7 +157,8 @@ pub struct OutputOptions {
     /// [`OutputOptions::dsdiff_absolute_start`], or 0), and `DIIN` with `EMID` and the
     /// program's markers, whatever [`OutputOptions::dsdiff_edited_master_info`] says. It
     /// needs `LSCO` ([`OutputOptions::dsdiff_loudspeaker_configuration`]) and the markers of
-    /// the TOC: without either, it is an [`Error::InvalidArgument`]. Default `false`.
+    /// the TOC: without either, it is an [`Error::InvalidArgument`]; so is a DSF file.
+    /// Default `false`.
     pub dsdiff_edited_master: bool,
     /// W24, whether a DSDIFF file has an edited master information chunk `DIIN` (8.4.8),
     /// with `EMID` and the markers of [`OutputOptions::dsdiff_markers`]. Default `false`
@@ -158,6 +179,16 @@ pub struct OutputOptions {
     /// byte after odd-length text (8.4.7 item 6); the file's bytes are the same either way.
     /// Default `false`, as for every other chunk (8.4.1 item 1).
     pub dsdiff_text_pad_counted: bool,
+    /// W3, the tag of a DSF file. Default [`Tags::FromToc`]; a set with no frame writes no
+    /// tag (8.2.6 item 3).
+    pub tags: Tags,
+    /// W11, whether album items come from the disc's text or the album's (8.3.5). Default
+    /// [`TextSource::DiscThenAlbum`].
+    pub text_source: TextSource,
+    /// W11, which genre entries the genre item takes (8.3.5, 8.3.7). Default all.
+    pub genres: GenreSources,
+    /// W4 to W12, the ID3 writer's choices.
+    pub id3: Id3Options,
 }
 
 impl Default for OutputOptions {
@@ -182,6 +213,10 @@ impl Default for OutputOptions {
             dsdiff_source_track_markers: false,
             dsdiff_clipped_program: false,
             dsdiff_text_pad_counted: false,
+            tags: Tags::FromToc,
+            text_source: TextSource::DiscThenAlbum,
+            genres: GenreSources::default(),
+            id3: Id3Options::default(),
         }
     }
 }
@@ -240,6 +275,26 @@ impl OutputOptions {
     /// These options with or without a `DSTI` sound index (W20).
     pub fn with_dsdiff_dst_index(self, write: bool) -> Self {
         OutputOptions { dsdiff_dst_index: write, ..self }
+    }
+
+    /// These options with tag `tags` (W3).
+    pub fn with_tags(self, tags: Tags) -> Self {
+        OutputOptions { tags, ..self }
+    }
+
+    /// These options with album items from `source` (W11).
+    pub fn with_text_source(self, source: TextSource) -> Self {
+        OutputOptions { text_source: source, ..self }
+    }
+
+    /// These options with genre entries from `genres` (W11).
+    pub fn with_genres(self, genres: GenreSources) -> Self {
+        OutputOptions { genres, ..self }
+    }
+
+    /// These options with ID3 choices `id3` (W4 to W12).
+    pub fn with_id3(self, id3: Id3Options) -> Self {
+        OutputOptions { id3, ..self }
     }
 
     /// These options with source track `track` (W29).
@@ -398,14 +453,18 @@ impl Layout {
     /// [`Error::OutputRefused`] when the format can't hold the area with these options;
     /// [`Error::InvalidArgument`] when an option is invalid for the area.
     pub fn new(
-        area: &Area,
-        image_sectors: u64,
+        toc: &Toc,
+        slot: Slot,
         first: u32,
         end: u32,
         format: Format,
         options: &OutputOptions,
     ) -> Result<Layout, Error> {
-        audio::check_range(area, first, end, image_sectors)?;
+        let area = toc.area(slot).ok_or(Error::NoSuchArea(slot))?;
+        audio::check_range(area, first, end, toc.sectors)?;
+        if options.dsdiff_edited_master && format == Format::Dsf {
+            return Err(Error::InvalidArgument("an edited master is a DSDIFF file"));
+        }
         let mut layout = Layout {
             format,
             slot: area.slot,
@@ -418,10 +477,17 @@ impl Layout {
             invalid: None,
             crc: false,
             image: None,
-            source: source_track(area, first, end, options.source_track)?,
+            source: if options.dsdiff_edited_master {
+                None
+            } else {
+                source_track(area, first, end, options.source_track)?
+            },
         };
         match format {
-            Format::Dsf => dsf::build(&mut layout, area, options)?,
+            Format::Dsf => {
+                let tag = layout.tag(toc, area, options)?;
+                dsf::build(&mut layout, area, options, tag)?
+            }
             Format::DsdiffDsd => dsdiff::build_dsd(&mut layout, area, options)?,
             Format::DsdiffDst => {
                 return Err(Error::InvalidArgument("a DST layout needs the frame lengths: Layout::new_dst"));
@@ -438,14 +504,10 @@ impl Layout {
     ///
     /// As [`Layout::new`], and [`Error::InvalidArgument`] if `lengths` are of another area
     /// or range.
-    pub fn new_dst(
-        area: &Area,
-        image_sectors: u64,
-        lengths: &DstLengths,
-        options: &OutputOptions,
-    ) -> Result<Layout, Error> {
+    pub fn new_dst(toc: &Toc, lengths: &DstLengths, options: &OutputOptions) -> Result<Layout, Error> {
+        let area = toc.area(lengths.slot()).ok_or(Error::NoSuchArea(lengths.slot()))?;
         let (first, end) = lengths.range();
-        audio::check_range(area, first, end, image_sectors)?;
+        audio::check_range(area, first, end, toc.sectors)?;
         let mut layout = Layout {
             format: Format::DsdiffDst,
             slot: area.slot,
@@ -458,7 +520,11 @@ impl Layout {
             invalid: Some(lengths.invalid()),
             crc: options.dsdiff_dst_crc,
             image: None,
-            source: source_track(area, first, end, options.source_track)?,
+            source: if options.dsdiff_edited_master {
+                None
+            } else {
+                source_track(area, first, end, options.source_track)?
+            },
         };
         let data = dsdiff_dst::DstData::new(&layout, lengths, options)?;
         dsdiff::assemble(&mut layout, area, options, dsdiff::Sound::Dst(data))?;
@@ -490,6 +556,17 @@ impl Layout {
     /// The frame range `[first, end)` the file holds.
     pub fn range(&self) -> (u32, u32) {
         (self.first, self.end)
+    }
+
+    /// The DSF tag of the options (8.2.6, 8.3), if any.
+    fn tag(&self, toc: &Toc, area: &Area, options: &OutputOptions) -> Result<Option<Vec<u8>>, Error> {
+        let source = self.source.and_then(|n| area.track(u32::from(n)));
+        match &options.tags {
+            Tags::None => Ok(None),
+            Tags::Raw(bytes) => id3::check_raw(bytes).map(|()| Some(bytes.clone())),
+            Tags::FromToc => id3::tag(&TagSet::from_toc(toc, area, source, options), &options.id3),
+            Tags::Set(set) => id3::tag(set, &options.id3),
+        }
     }
 
     /// The number of the file's source track (specification 8, 8.1 item 7), if it has one.
@@ -660,8 +737,7 @@ impl<R: Read + Seek> Disc<R> {
         format: Format,
         options: &OutputOptions,
     ) -> Result<Layout, Error> {
-        let area = self.toc().area(slot).ok_or(Error::NoSuchArea(slot))?;
-        let mut layout = Layout::new(area, self.image_sectors(), first, end, format, options)?;
+        let mut layout = Layout::new(self.toc(), slot, first, end, format, options)?;
         layout.image = Some(self.toc_digests().clone());
         Ok(layout)
     }
@@ -673,8 +749,7 @@ impl<R: Read + Seek> Disc<R> {
     ///
     /// [`Error::NoSuchArea`], then those of [`Layout::new_dst`].
     pub fn output_layout_dst(&self, lengths: &DstLengths, options: &OutputOptions) -> Result<Layout, Error> {
-        let area = self.toc().area(lengths.slot()).ok_or(Error::NoSuchArea(lengths.slot()))?;
-        let mut layout = Layout::new_dst(area, self.image_sectors(), lengths, options)?;
+        let mut layout = Layout::new_dst(self.toc(), lengths, options)?;
         layout.image = Some(self.toc_digests().clone());
         Ok(layout)
     }
