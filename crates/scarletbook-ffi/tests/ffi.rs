@@ -1841,6 +1841,7 @@ fn pool_arguments() {
     // SAFETY: a NULL out-pointer is allowed (and refused).
     assert_eq!(unsafe { sb_pool_new(1, ptr::null_mut()) }, SbStatus::InvalidArgument);
     assert_eq!(status_name(SbStatus::ThreadsUnavailable as i32), "threads-unavailable");
+    assert_eq!(status_name(SbStatus::OutOfMemory as i32), "out-of-memory");
     assert_eq!(pool_threads(ptr::null()), 0);
     pool_free(ptr::null_mut());
     assert_eq!(set_pool(ptr::null(), ptr::null()), SbStatus::InvalidArgument);

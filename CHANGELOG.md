@@ -50,6 +50,9 @@ is shared by every crate of the workspace; releases carry the `bench` program an
 
 ### Fixed
 
+- `sb_disc_open_memory` returns the new `SB_STATUS_OUT_OF_MEMORY` (-17) instead of aborting
+  the process when the copy of the caller's image cannot be allocated (#39). Additive: the
+  ABI version stays 1.
 - The `scarletbook` package carries the licence texts and the README; its `include`
   patterns are anchored, so the test fixtures' READMEs no longer slip in (#48).
 - A call into the C library from a thread-local destructor, after the library's per-thread

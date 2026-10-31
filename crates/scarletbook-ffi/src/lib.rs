@@ -64,6 +64,9 @@ pub enum SbStatus {
     FrameRangeInvalid = -15,
     /// The operating system could not start a decoding pool's threads (`sb_pool_new`).
     ThreadsUnavailable = -16,
+    /// Memory for a copy the caller asked for could not be allocated
+    /// (`sb_disc_open_memory`).
+    OutOfMemory = -17,
 }
 
 /// Area slots, as passed in `slot` arguments.
@@ -772,6 +775,7 @@ pub extern "C" fn sb_status_name(status: i32) -> *const c_char {
         -14 => c"internal-error",
         -15 => c"frame-range-invalid",
         -16 => c"threads-unavailable",
+        -17 => c"out-of-memory",
         _ => c"unknown",
     };
     name.as_ptr()
@@ -824,7 +828,8 @@ pub unsafe extern "C" fn sb_disc_open_file_with_log(
 }
 
 /// Opens a disc image held in memory. The bytes are copied; the caller may free `data`
-/// when the call returns. On failure `*out` is set to NULL.
+/// when the call returns. On failure `*out` is set to NULL; `SB_STATUS_OUT_OF_MEMORY` if
+/// the copy cannot be allocated.
 ///
 /// # Safety
 ///
@@ -862,7 +867,15 @@ pub unsafe extern "C" fn sb_disc_open_memory_with_log(
             return Err(Failure::arg("NULL data with non-zero length"));
         } else {
             // SAFETY: non-NULL and valid for `len` bytes of reads by this function's contract.
-            unsafe { std::slice::from_raw_parts(data, len) }.to_vec()
+            let src = unsafe { std::slice::from_raw_parts(data, len) };
+            // The copy's size is the caller's: report a failed allocation instead of
+            // aborting the process.
+            let mut bytes = Vec::new();
+            bytes.try_reserve_exact(len).map_err(|_| {
+                Failure(SbStatus::OutOfMemory, format!("cannot allocate {len} bytes for the image copy"))
+            })?;
+            bytes.extend_from_slice(src);
+            bytes
         };
         // SAFETY: forwarded contract.
         unsafe { open_reader(Box::new(Cursor::new(bytes)), log, out) }
