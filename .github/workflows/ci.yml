@@ -51,6 +51,11 @@ jobs:
       - run: cargo doc --workspace --no-deps --all-features --locked
         env:
           RUSTDOCFLAGS: -D warnings
+      # release.yml takes the release notes from CHANGELOG.md with this script.
+      - name: CHANGELOG.md sections for the release notes
+        run: |
+          python3 -I .github/scripts/changelog-section.py CHANGELOG.md 0.2.0 > /dev/null
+          ! python3 -I .github/scripts/changelog-section.py CHANGELOG.md 0.0.0 2> /dev/null
 
   # The criterion benchmarks are compiled so that they do not rot; timing them on shared
   # runners would mean nothing (README, "Measuring performance").
