@@ -37,7 +37,7 @@ pub mod toc;
 pub use audio::DecodeOn;
 pub use audio::{
     AreaCursor, AreaFrame, AreaFrames, AudioFrame, Continuation, Demuxer, FrameContent, FrameKind,
-    FrameStatus, Opening, TrackAudio, TrackAudioCursor, TrackCursor, TrackFrame, TrackFrames,
+    FrameStatus, Opening, Stored, TrackAudio, TrackAudioCursor, TrackCursor, TrackFrame, TrackFrames,
 };
 pub use control::{CancelToken, Progress};
 pub use disc::Disc;
