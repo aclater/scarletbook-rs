@@ -201,7 +201,10 @@ Provisional reading (cold seeks, specification 4, 4.2 item 8) is opt-in per disc
 After a handle's first read, `sb_track_audio_speculation` says whether its positions are
 provisional (`SbSpeculation`). With a seek index kept, `sb_disc_seek_verify` (on a clone in a
 thread of its own) checks provisional readings, and `sb_disc_seek_event_next` returns each
-verdict once: confirmed, or refuted with the frame from which the positions are exact.
+verdict once: confirmed, or refuted with the frame from which the positions are exact
+(`exact_from`; re-read the positions below it with `SB_SEEK_POLICY_EXACT` for those of a
+straight read). A disc that keeps a seek index of the area hands each reading through it to
+that index, also for ranges opened with an index of the caller's.
 
 ### Parallel decoding
 
@@ -579,7 +582,16 @@ range costs against where it starts, without and with a seek index, and the inde
 time and size. On a 50-minute 2-channel DST image (`scarletbook-synth --minutes 50 --area
 2ch --kind dst`) a 14-frame range at 99 % of the area reads 470 272 sectors (146 ms from the
 page cache) without an index and 64 sectors (2.4 ms) with one; the index (K = 64) takes one
-pass to build (162 ms) and 178 KB saved.
+pass to build (162 ms) and 178 KB saved. Its second table measures cold seeks by provisional reading (no index;
+`SeekPolicy::Speculative`): on the same image, 4 to 7 read calls and 80 to 139 sectors
+wherever the range lies, 3.5 to 5.6 ms in its network model (0.5 ms per read call, 110 MB/s),
+with the same frames as exact reads on that well-formed image.
+
+Through the C interface, `python3 .github/scripts/clib-seekcost.py PACKAGE_DIR IMAGE` opens the
+image with `sb_disc_open_callbacks` (counting read calls and bytes in the callbacks, 64 KiB per
+read call) and decodes the same ranges cold, exact and provisional: on the same image, 4 to 7
+read calls (164 to 285 KB, 3.5 to 5.6 ms modelled) for a provisional range anywhere in the area,
+against up to 14 696 read calls (963 MB) for an exact one at 99 %.
 
 Two criterion benchmarks track the decoder between releases:
 

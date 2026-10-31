@@ -10,7 +10,8 @@ that sb_abi_version() equals the header's SB_ABI_VERSION and sb_version() the
 package version, that the README's ctypes bindings run and match the header, then opens
 corpus image dst-features-2ch-6ch, compares its TOC with the
 conformance manifest and decodes track 1 of each area against the manifest's per-channel
-SHA-256.
+SHA-256. Last, through the README's bindings, reads ranges of it provisionally (#94) and
+checks the readings with a disc-kept seek index and with a caller-kept one.
 """
 import ctypes as C
 import hashlib
@@ -181,6 +182,108 @@ for index, want in enumerate(toc["areas"]):
     lib.sb_track_audio_free(handle)
     check(f"area {want['slot']} track 1 audio", [h.hexdigest() for h in hashes], audio["sha256"])
 lib.sb_disc_free(disc)
+
+# Provisional reading (#94), through the README's bindings where they bind the call: ranges
+# read provisionally equal exact reads, are reported PENDING, and are confirmed by a
+# disc-kept seek index (sb_disc_seek_verify, sb_disc_seek_event_next) and by a caller-kept
+# one (sb_seek_index_verify, sb_seek_index_event_next).
+R, Spec = bindings["lib"], bindings["SbSpeculation"]
+const = {n: int(v) for n, v in re.findall(r"^#define (SB_\w+) (\d+)$", header, flags=re.M)}
+SPECULATIVE, BUDGET = const["SB_SEEK_POLICY_SPECULATIVE"], const["SB_SEEK_DEFAULT_INLINE_BUDGET"]
+PENDING, CONFIRMED = const["SB_SPECULATION_PENDING"], const["SB_SPECULATION_CONFIRMED"]
+for name, *args in (("sb_disc_seek_index_enable", C.c_void_p, C.c_uint32, C.c_uint32, C.c_uint64),
+                    ("sb_range_audio_open", C.c_void_p, C.c_uint32, C.c_uint32, C.c_uint32, C.POINTER(C.c_void_p)),
+                    ("sb_range_audio_open_indexed", C.c_void_p, C.c_uint32, C.c_uint32, C.c_uint32, C.c_void_p,
+                     C.POINTER(C.c_void_p)),
+                    ("sb_seek_index_new", C.c_void_p, C.c_uint32, C.c_uint32, C.c_uint64, C.POINTER(C.c_void_p)),
+                    ("sb_seek_index_extend", C.c_void_p, C.c_void_p, C.c_uint64, C.POINTER(C.c_uint8)),
+                    ("sb_track_audio_absorb", C.c_void_p, C.c_void_p)):
+    if getattr(R, name).argtypes is None:
+        getattr(R, name).restype, getattr(R, name).argtypes = C.c_int32, list(args)
+if R.sb_seek_index_free.argtypes is None:
+    R.sb_seek_index_free.restype, R.sb_seek_index_free.argtypes = None, [C.c_void_p]
+
+
+def rcall(fn, *args):
+    status = getattr(R, fn)(*args)
+    if status not in (OK, END):
+        sys.exit(f"{fn}: status {status}: {R.sb_last_error_message().decode()}")
+    return status
+
+
+def read_range(d, handle):
+    out, buf, frame = [], C.create_string_buffer(6 * 4704), bindings["SbFrameInfo"]()
+    while rcall("sb_track_audio_read", handle, d, buf, len(buf), C.byref(frame)) == OK:
+        out.append((frame.number, frame.status, buf.raw[:frame.size]))
+    return out
+
+
+def speculation(handle):
+    s = Spec()
+    rcall("sb_track_audio_speculation", handle, C.byref(s))
+    return s
+
+
+def exact(first, end):
+    d, h = C.c_void_p(), C.c_void_p()
+    rcall("sb_disc_open_file", case["input"].encode(), C.byref(d))
+    rcall("sb_range_audio_open", d, 0, first, end, C.byref(h))
+    got = read_range(d, h)
+    check("exact read is exact", speculation(h).state, const["SB_SPECULATION_EXACT"])
+    R.sb_track_audio_free(h)
+    R.sb_disc_free(d)
+    return got
+
+
+d = C.c_void_p()
+rcall("sb_disc_open_file", case["input"].encode(), C.byref(d))
+area = bindings["SbAreaInfo"]()
+rcall("sb_disc_area", d, 0, C.byref(area))
+p = area.playtime_frames
+rcall("sb_disc_seek_policy_set", d, 0, SPECULATIVE, 0)
+rcall("sb_disc_seek_index_enable", d, 0, 4, BUDGET)
+ranges = [(p // 2, p // 2 + 3), (p * 2 // 3, p * 2 // 3 + 3)]
+handles = []
+for first, end in ranges:
+    h = C.c_void_p()
+    rcall("sb_range_audio_open", d, 0, first, end, C.byref(h))
+    check(f"provisional read of {first}..{end}", read_range(d, h), exact(first, end))
+    s = speculation(h)
+    check(f"{first}..{end} pending", (s.state, s.first, s.claim > 0), (PENDING, first, True))
+    handles.append((h, s.claim))
+done = C.c_uint8(0)
+while rcall("sb_disc_seek_verify", d, 0, 1 << 20, C.byref(done)) == OK and not done.value:
+    pass
+events, e = [], Spec()
+while rcall("sb_disc_seek_event_next", d, 0, C.byref(e)) == OK:
+    events.append((e.claim, e.state))
+check("disc-kept index events", sorted(events), sorted((c, CONFIRMED) for _, c in handles))
+for h, _ in handles:
+    check("confirmed reading", speculation(h).state, CONFIRMED)
+    R.sb_track_audio_free(h)
+R.sb_disc_free(d)
+# A disc without a seek index of its own (one would take the reading), with the caller's.
+rcall("sb_disc_open_file", case["input"].encode(), C.byref(d))
+rcall("sb_disc_seek_policy_set", d, 0, SPECULATIVE, 0)
+index, h = C.c_void_p(), C.c_void_p()
+rcall("sb_seek_index_new", d, 0, 4, BUDGET, C.byref(index))
+rcall("sb_range_audio_open_indexed", d, 0, p // 2, p // 2 + 2, index, C.byref(h))
+check("caller-kept provisional read", read_range(d, h), exact(p // 2, p // 2 + 2))
+s = speculation(h)
+check("caller-kept pending", s.state, PENDING)
+rcall("sb_track_audio_absorb", h, index)
+while rcall("sb_seek_index_extend", d, index, 1 << 20, C.byref(done)) == OK and not done.value:
+    pass
+settled = C.c_uint32(99)
+rcall("sb_seek_index_verify", d, index, C.byref(settled))
+check("caller-kept index: unsettled readings", settled.value, 0)
+check("caller-kept index event", rcall("sb_seek_index_event_next", index, C.byref(e)), OK)
+check("caller-kept index verdict", (e.claim, e.state), (s.claim, CONFIRMED))
+check("caller-kept reading", speculation(h).state, CONFIRMED)
+R.sb_track_audio_free(h)
+R.sb_seek_index_free(index)
+R.sb_disc_free(d)
+print(f"provisional reading: {len(ranges) + 1} ranges read provisionally and confirmed")
 
 if failures:
     sys.exit("smoke test failed:\n  " + "\n  ".join(failures))

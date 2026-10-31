@@ -708,3 +708,181 @@ fn a_reading_is_not_checked_against_another_image() {
     free(a);
     free(b);
 }
+
+/// The ids of the corpus's well-formed images.
+fn well_formed() -> Vec<String> {
+    let corpus = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../corpus/manifest.json");
+    let m: serde_json::Value = serde_json::from_slice(&std::fs::read(corpus).unwrap()).unwrap();
+    let ids: Vec<String> = m["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["category"] == "valid")
+        .map(|c| c["id"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(ids.len() > 20, "{ids:?}");
+    ids
+}
+
+fn verify_all(disc: *const SbDisc, slot: u32) {
+    let mut done = 0u8;
+    // SAFETY: a live handle and a valid out-pointer.
+    while unsafe { sb_disc_seek_verify(disc, slot, 1 << 20, &mut done) } == SbStatus::Ok && done == 0 {}
+    assert_eq!(done, 1, "{}", last_error());
+}
+
+/// On every well-formed corpus image, in each area, a provisional range read through the
+/// C interface gives the frames, statuses, and missing and invalid counts of an exact one,
+/// and a disc-kept seek index confirms it. (Malformed sector counts begin at `L` and are
+/// not compared.)
+#[test]
+#[cfg_attr(miri, ignore = "reads every well-formed corpus image")]
+fn provisional_reads_equal_exact_reads_on_the_corpus() {
+    let mut provisional = 0;
+    for id in well_formed() {
+        let bytes = image(&id);
+        let exact = open(&bytes);
+        let disc = open(&bytes);
+        for area in [0, 1] {
+            let mut info = SbAreaInfo::default();
+            // SAFETY: a live handle and a valid out-pointer.
+            if unsafe { sb_disc_area(disc, area, &mut info) } != SbStatus::Ok {
+                continue;
+            }
+            let (slot, p) = (info.slot, info.playtime_frames);
+            assert_eq!(policy(disc, slot, SB_SEEK_POLICY_SPECULATIVE, 0), SbStatus::Ok);
+            // SAFETY: a live handle.
+            let s = unsafe { sb_disc_seek_index_enable(disc, slot, 4, SB_SEEK_DEFAULT_INLINE_BUDGET) };
+            assert_eq!(s, SbStatus::Ok);
+            let mut handles = Vec::new();
+            for first in [p / 3, p / 2, p * 9 / 10, p.saturating_sub(2)] {
+                let end = p.min(first + 4);
+                let a = range_open(disc, slot, first, end);
+                let got = read_all(a, disc);
+                let b = range_open(exact, slot, first, end);
+                let want = read_all(b, exact);
+                assert_eq!(speculation(b).state, SB_SPECULATION_EXACT);
+                assert_eq!(
+                    (&got.0, got.1, got.2),
+                    (&want.0, want.1, want.2),
+                    "{id} slot {slot} first {first}"
+                );
+                audio_free(b);
+                handles.push(a);
+            }
+            verify_all(disc, slot);
+            for a in handles {
+                let s = speculation(a);
+                if s.state != SB_SPECULATION_EXACT {
+                    assert_eq!(s.state, SB_SPECULATION_CONFIRMED, "{id} slot {slot}: {s:?}");
+                    provisional += 1;
+                }
+                audio_free(a);
+            }
+            while next_event(disc, slot).is_some() {}
+        }
+        free(disc);
+        free(exact);
+    }
+    assert!(provisional >= 10, "{provisional} provisional reads");
+}
+
+/// A disc of one 2-channel area of one-sector DST frames, frame `k` at audio sector `k`,
+/// except that sector `at` holds a frame numbered `number` instead.
+fn one_sector_frames(frames: u32, at: u32, number: u32) -> Vec<u8> {
+    let s = 2048;
+    let mut img = small_image(frames as usize);
+    let a = 540 * s;
+    let tc = |n: u32| [(n / 4500) as u8, (n / 75 % 60) as u8, (n % 75) as u8];
+    img[a + 64..a + 67].copy_from_slice(&tc(frames));
+    for k in 0..frames {
+        let n = if k == at { number } else { k };
+        let at = (546 + k as usize) * s;
+        let sector = &mut img[at..at + s];
+        sector.fill(0);
+        // DST, one frame start, one packet: an audio packet starting the frame, of 2000 bytes.
+        sector[0] = 1 | (1 << 2) | (1 << 5);
+        sector[1..3].copy_from_slice(&((1u16 << 15) | (2 << 11) | 2000).to_be_bytes());
+        sector[3..6].copy_from_slice(&tc(n));
+        sector[6] = 1 << 2;
+        sector[7..2007].fill(k as u8);
+    }
+    img
+}
+
+/// A frame numbered within the range, early in the area, refutes a provisional reading of
+/// that range (specification 4, 4.2 item 8): the C caller sees REFUTED with `exact_from`,
+/// positions from there on equal a straight read, and an exact re-read of the positions
+/// below it completes a read equal to a straight one.
+#[test]
+#[cfg_attr(miri, ignore = "reads a thousand sectors")]
+fn a_refutation_reaches_the_c_caller() {
+    let bytes = one_sector_frames(1000, 100, 505);
+    let plain = open(&bytes);
+    let disc = open(&bytes);
+    assert_eq!(playtime(disc, 0), 1000);
+    let (first, end) = (300, 600);
+    let b = range_open(plain, 0, first, end);
+    let want = read_all(b, plain);
+    audio_free(b);
+    assert_eq!(policy(disc, 0, SB_SEEK_POLICY_SPECULATIVE, 0), SbStatus::Ok);
+    // SAFETY: a live handle.
+    let st = unsafe { sb_disc_seek_index_enable(disc, 0, 64, SB_SEEK_DEFAULT_INLINE_BUDGET) };
+    assert_eq!(st, SbStatus::Ok);
+    let a = range_open(disc, 0, first, end);
+    let got = read_all(a, disc);
+    assert_eq!(speculation(a).state, SB_SPECULATION_PENDING);
+    assert_ne!(got.0, want.0, "the provisional positions differ");
+    verify_all(disc, 0);
+    let e = next_event(disc, 0).unwrap();
+    let s = speculation(a);
+    let fields = |x: SbSpeculation| (x.claim, x.lsn, x.slot, x.state, x.first, x.last_returned, x.exact_from);
+    assert_eq!(fields(s), fields(e));
+    assert_eq!((s.state, s.first, s.last_returned), (SB_SPECULATION_REFUTED, first, end - 1), "{s:?}");
+    assert!((506..end).contains(&s.exact_from), "at least a* = 506: {s:?}");
+    for (g, w) in got.0.iter().zip(&want.0).filter(|(g, _)| g.0 >= s.exact_from) {
+        assert_eq!(g, w);
+    }
+    audio_free(a);
+    // As pysacd does: re-read [first, exact_from) exactly and keep the rest.
+    assert_eq!(policy(disc, 0, SB_SEEK_POLICY_EXACT, 0), SbStatus::Ok);
+    let r = range_open(disc, 0, first, s.exact_from);
+    let mut joined = read_all(r, disc).0;
+    assert_eq!(speculation(r).state, SB_SPECULATION_EXACT);
+    audio_free(r);
+    joined.extend(got.0.into_iter().filter(|g| g.0 >= s.exact_from));
+    assert_eq!(joined, want.0);
+    free(disc);
+    free(plain);
+}
+
+/// A provisional reading made through a disc is checked through its clone, on another
+/// thread; the verdict reaches the reading's handle and the disc's own event queue.
+#[test]
+#[cfg_attr(miri, ignore = "reads a corpus image")]
+fn a_clone_checks_readings_on_another_thread() {
+    let bytes = image("dst-features-2ch-6ch");
+    let disc = open(&bytes);
+    let p = playtime(disc, 0);
+    assert_eq!(policy(disc, 0, SB_SEEK_POLICY_SPECULATIVE, 0), SbStatus::Ok);
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { sb_disc_seek_index_enable(disc, 0, 4, SB_SEEK_DEFAULT_INLINE_BUDGET) }, SbStatus::Ok);
+    let a = range_open(disc, 0, p * 2 / 3, p * 2 / 3 + 3);
+    read_all(a, disc);
+    let s = speculation(a);
+    assert_eq!(s.state, SB_SPECULATION_PENDING);
+    let c = clone(disc).expose_provenance();
+    std::thread::spawn(move || {
+        let c: *mut SbDisc = ptr::with_exposed_provenance_mut(c);
+        verify_all(c, 0);
+        free(c);
+    })
+    .join()
+    .unwrap();
+    assert_eq!(speculation(a).state, SB_SPECULATION_CONFIRMED);
+    let e = next_event(disc, 0).unwrap();
+    assert_eq!((e.claim, e.state, e.first), (s.claim, SB_SPECULATION_CONFIRMED, s.first));
+    assert!(next_event(disc, 0).is_none());
+    audio_free(a);
+    free(disc);
+}
