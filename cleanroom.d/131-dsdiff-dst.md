@@ -1,0 +1,1 @@
+| 2026-10-31 | #131 DSDIFF DST layout (#143) | `output::DstLengths`, `Layout::new_dst`, `DSTF`/`DSTC`/`DSTI`, the frame CRC with the test vectors of 8.4.6.1. Specification 8, 8.4.2, 8.4.6, 8.4.6.1, 8.4.6.2 and 8.6 rows 13 and 18 to 21 at sacd-spec `1517ab7` (unchanged at `6db1251`), with specification 4, 4.4, 4.6.1 items 2 to 5. No new sources consulted. |

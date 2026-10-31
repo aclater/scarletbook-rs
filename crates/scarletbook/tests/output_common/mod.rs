@@ -75,14 +75,46 @@ impl Lcg {
     }
 }
 
-/// Checks a layout against the sequential write `expected`: size, regions, a whole read,
-/// reads at region boundaries and the end, and random reads through [`Layout::read_at`]
-/// and through [`Layout::positions_for`] and [`Layout::fill`].
+/// Records the positions asked of a source.
+struct Recording<'a> {
+    inner: &'a mut dyn PositionSource,
+    asked: Vec<u32>,
+}
+
+impl PositionSource for Recording<'_> {
+    fn content(&mut self, t: u32) -> Result<Cow<'_, [u8]>, Error> {
+        self.asked.push(t);
+        self.inner.content(t)
+    }
+
+    fn dst_equivalent(&mut self, t: u32) -> Result<Cow<'_, [u8]>, Error> {
+        self.asked.push(t);
+        self.inner.dst_equivalent(t)
+    }
+}
+
+/// Checks a layout against the sequential write `expected`, with the positions' content
+/// held in memory (see [`check_with`]).
 pub fn check<R: Read + Seek>(
     disc: &mut Disc<R>,
     layout: &Layout,
     expected: &[u8],
     content: &[Vec<u8>],
+    rng: &mut Lcg,
+) {
+    let (first, _) = layout.range();
+    check_with(disc, layout, expected, &mut Held { first, content, asked: Vec::new() }, rng);
+}
+
+/// Checks a layout against the sequential write `expected`: size, regions, a whole read,
+/// reads at region boundaries and the end, and random reads through [`Layout::read_at`]
+/// and through [`Layout::positions_for`] and [`Layout::fill`] from `source`, which may be
+/// asked only for positions of [`Layout::positions_for`].
+pub fn check_with<R: Read + Seek>(
+    disc: &mut Disc<R>,
+    layout: &Layout,
+    expected: &[u8],
+    source: &mut dyn PositionSource,
     rng: &mut Lcg,
 ) {
     let size = layout.size();
@@ -102,7 +134,6 @@ pub fn check<R: Read + Seek>(
     assert!(whole[..expected.len()] == *expected, "whole read differs");
     assert_eq!(layout.read_at(disc, size, &mut [0; 4]).unwrap(), 0);
 
-    let (first, _) = layout.range();
     let span = 4096 * u64::from(layout.channels());
     let mut reads: Vec<(u64, u64)> = vec![(size - 1, 1)];
     for r in &regions[1..] {
@@ -122,11 +153,11 @@ pub fn check<R: Read + Seek>(
         assert!(got == want, "read_at {at}+{len} differs");
 
         let positions = layout.positions_for(at..at + len);
-        let mut held = Held { first, content, asked: Vec::new() };
+        let mut recording = Recording { inner: &mut *source, asked: Vec::new() };
         let mut got = vec![0; len as usize];
-        assert_eq!(layout.fill(at, &mut got, &mut held).unwrap(), len as usize);
+        assert_eq!(layout.fill(at, &mut got, &mut recording).unwrap(), len as usize);
         assert!(got == want, "fill {at}+{len} differs");
-        assert!(held.asked.iter().all(|t| positions.contains(t)), "fill read outside positions_for");
+        assert!(recording.asked.iter().all(|t| positions.contains(t)), "fill read outside positions_for");
     }
 }
 
