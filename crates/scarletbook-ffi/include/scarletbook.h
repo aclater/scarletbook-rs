@@ -49,9 +49,11 @@
 #include <stdint.h>
 
 /*
- The version of this C ABI. It is incremented on every incompatible change to a
- function signature or to the layout of a struct or enum in this header. 1 is the
- first released ABI.
+ The version of this C ABI. It is incremented on every breaking change: a function,
+ struct layout, enum value or macro of this header removed or changed, or a documented
+ behaviour changed incompatibly. Additions (new functions, types, enum values, macros)
+ keep it. 1 is the first released ABI. The compatibility policy is in the repository's
+ README ("ABI compatibility").
  */
 #define SB_ABI_VERSION 1
 

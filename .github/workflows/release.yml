@@ -10,6 +10,11 @@ name: Release
 #
 # The generic asset uses the `dist` profile (release with one codegen unit), the others
 # the release profile; see Cargo.toml and issue #32 for the measurements.
+#
+# The release also carries the C library (scarletbook-ffi) for Linux (glibc and musl,
+# x86_64 and aarch64), macOS (x86_64 and arm64) and Windows (x86_64, MinGW-w64), built and
+# tested by clib.yml: scarletbook-ffi-<version>-<target>.tar.gz, each with a checksum.
+# All assets share one build provenance attestation.
 
 on:
   push:
@@ -27,7 +32,11 @@ defaults:
     shell: bash
 
 jobs:
+  clib:
+    uses: ./.github/workflows/clib.yml
+
   release:
+    needs: clib
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -46,6 +55,12 @@ jobs:
             exit 1
           fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Fetch the C library packages
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: clib-*
+          path: dist
+          merge-multiple: true
       - name: Build (generic x86-64)
         run: cargo build --profile dist --locked -p scarletbook-bench --target x86_64-unknown-linux-gnu
       # The gate's `bench` is the binary just built: same profile, flags and target dir.
@@ -93,6 +108,7 @@ jobs:
           package "bench-$VERSION-x86_64-linux-znver5" \
             target-znver5/x86_64-unknown-linux-gnu/release/bench \
             "Built with -C target-cpu=znver5 for AMD Zen 5 (the measuring machine's CPU); runs only on Zen 5."
+          (cd dist && sha256sum -c scarletbook-ffi-*.sha256)
           ls -l dist
       - name: Attest build provenance
         # Artifact attestations work on public repositories (private ones need GitHub
@@ -124,7 +140,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" --title "scarletbook $VERSION" --verify-tag \
-            --notes "Benchmark program \`bench\` for sacd-spec benchmarks/README.md, built from $GITHUB_SHA.
+            --notes "Built from $GITHUB_SHA.
+
+          C library (scarletbook-ffi, C ABI version $(sed -n 's/^#define SB_ABI_VERSION //p' crates/scarletbook-ffi/include/scarletbook.h)): \`scarletbook-ffi-$VERSION-<target>.tar.gz\` holds the shared and static library and \`scarletbook.h\`, for x86_64-unknown-linux-gnu and aarch64-unknown-linux-gnu (glibc 2.17 or later), x86_64-unknown-linux-musl and aarch64-unknown-linux-musl (musl 1.2 or later), x86_64-apple-darwin (macOS 10.12 or later), aarch64-apple-darwin (macOS 11.0 or later) and x86_64-pc-windows-gnu (Windows 10 or later; UCRT, for MinGW-w64 GCC). Each has a \`.sha256\` checksum and, for a public repository, the build provenance attestation, and was tested on its platform. Linking, the ABI compatibility policy and verification: README, \"C library\".
+
+          Benchmark program \`bench\` for sacd-spec benchmarks/README.md:
           - \`bench-$VERSION-x86_64-linux.tar.gz\`: generic x86-64 (the required asset).
           - \`bench-$VERSION-x86_64-linux-znver5.tar.gz\`: built for AMD Zen 5, the measuring machine's CPU (the optional labelled asset of benchmarks/README.md).
           - \`bench-$VERSION-x86-64-v3-linux.tar.gz\`: built for x86-64-v3 (AVX2 and later CPUs), labelled; an extra build for users, not one of the benchmark assets.

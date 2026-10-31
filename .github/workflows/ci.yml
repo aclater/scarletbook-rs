@@ -100,6 +100,32 @@ jobs:
         run: |
           cargo install cbindgen --locked --version 0.29.4
           cbindgen --config cbindgen.toml --crate scarletbook-ffi --output include/scarletbook.h --verify
+      # An addition to the ABI regenerates the baseline abi/abi-N.txt; a breaking change
+      # bumps SB_ABI_VERSION and adds abi-(N+1).txt (README, "ABI compatibility"). On a
+      # pull request the header is also classified against the base branch's baseline, so a
+      # hand-rewritten baseline cannot hide a breaking change, and the baselines of earlier
+      # versions must be unchanged.
+      - name: The ABI matches its baseline
+        if: runner.os == 'Linux'
+        run: |
+          python3 .github/scripts/abi-check-test.py
+          if [[ "$GITHUB_EVENT_NAME" != pull_request ]]; then
+            python3 .github/scripts/abi-check.py
+            exit 0
+          fi
+          current=$(sed -n 's/^#define SB_ABI_VERSION //p' crates/scarletbook-ffi/include/scarletbook.h)
+          git fetch --quiet --depth=1 origin "$GITHUB_BASE_REF"
+          if git show "FETCH_HEAD:crates/scarletbook-ffi/abi/abi-$current.txt" > "$RUNNER_TEMP/base-abi.txt" 2> /dev/null; then
+            python3 .github/scripts/abi-check.py --base "$RUNNER_TEMP/base-abi.txt"
+          else
+            python3 .github/scripts/abi-check.py
+          fi
+          edited=$(git diff --no-renames --name-only --diff-filter=MD FETCH_HEAD HEAD -- crates/scarletbook-ffi/abi \
+            | grep -v "/abi-$current\.txt$" || true)
+          if [[ -n "$edited" ]]; then
+            echo "::error::baselines of earlier ABI versions edited or removed: $edited"
+            exit 1
+          fi
       - run: cargo build -p scarletbook-ffi --release --locked
       - name: Build and run the C smoke test
         run: |

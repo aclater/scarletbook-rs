@@ -23,6 +23,11 @@ assets. Nothing is published on crates.io yet.
   across ranges; in C, `sb_range_check`, `sb_range_audio_open`, `sb_range_audio_open_next`,
   `sb_track_range_with_pause` and `SB_STATUS_FRAME_RANGE_INVALID`. Additive: the ABI version
   stays 1.
+- C library release assets (#34, #42): on each tag, `scarletbook-ffi-<version>-<target>`
+  archives (header, shared and static library) for Linux glibc 2.17+ and musl 1.2+ on x86_64
+  and aarch64, macOS x86_64 (10.12+) and arm64 (11.0+), and Windows x86_64 (MinGW-w64, UCRT),
+  each with a SHA-256 file and build provenance; a documented ABI compatibility policy,
+  enforced in CI against `crates/scarletbook-ffi/abi/abi-1.txt`.
 - Repository hygiene (#46): Dependabot, OpenSSF Scorecard, CodeQL, zizmor, dependency
   review and coverage workflows; `SECURITY.md`, `CONTRIBUTING.md` (with the clean-room
   rule) and this changelog; README badges; `readme` in the crate metadata.
