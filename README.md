@@ -210,16 +210,139 @@ install name `@rpath/libscarletbook_ffi.dylib`, so a program finds them through 
 library with their program; to be revisited at 1.0. With MinGW-w64 GCC,
 `-lscarletbook_ffi` picks the import library (`.dll.a`), so the program needs
 `scarletbook_ffi.dll` at run time; link the static library by its path instead to avoid
-that. From Python:
+that.
+
+### Using from Python (ctypes)
+
+The library loads with Python's `ctypes`; there are no variadic functions, and every
+type has a fixed ctypes counterpart. Check the ABI version first: the bindings below are
+written for `SB_ABI_VERSION` 1, and a library of another ABI version must not be used
+with them (see "ABI compatibility"). Give every function its `argtypes` and `restype`:
+without them ctypes passes and returns C `int`, which truncates pointers and 64-bit values.
 
 ```python
-import ctypes
-lib = ctypes.CDLL("/path/to/libscarletbook_ffi.so")   # .dylib, or scarletbook_ffi.dll
-lib.sb_abi_version.restype = ctypes.c_uint32
-assert lib.sb_abi_version() == 1   # the SB_ABI_VERSION you wrote your bindings for
+import ctypes as C
+
+lib = C.CDLL("/path/to/libscarletbook_ffi.so")  # .dylib on macOS, scarletbook_ffi.dll on Windows
+
+SB_ABI_VERSION = 1  # the SB_ABI_VERSION of the header these bindings follow
+lib.sb_abi_version.argtypes, lib.sb_abi_version.restype = [], C.c_uint32
+if lib.sb_abi_version() != SB_ABI_VERSION:
+    raise ImportError(f"scarletbook C ABI {lib.sb_abi_version()}, these bindings need {SB_ABI_VERSION}")
+
+# The structs, field for field as in scarletbook.h (bool is C99 _Bool, size_t is c_size_t).
+class SbDiscInfo(C.Structure):
+    _fields_ = [("sector_size", C.c_uint32), ("sectors", C.c_uint64), ("version_major", C.c_uint8),
+                ("version_minor", C.c_uint8), ("album_set_size", C.c_uint16),
+                ("album_sequence_number", C.c_uint16), ("hybrid", C.c_bool),
+                ("manufacturer_sector", C.c_bool), ("year", C.c_uint16), ("month", C.c_uint8),
+                ("day", C.c_uint8), ("area_count", C.c_uint32), ("warning_count", C.c_uint32)]
+
+class SbAreaInfo(C.Structure):
+    _fields_ = [(name, C.c_uint32) for name in (
+        "slot", "kind_channels", "toc_lsn", "toc_sectors", "channel_count", "area_config",
+        "sample_frequency_code", "frame_format", "max_byte_rate", "playtime_frames",
+        "audio_start_lsn", "audio_end_lsn", "track_count")]
+
+class SbTrackInfo(C.Structure):
+    _fields_ = [("number", C.c_uint32), ("start_lsn", C.c_uint32), ("length_sectors", C.c_uint32),
+                ("start_frame", C.c_uint32), ("duration_frames", C.c_uint32),
+                ("start_flags", C.c_uint8), ("duration_flags", C.c_uint8), ("has_genre", C.c_bool),
+                ("genre_category", C.c_uint8), ("genre_index", C.c_uint8)]
+
+class SbWarning(C.Structure):
+    _fields_ = [("code", C.c_char_p), ("slot", C.c_int32), ("track", C.c_uint32), ("lsn", C.c_int64)]
+
+class SbFrameInfo(C.Structure):
+    _fields_ = [("number", C.c_uint32), ("status", C.c_uint32), ("dst_rule", C.c_uint32),
+                ("size", C.c_size_t)]
+
+class SbRawFrameInfo(C.Structure):
+    _fields_ = [("number", C.c_uint32), ("kind", C.c_uint32), ("size", C.c_size_t)]
+
+# Handles are opaque pointers; SbStatus is a C int (0 OK, 1 END, 2 ABSENT, negative: failure).
+H, S, P, U32, SIZE = C.c_void_p, C.c_int, C.POINTER, C.c_uint32, C.c_size_t
+
+def bind(name, restype, *argtypes):
+    f = getattr(lib, name)
+    f.restype, f.argtypes = restype, list(argtypes)
+
+bind("sb_version", C.c_char_p)
+bind("sb_last_error_message", C.c_char_p)
+bind("sb_status_name", C.c_char_p, C.c_int32)
+bind("sb_disc_open_file", S, C.c_char_p, P(H))
+bind("sb_disc_open_memory", S, C.c_char_p, SIZE, P(H))
+bind("sb_disc_free", None, H)
+bind("sb_disc_info", S, H, P(SbDiscInfo))
+bind("sb_disc_string", S, H, U32, C.c_char_p, SIZE, P(SIZE))
+bind("sb_disc_area", S, H, U32, P(SbAreaInfo))
+bind("sb_disc_warning", S, H, U32, P(SbWarning))
+bind("sb_track_info", S, H, U32, U32, P(SbTrackInfo))
+bind("sb_track_string", S, H, U32, U32, U32, C.c_char_p, SIZE, P(SIZE))
+bind("sb_track_check", S, H, U32, U32)
+bind("sb_track_audio_open", S, H, U32, U32, P(H))
+bind("sb_track_audio_open_next", S, H, H, U32, U32, P(H))
+bind("sb_track_audio_channels", U32, H)
+bind("sb_track_audio_read", S, H, H, C.c_char_p, SIZE, P(SbFrameInfo))
+bind("sb_track_audio_counts", S, H, P(C.c_uint64), P(C.c_uint64))
+bind("sb_track_audio_free", None, H)
+bind("sb_pool_new", S, U32, P(H))
+bind("sb_pool_free", None, H)
+bind("sb_track_audio_set_pool", S, H, H)
+bind("sb_raw_frames_open", S, H, U32, U32, U32, P(H))
+bind("sb_raw_frames_read", S, H, H, C.c_char_p, SIZE, P(SbRawFrameInfo))
+bind("sb_raw_frames_free", None, H)
+bind("sb_dst_decode", S, C.c_char_p, SIZE, U32, C.c_char_p, SIZE, P(U32))
 ```
 
-`.github/scripts/clib-smoke.py` is a fuller ctypes example (structs, strings, audio).
+The other functions bind the same way from their declarations in `scarletbook.h`. Then:
+
+```python
+def check(status):
+    """Raises on a failure, with the calling thread's error message."""
+    if status < 0:
+        raise RuntimeError(f"{lib.sb_status_name(status).decode()}: {lib.sb_last_error_message().decode()}")
+    return status
+
+def disc_string(disc, field):
+    """A disc string (SbDiscString), or None when absent: size it, then copy it."""
+    n = C.c_size_t()
+    if lib.sb_disc_string(disc, field, None, 0, C.byref(n)) == 2:  # SB_STATUS_ABSENT
+        return None
+    buf = C.create_string_buffer(n.value + 1)
+    check(lib.sb_disc_string(disc, field, buf, len(buf), C.byref(n)))
+    return buf.raw[:n.value].decode()  # may contain U+0000: use the length, not the NUL
+
+disc = H()
+check(lib.sb_disc_open_file("disc.iso".encode(), C.byref(disc)))  # a UTF-8 path
+try:
+    info = SbDiscInfo()
+    check(lib.sb_disc_info(disc, C.byref(info)))
+    title = disc_string(disc, 0)  # SB_DISC_STRING_ALBUM_TITLE
+    audio = H()
+    check(lib.sb_track_audio_open(disc, 0, 1, C.byref(audio)))  # 2-channel area, track 1
+    try:
+        buf = C.create_string_buffer(lib.sb_track_audio_channels(audio) * 4704)
+        frame = SbFrameInfo()
+        while check(lib.sb_track_audio_read(audio, disc, buf, len(buf), C.byref(frame))) == 0:
+            dsd = buf.raw[:frame.size]  # interleaved DSD, channels x 4704 bytes
+    finally:
+        lib.sb_track_audio_free(audio)
+finally:
+    lib.sb_disc_free(disc)
+```
+
+ctypes releases the GIL for each call, so conversions on several Python threads run in
+parallel: give each thread its own disc and handles (a handle may move between threads but
+not be used by two at once; an `SbPool` may be shared), and read `sb_last_error_message()`
+on the thread whose call failed, before that thread's next call, as `check` does. Every
+handle has its `_free` function; nothing else needs freeing (the strings the library
+returns are static or copied into your buffers). Callbacks (`sb_disc_open_callbacks`,
+`sb_disc_set_log`) are `ctypes.CFUNCTYPE` objects: keep a reference to them until the disc
+is freed, and catch every exception inside them: ctypes only prints it, and the library then gets
+an unspecified value (for a read callback, return -1 instead). A log callback can be
+called from a pool's threads (see `sb_disc_set_log`).
+`.github/scripts/clib-smoke.py` checks the first block above against the header and runs it.
 
 ### ABI compatibility
 

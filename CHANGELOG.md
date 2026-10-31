@@ -22,6 +22,19 @@ is shared by every crate of the workspace; releases carry the `bench` program an
   them; the library starts no global pool. `SB_MAX_POOL_THREADS` and
   `SB_STATUS_THREADS_UNAVAILABLE` are new. Additive: the ABI version stays 1. The C smoke
   test also decodes every track on a pool and compares.
+- A test of several discs decoded at once through the C interface (#39): 8 threads, each
+  with a disc of its own opened from memory or from a file, decode every track on the
+  calling thread or on a shared pool and match the conformance manifest; each thread's
+  error message stays its own, and a track handle is refused with another thread's disc.
+- Documented C struct layouts (#39): each struct of `scarletbook.h` states its size,
+  alignment and padding on 64-bit targets, which a test checks field by field, and the
+  header's conventions state the C types used (fixed-width integers, `size_t` for lengths,
+  `bool`, the int-sized `SbStatus`, no variadic functions). Comments only: the ABI is
+  unchanged.
+- README "Using from Python (ctypes)" (#39): the ABI version check at load, the six
+  structs and the `argtypes`/`restype` of the main functions, a decoding example, and the
+  rules for threads, error messages, freeing and callbacks. The ctypes smoke test of every
+  release package runs these bindings and checks them against the header.
 - CI runs the `parallel` decoding path under Miri with Tree Borrows (#28): the C
   interface's pools and the read-error test on pull requests, plus the continuation
   property test and the window cap on `main`.
@@ -39,6 +52,12 @@ is shared by every crate of the workspace; releases carry the `bench` program an
 
 - The `scarletbook` package carries the licence texts and the README; its `include`
   patterns are anchored, so the test fixtures' READMEs no longer slip in (#48).
+- A call into the C library from a thread-local destructor, after the library's per-thread
+  error message was destroyed while the thread exits, aborted the process (a panic outside
+  `guard`); it now returns its status, and `sb_last_error_message` returns an empty
+  string (#39). A new test checks, on the source, that every function the header declares
+  runs under `guard` or is on a short list of functions that cannot panic.
+
 
 ## [0.3.0] - 2026-10-31
 
