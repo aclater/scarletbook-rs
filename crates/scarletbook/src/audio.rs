@@ -697,18 +697,44 @@ impl<'a> Continuation<'a> {
     }
 
     /// `prev` continued into this range (see [`TrackAudioCursor::continue_to_range`]),
-    /// or a fresh cursor when its state cannot be reused.
+    /// or a fresh cursor when its state cannot be reused. Logs the opening first
+    /// ([`Continuation::log_audio`]).
     pub fn audio(self, prev: TrackAudioCursor) -> TrackAudioCursor {
+        self.log_audio(&prev);
+        self.audio_unlogged(prev)
+    }
+
+    /// Logs (at [`Level::Info`]) the opening of this range's audio from `prev`: whether
+    /// its scan continues. [`Continuation::audio`] does this itself.
+    pub fn log_audio(&self, prev: &TrackAudioCursor) {
         self.log_open("decoded audio", || {
             prev.continues(self.area, self.first, self.image_sectors, self.image_id)
         });
+    }
+
+    /// [`Continuation::audio`] without logging: no log sink runs during the call. For a
+    /// caller that must not run one while it hands `prev` over (the C interface, whose
+    /// callbacks could otherwise reach a handle being consumed); it calls
+    /// [`Continuation::log_audio`] first, while `prev` is still guarded.
+    pub fn audio_unlogged(self, prev: TrackAudioCursor) -> TrackAudioCursor {
         prev.continue_in(self.area, self.first, self.end, self.image_sectors, self.image_id)
     }
 
     /// `prev` continued into this range (see [`TrackCursor::continue_to_range`]), or a
-    /// fresh cursor when its state cannot be reused.
+    /// fresh cursor when its state cannot be reused. Logs the opening first
+    /// ([`Continuation::log_frames`]).
     pub fn frames(self, prev: TrackCursor) -> TrackCursor {
+        self.log_frames(&prev);
+        self.frames_unlogged(prev)
+    }
+
+    /// Logs (at [`Level::Info`]) the opening of this range's frames from `prev`.
+    pub fn log_frames(&self, prev: &TrackCursor) {
         self.log_open("frames", || prev.reusable(self.area, self.first, self.image_sectors, self.image_id));
+    }
+
+    /// [`Continuation::frames`] without logging (see [`Continuation::audio_unlogged`]).
+    pub fn frames_unlogged(self, prev: TrackCursor) -> TrackCursor {
         prev.continue_in(self.area, self.first, self.end, self.image_sectors, self.image_id)
     }
 }

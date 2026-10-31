@@ -1368,17 +1368,22 @@ unsafe fn open_next(
         if p.disc_id != handle.id {
             return Err(Failure::arg("the previous track audio handle belongs to another disc"));
         }
-        if p.inner.try_borrow_mut().is_err() {
-            return Err(Failure::arg(REENTRANT));
-        }
+        // `prev` stays borrowed while a log callback can run (the checks and the opening
+        // are logged): a callback that reaches it then gets SB_STATUS_INVALID_ARGUMENT,
+        // or a no-op from sb_track_audio_free, instead of freeing or reading it.
+        let borrowed = p.inner.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))?;
         let next = match target {
             Target::Track(n) => d.track_continuation(slot, n)?,
             Target::Range(first, end) => d.range_continuation(slot, first, end)?,
         };
-        // SAFETY: a live handle created by Box::into_raw and not in use; the caller does
-        // not use it again after this successful call.
+        next.log_audio(&borrowed);
+        drop(borrowed);
+        // From here to the end, nothing logs: no callback runs while `prev` is consumed.
+        // SAFETY: a live handle created by Box::into_raw and not in use (no borrow is
+        // active, and no callback runs before it is freed); the caller does not use it
+        // again after this successful call.
         let prev_box = unsafe { Box::from_raw(prev) };
-        let cursor = next.audio(prev_box.inner.into_inner());
+        let cursor = next.audio_unlogged(prev_box.inner.into_inner());
         let audio = Box::new(SbTrackAudio { inner: RefCell::new(cursor), disc_id: handle.id });
         // SAFETY: non-NULL and valid for a write by this function's contract.
         unsafe { out.write(Box::into_raw(audio)) };

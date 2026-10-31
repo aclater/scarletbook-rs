@@ -767,6 +767,11 @@ struct LogUser {
     /// If set, the callback tries to replace the log of this disc and records the status.
     disc: std::sync::atomic::AtomicPtr<SbDisc>,
     reentry: std::sync::Mutex<Vec<SbStatus>>,
+    /// If set, the callback tries to read and free this track handle (of `victim_disc`)
+    /// and records the status of the read.
+    victim: std::sync::atomic::AtomicPtr<SbTrackAudio>,
+    victim_disc: std::sync::atomic::AtomicPtr<SbDisc>,
+    victim_reads: std::sync::Mutex<Vec<SbStatus>>,
 }
 
 impl LogUser {
@@ -790,6 +795,18 @@ unsafe extern "C" fn cb_log(user: *mut c_void, level: i32, message: *const c_cha
         // SAFETY: `disc` is the live disc whose call invoked this callback, on this thread.
         let s = unsafe { sb_disc_set_log(disc, None, ptr::null_mut(), SB_LOG_OFF) };
         user.reentry.lock().unwrap().push(s);
+    }
+    let victim = user.victim.swap(ptr::null_mut(), std::sync::atomic::Ordering::Relaxed);
+    if !victim.is_null() {
+        let disc = user.victim_disc.load(std::sync::atomic::Ordering::Relaxed);
+        let mut buf = vec![0u8; 2 * 4704];
+        let mut fi = SbFrameInfo::default();
+        // SAFETY: `victim` is the live `prev` handle of the call that invoked this callback
+        // (on this thread), `disc` its live disc; `buf` and `fi` are valid.
+        let s = unsafe { sb_track_audio_read(victim, disc, buf.as_mut_ptr(), buf.len(), &mut fi) };
+        user.victim_reads.lock().unwrap().push(s);
+        // SAFETY: as above; the library must ignore the free of a handle in use.
+        unsafe { sb_track_audio_free(victim) };
     }
 }
 
@@ -949,4 +966,35 @@ fn log_callback_from_the_pool() {
         })
         .collect();
     assert!(frames.windows(2).all(|w| w[0] < w[1]) && !frames.is_empty(), "{frames:?}");
+}
+
+/// A log callback that runs while `sb_track_audio_open_next` or `sb_range_audio_open_next`
+/// consumes `prev` cannot reach it: reading it fails and freeing it does nothing (Miri
+/// checks that nothing is freed twice or read after being moved).
+#[test]
+fn log_callback_cannot_reach_a_handle_being_consumed() {
+    let user = LogUser::default();
+    let disc = open_logged(&tiny_image(), &user, SB_LOG_INFO).unwrap();
+    user.victim_disc.store(disc, std::sync::atomic::Ordering::Relaxed);
+    let a = audio_open(disc, 0, 1).unwrap();
+    let mut buf = vec![0u8; 2 * 4704];
+    assert_eq!(audio_read(a, disc, &mut buf).0, SbStatus::Ok);
+    // Into a track.
+    user.victim.store(a, std::sync::atomic::Ordering::Relaxed);
+    let b = audio_open_next(disc, a, 0, 1).unwrap();
+    assert_eq!(*user.victim_reads.lock().unwrap(), [SbStatus::InvalidArgument]);
+    assert!(user.victim.load(std::sync::atomic::Ordering::Relaxed).is_null(), "the callback ran");
+    assert_eq!(read_frames(b, disc).len(), 2);
+    // Into a range.
+    user.victim.store(b, std::sync::atomic::Ordering::Relaxed);
+    let c = range_open_next(disc, b, 0, 0, 7).unwrap();
+    assert_eq!(*user.victim_reads.lock().unwrap(), [SbStatus::InvalidArgument; 2]);
+    assert_eq!(read_frames(c, disc).len(), 7);
+    // A refusal is logged while `prev` is still the caller's: it stays usable.
+    user.victim.store(c, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(range_open_next(disc, c, 0, 0, 11).unwrap_err(), SbStatus::FrameRangeInvalid);
+    assert_eq!(*user.victim_reads.lock().unwrap(), [SbStatus::InvalidArgument; 3]);
+    assert_eq!(audio_read(c, disc, &mut buf).0, SbStatus::End);
+    audio_free(c);
+    free(disc);
 }

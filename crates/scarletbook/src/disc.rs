@@ -323,8 +323,10 @@ impl<R: Read + Seek> Disc<R> {
     ///
     /// [`Error::NoSuchArea`] or [`Error::NoSuchTrack`].
     pub fn track_range_with_pause(&self, slot: Slot, number: u32) -> Result<(u32, u32), Error> {
-        let (area, _) = audio::find_track(&self.toc.areas, slot, number)?;
-        audio::track_range_with_pause(area, number).ok_or(Error::NoSuchTrack { slot, track: number })
+        let (area, _) = self.find_track(slot, number)?;
+        audio::track_range_with_pause(area, number)
+            .ok_or(Error::NoSuchTrack { slot, track: number })
+            .inspect_err(|e| sb_log!(self.log(), Info, "area {slot} track {number}: {e}"))
     }
 
     /// The borrowing iterator over a track (or range) decoding state of this disc.
