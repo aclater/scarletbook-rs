@@ -449,3 +449,4 @@ on 2026-10-30: the name `scarletbook` is not taken on crates.io. Nothing was pub
 | 2026-10-31 | release 0.3.0 (#54) | version and changelog only: workspace version 0.3.0, the changelog section for the release notes. No new sources consulted. |
 | 2026-10-31 | CI speed-up (#55) | Miri and fuzz gated on code changes, a Miri subset on pull requests (full on `main` and on manual runs), build cache. No new sources beyond the `rust-cache` README. |
 | 2026-10-31 | package licences (#48) | the published `scarletbook` crate carries `LICENSE-MIT`, `LICENSE-APACHE` (copies checked against the root in CI) and the README. No new sources consulted. |
+| 2026-10-31 | #36 decoding pool per cursor | `DecodeOn`: a cursor's DST frames decoded on a given rayon pool or on the calling thread; no change to decoding. Consulted the rayon-core 1.13.0 source in the local cargo registry (`ThreadPool` drop and build-failure behaviour), a general Rust library. No SACD or DST sources. |

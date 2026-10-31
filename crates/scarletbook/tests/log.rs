@@ -361,6 +361,96 @@ fn parallel_decoding_logs_from_the_pool_in_order() {
     }
 }
 
+/// A cursor given its own pool decodes there, from a thread outside any pool and from a
+/// thread of another pool alike, with the frames and frame lines of the calling thread
+/// (the demultiplexing lines run further ahead), and its continuations keep the pool.
+#[cfg(feature = "parallel")]
+#[test]
+#[cfg_attr(miri, ignore = "reads whole corpus images")]
+fn a_cursor_decodes_on_the_pool_it_is_given() {
+    use scarletbook::DecodeOn;
+
+    /// Each line with the name of the thread that logged it.
+    type Named = Vec<(String, Level, String)>;
+
+    fn name() -> String {
+        std::thread::current().name().unwrap_or("").to_owned()
+    }
+
+    /// The frames and lines of every track of the 2-channel area, decoded `on`.
+    fn decode(id: &str, on: &DecodeOn) -> (Vec<AudioFrame>, Named) {
+        let lines: Arc<Mutex<Named>> = Arc::default();
+        let sink = Arc::clone(&lines);
+        let log = Log::new(Level::Trace, move |l, m| sink.lock().unwrap().push((name(), l, m.to_string())));
+        let mut disc = Disc::open_with_log(Cursor::new(image(id)), log).unwrap();
+        let count = disc.toc().area(Slot::TwoChannel).unwrap().tracks.len() as u32;
+        let (mut frames, mut cursor) = (Vec::new(), None);
+        for n in 1..=count {
+            let next = match cursor.take() {
+                Some(prev) => disc.continue_track_audio(prev, Slot::TwoChannel, n).unwrap(),
+                None => {
+                    let mut c = disc.track_audio_cursor(Slot::TwoChannel, n).unwrap();
+                    c.set_decode_on(on.clone());
+                    c
+                }
+            };
+            assert_eq!(format!("{:?}", next.decode_on()), format!("{on:?}"));
+            let mut audio = disc.read_track_audio(next);
+            frames.extend(audio.by_ref().map(Result::unwrap));
+            cursor = Some(audio.into_cursor());
+        }
+        let lines = lines.lock().unwrap().clone();
+        (frames, lines)
+    }
+
+    let named = |prefix: &'static str, threads| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .thread_name(move |i| format!("{prefix}-{i}"))
+            .build()
+            .unwrap()
+    };
+    let plain =
+        |lines: &Named| -> Vec<(Level, String)> { lines.iter().map(|(_, l, m)| (*l, m.clone())).collect() };
+    let id = "dst-features-2ch-6ch";
+    let (serial, serial_lines) = decode(id, &DecodeOn::CallingThread);
+    assert!(serial_lines.iter().all(|(t, _, _)| *t == name()));
+    let other = named("other", 3);
+    for threads in [1, 2, 4] {
+        let pool = Arc::new(named("chosen", threads));
+        // From this thread, outside any pool, then from a thread of another pool.
+        let runs = [
+            (name(), decode(id, &DecodeOn::Pool(Arc::clone(&pool)))),
+            other.install(|| (name(), decode(id, &DecodeOn::Pool(Arc::clone(&pool))))),
+        ];
+        for (caller, (frames, lines)) in runs {
+            assert_eq!(frames, serial, "{threads} threads from {caller:?}");
+            for level in [Level::Warn, Level::Trace] {
+                assert_eq!(frame_lines(&plain(&lines), level), frame_lines(&plain(&serial_lines), level));
+            }
+            // The groups are decoded on the chosen pool's threads only (a pool of one
+            // thread decodes on the calling thread); every other line is the caller's.
+            let groups: Vec<&String> = lines
+                .iter()
+                .filter(|(_, _, m)| m.starts_with("decoding DST frames"))
+                .map(|(t, _, _)| t)
+                .collect();
+            assert!(!groups.is_empty());
+            if threads == 1 {
+                assert!(groups.iter().all(|t| **t == caller), "{groups:?}");
+            } else {
+                assert!(groups.iter().all(|t| t.starts_with("chosen-")), "{threads} threads: {groups:?}");
+            }
+            assert!(
+                lines
+                    .iter()
+                    .filter(|(_, _, m)| !m.starts_with("decoding DST frames"))
+                    .all(|(t, _, _)| *t == caller)
+            );
+        }
+    }
+}
+
 /// Every corpus image: the logged TOC warnings are the disc's warnings, the frame lines
 /// are the returned frames' problems in order, and a rejected image logs no error-level
 /// line for a well-behaved reader.
