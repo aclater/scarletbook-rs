@@ -70,6 +70,7 @@ use crate::audio::{
 };
 use crate::error::Error;
 use crate::image::{Image, SECTOR_SIZE};
+use crate::log::sb_log;
 use crate::toc::Area;
 
 /// Default checkpoint interval `K` in sectors.
@@ -275,6 +276,207 @@ pub enum Speculation {
         /// `u`, the range's first frame when the reading began.
         first: u32,
     },
+    /// A provisional reading whose conditions (a) and (b) a pass from the first sector has
+    /// established: its positions are this specification's (4.2 item 8).
+    Confirmed {
+        /// `L`.
+        lsn: u64,
+        /// `u`.
+        first: u32,
+    },
+    /// A provisional reading whose condition (a) or (b) fails: its positions numbered
+    /// `first` to `exact_from - 1` are **possibly different** from this specification's
+    /// (4.2 item 8), whether or not they are missing; from `exact_from` on they are exact.
+    /// `exact_from` is at least the specification's `a*` (the next acceptable frame number
+    /// of a reader from the first sector just after it delivered or discarded the frame
+    /// under assembly at `L`): the larger of `a_L` and one more than that frame's number.
+    Refuted {
+        /// `L`.
+        lsn: u64,
+        /// `u`.
+        first: u32,
+        /// The last position the cursor had returned, if any.
+        last_returned: Option<u32>,
+        /// Positions from here on are exact.
+        exact_from: u32,
+    },
+    /// A provisional reading that will not be checked: dropped past the limit of
+    /// [`MAX_CLAIMS`] pending readings per index, or found to be of an index that does not
+    /// match the image. Its positions stay provisional.
+    Unverified {
+        /// `L`.
+        lsn: u64,
+        /// `u`.
+        first: u32,
+    },
+}
+
+/// Most provisional readings an index keeps waiting to be checked; past it, the oldest is
+/// dropped as [`Speculation::Unverified`].
+pub const MAX_CLAIMS: usize = 256;
+
+/// Most verdicts kept waiting to be taken, per index ([`AreaIndex::take_events`]) and per
+/// disc and area ([`crate::Disc::take_seek_events`]); past it, the oldest are dropped (the
+/// cursors still hold their verdicts).
+pub const MAX_EVENTS: usize = 4 * MAX_CLAIMS;
+
+/// Appends `events` to `queue`, keeping the last [`MAX_EVENTS`].
+pub(crate) fn queue_events(queue: &mut Vec<SeekEvent>, events: impl IntoIterator<Item = SeekEvent>) {
+    queue.extend(events);
+    if queue.len() > MAX_EVENTS {
+        queue.drain(..queue.len() - MAX_EVENTS);
+    }
+}
+
+/// What became of a provisional reading: an event of [`AreaIndex::take_events`] and
+/// [`crate::Disc::take_seek_events`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SeekEvent {
+    /// The area.
+    pub slot: crate::Slot,
+    /// The provisional reading, as the cursors that made it number it
+    /// ([`crate::TrackCursor::speculation_id`]).
+    pub claim: u64,
+    /// Its verdict: [`Speculation::Confirmed`], [`Speculation::Refuted`] or
+    /// [`Speculation::Unverified`].
+    pub speculation: Speculation,
+}
+
+static NEXT_CLAIM: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// The verdict on a provisional reading.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Verdict {
+    Confirmed,
+    Refuted { exact_from: u32 },
+    Unverified,
+}
+
+/// A provisional reading (`L`, `u`), shared by the cursor that made it (and its
+/// continuations) and the index that checks it.
+#[derive(Debug)]
+pub(crate) struct Claim {
+    pub(crate) id: u64,
+    slot: crate::Slot,
+    first: u32,
+    lsn: std::sync::atomic::AtomicU64,
+    /// One more than the last position returned, 0 for none.
+    returned: std::sync::atomic::AtomicU32,
+    verdict: std::sync::Mutex<Option<Verdict>>,
+}
+
+impl Claim {
+    pub(crate) fn new(slot: crate::Slot, first: u32) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Claim {
+            id: NEXT_CLAIM.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            slot,
+            first,
+            lsn: std::sync::atomic::AtomicU64::new(0),
+            returned: std::sync::atomic::AtomicU32::new(0),
+            verdict: std::sync::Mutex::new(None),
+        })
+    }
+
+    pub(crate) fn set_lsn(&self, lsn: u64) {
+        self.lsn.store(lsn, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub(crate) fn lsn(&self) -> u64 {
+        self.lsn.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Notes that position `t` was returned.
+    #[inline]
+    pub(crate) fn returned(&self, t: u32) {
+        self.returned.fetch_max(t.saturating_add(1), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn verdict(&self) -> Option<Verdict> {
+        // Nothing panics while the lock is held.
+        *self.verdict.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Settles the claim, once: whether this call did.
+    fn settle(&self, verdict: Verdict) -> bool {
+        let mut v = self.verdict.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if v.is_some() {
+            return false;
+        }
+        *v = Some(verdict);
+        true
+    }
+
+    pub(crate) fn speculation(&self) -> Speculation {
+        let (lsn, first) = (self.lsn(), self.first);
+        match self.verdict() {
+            None => Speculation::Pending { lsn, first },
+            Some(Verdict::Confirmed) => Speculation::Confirmed { lsn, first },
+            Some(Verdict::Refuted { exact_from }) => {
+                let r = self.returned.load(std::sync::atomic::Ordering::Relaxed);
+                Speculation::Refuted { lsn, first, last_returned: r.checked_sub(1), exact_from }
+            }
+            Some(Verdict::Unverified) => Speculation::Unverified { lsn, first },
+        }
+    }
+
+    fn event(&self) -> SeekEvent {
+        SeekEvent { slot: self.slot, claim: self.id, speculation: self.speculation() }
+    }
+}
+
+/// The state of a provisional reading at a checkpoint boundary it crossed, after it had
+/// resynchronised (delivered a frame): where its frame under assembly started (`back`, as
+/// in [`Checkpoint`], at most [`REPLAY_SECTORS`]), the digest of the sector, and one more
+/// than the largest frame number it had delivered complete (`seen`). Used only by later
+/// provisional starts (never by exact ones), and not saved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Provisional {
+    pub(crate) back: u32,
+    pub(crate) digest: u64,
+    pub(crate) seen: u32,
+    /// The number of the frame under assembly there, if any.
+    pub(crate) under: Option<u32>,
+}
+
+/// The provisional checkpoints a provisional reading records.
+#[derive(Debug)]
+pub(crate) struct ProvisionalRecorder {
+    interval: u64,
+    next: u64,
+    pub(crate) list: Vec<(u64, Provisional)>,
+}
+
+impl ProvisionalRecorder {
+    /// A recorder of the boundaries `start + j x interval` after `from`.
+    pub(crate) fn new(start: u64, from: u64, interval: u32) -> Box<Self> {
+        let k = u64::from(interval.max(1));
+        let next = start + (from - start) / k * k + k;
+        Box::new(ProvisionalRecorder { interval: k, next, list: Vec::new() })
+    }
+
+    #[inline]
+    pub(crate) fn due(&self, lsn: u64) -> bool {
+        lsn == self.next
+    }
+
+    /// Records the boundary before sector `lsn`, if the reading has resynchronised.
+    pub(crate) fn record(
+        &mut self,
+        lsn: u64,
+        under: Option<(u64, u32)>,
+        seen: u32,
+        sector: &[u8; SECTOR_SIZE],
+    ) {
+        self.next += self.interval;
+        let back = under.map_or(0, |(b, _)| b);
+        if seen > 0 && back <= REPLAY_SECTORS {
+            // At most REPLAY_SECTORS.
+            let back = back as u32;
+            let under = under.map(|(_, n)| n);
+            self.list.push((lsn, Provisional { back, digest: digest(sector), seen, under }));
+        }
+    }
 }
 
 /// A provisional start still to be chosen: on the cursor's first read, from the area's
@@ -578,6 +780,12 @@ pub struct AreaIndex {
     /// The image of the first cursor this index took checkpoints from ([`Image::id`],
     /// unique within the process; not saved), whose cursors alone it takes from then on.
     image_id: Option<u64>,
+    /// Provisional readings waiting to be checked (not saved).
+    claims: Vec<std::sync::Arc<Claim>>,
+    /// Provisional checkpoints past the frontier, for provisional starts only (not saved).
+    provisional: std::collections::BTreeMap<u64, Provisional>,
+    /// Verdicts not yet taken.
+    events: Vec<SeekEvent>,
 }
 
 /// Two indexes are equal when they hold the same reading state: the image they were
@@ -618,6 +826,9 @@ impl AreaIndex {
             end_state: None,
             malformed: Vec::new(),
             image_id: None,
+            claims: Vec::new(),
+            provisional: std::collections::BTreeMap::new(),
+            events: Vec::new(),
         })
     }
 
@@ -679,6 +890,7 @@ impl AreaIndex {
         // Of this image from now on, even if there is nothing left to read.
         self.image_id = Some(image.id());
         if self.is_complete() {
+            self.verify(image)?;
             return Ok(true);
         }
         let mut cursor = AreaCursor::resume(self, u32::MAX);
@@ -691,7 +903,9 @@ impl AreaIndex {
         }
         // A cursor of this index joins it.
         self.take_from(&cursor)?;
-        scanned.map(|_| self.is_complete())
+        scanned?;
+        self.verify(image)?;
+        Ok(self.is_complete())
     }
 
     pub(crate) fn key(&self) -> AreaKey {
@@ -727,6 +941,19 @@ impl AreaIndex {
         let checkpoint = self.checkpoints[j];
         let held = self.stored.get(j as u32);
         Plan::At { lsn: self.checkpoint_lsn(j), checkpoint, held }
+    }
+
+    /// The resume plan at checkpoint `j`, which must exist.
+    pub(crate) fn plan_at(&self, j: usize) -> Plan<'_> {
+        let checkpoint = self.checkpoints[j];
+        Plan::At { lsn: self.checkpoint_lsn(j), checkpoint, held: self.stored.get(j as u32) }
+    }
+
+    /// The number of the last checkpoint at or before `lsn` (which must not lie past the
+    /// frontier): `None` if there is none.
+    pub(crate) fn checkpoint_before(&self, lsn: u64) -> Option<usize> {
+        let j = ((lsn.checked_sub(self.start)?) / u64::from(self.interval)) as usize;
+        (!self.checkpoints.is_empty()).then(|| j.min(self.checkpoints.len() - 1))
     }
 
     /// The malformed sectors before `lsn`, which must not lie past the frontier.
@@ -779,6 +1006,7 @@ impl AreaIndex {
         match self.take_from(cursor) {
             Ok(()) => {
                 Self::drain(cursor);
+                self.take_provisional(cursor);
                 Ok(())
             }
             Err(e) => {
@@ -852,6 +1080,7 @@ impl AreaIndex {
         if self.image_id.is_none() {
             self.image_id = cursor.image_id();
         }
+        self.prune_provisional();
         Ok(())
     }
 }
@@ -866,6 +1095,7 @@ impl AreaIndex {
             return;
         }
         Self::drain(cursor);
+        self.take_provisional(cursor);
     }
 
     /// Drops what `cursor` recorded, once taken: it records on from there.
@@ -897,13 +1127,162 @@ impl AreaIndex {
     }
 }
 
+impl AreaIndex {
+    /// The provisional readings waiting to be checked ([`AreaIndex::verify`]).
+    pub fn pending_claims(&self) -> usize {
+        self.claims.len()
+    }
+
+    /// Takes the verdicts on provisional readings reached since the last call (see
+    /// [`AreaIndex::verify`]).
+    pub fn take_events(&mut self) -> Vec<SeekEvent> {
+        std::mem::take(&mut self.events)
+    }
+
+    /// Takes from `cursor` its provisional reading, to check, and the provisional
+    /// checkpoints it recorded past the frontier: only for a cursor of this index's image.
+    pub(crate) fn take_provisional(&mut self, cursor: &mut AreaCursor) {
+        if self.image_id.is_some_and(|id| cursor.image_id().is_some_and(|c| c != id)) {
+            return;
+        }
+        if let Some(claim) = cursor.unregistered_claim() {
+            if self.claims.len() >= MAX_CLAIMS {
+                let old = self.claims.remove(0);
+                if old.settle(Verdict::Unverified) {
+                    queue_events(&mut self.events, [old.event()]);
+                }
+            }
+            self.claims.push(claim);
+        }
+        let frontier = self.frontier();
+        let most = self.boundaries();
+        for (lsn, p) in cursor.take_provisional_checkpoints() {
+            if lsn > frontier && self.provisional.len() < most {
+                self.provisional.insert(lsn, p);
+            }
+        }
+    }
+
+    /// Drops the oldest pending readings past [`MAX_CLAIMS`], as unverified.
+    pub(crate) fn cap_claims(&mut self) {
+        while self.claims.len() > MAX_CLAIMS {
+            let old = self.claims.remove(0);
+            if old.settle(Verdict::Unverified) {
+                queue_events(&mut self.events, [old.event()]);
+            }
+        }
+    }
+
+    /// Drops what the exact checkpoints now cover.
+    fn prune_provisional(&mut self) {
+        let frontier = self.frontier();
+        self.provisional.retain(|&lsn, _| lsn > frontier);
+    }
+
+    /// A provisional start for positions `u` or more from the provisional checkpoints: the
+    /// last one whose reading had delivered no frame numbered `u` or more and whose frame
+    /// under assembly is none or numbered below `u` (so that, as far as that reading saw,
+    /// (a) and (b) of 4.2 item 8 hold there), if a later one had delivered such a frame (so
+    /// that `u` lies within what they cover).
+    pub(crate) fn plan_provisional(&self, u: u32) -> Option<(u64, Provisional)> {
+        let mut best = None;
+        for (&lsn, &p) in &self.provisional {
+            if p.seen > u {
+                return best;
+            }
+            if p.under.is_none_or(|n| n < u) {
+                best = Some((lsn, p));
+            }
+        }
+        None
+    }
+
+    /// Checks the provisional readings that the exact checkpoints now reach (specification
+    /// 4, 4.2 item 8): for each, the state at its `L` of a reader from the first sector,
+    /// rebuilt from the checkpoint at or before `L` (at most [`REPLAY_SECTORS`] plus the
+    /// interval in sectors read through `image`). A reading is confirmed when (a) that
+    /// reader's next acceptable frame number at `L` is at most `u` and (b) its frame under
+    /// assembly there is none or numbered below `u`, and refuted ("possibly different")
+    /// otherwise; its cursors see the verdict at once ([`crate::TrackCursor::speculation`]),
+    /// and it becomes an event ([`AreaIndex::take_events`]). Refutations are logged at
+    /// warning level. Returns the number of readings settled. [`AreaIndex::extend`] does
+    /// this itself.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidArgument`] if `image` is another image than the index's (see [One
+    /// index per image](AreaIndex#one-index-per-image)); [`Error::Io`] if a read fails (the
+    /// readings not yet checked stay pending).
+    pub fn verify<R: Read + Seek>(&mut self, image: &mut Image<R>) -> Result<usize, Error> {
+        if self.image_id.is_some_and(|id| id != image.id()) {
+            return Err(Error::InvalidArgument("seek index of another image"));
+        }
+        // Checked against this image: the index is of it from now on.
+        self.image_id = Some(image.id());
+        let frontier = self.frontier();
+        let mut settled = 0;
+        let mut i = 0;
+        while i < self.claims.len() {
+            let claim = std::sync::Arc::clone(&self.claims[i]);
+            let lsn = claim.lsn();
+            if claim.verdict().is_some() {
+                self.claims.remove(i);
+                continue;
+            }
+            if lsn == 0 || lsn > frontier || lsn >= self.end {
+                i += 1;
+                continue;
+            }
+            let verdict = match AreaCursor::state_at(self, lsn, image)? {
+                None => Verdict::Unverified,
+                Some((a, held, _)) => {
+                    let u = claim.first;
+                    if a <= u && held.is_none_or(|g| g < u) {
+                        Verdict::Confirmed
+                    } else {
+                        Verdict::Refuted { exact_from: a.max(held.map_or(0, |g| g.saturating_add(1))) }
+                    }
+                }
+            };
+            self.claims.remove(i);
+            if claim.settle(verdict) {
+                settled += 1;
+                let event = claim.event();
+                match event.speculation {
+                    Speculation::Refuted { first, last_returned, exact_from, .. } => sb_log!(
+                        image.log(),
+                        Warn,
+                        "area {}: provisional reading from LSN {lsn} for frames {first}.. possibly different \
+                         from the specification below frame {exact_from} (4.2 item 8; returned up to {:?})",
+                        claim.slot,
+                        last_returned
+                    ),
+                    _ => sb_log!(
+                        image.log(),
+                        Debug,
+                        "area {}: provisional reading from LSN {lsn}: {:?}",
+                        claim.slot,
+                        event.speculation
+                    ),
+                }
+                queue_events(&mut self.events, [event]);
+            }
+        }
+        Ok(settled)
+    }
+}
+
 /// The seek indexes a [`crate::Disc`] keeps, one per slot, each behind its own lock so that
 /// cursors can be made and continued through `&Disc`: a read lock while a cursor is made
 /// from an index, a write lock while checkpoints are taken into it. No log sink runs under
 /// either. Kept apart from the rest of the disc so that discs sharing an image can share
 /// it.
 #[derive(Debug, Default)]
-pub(crate) struct SeekIndexes([std::sync::RwLock<Option<AreaIndex>>; 2]);
+pub(crate) struct SeekIndexes {
+    indexes: [std::sync::RwLock<Option<AreaIndex>>; 2],
+    /// Verdicts on provisional readings, for [`crate::Disc::take_seek_events`].
+    events: [std::sync::Mutex<Vec<SeekEvent>>; 2],
+}
 
 impl SeekIndexes {
     fn at(slot: crate::Slot) -> usize {
@@ -916,13 +1295,14 @@ impl SeekIndexes {
     /// Runs `f` on the index of `slot`, if one is kept, under a read lock.
     pub(crate) fn read<T>(&self, slot: crate::Slot, f: impl FnOnce(Option<&AreaIndex>) -> T) -> T {
         // Nothing panics while a lock is held: the indexes stay consistent.
-        let index = self.0[Self::at(slot)].read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let index = self.indexes[Self::at(slot)].read().unwrap_or_else(std::sync::PoisonError::into_inner);
         f(index.as_ref())
     }
 
     /// Runs `f` on the index of `slot` (or its absence) under a write lock.
     pub(crate) fn write<T>(&self, slot: crate::Slot, f: impl FnOnce(&mut Option<AreaIndex>) -> T) -> T {
-        let mut index = self.0[Self::at(slot)].write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut index =
+            self.indexes[Self::at(slot)].write().unwrap_or_else(std::sync::PoisonError::into_inner);
         f(&mut index)
     }
 
@@ -933,16 +1313,39 @@ impl SeekIndexes {
     /// checkpoints are that image's.
     #[inline]
     pub(crate) fn absorb(&self, cursor: &mut AreaCursor, image_id: u64) {
-        if cursor.recorder().is_some_and(|r| r.kept && r.has_news()) {
+        let kept = cursor.recorder().is_none_or(|r| r.kept);
+        if kept && cursor.has_news() {
             if cursor.image_id().is_some_and(|id| id != image_id) {
                 cursor.stop_recording();
                 return;
             }
-            self.write(cursor.slot(), |index| match index {
-                Some(index) => index.absorb_drain(cursor),
-                None => cursor.stop_recording(),
+            let events = self.write(cursor.slot(), |index| match index {
+                Some(index) => {
+                    index.absorb_drain(cursor);
+                    index.take_events()
+                }
+                None => {
+                    cursor.stop_recording();
+                    Vec::new()
+                }
             });
+            self.push_events(cursor.slot(), events);
         }
+    }
+
+    /// Queues verdicts for [`crate::Disc::take_seek_events`].
+    pub(crate) fn push_events(&self, slot: crate::Slot, events: Vec<SeekEvent>) {
+        if !events.is_empty() {
+            let mut queue =
+                self.events[Self::at(slot)].lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            queue_events(&mut queue, events);
+        }
+    }
+
+    /// Takes the queued verdicts of `slot`.
+    pub(crate) fn take_events(&self, slot: crate::Slot) -> Vec<SeekEvent> {
+        let mut queue = self.events[Self::at(slot)].lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::mem::take(&mut *queue)
     }
 }
 
@@ -1026,6 +1429,9 @@ mod tests {
             end_state: end.map(|a| EndState { next_acceptable: a, malformed: 0 }),
             malformed: Vec::new(),
             image_id: None,
+            claims: Vec::new(),
+            provisional: std::collections::BTreeMap::new(),
+            events: Vec::new(),
         }
     }
 
