@@ -154,6 +154,10 @@ struct SbDisc *disc;
 if (sb_disc_open_file("disc.iso", &disc) != SB_STATUS_OK) puts(sb_last_error_message());
 ```
 
+`sb_build_info()` says how the loaded library was built, for logs and bug reports: a
+static string of `key=value` pairs naming its version, target, profile, features, target
+CPU features, compiler and commit.
+
 The conventions (status codes, copy-out strings, handle lifetimes, threads) are stated
 at the top of `crates/scarletbook-ffi/include/scarletbook.h`;
 `crates/scarletbook-ffi/examples/smoke.c` is a complete program. Calls return an
@@ -401,6 +405,7 @@ def bind(name, restype, *argtypes):
     f.restype, f.argtypes = restype, list(argtypes)
 
 bind("sb_version", C.c_char_p)
+bind("sb_build_info", C.c_char_p)
 bind("sb_last_error_message", C.c_char_p)
 bind("sb_status_name", C.c_char_p, C.c_int32)
 bind("sb_disc_open_file", S, C.c_char_p, P(H))

@@ -298,6 +298,7 @@ extern " C " {
 #endif
 uint32_t sb_abi_version(void);
 const char *sb_version(void);
+const char *sb_build_info(void);
 const char *sb_last_error_message(void);
 const char *sb_status_name(int32_t status);
 SbStatus sb_disc_open_file(const char *path, struct SbDisc **out);

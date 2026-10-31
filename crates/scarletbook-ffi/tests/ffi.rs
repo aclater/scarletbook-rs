@@ -932,6 +932,32 @@ fn version_is_the_crate_version() {
     assert_eq!(v.to_str().unwrap(), env!("CARGO_PKG_VERSION"));
 }
 
+/// The build information names the version, this target's architecture and the features.
+#[test]
+fn build_info_names_the_build() {
+    // SAFETY: sb_build_info returns a static NUL-terminated string.
+    let info = unsafe { CStr::from_ptr(sb_build_info()) }.to_str().unwrap();
+    let pairs: Vec<(&str, &str)> = info.split(' ').map(|kv| kv.split_once('=').unwrap()).collect();
+    let keys: Vec<&str> = pairs.iter().map(|&(k, _)| k).collect();
+    assert_eq!(
+        keys,
+        ["version", "target", "profile", "opt-level", "features", "target-features", "rustc", "commit"],
+        "{info}"
+    );
+    let get = |key: &str| pairs.iter().find(|&&(k, _)| k == key).unwrap().1;
+    assert!(pairs.iter().all(|&(_, v)| !v.is_empty() && v.bytes().all(|b| b.is_ascii_graphic())), "{info}");
+    // SAFETY: sb_version returns a static NUL-terminated string.
+    assert_eq!(get("version"), unsafe { CStr::from_ptr(sb_version()) }.to_str().unwrap());
+    let arch = std::env::consts::ARCH;
+    assert!(
+        get("target").starts_with(arch) || (arch == "x86" && get("target").starts_with("i686")),
+        "{info}"
+    );
+    assert_eq!(get("features"), if cfg!(feature = "parallel") { "parallel" } else { "none" });
+    let commit = get("commit");
+    assert!(commit == "unknown" || commit.bytes().all(|b| b.is_ascii_hexdigit()), "{info}");
+}
+
 fn range_open_next(
     disc: *const SbDisc,
     prev: *mut SbTrackAudio,

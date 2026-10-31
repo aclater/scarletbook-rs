@@ -904,6 +904,36 @@ pub extern "C" fn sb_version() -> *const c_char {
     VERSION.as_ptr()
 }
 
+/// How the library was built, a static NUL-terminated string of space-separated
+/// `key=value` pairs, values without spaces, in this order:
+///
+/// - `version`: as `sb_version()`;
+/// - `target`: the target triple, for example `x86_64-unknown-linux-gnu`;
+/// - `profile`: the Cargo profile (`dist` for the release assets, `release`, `dev`) and
+///   `opt-level` its optimisation level;
+/// - `features`: the library's enabled Cargo features, comma-separated (`parallel`), or
+///   `none`;
+/// - `target-features`: the CPU features the code was compiled for, comma-separated, as
+///   the compiler names them (a generic x86-64 build lists `fxsr,sse,sse2`), or `none`;
+/// - `rustc`: the compiler version;
+/// - `commit`: the commit of this repository the library was built from:
+///   `SCARLETBOOK_COMMIT` at build time, else `GITHUB_SHA` in this repository's own GitHub
+///   Actions runs, else git's HEAD when the source is this repository's work tree, else
+///   `unknown` (a build from a vendored copy or a package, or by another repository's CI,
+///   reports no commit of its own).
+///
+/// More keys may be added; parse by key, not by position. The call allocates nothing and
+/// does no I/O.
+#[unsafe(no_mangle)]
+pub extern "C" fn sb_build_info() -> *const c_char {
+    // Written by build.rs.
+    const INFO: &CStr = match CStr::from_bytes_with_nul(concat!(env!("SB_BUILD_INFO"), "\0").as_bytes()) {
+        Ok(v) => v,
+        Err(_) => c"version=unknown",
+    };
+    INFO.as_ptr()
+}
+
 /// The message of the calling thread's last failed call (empty if the last call
 /// succeeded). Valid until the thread's next call into this library.
 #[unsafe(no_mangle)]
