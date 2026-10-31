@@ -148,26 +148,37 @@ pub fn dst(data: &[u8]) {
 const SEEK_SECTORS: u32 = 64;
 
 /// A 2-channel area of [`SEEK_SECTORS`] sectors from LSN 0 holding DST frames of 4
-/// sectors each, a malformed sector and a frame with the largest timecode; and its image.
+/// sectors, a malformed sector, a frame held over 37 sectors without packets and a frame
+/// with the largest timecode; and its image.
 pub fn seek_area() -> (scarletbook::Image<std::io::Cursor<Vec<u8>>>, scarletbook::Area) {
     use scarletbook::toc::{AreaKind, AreaText, Timecode, Version};
     let mut bytes = vec![0u8; SEEK_SECTORS as usize * 2048];
     for (i, s) in bytes.chunks_exact_mut(2048).enumerate() {
         let packet = |start: bool, len: u16| ((u16::from(start) << 15) | (2 << 11) | len).to_be_bytes();
-        if i == 30 {
-            // One packet past the end of the sector (specification 4, 4.4.3 item 1).
-            s[0] = 1 << 5;
-            s[1..3].copy_from_slice(&packet(false, 2047));
-        } else if i % 4 == 0 {
-            // A DST frame of 4 sectors, numbered i / 4, or 1 166 880 at sector 48.
-            let n = if i == 48 { 1_166_880 } else { i as u32 / 4 };
+        let start = |s: &mut [u8], n: u32, count: u8| {
             s[0] = 1 | (1 << 2) | (1 << 5);
             s[1..3].copy_from_slice(&packet(true, 500));
             s[3..6].copy_from_slice(&[(n / 4500) as u8, (n / 75 % 60) as u8, (n % 75) as u8]);
-            s[6] = 4 << 2;
-        } else {
-            s[0] = 1 | (1 << 5);
-            s[1..3].copy_from_slice(&packet(false, 500));
+            s[6] = count << 2;
+        };
+        match i {
+            // One packet past the end of the sector (specification 4, 4.4.3 item 1).
+            10 => {
+                s[0] = 1 << 5;
+                s[1..3].copy_from_slice(&packet(false, 2047));
+            }
+            // DST frames of 4 sectors, numbered i / 4.
+            0..20 if i % 4 == 0 => start(s, i as u32 / 4, 4),
+            // Frame 5 from sector 20, held over 37 sectors without packets: longer than
+            // REPLAY_SECTORS, so a checkpoint inside it stores its bytes.
+            20 => start(s, 5, 3),
+            21..58 => s[0] = 1,
+            // The frame with the largest timecode.
+            60 => start(s, 1_166_880, 4),
+            _ => {
+                s[0] = 1 | (1 << 5);
+                s[1..3].copy_from_slice(&packet(false, 500));
+            }
         }
     }
     let image =
@@ -236,7 +247,11 @@ pub fn seek_index(data: &[u8]) {
     let mut summed = data.to_vec();
     summed.extend_from_slice(&fnv(data).to_le_bytes());
     for bytes in [data, &summed[..]] {
-        let Ok(index) = AreaIndex::from_bytes(&area, n, bytes) else { continue };
+        // Within a small budget, loading drops stored frames; it must not fail otherwise.
+        if let Ok(small) = AreaIndex::from_bytes(&area, n, bytes, 600) {
+            assert!(small.options().inline_budget <= 600);
+        }
+        let Ok(index) = AreaIndex::from_bytes(&area, n, bytes, usize::MAX) else { continue };
         assert!(index.memory() <= 1024 + 2 * bytes.len(), "{} for {} bytes", index.memory(), bytes.len());
         assert_eq!(index.to_bytes(), bytes, "saving a loaded index changes it");
         let p = area.playtime_frames();

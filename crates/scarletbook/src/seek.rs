@@ -101,7 +101,8 @@ pub struct IndexOptions {
     /// past its checkpoint before the range's first frame is known.
     pub interval: u32,
     /// The most bytes of frames under assembly the index stores, over all its checkpoints
-    /// (see [`REPLAY_SECTORS`]); 0 stores none.
+    /// (see [`REPLAY_SECTORS`]); 0 stores none. A cursor made from the index may hold as
+    /// much again while it records. Saved indexes keep at most 4 GiB of it.
     pub inline_budget: usize,
 }
 
@@ -490,7 +491,9 @@ impl AreaIndex {
             first: first as u32,
             next: self.checkpoint_lsn(first),
             from,
-            budget: self.inline_budget.saturating_sub(self.stored.used),
+            // The cursor's own bound; this index charges only what it adds when it takes
+            // the frames (a frame it holds a prefix of costs its growth).
+            budget: self.inline_budget,
             checkpoints: Vec::new(),
             stored: Stored::default(),
             end_state: None,

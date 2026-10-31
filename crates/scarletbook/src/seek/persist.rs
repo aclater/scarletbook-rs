@@ -125,7 +125,8 @@ impl AreaIndex {
             u32s(&mut out, u32::try_from(n).unwrap_or(u32::MAX));
         }
         u32s(&mut out, 0);
-        u64s(&mut out, self.inline_budget as u64);
+        // At most 4 GiB is saved, so that every target loads it as it was saved.
+        u64s(&mut out, (self.inline_budget as u64).min(u64::from(u32::MAX)));
         let end = self.end_state.unwrap_or(EndState { next_acceptable: 0, malformed: 0 });
         u32s(&mut out, end.next_acceptable);
         u32s(&mut out, 0);
@@ -174,10 +175,28 @@ impl AreaIndex {
     /// is of this very image is checked as it is used (see the [module
     /// documentation](super#trust)).
     ///
+    /// The loaded index's inline budget is the smaller of the saved one and
+    /// `max_inline_budget`, the caller's bound on the memory of stored frames under
+    /// assembly (specification 7, 7.1 item 2): stored frames beyond it are dropped, and
+    /// their checkpoints are replayed instead (exact, only slower). Pass
+    /// [`crate::seek::DEFAULT_INLINE_BUDGET`] or the [`IndexOptions`](super::IndexOptions)
+    /// the caller builds with.
+    ///
+    /// These checks make loading **safe**, not **exact**: bytes forged to pass them (and
+    /// the digests checked as the index is used) can make cursors return other frames than
+    /// the image holds. If exact output matters, rebuild an index read from untrusted
+    /// storage ([`AreaIndex::extend`]) rather than load it.
+    ///
     /// # Errors
     ///
-    /// [`Error::InvalidArgument`] if any check fails.
-    pub fn from_bytes(area: &Area, image_sectors: u64, bytes: &[u8]) -> Result<Self, Error> {
+    /// [`Error::InvalidArgument`] if any check fails, including a saved inline budget above
+    /// 4 GiB (`u32::MAX` bytes).
+    pub fn from_bytes(
+        area: &Area,
+        image_sectors: u64,
+        bytes: &[u8],
+        max_inline_budget: usize,
+    ) -> Result<Self, Error> {
         let Some((body, sum)) = bytes.split_last_chunk::<8>() else {
             return Err(bad("seek index truncated"));
         };
@@ -215,7 +234,12 @@ impl AreaIndex {
         if input.u32()? != 0 {
             return Err(bad("seek index reserved field not 0"));
         }
-        let inline_budget = usize::try_from(input.u64()?).unwrap_or(usize::MAX);
+        let saved_budget = input.u64()?;
+        if saved_budget > u64::from(u32::MAX) {
+            return Err(bad("seek index inline budget above 4 GiB"));
+        }
+        // At most u32::MAX: fits a usize on every supported target.
+        let inline_budget = usize::try_from(saved_budget).unwrap_or(usize::MAX);
         let end_next = input.u32()?;
         if input.u32()? != 0 {
             return Err(bad("seek index reserved field not 0"));
@@ -344,6 +368,15 @@ impl AreaIndex {
         }
         if input.left() != 0 {
             return Err(bad("seek index has trailing bytes"));
+        }
+        // Within the caller's bound: the last frames go first, with the checkpoints that
+        // refer to them.
+        index.inline_budget = inline_budget.min(max_inline_budget);
+        while stored.used > index.inline_budget {
+            let Some(last) = stored.frames.pop() else { break };
+            stored.used -= last.bytes.len();
+            let gone = stored.frames.len() as u32;
+            stored.held.retain(|h| h.frame != gone);
         }
         index.stored = stored;
         index.malformed = malformed;

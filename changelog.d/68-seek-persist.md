@@ -1,7 +1,8 @@
 Added
-- Saved seek indexes (#68): `AreaIndex::to_bytes` and `AreaIndex::from_bytes` (a
+- Saved seek indexes (#68, #83): `AreaIndex::to_bytes` and `AreaIndex::from_bytes` (a
   versioned little-endian format with the area's key and a checksum; every count, bound and
-  invariant is checked before anything is allocated, so untrusted bytes give an error),
+  invariant is checked before anything is allocated, so untrusted bytes give an error; the
+  loaded inline budget is at most the caller's, stored frames beyond it are replayed instead),
   and `AreaIndex::merge` for indexes built apart. A cursor compares each checkpoint's sector
   digest with the sector it reads there, and on a mismatch (a stale index, or one of another
   image of the same size) discards the index, logs a warning and scans from the area's first

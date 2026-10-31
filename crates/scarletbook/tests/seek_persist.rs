@@ -67,7 +67,7 @@ fn saved_index_round_trips_and_reads_alike() {
     for k in [1, 5, 64] {
         let index = complete(&mut d, k);
         let bytes = index.to_bytes();
-        let loaded = AreaIndex::from_bytes(&area, n, &bytes).unwrap();
+        let loaded = AreaIndex::from_bytes(&area, n, &bytes, usize::MAX).unwrap();
         assert_eq!(loaded, index);
         assert_eq!(loaded.to_bytes(), bytes);
         for first in [0, 17, 100, 199] {
@@ -76,7 +76,7 @@ fn saved_index_round_trips_and_reads_alike() {
         }
         // Every truncation is refused.
         for len in 0..bytes.len() {
-            assert!(AreaIndex::from_bytes(&area, n, &bytes[..len]).is_err(), "{len}");
+            assert!(AreaIndex::from_bytes(&area, n, &bytes[..len], usize::MAX).is_err(), "{len}");
         }
     }
 }
@@ -88,13 +88,16 @@ fn an_index_of_another_area_or_image_is_refused() {
     let area = d.toc().areas[0].clone();
     let n = d.toc().sectors;
     let bytes = complete(&mut d, 8).to_bytes();
-    assert!(matches!(AreaIndex::from_bytes(&area, n + 1, &bytes), Err(Error::InvalidArgument(_))));
+    assert!(matches!(
+        AreaIndex::from_bytes(&area, n + 1, &bytes, usize::MAX),
+        Err(Error::InvalidArgument(_))
+    ));
     let mut other = area.clone();
     other.slot = Slot::Multichannel;
-    assert!(matches!(AreaIndex::from_bytes(&other, n, &bytes), Err(Error::InvalidArgument(_))));
+    assert!(matches!(AreaIndex::from_bytes(&other, n, &bytes, usize::MAX), Err(Error::InvalidArgument(_))));
     other = area.clone();
     other.channel_count = 6;
-    assert!(matches!(AreaIndex::from_bytes(&other, n, &bytes), Err(Error::InvalidArgument(_))));
+    assert!(matches!(AreaIndex::from_bytes(&other, n, &bytes, usize::MAX), Err(Error::InvalidArgument(_))));
 }
 
 /// An index of another image with the same key: the digest at the checkpoint differs, the
@@ -204,12 +207,14 @@ fn small_round_trip() {
     let n = image.sector_count();
     let mut index = AreaIndex::new(&area, n, IndexOptions::new().with_interval(16)).unwrap();
     while !index.extend(&mut image, 64).unwrap() {}
-    let loaded = AreaIndex::from_bytes(&area, n, &index.to_bytes()).unwrap();
+    let loaded = AreaIndex::from_bytes(&area, n, &index.to_bytes(), usize::MAX).unwrap();
     assert_eq!(loaded, index);
-    let mut c = TrackCursor::for_range_indexed(&area, 9, 10, n, &loaded).unwrap();
+    // Frame 4 starts at sector 16, where `a` is 3 (frame 3 is delivered there).
+    let mut c = TrackCursor::for_range_indexed(&area, 4, 5, n, &loaded).unwrap();
     let f = c.next_frame(&mut image).unwrap().unwrap();
-    assert_eq!(f.number, 9);
-    assert!(matches!(c.resumed_from(), ResumedFrom::Checkpoint { lsn: 32, .. }));
+    assert_eq!(f.number, 4);
+    assert!(matches!(f.content, scarletbook::FrameContent::Dst(_)), "{f:?}");
+    assert!(matches!(c.resumed_from(), ResumedFrom::Checkpoint { lsn: 16, .. }), "{:?}", c.resumed_from());
 }
 
 /// A DST sector starting frame `number` (sector count `count`) with a packet of `len`
@@ -275,8 +280,18 @@ fn checkpoints_share_one_frame_buffer() {
     assert_eq!(replay_from, lsn, "stored, not replayed");
     assert_eq!(got, straight(&mut d, 1, playtime));
     // Saved and loaded, the buffer stays shared.
-    let loaded = AreaIndex::from_bytes(&area, n, &index.to_bytes()).unwrap();
+    let loaded = AreaIndex::from_bytes(&area, n, &index.to_bytes(), usize::MAX).unwrap();
     assert_eq!(loaded, index);
+    // Loaded within a caller's smaller budget, the frame is dropped and replayed instead,
+    // with the same frames.
+    let small = AreaIndex::from_bytes(&area, n, &index.to_bytes(), 1000).unwrap();
+    assert_eq!(small.options().inline_budget, 1000);
+    assert!(small.memory() < index.memory());
+    let c = TrackCursor::for_range_indexed(&area, 1, playtime, n, &small).unwrap();
+    let (got, c) = frames(&mut d, c);
+    let ResumedFrom::Checkpoint { lsn, replay_from } = c.resumed_from() else { panic!() };
+    assert!(replay_from < lsn, "replayed");
+    assert_eq!(got, straight(&mut d, 1, playtime));
     assert!(index.to_bytes().len() < 70_000 + 60 * index.checkpoints());
 }
 

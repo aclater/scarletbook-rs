@@ -544,10 +544,15 @@ impl AreaCursor {
     /// another image of the same size). Nothing was returned from it yet: the sectors
     /// processed so far only rebuilt the frame under assembly.
     fn discard_index(&mut self, log: &Log, lsn: u64) {
-        let image_id = self.image_id;
+        let (image_id, stop) = (self.image_id, self.stop_lsn);
         *self = Self::with_key(self.key);
         self.image_id = image_id;
         self.resumed = ResumedFrom::Discarded { lsn };
+        if stop != u64::MAX {
+            // Extending the index (`scan_to`): stop here; reading from the first sector
+            // would only record nothing.
+            self.stop_lsn = self.next_lsn;
+        }
         sb_log!(
             log,
             Warn,
@@ -1219,8 +1224,7 @@ impl TrackCursor {
     ///
     /// A cursor made from a seek index ([`TrackCursor::for_range_indexed`]) does not keep
     /// the index: continued backwards with this method, it scans from the area's first
-    /// sector. To start from the index instead, open a new cursor from it, or continue
-    /// through a [`crate::Disc`] that keeps the index.
+    /// sector. To start from the index instead, open a new cursor from it.
     ///
     /// # Errors
     ///
