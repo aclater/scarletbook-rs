@@ -31,6 +31,7 @@
 //! "writer's choices") is a field of [`OutputOptions`], with a documented default.
 
 mod dsdiff;
+mod dsdiff_dst;
 mod dsf;
 
 use std::borrow::Cow;
@@ -38,12 +39,16 @@ use std::collections::VecDeque;
 use std::io::{Read, Seek};
 use std::ops::Range;
 
-use crate::audio::{self, AudioFrame, FRAME_BYTES_PER_CHANNEL, TrackAudio};
+use crate::audio::{
+    self, AudioFrame, FRAME_BYTES_PER_CHANNEL, FrameContent, TrackAudio, TrackFrame, TrackFrames,
+};
 use crate::disc::Disc;
+use crate::dst::DstDecoder;
 use crate::error::{Error, Slot};
 use crate::toc::Area;
 
-pub use dsdiff::PropertyChunk;
+pub use dsdiff::{LocalChunk, PropertyChunk};
+pub use dsdiff_dst::{DstIndexOffset, DstLengths, InvalidDst};
 pub use dsf::DsfBitsPerSample;
 
 /// An output file format (specification 8).
@@ -54,6 +59,9 @@ pub enum Format {
     Dsf,
     /// DSDIFF with plain DSD sound data (8.4.5).
     DsdiffDsd,
+    /// DSDIFF with DST sound data (8.4.6): the positions' DST equivalents, unchanged. Its
+    /// layout needs the frame lengths as well as the TOC: see [`Layout::new_dst`].
+    DsdiffDst,
 }
 
 /// The writer's choices of specification 8, 8.6 ("W" numbers below are its rows), each
@@ -88,6 +96,21 @@ pub struct OutputOptions {
     /// `None`: no `ABSS`, which means `A = 0`. `Some(first)` makes times equal timeline
     /// positions.
     pub dsdiff_absolute_start: Option<u32>,
+    /// W13, the order of the DSDIFF local chunks after `FVER` (8.4.2): each chunk the file
+    /// holds once, `PROP` before the sound data; chunks the file doesn't hold are ignored.
+    /// Default [`LocalChunk::DEFAULT_ORDER`]: `PROP`, the sound data, `DSTI`.
+    pub dsdiff_local_order: Vec<LocalChunk>,
+    /// W19, whether each `DSTF` chunk is followed by a `DSTC` chunk with the CRC of the
+    /// position's content (8.4.6.1). Producing one needs the position decoded. Default
+    /// `false`.
+    pub dsdiff_dst_crc: bool,
+    /// W20, whether a DST file has a `DSTI` sound index (8.4.6.2), which the DSDIFF document
+    /// recommends. Default `true`.
+    pub dsdiff_dst_index: bool,
+    /// W21, what a `DSTI` entry's offset points at (8.4.6.2 item 3). Default
+    /// [`DstIndexOffset::ChunkHeader`], the `DSTF` chunk's first byte; the other reading,
+    /// [`DstIndexOffset::FrameData`], is 12 bytes later.
+    pub dsdiff_dst_index_offset: DstIndexOffset,
 }
 
 impl Default for OutputOptions {
@@ -100,6 +123,10 @@ impl Default for OutputOptions {
             dsdiff_unspecified_loudspeaker_configuration: false,
             dsdiff_loudspeaker_configuration: true,
             dsdiff_absolute_start: None,
+            dsdiff_local_order: LocalChunk::DEFAULT_ORDER.to_vec(),
+            dsdiff_dst_crc: false,
+            dsdiff_dst_index: true,
+            dsdiff_dst_index_offset: DstIndexOffset::ChunkHeader,
         }
     }
 }
@@ -144,6 +171,26 @@ impl OutputOptions {
     pub fn with_dsdiff_absolute_start(self, frame: Option<u32>) -> Self {
         OutputOptions { dsdiff_absolute_start: frame, ..self }
     }
+
+    /// These options with DSDIFF local chunk order `order` (W13).
+    pub fn with_dsdiff_local_order(self, order: Vec<LocalChunk>) -> Self {
+        OutputOptions { dsdiff_local_order: order, ..self }
+    }
+
+    /// These options with or without `DSTC` frame CRCs (W19).
+    pub fn with_dsdiff_dst_crc(self, write: bool) -> Self {
+        OutputOptions { dsdiff_dst_crc: write, ..self }
+    }
+
+    /// These options with or without a `DSTI` sound index (W20).
+    pub fn with_dsdiff_dst_index(self, write: bool) -> Self {
+        OutputOptions { dsdiff_dst_index: write, ..self }
+    }
+
+    /// These options with `DSTI` offsets pointing at `offset` (W21).
+    pub fn with_dsdiff_dst_index_offset(self, offset: DstIndexOffset) -> Self {
+        OutputOptions { dsdiff_dst_index_offset: offset, ..self }
+    }
 }
 
 /// What a region of an output file holds.
@@ -152,9 +199,11 @@ impl OutputOptions {
 pub enum RegionKind {
     /// Chunk headers and other bytes before the sound data.
     Header,
-    /// The sound data: audio of the range's positions, and the padding the format puts
-    /// among it.
+    /// The sound data: audio of the range's positions, and the framing and padding the
+    /// format puts among it.
     SoundData,
+    /// Chunks after the sound data, such as a DST sound index.
+    Trailer,
 }
 
 /// One contiguous region of an output file.
@@ -178,6 +227,8 @@ enum Part {
     Dsf(dsf::DsfData),
     /// DSDIFF plain DSD sound data (8.4.5).
     Dsd(dsdiff::DsdData),
+    /// DSDIFF DST sound data (8.4.6).
+    Dst(dsdiff_dst::DstData),
 }
 
 /// The content of timeline positions, which [`Layout::fill`] reads.
@@ -190,6 +241,33 @@ pub trait PositionSource {
     ///
     /// Any error is returned by [`Layout::fill`] unchanged.
     fn content(&mut self, t: u32) -> Result<Cow<'_, [u8]>, Error>;
+
+    /// The DST equivalent of position `t` (specification 4, 4.6.1 item 3), as the file
+    /// holds it: for a [`Format::DsdiffDst`] layout whose lengths are
+    /// [`InvalidDst::Replaced`], an invalid DST frame's is the 0x55 fill's (4.6.1 item 5).
+    /// Its length must be the one [`DstLengths`] gave. [`Layout::fill`] asks for it only
+    /// for DST layouts ([`Layout::input`]).
+    ///
+    /// # Errors
+    ///
+    /// Any error is returned by [`Layout::fill`] unchanged. The default gives
+    /// [`Error::InvalidArgument`]: a source of content only.
+    fn dst_equivalent(&mut self, t: u32) -> Result<Cow<'_, [u8]>, Error> {
+        let _ = t;
+        Err(Error::InvalidArgument("this source gives no DST equivalents"))
+    }
+}
+
+/// What [`Layout::fill`] asks a [`PositionSource`] for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Input {
+    /// Content (specification 4, 4.6) only.
+    Content,
+    /// DST equivalents only.
+    DstEquivalents,
+    /// DST equivalents, and content for the frame CRCs.
+    DstEquivalentsAndContent,
 }
 
 /// The layout of one output file: one format, one frame range `[first, end)` of one area
@@ -204,6 +282,9 @@ pub struct Layout {
     size: u64,
     regions: Vec<Region>,
     parts: Vec<Part>,
+    /// For DST layouts, what invalid DST frames are given as.
+    invalid: Option<InvalidDst>,
+    crc: bool,
 }
 
 impl Layout {
@@ -234,11 +315,49 @@ impl Layout {
             size: 0,
             regions: Vec::new(),
             parts: Vec::new(),
+            invalid: None,
+            crc: false,
         };
         match format {
             Format::Dsf => dsf::build(&mut layout, area, options)?,
             Format::DsdiffDsd => dsdiff::build_dsd(&mut layout, area, options)?,
+            Format::DsdiffDst => {
+                return Err(Error::InvalidArgument("a DST layout needs the frame lengths: Layout::new_dst"));
+            }
         }
+        Ok(layout)
+    }
+
+    /// The layout of a [`Format::DsdiffDst`] file holding the range of `lengths` of `area`
+    /// (specification 8, 8.4.6): every size and the sound index follow from the lengths
+    /// (8.4.6 "Sizes").
+    ///
+    /// # Errors
+    ///
+    /// As [`Layout::new`], and [`Error::InvalidArgument`] if `lengths` are of another area
+    /// or range.
+    pub fn new_dst(
+        area: &Area,
+        image_sectors: u64,
+        lengths: &DstLengths,
+        options: &OutputOptions,
+    ) -> Result<Layout, Error> {
+        let (first, end) = lengths.range();
+        audio::check_range(area, first, end, image_sectors)?;
+        let mut layout = Layout {
+            format: Format::DsdiffDst,
+            slot: area.slot,
+            first,
+            end,
+            channels: area.channel_count,
+            size: 0,
+            regions: Vec::new(),
+            parts: Vec::new(),
+            invalid: Some(lengths.invalid()),
+            crc: options.dsdiff_dst_crc,
+        };
+        let data = dsdiff_dst::DstData::new(&layout, lengths, options)?;
+        dsdiff::assemble(&mut layout, area, options, dsdiff::Sound::Dst(data))?;
         Ok(layout)
     }
 
@@ -274,6 +393,15 @@ impl Layout {
         self.channels
     }
 
+    /// What [`Layout::fill`] asks its source for.
+    pub fn input(&self) -> Input {
+        match (self.invalid, self.crc) {
+            (None, _) => Input::Content,
+            (Some(_), false) => Input::DstEquivalents,
+            (Some(_), true) => Input::DstEquivalentsAndContent,
+        }
+    }
+
     /// The file's regions, in order, covering `[0, size)`.
     pub fn regions(&self) -> &[Region] {
         &self.regions
@@ -281,7 +409,15 @@ impl Layout {
 
     /// The memory the layout holds, in bytes (approximate, without allocator overhead).
     pub fn memory(&self) -> usize {
-        let parts: usize = self.parts.iter().map(|p| if let Part::Bytes(b) = p { b.len() } else { 0 }).sum();
+        let parts: usize = self
+            .parts
+            .iter()
+            .map(|p| match p {
+                Part::Bytes(b) => b.len(),
+                Part::Dst(d) => d.memory(),
+                Part::Dsf(_) | Part::Dsd(_) => 0,
+            })
+            .sum();
         size_of::<Self>() + parts + self.regions.len() * (size_of::<Region>() + size_of::<Part>())
     }
 
@@ -301,6 +437,7 @@ impl Layout {
                 Part::Bytes(_) => continue,
                 Part::Dsf(d) => d.positions(start - region.offset..end - region.offset),
                 Part::Dsd(d) => d.positions(start - region.offset..end - region.offset),
+                Part::Dst(d) => d.positions(start - region.offset..end - region.offset),
             };
             if !p.is_empty() {
                 lo = lo.min(p.start);
@@ -342,6 +479,7 @@ impl Layout {
                 }
                 Part::Dsf(d) => d.fill(rel, dst, self.first, &mut source)?,
                 Part::Dsd(d) => d.fill(rel, dst, self.first, &mut source)?,
+                Part::Dst(d) => d.fill(rel, dst, self.first, &mut source)?,
             }
             done += n;
         }
@@ -371,8 +509,23 @@ impl Layout {
         if positions.is_empty() {
             return self.fill(offset, out, &mut NoPositions);
         }
-        let frames = disc.range_audio(self.slot, positions.start, positions.end)?;
-        self.fill(offset, out, &mut Window { frames, window: VecDeque::new() })
+        match self.invalid {
+            None => {
+                let frames = disc.range_audio(self.slot, positions.start, positions.end)?;
+                self.fill(offset, out, &mut Window { frames, window: VecDeque::new() })
+            }
+            Some(invalid) => {
+                let frames = disc.range_frames(self.slot, positions.start, positions.end)?;
+                let mut source = StoredWindow {
+                    frames,
+                    window: VecDeque::new(),
+                    decoder: DstDecoder::new(),
+                    channels: self.channels,
+                    invalid,
+                };
+                self.fill(offset, out, &mut source)
+            }
+        }
     }
 }
 
@@ -396,6 +549,17 @@ impl<R: Read + Seek> Disc<R> {
         let area = self.toc().area(slot).ok_or(Error::NoSuchArea(slot))?;
         Layout::new(area, self.image_sectors(), first, end, format, options)
     }
+
+    /// The [`Format::DsdiffDst`] [`Layout`] of the range of `lengths` of their area (see
+    /// [`Layout::new_dst`]).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NoSuchArea`], then those of [`Layout::new_dst`].
+    pub fn output_layout_dst(&self, lengths: &DstLengths, options: &OutputOptions) -> Result<Layout, Error> {
+        let area = self.toc().area(lengths.slot()).ok_or(Error::NoSuchArea(lengths.slot()))?;
+        Layout::new_dst(area, self.image_sectors(), lengths, options)
+    }
 }
 
 /// A source whose content sizes are checked.
@@ -412,6 +576,10 @@ impl Checked<'_> {
             return Err(Error::InvalidArgument("position content must be C x 4704 bytes"));
         }
         Ok(c)
+    }
+
+    fn dst_equivalent(&mut self, t: u32) -> Result<Cow<'_, [u8]>, Error> {
+        self.inner.dst_equivalent(t)
     }
 }
 
@@ -447,5 +615,59 @@ impl<R: Read + Seek> PositionSource for Window<'_, R> {
         let i = t.checked_sub(front).ok_or(Error::InvalidArgument("position no longer held"))?;
         let frame = self.window.get(i as usize).ok_or(Error::InvalidArgument("position not held"))?;
         Ok(Cow::Borrowed(&frame.data))
+    }
+}
+
+/// A stored position, with its content once decoded.
+struct Stored {
+    frame: TrackFrame,
+    decoded: Option<AudioFrame>,
+}
+
+/// Stored positions of one range, read in order, with the last few kept, decoded only
+/// when content is asked for or invalid frames are replaced.
+struct StoredWindow<'a, R> {
+    frames: TrackFrames<'a, R>,
+    window: VecDeque<Stored>,
+    decoder: DstDecoder,
+    channels: u8,
+    invalid: InvalidDst,
+}
+
+impl<R: Read + Seek> StoredWindow<'_, R> {
+    fn get(&mut self, t: u32, decode: bool) -> Result<&Stored, Error> {
+        while self.window.back().is_none_or(|f| f.frame.number < t) {
+            let frame = self.frames.next().ok_or(Error::InvalidArgument("position past the range"))??;
+            self.window.push_back(Stored { frame, decoded: None });
+        }
+        while self.window.front().is_some_and(|f| f.frame.number.saturating_add(WINDOW) < t) {
+            self.window.pop_front();
+        }
+        let front = self.window.front().map_or(t, |f| f.frame.number);
+        let i = t.checked_sub(front).ok_or(Error::InvalidArgument("position no longer held"))?;
+        let held = self.window.get_mut(i as usize).ok_or(Error::InvalidArgument("position not held"))?;
+        if decode && held.decoded.is_none() {
+            held.decoded = Some(audio::decode_frame(&mut self.decoder, held.frame.clone(), self.channels)?);
+        }
+        Ok(held)
+    }
+}
+
+impl<R: Read + Seek> PositionSource for StoredWindow<'_, R> {
+    fn content(&mut self, t: u32) -> Result<Cow<'_, [u8]>, Error> {
+        let held = self.get(t, true)?;
+        Ok(Cow::Borrowed(held.decoded.as_ref().map_or(&[][..], |d| &d.data)))
+    }
+
+    fn dst_equivalent(&mut self, t: u32) -> Result<Cow<'_, [u8]>, Error> {
+        let channels = self.channels;
+        let replace = self.invalid == InvalidDst::Replaced;
+        let held = self.get(t, replace)?;
+        let invalid = matches!(held.frame.content, FrameContent::Dst(_))
+            && held.decoded.as_ref().is_some_and(|d| matches!(d.status, audio::FrameStatus::Invalid(_)));
+        if invalid {
+            return Ok(Cow::Owned(dsdiff_dst::replaced(channels)));
+        }
+        held.frame.content.dst_equivalent(channels)
     }
 }
