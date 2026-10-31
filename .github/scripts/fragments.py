@@ -13,7 +13,7 @@ cleanroom.d/<name>.md   one row of the CLEANROOM.md Log table, starting with `| 
 
 `check` validates every fragment. `require BASE_REF` fails if the change since BASE_REF
 touches library or program code (crates/*/src, Cargo.toml or Cargo.lock) without adding a
-fragment to both directories. `assemble` moves the CHANGELOG.md `## [Unreleased]` entries and
+fragment to both directories; tests, corpus, fuzz targets, docs and CI need none. `assemble` moves the CHANGELOG.md `## [Unreleased]` entries and
 every changelog fragment under `## [VERSION] - DATE`, appends the cleanroom rows to the Log,
 and deletes the fragments.
 """
@@ -100,6 +100,8 @@ def assemble(version, date):
             entries.setdefault(current, [])
         elif current is not None:
             entries[current].append(line)
+        elif line.strip():
+            raise ValueError(f"CHANGELOG.md: text under [Unreleased] before any ### section: {line!r}")
     blocks = {s: ["\n".join(v).strip("\n")] if "".join(v).strip() else [] for s, v in entries.items()}
     for p in fragments(CHANGELOG_D):
         section, body = read_changelog(p)

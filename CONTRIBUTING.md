@@ -67,8 +67,10 @@ a `TODO` that names the issue, and carry on with the rest.
 
 ## Change records
 
-Each pull request that changes library or program code adds two small files, so that pull
-requests never edit the same lines:
+Each pull request that changes library or program code (`crates/*/src/`, `Cargo.toml`,
+`Cargo.lock`) adds two small files, so that pull requests never edit the same lines. Changes
+to tests, the corpus, fuzz targets, documentation or CI need none, though a user-visible one
+may still add them:
 
 - `changelog.d/<name>.md`: its CHANGELOG entry (first line `Added`, `Changed`, `Deprecated`,
   `Removed`, `Fixed` or `Security`, then the list item);
