@@ -1,2 +1,0 @@
-Added
-- Discs of one image on several threads (#74): `Disc::share` and `Disc::share_with_log` open the same image through another reader, checked against the image's length and its TOC sectors, and `clone` does so for a disc read through a `ReadAtReader` with no I/O. They share the parsed TOC, warnings, sector format and image identifier, so a cursor made or read through one reads through any other; reads, bounds and errors are those of one reader. `Image::id` is now shared by such discs.

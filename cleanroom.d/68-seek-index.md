@@ -1,1 +1,0 @@
-| 2026-10-31 | #68 seek index, core (#73) | `AreaIndex`, checkpoints and indexed range cursors. Specification 4, 4.2 item 7, 4.4.5 item 4, 4.5 item 6 and 4.7.1 item 6, and 7.1 items 2 and 3, at sacd-spec `da6b900` (answering sacd-spec#25 to #27); see "Specification version". No new sources consulted. |

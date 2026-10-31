@@ -1,1 +1,0 @@
-| 2026-10-31 | #68 seek index on `Disc` | opt-in per area, cursors and continuations through the index, documentation. Specification 4, 4.2 items 6 and 7, at sacd-spec `da6b900`. No new sources consulted. |

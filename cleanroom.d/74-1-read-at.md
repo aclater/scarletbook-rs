@@ -1,1 +1,0 @@
-| 2026-10-31 | positional reads (#74, part 1) | `ReadAt` and `ReadAtReader`; no change to image reading. Rust standard library documentation of `std::os::unix::fs::FileExt::read_at` and `std::os::windows::fs::FileExt::seek_read`, read in the local `rust-src` of `nightly-2026-10-30` (see Sources consulted). No SACD or DST sources. |
