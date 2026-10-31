@@ -9,6 +9,50 @@ is shared by every crate of the workspace; releases carry the `bench` program an
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-31
+
+### Added
+
+- The remaining TOC fields through the C interface (#104): `sb_disc_genre` (album and disc genres, `SB_GENRE_LIST_*`, `SbGenre`), `sb_disc_text_channel_count` and `sb_disc_text_channel` (language codes as stored and character set codes, `SbTextChannel`), `sb_disc_catalog_number_stored` (catalogue numbers up to the first 0x00, padding kept), `sb_disc_manufacturer` (the manufacturer data, `SB_MANUFACTURER_BYTES`), `sb_area_details` (version, maximum available channels, mute flags, track attribute and offset, text channel count and character set, `SbAreaDetails`) and `sb_area_text_channel`. Additive to ABI 2 (#104, #114).
+- C interface: `sb_disc_read_sectors` copies the 2048-byte user data of a range of logical sectors, whatever the image's stored sector size, on every disc handle (clones and callback discs included), many sectors per source read; a range past the last sector fails whole with the new `SB_STATUS_SECTOR_RANGE_INVALID` (#105, #113).
+- Cancelling and observing long reads (#106, part 1, #115): `CancelToken`, one per image and
+  shared by every disc made from it (`Disc::cancel_token`, `Image::cancel_token`). While
+  cancellation is requested, reads of audio sectors return the new `Error::Cancelled`
+  (`ErrorClass::Cancelled`) within 32 sectors, the scan before a range's first frame, seek
+  index replays, provisional searches, the stored frame list and seek index extension
+  included. The cursor stays where it was and continues exactly once the request is
+  withdrawn. `Progress`, from `TrackAudioCursor::progress`, `TrackCursor::progress`,
+  `AreaCursor::progress` and their iterators: the sectors read so far and the sectors
+  expected, readable from any thread, updated with every read of at most 32 sectors.
+- Cancelling and observing long calls in the C interface (#106, part 2, #117):
+  `SB_STATUS_CANCELLED` (-19); `SbCancel` from `sb_disc_cancel_token` (one per image,
+  shared by a disc's clones), with `sb_cancel_request`, `sb_cancel_withdraw`,
+  `sb_cancel_requested` and `sb_cancel_free`; `SbProgress` from `sb_track_audio_progress` and
+  `sb_raw_frames_progress`, read with `sb_progress_get` (sectors read, sectors expected) and
+  freed with `sb_progress_free`. Both may be used by several threads at once, without
+  borrowing the disc or handle they come from. Additive on ABI 2. README section and ctypes
+  bindings.
+- Stored and decoded frames of one range in one pass (#107, part 1, #118):
+  `TrackAudioCursor::keep_stored` (also on `TrackAudio`), then
+  `TrackAudioCursor::next_frame_with_stored` / `TrackAudio::next_with_stored` give each
+  position decoded, as `next_frame` does (on the cursor's pool, with the same positions held
+  ahead), and its stored content, as `TrackCursor::next_frame` gives it, from one read of the
+  area's sectors. The new `Stored` (a DST frame's bytes, `Plain` or `Missing`; a plain
+  frame's bytes are the decoded data, not copied again) with `Stored::content` and
+  `Stored::bytes`; `TrackAudioCursor::dst_equivalent`. Continuations keep the mode. The
+  `pipeline` benchmark has `/stored` cases.
+- Stored and decoded frames of one range in one pass in the C interface (#107, part 2, #119):
+  `sb_track_audio_keep_stored`, then `sb_track_audio_read_with_stored` writes each position's
+  decoded audio (as `sb_track_audio_read`) and its stored content (as `sb_raw_frames_read`,
+  or its DST equivalent as `sb_raw_frames_read_dst_equivalent`) from one read of the area's
+  sectors, decoding on the handle's pool; a raw buffer too small holds the position for the
+  next call. Additive on ABI 2. README section and ctypes bindings.
+- C interface: `sb_build_info()`, a static string of how the library was built (version, target, profile and optimisation level, enabled features, target CPU features, compiler, commit), recorded by a build script of the FFI crate; the release smoke test checks that it names the package's target and `sb_version()`'s version (#108, #116).
+
+### Changed
+
+- `Locale::language_code` and `MasterToc::album_catalog_number_stored` and `disc_catalog_number_stored` hold the stored bytes behind the trimmed language and catalogue numbers, and `text::fixed_bytes` gives a fixed text field's bytes up to the first 0x00 (#104, #114). `Locale` and `MasterToc` are not `#[non_exhaustive]`, so the new public fields are a breaking change for code that constructs them as struct literals; code that only reads them is unaffected.
+
 ## [0.4.1] - 2026-10-31
 
 ### Added
@@ -332,7 +376,8 @@ First release: a clean-room reader for SACD images, written from sacd-spec, pass
 - DST decoding about 3.8 times faster on one thread, and parallel decoding that overlaps
   demultiplexing with decoding within a bounded memory (#16, #17, #19).
 
-[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/aclater/scarletbook-rs/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/aclater/scarletbook-rs/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/aclater/scarletbook-rs/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/aclater/scarletbook-rs/compare/v0.2.0...v0.3.0

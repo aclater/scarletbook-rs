@@ -1,1 +1,0 @@
-| 2026-10-31 | #106 cancellation and progress, core | `CancelToken`, `Error::Cancelled` and `Progress`; checked and counted where cursors read sectors. API behaviour, no specification change. No new sources consulted. |
