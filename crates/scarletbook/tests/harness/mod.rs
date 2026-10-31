@@ -9,7 +9,7 @@ use std::io::{self, Read, Seek, SeekFrom};
 
 use scarletbook::audio::{FRAME_BYTES_PER_CHANNEL, MAX_FRAME_BYTES};
 use scarletbook::dst::FL;
-use scarletbook::{Demuxer, Disc, DstDecoder, FrameKind};
+use scarletbook::{AreaIndex, Demuxer, Disc, DstDecoder, FrameKind};
 
 /// Bytes of 510 empty plain sectors, prepended to fuzz input so that the input starts at
 /// the master TOC.
@@ -141,5 +141,114 @@ pub fn dst(data: &[u8]) {
         if ra.is_ok() {
             assert!(a == b, "decoded output is not deterministic");
         }
+    }
+}
+
+/// Audio sectors in the area of [`seek_index`].
+const SEEK_SECTORS: u32 = 64;
+
+/// A 2-channel area of [`SEEK_SECTORS`] sectors from LSN 0 holding DST frames of 4
+/// sectors each, a malformed sector and a frame with the largest timecode; and its image.
+pub fn seek_area() -> (scarletbook::Image<std::io::Cursor<Vec<u8>>>, scarletbook::Area) {
+    use scarletbook::toc::{AreaKind, AreaText, Timecode, Version};
+    let mut bytes = vec![0u8; SEEK_SECTORS as usize * 2048];
+    for (i, s) in bytes.chunks_exact_mut(2048).enumerate() {
+        let packet = |start: bool, len: u16| ((u16::from(start) << 15) | (2 << 11) | len).to_be_bytes();
+        if i == 30 {
+            // One packet past the end of the sector (specification 4, 4.4.3 item 1).
+            s[0] = 1 << 5;
+            s[1..3].copy_from_slice(&packet(false, 2047));
+        } else if i % 4 == 0 {
+            // A DST frame of 4 sectors, numbered i / 4, or 1 166 880 at sector 48.
+            let n = if i == 48 { 1_166_880 } else { i as u32 / 4 };
+            s[0] = 1 | (1 << 2) | (1 << 5);
+            s[1..3].copy_from_slice(&packet(true, 500));
+            s[3..6].copy_from_slice(&[(n / 4500) as u8, (n / 75 % 60) as u8, (n % 75) as u8]);
+            s[6] = 4 << 2;
+        } else {
+            s[0] = 1 | (1 << 5);
+            s[1..3].copy_from_slice(&packet(false, 500));
+        }
+    }
+    let image =
+        scarletbook::Image::with_format(std::io::Cursor::new(bytes), scarletbook::SectorFormat::Plain)
+            .unwrap();
+    let area = scarletbook::Area {
+        slot: scarletbook::Slot::TwoChannel,
+        kind: AreaKind::TwoChannel,
+        version: Version { major: 1, minor: 20 },
+        toc_lsn: 0,
+        toc_sectors: 0,
+        max_byte_rate: 0,
+        sample_frequency_code: 4,
+        frame_format: 0,
+        channel_count: 2,
+        area_config: 0,
+        max_available_channels: 2,
+        area_mute_flags: 0,
+        track_attribute: 0,
+        playtime: Timecode { minutes: 0, seconds: 0, frames: 20 },
+        track_offset: 0,
+        audio_start_lsn: 0,
+        audio_end_lsn: SEEK_SECTORS - 1,
+        text_channel_count: 0,
+        locales: Vec::new(),
+        text_charset: 0,
+        text: AreaText::default(),
+        tracks: Vec::new(),
+    };
+    (image, area)
+}
+
+fn fnv(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
+}
+
+/// Seeds for [`seek_index`]: complete indexes of [`seek_area`] at a few intervals, and a
+/// partial one, without their checksums.
+pub fn seek_index_seeds() -> Vec<Vec<u8>> {
+    let (mut image, area) = seek_area();
+    let n = image.sector_count();
+    let mut out = Vec::new();
+    for (k, steps) in [(1, None), (4, None), (7, Some(1)), (64, None)] {
+        let options = scarletbook::IndexOptions::new().with_interval(k);
+        let mut index = AreaIndex::new(&area, n, options).unwrap();
+        match steps {
+            Some(sectors) => {
+                index.extend(&mut image, sectors * 20).unwrap();
+            }
+            None => while !index.extend(&mut image, 1000).unwrap() {},
+        }
+        let mut bytes = index.to_bytes();
+        bytes.truncate(bytes.len() - 8);
+        out.push(bytes);
+    }
+    out
+}
+
+/// A saved seek index from untrusted bytes, for the area of [`seek_area`]: the input as
+/// it is, and with its checksum appended, so that the fuzzer gets past the checksum. A
+/// loaded index takes memory proportional to the input, saves to the same bytes, and
+/// cursors started from it and its extension read without panicking.
+pub fn seek_index(data: &[u8]) {
+    let (mut image, area) = seek_area();
+    let n = image.sector_count();
+    let mut summed = data.to_vec();
+    summed.extend_from_slice(&fnv(data).to_le_bytes());
+    for bytes in [data, &summed[..]] {
+        let Ok(index) = AreaIndex::from_bytes(&area, n, bytes) else { continue };
+        assert!(index.memory() <= 1024 + 2 * bytes.len(), "{} for {} bytes", index.memory(), bytes.len());
+        assert_eq!(index.to_bytes(), bytes, "saving a loaded index changes it");
+        let p = area.playtime_frames();
+        for first in [0, p / 2, p - 1] {
+            let mut cursor = scarletbook::TrackCursor::for_range_indexed(&area, first, p, n, &index).unwrap();
+            while let Some(Ok(_)) = cursor.next_frame(&mut image) {}
+            let mut copy = index.clone();
+            let _ = copy.absorb(&cursor);
+        }
+        let mut copy = index.clone();
+        let _ = copy.extend(&mut image, 1000);
+        let mut merged = index.clone();
+        let _ = merged.merge(&copy);
     }
 }

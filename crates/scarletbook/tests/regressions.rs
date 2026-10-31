@@ -37,3 +37,25 @@ fn demux_regressions() {
 fn dst_regressions() {
     replay("dst", harness::dst);
 }
+
+#[test]
+#[cfg_attr(miri, ignore = "slow under Miri")]
+fn seek_index_regressions() {
+    replay("seek_index", harness::seek_index);
+}
+
+/// The fuzz seeds load, with their checksum, and go through the harness.
+#[test]
+#[cfg_attr(miri, ignore = "slow under Miri")]
+fn seek_index_seeds_load() {
+    let (image, area) = harness::seek_area();
+    for seed in harness::seek_index_seeds() {
+        let mut bytes = seed.clone();
+        let sum = seed
+            .iter()
+            .fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
+        bytes.extend_from_slice(&sum.to_le_bytes());
+        scarletbook::AreaIndex::from_bytes(&area, image.sector_count(), &bytes).unwrap();
+        harness::seek_index(&seed);
+    }
+}

@@ -9,7 +9,7 @@ use crate::dst::{DstDecoder, DstError};
 use crate::error::{Error, Slot, Warning, WarningCode};
 use crate::image::{Image, ReadOutcome, SECTOR_SIZE};
 use crate::log::{Level, Log, sb_log};
-use crate::seek::{AreaIndex, Assembling, Plan, Recorder, ResumedFrom};
+use crate::seek::{AreaIndex, Assembling, Plan, Recorder, ResumedFrom, digest};
 use crate::toc::{Area, Track};
 
 /// DSD bytes per channel in one frame (specification 0, 0.5).
@@ -426,6 +426,10 @@ pub struct AreaCursor {
     /// [`AreaCursor::next_frame`] reads no sector at or past this LSN (returns `None`), for
     /// [`AreaIndex::extend`].
     stop_lsn: u64,
+    /// The checkpoint's LSN and the digest its sector must have, until it is read.
+    verify: Option<(u64, u64)>,
+    /// The area, to scan it afresh when a seek index does not match the image.
+    key: AreaKey,
 }
 
 /// The state a resumed scan takes once its replay reaches the checkpoint.
@@ -466,6 +470,8 @@ impl AreaCursor {
             replay: None,
             resumed: ResumedFrom::Start,
             stop_lsn: u64::MAX,
+            verify: None,
+            key,
         }
     }
 
@@ -500,11 +506,11 @@ impl AreaCursor {
                 // the first sector would.
                 cursor.warnings = index.malformed_below(lsn).map(warn).collect();
                 let replay_from = match held {
-                    Some(h) => {
+                    Some((h, bytes)) => {
                         cursor.demux.assembling = Some(Assembly {
                             number: h.number,
                             kind: h.kind,
-                            data: h.bytes.to_vec(),
+                            data: bytes.to_vec(),
                             remaining: h.remaining,
                             start_lsn: lsn - u64::from(checkpoint.back),
                         });
@@ -525,11 +531,30 @@ impl AreaCursor {
                     });
                 }
                 cursor.next_lsn = replay_from;
+                cursor.verify = Some((lsn, checkpoint.digest));
                 cursor.recorder = index.recorder(lsn);
                 cursor.resumed = ResumedFrom::Checkpoint { lsn, replay_from };
             }
         }
         cursor
+    }
+
+    /// Starts afresh at the area's first audio sector: the seek index this cursor started
+    /// from does not hold sector `lsn` as it is in the image (a stale index, or one of
+    /// another image of the same size). Nothing was returned from it yet: the sectors
+    /// processed so far only rebuilt the frame under assembly.
+    fn discard_index(&mut self, log: &Log, lsn: u64) {
+        let image_id = self.image_id;
+        *self = Self::with_key(self.key);
+        self.image_id = image_id;
+        self.resumed = ResumedFrom::Discarded { lsn };
+        sb_log!(
+            log,
+            Warn,
+            "area {}: seek index does not match the image at LSN {lsn}, discarded; scanning from LSN {}",
+            self.slot,
+            self.next_lsn
+        );
     }
 
     /// Where this cursor's scan started (see [`ResumedFrom`]).
@@ -635,6 +660,8 @@ impl AreaCursor {
                         "area {}: seek index: no frame accepted at or after the range, nothing to read",
                         self.slot
                     ),
+                    // Set only once the cursor reads.
+                    ResumedFrom::Discarded { .. } => {}
                 }
             }
             Some(id) if id != image.id() => {
@@ -660,8 +687,12 @@ impl AreaCursor {
                         if let Some(r) = self.replay {
                             if lsn < r.until {
                                 // Rebuilds the frame under assembly only: no log lines, no
-                                // warnings, nothing delivered (4.4.5 item 2).
+                                // warnings, nothing delivered, and the malformed count stays
+                                // the checkpoint's, which counts these sectors already, also
+                                // if a read fails before the replay ends (4.4.5 item 2).
+                                let malformed = self.demux.malformed;
                                 self.demux.push_sector_at(&s, self.demux.at(&Log::none(), lsn));
+                                self.demux.malformed = malformed;
                                 self.demux.ready.clear();
                                 continue;
                             }
@@ -669,6 +700,13 @@ impl AreaCursor {
                             self.demux.next_acceptable = r.next_acceptable;
                             self.demux.malformed = r.malformed;
                             self.replay = None;
+                        }
+                        if let Some((at, want)) = self.verify.filter(|&(at, _)| at == lsn) {
+                            self.verify = None;
+                            if digest(&s) != want {
+                                self.discard_index(image.log(), at);
+                                continue;
+                            }
                         }
                         if let Some(rec) = self.recorder.as_deref_mut().filter(|r| r.due(lsn)) {
                             let d = &self.demux;
@@ -1178,6 +1216,11 @@ impl TrackCursor {
     /// This method cannot tell two images of the same size apart; a cursor continued
     /// onto another image refuses to read it (see [`AreaCursor::next_frame`]). Use
     /// [`crate::Disc::continue_track_audio`], which compares the images and scans afresh.
+    ///
+    /// A cursor made from a seek index ([`TrackCursor::for_range_indexed`]) does not keep
+    /// the index: continued backwards with this method, it scans from the area's first
+    /// sector. To start from the index instead, open a new cursor from it, or continue
+    /// through a [`crate::Disc`] that keeps the index.
     ///
     /// # Errors
     ///
@@ -1899,20 +1942,36 @@ impl TrackAudioCursor {
     }
 }
 
-impl AsRef<AreaCursor> for AreaCursor {
-    fn as_ref(&self) -> &AreaCursor {
+/// A cursor whose recorded checkpoints [`AreaIndex::absorb`] takes: [`AreaCursor`],
+/// [`TrackCursor`] or [`TrackAudioCursor`]. Sealed: implemented only by this crate.
+pub trait SeekCursor: sealed::Sealed {}
+
+pub(crate) mod sealed {
+    /// The area cursor inside a [`super::SeekCursor`].
+    pub trait Sealed {
+        /// The area cursor.
+        fn area_cursor(&self) -> &super::AreaCursor;
+    }
+}
+
+impl SeekCursor for AreaCursor {}
+impl SeekCursor for TrackCursor {}
+impl SeekCursor for TrackAudioCursor {}
+
+impl sealed::Sealed for AreaCursor {
+    fn area_cursor(&self) -> &AreaCursor {
         self
     }
 }
 
-impl AsRef<AreaCursor> for TrackCursor {
-    fn as_ref(&self) -> &AreaCursor {
+impl sealed::Sealed for TrackCursor {
+    fn area_cursor(&self) -> &AreaCursor {
         &self.area
     }
 }
 
-impl AsRef<AreaCursor> for TrackAudioCursor {
-    fn as_ref(&self) -> &AreaCursor {
+impl sealed::Sealed for TrackAudioCursor {
+    fn area_cursor(&self) -> &AreaCursor {
         &self.frames.area
     }
 }

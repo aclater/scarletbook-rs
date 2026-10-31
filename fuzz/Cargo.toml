@@ -35,3 +35,10 @@ path = "fuzz_targets/dst.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "seek_index"
+path = "fuzz_targets/seek_index.rs"
+test = false
+doc = false
+bench = false
