@@ -355,3 +355,46 @@ fn when_it_can_be_asked_for() {
     // SAFETY: `disc` is live and not used again.
     unsafe { sb_disc_free(disc) };
 }
+
+/// A handle continued while a position is held: a range starting at that position scans
+/// afresh and delivers it, with the decoded and stored bytes and the counts of a new
+/// handle of the range.
+#[test]
+#[cfg_attr(miri, ignore = "reads whole corpus images")]
+fn a_held_position_is_delivered_after_open_next() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../corpus/images/dst-features-2ch-6ch.iso");
+    let disc = open(&std::fs::read(path).unwrap()).unwrap();
+    for (slot, first, end) in ranges(disc).into_iter().filter(|r| r.2 - r.1 > 20) {
+        let b = audio_open(disc, (slot, first, end), ptr::null());
+        assert_eq!(keep(b), SbStatus::Ok);
+        for _ in 0..5 {
+            assert_eq!(both_read(b, disc, true, SB_MAX_FRAME_BYTES).0.0, SbStatus::Ok);
+        }
+        let (d, _) = both_read(b, disc, true, 1);
+        assert_eq!(d.0, SbStatus::BufferTooSmall);
+        let n = d.1;
+        let mut c = ptr::null_mut();
+        // SAFETY: `disc` and `b` are live; `b` is not used again; `&mut c` is valid.
+        assert_eq!(unsafe { sb_range_audio_open_next(disc, b, slot, n, end, &mut c) }, SbStatus::Ok);
+        let fresh = audio_open(disc, (slot, n, end), ptr::null());
+        assert_eq!(keep(fresh), SbStatus::Ok);
+        let mut k = 0;
+        loop {
+            let got = both_read(c, disc, true, SB_MAX_FRAME_BYTES);
+            let want = both_read(fresh, disc, true, SB_MAX_FRAME_BYTES);
+            assert_eq!(got, want, "slot {slot} position {k}");
+            if k == 0 {
+                assert_eq!((got.0.0, got.0.1), (SbStatus::Ok, n), "the held position, delivered");
+            }
+            if got.0.0 != SbStatus::Ok {
+                break;
+            }
+            k += 1;
+        }
+        assert_eq!(counts(c), counts(fresh));
+        audio_free(c);
+        audio_free(fresh);
+    }
+    // SAFETY: `disc` is live and not used again.
+    unsafe { sb_disc_free(disc) };
+}

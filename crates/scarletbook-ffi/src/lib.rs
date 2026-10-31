@@ -2468,6 +2468,9 @@ unsafe fn open_next(
         // active, and no callback runs before it is freed); the caller does not use it
         // again after this successful call.
         let prev_box = unsafe { Box::from_raw(prev) };
+        // A position held for a too small buffer (sb_track_audio_read_with_stored) is
+        // dropped with the frames held ahead: the cursor stands after them, so a range
+        // that starts at or before it scans afresh.
         let prev_cursor = prev_box.inner.into_inner();
         let cursor = match index.as_deref_mut() {
             Some(i) => next.audio_indexed_as(prev_cursor, i, opening),
@@ -2716,9 +2719,11 @@ pub unsafe extern "C" fn sb_track_audio_keep_stored(audio: *const SbTrackAudio) 
 /// always suffices; a missing position has none, unless `dst_equivalent`). If `raw_buf`
 /// is too small, the call writes `*info` and `*raw_info` (with the size needed) but
 /// neither buffer, returns `SB_STATUS_BUFFER_TOO_SMALL`, and keeps the position for the
-/// next call (or for `sb_track_audio_read`, which then drops its stored content). The
-/// handle's other calls behave as for any track audio handle; `sb_track_audio_read` may be
-/// mixed with this one.
+/// next call (or for `sb_track_audio_read`, which then drops its stored content). A handle
+/// continued with a position held (`sb_track_audio_open_next`, `sb_range_audio_open_next`)
+/// drops it, as `sb_raw_frames_open_next` does: the reading stands after it, so a range
+/// that starts at or before it scans afresh and returns it again. The handle's other calls
+/// behave as for any track audio handle; `sb_track_audio_read` may be mixed with this one.
 ///
 /// # Safety
 ///

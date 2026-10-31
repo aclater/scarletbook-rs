@@ -1846,9 +1846,11 @@ SbStatus sb_track_audio_keep_stored(const struct SbTrackAudio *audio);
  always suffices; a missing position has none, unless `dst_equivalent`). If `raw_buf`
  is too small, the call writes `*info` and `*raw_info` (with the size needed) but
  neither buffer, returns `SB_STATUS_BUFFER_TOO_SMALL`, and keeps the position for the
- next call (or for `sb_track_audio_read`, which then drops its stored content). The
- handle's other calls behave as for any track audio handle; `sb_track_audio_read` may be
- mixed with this one.
+ next call (or for `sb_track_audio_read`, which then drops its stored content). A handle
+ continued with a position held (`sb_track_audio_open_next`, `sb_range_audio_open_next`)
+ drops it, as `sb_raw_frames_open_next` does: the reading stands after it, so a range
+ that starts at or before it scans afresh and returns it again. The handle's other calls
+ behave as for any track audio handle; `sb_track_audio_read` may be mixed with this one.
 
  # Safety
 
