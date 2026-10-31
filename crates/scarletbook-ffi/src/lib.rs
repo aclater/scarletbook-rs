@@ -714,9 +714,21 @@ fn set_error(msg: &str) {
     let _ = LAST_ERROR.try_with(|e| *e.borrow_mut() = c);
 }
 
+/// Empties the thread's message. Allocates nothing when it is already empty, as it is after
+/// every successful call: this runs on every call (#132).
+fn clear_error() {
+    let _ = LAST_ERROR.try_with(|e| {
+        if let Ok(mut e) = e.try_borrow_mut() {
+            if !e.is_empty() {
+                *e = CString::default();
+            }
+        }
+    });
+}
+
 /// Runs `f`, catching panics and recording the error message.
 fn guard(f: impl FnOnce() -> Result<SbStatus, Failure>) -> SbStatus {
-    set_error("");
+    clear_error();
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(Ok(status)) => status,
         Ok(Err(Failure(status, msg))) => {
