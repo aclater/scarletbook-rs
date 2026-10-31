@@ -637,14 +637,47 @@ fn open_next_refusals_leave_prev_usable() {
 fn abi_version_and_layouts() {
     assert_eq!(sb_abi_version(), SB_ABI_VERSION);
     assert_eq!(SB_ABI_VERSION, 1);
-    #[cfg(target_pointer_width = "64")]
-    {
-        assert_eq!(std::mem::size_of::<SbWarning>(), 24);
-        assert_eq!(std::mem::size_of::<SbFrameInfo>(), 24);
-        assert_eq!(std::mem::size_of::<SbRawFrameInfo>(), 16);
-    }
     assert_eq!(std::mem::size_of::<SbStatus>(), 4);
     assert_eq!(SB_MAX_FRAME_BYTES, 65_536);
+}
+
+/// Asserts a struct's size, alignment and the offset of each of its fields, in order.
+macro_rules! assert_layout {
+    ($t:ty, size $size:expr, align $align:expr, { $($field:ident: $offset:expr),* $(,)? }) => {
+        assert_eq!(std::mem::size_of::<$t>(), $size, "size of {}", stringify!($t));
+        assert_eq!(std::mem::align_of::<$t>(), $align, "alignment of {}", stringify!($t));
+        $(assert_eq!(
+            std::mem::offset_of!($t, $field), $offset, "{}.{}", stringify!($t), stringify!($field)
+        );)*
+    };
+}
+
+/// The struct layouts documented in the header (each struct's "Layout" line), on 64-bit
+/// targets: every release target. Callers allocate the structs, so a change to any of
+/// these numbers is a breaking change (README, "ABI compatibility").
+#[test]
+#[cfg(target_pointer_width = "64")]
+fn struct_layouts_on_64_bit_targets() {
+    assert_layout!(SbDiscInfo, size 40, align 8, {
+        sector_size: 0, sectors: 8, version_major: 16, version_minor: 17, album_set_size: 18,
+        album_sequence_number: 20, hybrid: 22, manufacturer_sector: 23, year: 24, month: 26,
+        day: 27, area_count: 28, warning_count: 32,
+    });
+    assert_layout!(SbAreaInfo, size 52, align 4, {
+        slot: 0, kind_channels: 4, toc_lsn: 8, toc_sectors: 12, channel_count: 16,
+        area_config: 20, sample_frequency_code: 24, frame_format: 28, max_byte_rate: 32,
+        playtime_frames: 36, audio_start_lsn: 40, audio_end_lsn: 44, track_count: 48,
+    });
+    assert_layout!(SbTrackInfo, size 28, align 4, {
+        number: 0, start_lsn: 4, length_sectors: 8, start_frame: 12, duration_frames: 16,
+        start_flags: 20, duration_flags: 21, has_genre: 22, genre_category: 23, genre_index: 24,
+    });
+    assert_layout!(SbWarning, size 24, align 8, { code: 0, slot: 8, track: 12, lsn: 16 });
+    assert_layout!(SbFrameInfo, size 24, align 8, { number: 0, status: 4, dst_rule: 8, size: 16 });
+    assert_layout!(SbRawFrameInfo, size 16, align 8, { number: 0, kind: 4, size: 8 });
+    // The C types of the fields that are not fixed-width integers.
+    assert_eq!(std::mem::size_of::<bool>(), 1);
+    assert_eq!(std::mem::size_of::<usize>(), 8);
 }
 
 #[test]

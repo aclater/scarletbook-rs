@@ -22,6 +22,11 @@ is shared by every crate of the workspace; releases carry the `bench` program an
   them; the library starts no global pool. `SB_MAX_POOL_THREADS` and
   `SB_STATUS_THREADS_UNAVAILABLE` are new. Additive: the ABI version stays 1. The C smoke
   test also decodes every track on a pool and compares.
+- Documented C struct layouts (#39): each struct of `scarletbook.h` states its size,
+  alignment and padding on 64-bit targets, which a test checks field by field, and the
+  header's conventions state the C types used (fixed-width integers, `size_t` for lengths,
+  `bool`, the int-sized `SbStatus`, no variadic functions). Comments only: the ABI is
+  unchanged.
 
 ### Changed
 
