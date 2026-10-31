@@ -18,6 +18,11 @@ assets. Nothing is published on crates.io yet.
 - Criterion benchmarks (`dst_frames`, `pipeline`) and `perf/` scripts for cycles per
   symbol, flame graphs, A/B comparison, build configurations and PGO; CI compiles the
   benchmarks (#30, #41).
+- Frame ranges (#35, #44): decoded audio of any frame range `[first, end)` of an area
+  (specification 4, 4.7.1), the track-with-pause range of each track, and continuation
+  across ranges; in C, `sb_range_check`, `sb_range_audio_open`, `sb_range_audio_open_next`,
+  `sb_track_range_with_pause` and `SB_STATUS_FRAME_RANGE_INVALID`. Additive: the ABI version
+  stays 1.
 - Repository hygiene (#46): Dependabot, OpenSSF Scorecard, CodeQL, zizmor, dependency
   review and coverage workflows; `SECURITY.md`, `CONTRIBUTING.md` (with the clean-room
   rule) and this changelog; README badges; `readme` in the crate metadata.

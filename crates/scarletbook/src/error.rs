@@ -63,13 +63,14 @@ pub enum Error {
         /// The area's stored channel count.
         channels: u8,
     },
-    /// The track's duration is 0 (`track-empty`).
+    /// The track's duration is 0, or the frame range is empty (`track-empty`).
     #[error("track skipped: its duration is 0 frames")]
     TrackEmpty,
-    /// The track ends beyond 7 frames per existing audio sector (`track-exceeds-capacity`).
-    #[error("track refused: it ends at frame {end_frame}, beyond the area capacity of {capacity} frames")]
+    /// The track (or frame range) ends beyond 7 frames per existing audio sector
+    /// (`track-exceeds-capacity`).
+    #[error("refused: it ends at frame {end_frame}, beyond the area capacity of {capacity} frames")]
     TrackExceedsCapacity {
-        /// The track's end frame number.
+        /// The track's (or range's) end frame number.
         end_frame: u32,
         /// The area's capacity in frames.
         capacity: u64,
@@ -84,6 +85,18 @@ pub enum Error {
         slot: Slot,
         /// The requested track number.
         track: u32,
+    },
+    /// A requested frame range `[first, end)` is reversed or extends past the area's play
+    /// time: it must satisfy `first <= end <= playtime` (specification 4, 4.7.1 item 3, a
+    /// caller error). An empty range is [`Error::TrackEmpty`].
+    #[error("frame range [{first}, {end}) is not within the area's timeline [0, {playtime})")]
+    FrameRangeInvalid {
+        /// The range's first frame number.
+        first: u32,
+        /// The range's end frame number (exclusive).
+        end: u32,
+        /// The area's play time in frames.
+        playtime: u32,
     },
     /// A caller-supplied argument is invalid (for example a buffer of the wrong size).
     #[error("invalid argument: {0}")]
@@ -120,7 +133,11 @@ impl Error {
             Error::ChannelCountUnsupported { .. } => "channel-count-unsupported",
             Error::TrackEmpty => "track-empty",
             Error::TrackExceedsCapacity { .. } => "track-exceeds-capacity",
-            Error::NoSuchArea(_) | Error::NoSuchTrack { .. } | Error::InvalidArgument(_) | Error::Io(_) => {
+            Error::NoSuchArea(_)
+            | Error::NoSuchTrack { .. }
+            | Error::FrameRangeInvalid { .. }
+            | Error::InvalidArgument(_)
+            | Error::Io(_) => {
                 return None;
             }
         })
@@ -137,7 +154,10 @@ impl Error {
                 ErrorClass::TrackRefused
             }
             Error::TrackEmpty => ErrorClass::TrackSkipped,
-            Error::NoSuchArea(_) | Error::NoSuchTrack { .. } | Error::InvalidArgument(_) => ErrorClass::Usage,
+            Error::NoSuchArea(_)
+            | Error::NoSuchTrack { .. }
+            | Error::FrameRangeInvalid { .. }
+            | Error::InvalidArgument(_) => ErrorClass::Usage,
             Error::Io(_) => ErrorClass::Io,
         }
     }
