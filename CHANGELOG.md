@@ -28,7 +28,9 @@ is shared by every crate of the workspace; releases carry the `bench` program an
 - A cursor continued or dropped with DST frames still queued on the pool no longer has
   them decoded for nothing: the abandoned jobs skip decoding (#29).
 - The C library now always links rayon; its `parallel` feature only makes handles without
-  a pool decode on rayon's global pool, as before.
+  a pool decode on rayon's global pool, as before. On x86_64 Linux (`dist` profile) the
+  shared library grows from 2.01 MB to 2.17 MB (1.85 MB to 1.97 MB stripped) and the
+  static library from 25.2 MB to 25.6 MB.
 
 ### Fixed
 
