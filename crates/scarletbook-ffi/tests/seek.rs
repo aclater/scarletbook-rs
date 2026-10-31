@@ -92,19 +92,19 @@ fn index_free(index: *mut SbSeekIndex) {
 }
 
 fn extend(disc: *const SbDisc, index: *mut SbSeekIndex, sectors: u64) -> Result<bool, SbStatus> {
-    let mut done = false;
+    let mut done = 0u8;
     // SAFETY: live handles and a valid out-pointer.
     match unsafe { sb_seek_index_extend(disc, index, sectors, &mut done) } {
-        SbStatus::Ok => Ok(done),
+        SbStatus::Ok => Ok(done != 0),
         s => Err(s),
     }
 }
 
 fn frontier(index: *const SbSeekIndex) -> (u64, bool) {
-    let (mut lsn, mut done) = (0, false);
+    let (mut lsn, mut done) = (0, 0u8);
     // SAFETY: a live handle and valid out-pointers.
     assert_eq!(unsafe { sb_seek_index_frontier(index, &mut lsn, &mut done) }, SbStatus::Ok);
-    (lsn, done)
+    (lsn, done != 0)
 }
 
 fn save(index: *const SbSeekIndex) -> Vec<u8> {
@@ -191,7 +191,7 @@ fn read_all(a: *const SbTrackAudio, disc: *const SbDisc) -> Read {
         // SAFETY: live handles; `buf` and `fi` are valid.
         match unsafe { sb_track_audio_read(a, disc, buf.as_mut_ptr(), buf.len(), &mut fi) } {
             SbStatus::End => break,
-            SbStatus::Ok => frames.push((fi.number, fi.status, buf[..fi.size].to_vec())),
+            SbStatus::Ok => frames.push((fi.number, fi.status, buf[..fi.size as usize].to_vec())),
             s => panic!("{s:?}: {}", last_error()),
         }
     }
@@ -492,10 +492,10 @@ fn a_clone_shares_the_discs_index() {
     assert!(gone.is_null());
     // SAFETY: live handles.
     assert_eq!(unsafe { sb_disc_seek_index_set(disc, 0, kept) }, SbStatus::Ok);
-    let mut done = false;
+    let mut done = 0u8;
     // SAFETY: a live handle and a valid out-pointer.
     assert_eq!(unsafe { sb_disc_seek_index_extend(disc, 0, 10, &mut done) }, SbStatus::Ok);
-    assert!(done);
+    assert_eq!(done, 1);
     index_free(kept);
     free(disc);
     free(plain);

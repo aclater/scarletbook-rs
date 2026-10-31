@@ -67,14 +67,16 @@ bindings = {}
 exec(block.replace('"/path/to/libscarletbook_ffi.so"', repr(str(lib_path))), bindings)
 check("README SB_ABI_VERSION", bindings["SB_ABI_VERSION"], int(re.search(r"^#define SB_ABI_VERSION (\d+)$", header, flags=re.M).group(1)))
 CTYPES = {"uint8_t": C.c_uint8, "uint16_t": C.c_uint16, "uint32_t": C.c_uint32, "uint64_t": C.c_uint64,
-          "int32_t": C.c_int32, "int64_t": C.c_int64, "bool": C.c_bool, "size_t": C.c_size_t,
-          "const char *": C.c_char_p}
+          "int32_t": C.c_int32, "int64_t": C.c_int64, "size_t": C.c_size_t, "const char *": C.c_char_p}
 decls = abi_check.normalise(header)
 structs = re.findall(r"^typedef struct (\w+) \{\n(.*?)^\} \1;", decls, flags=re.M | re.S)
 check("structs", sorted(n for n, _ in structs), sorted(n for n, v in bindings.items()
                                                        if isinstance(v, type) and issubclass(v, C.Structure)))
 for name, body in structs:
-    want = [(m.group(2), CTYPES.get(m.group(1).strip())) for m in re.finditer(r"^(.*?)\s*\b(\w+);$", body, flags=re.M)]
+    # A field is "type name;" or, an array, "type name [ N ];" (as normalised).
+    want = [(m.group(2), CTYPES.get(m.group(1).strip()) if m.group(3) is None
+             else CTYPES.get(m.group(1).strip()) * int(m.group(3)))
+            for m in re.finditer(r"^(.*?)\s*\b(\w+)(?: \[ (\d+) \])?;$", body, flags=re.M)]
     got = [(f, t) for f, t in bindings[name]._fields_] if name in bindings else []
     check(f"README struct {name}", got, want)
 for m in re.finditer(r"^(?!typedef)[^(]*?\b(sb_\w+)\((.*)\);$", decls, flags=re.M):
@@ -86,10 +88,10 @@ print("README ctypes bindings match the header")
 
 
 class DiscInfo(C.Structure):
-    _fields_ = [("sector_size", C.c_uint32), ("sectors", C.c_uint64), ("version_major", C.c_uint8),
+    _fields_ = [("sectors", C.c_uint64), ("sector_size", C.c_uint32), ("version_major", C.c_uint8),
                 ("version_minor", C.c_uint8), ("album_set_size", C.c_uint16),
-                ("album_sequence_number", C.c_uint16), ("hybrid", C.c_bool),
-                ("manufacturer_sector", C.c_bool), ("year", C.c_uint16), ("month", C.c_uint8),
+                ("album_sequence_number", C.c_uint16), ("hybrid", C.c_uint8),
+                ("manufacturer_sector", C.c_uint8), ("year", C.c_uint16), ("month", C.c_uint8),
                 ("day", C.c_uint8), ("area_count", C.c_uint32), ("warning_count", C.c_uint32)]
 
 
@@ -103,19 +105,19 @@ class AreaInfo(C.Structure):
 class TrackInfo(C.Structure):
     _fields_ = [("number", C.c_uint32), ("start_lsn", C.c_uint32), ("length_sectors", C.c_uint32),
                 ("start_frame", C.c_uint32), ("duration_frames", C.c_uint32), ("start_flags", C.c_uint8),
-                ("duration_flags", C.c_uint8), ("has_genre", C.c_bool), ("genre_category", C.c_uint8),
-                ("genre_index", C.c_uint8)]
+                ("duration_flags", C.c_uint8), ("has_genre", C.c_uint8), ("genre_category", C.c_uint8),
+                ("genre_index", C.c_uint8), ("reserved", C.c_uint8 * 3)]
 
 
 class FrameInfo(C.Structure):
     _fields_ = [("number", C.c_uint32), ("status", C.c_uint32), ("dst_rule", C.c_uint32),
-                ("size", C.c_size_t)]
+                ("size", C.c_uint32)]
 
 
 OK, END = 0, 1
 for fn in ("sb_disc_open_file", "sb_disc_info", "sb_disc_string", "sb_disc_area", "sb_track_info",
            "sb_track_audio_open", "sb_track_audio_read"):
-    getattr(lib, fn).restype = C.c_int
+    getattr(lib, fn).restype = C.c_int32
 lib.sb_track_audio_channels.restype = C.c_uint32
 
 
