@@ -42,7 +42,25 @@ defaults:
     shell: bash
 
 jobs:
+  # Cheap checks first, so that a tag without a matching version or CHANGELOG.md section
+  # stops the release before the seven C library builds.
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The tag matches the crate version and has a CHANGELOG.md section
+        run: |
+          version=$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match the workspace version $version"
+            exit 1
+          fi
+          python3 -I .github/scripts/changelog-section.py CHANGELOG.md "$version" > /dev/null
+
   clib:
+    needs: preflight
     uses: ./.github/workflows/clib.yml
 
   release:
