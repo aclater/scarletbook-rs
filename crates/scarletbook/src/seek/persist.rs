@@ -391,11 +391,15 @@ impl AreaIndex {
     /// # Errors
     ///
     /// [`Error::InvalidArgument`], with both indexes unchanged, if `other` is of another
-    /// area, image size or interval, or a checkpoint both hold differs (indexes of two
-    /// images).
+    /// area, image size or interval, was built from another image than this one in this
+    /// process (see [One index per image](AreaIndex#one-index-per-image)), or a checkpoint
+    /// both hold differs (indexes of two images).
     pub fn merge(&mut self, other: &AreaIndex) -> Result<(), Error> {
         if other.key != self.key || other.interval != self.interval {
             return Err(bad("seek index of another area, image size or interval"));
+        }
+        if matches!((self.image_id, other.image_id), (Some(a), Some(b)) if a != b) {
+            return Err(bad("seek indexes of two images"));
         }
         let both = self.checkpoints.len().min(other.checkpoints.len());
         if self.checkpoints[..both] != other.checkpoints[..both] {
@@ -403,6 +407,9 @@ impl AreaIndex {
         }
         if matches!((self.end_state, other.end_state), (Some(a), Some(b)) if a != b) {
             return Err(bad("seek indexes differ"));
+        }
+        if self.image_id.is_none() {
+            self.image_id = other.image_id;
         }
         if other.frontier() <= self.frontier() {
             return Ok(());

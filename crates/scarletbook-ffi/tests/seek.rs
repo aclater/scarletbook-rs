@@ -500,3 +500,45 @@ fn a_clone_shares_the_discs_index() {
     free(disc);
     free(plain);
 }
+
+/// Two images of the same size and layout, different contents (#90): an index built from
+/// one refuses the other's handles, reads and indexes. Small enough for Miri.
+#[test]
+fn an_index_is_of_one_image() {
+    let x_bytes = small_image(5);
+    let mut y_bytes = x_bytes.clone();
+    // Sector 2 of Y's audio: well-formed (no packets) where X's is malformed.
+    let at = (546 + 2) * 2048;
+    y_bytes[at..at + 2048].fill(0);
+    let (x, y) = (open(&x_bytes), open(&y_bytes));
+    let index = index_new(x, 0, 1).unwrap();
+    assert!(!extend(x, index, 1).unwrap());
+    let (lsn, _) = frontier(index);
+    // Reads of Y into it: refused, the index unchanged.
+    assert_eq!(extend(y, index, 1).unwrap_err(), SbStatus::InvalidArgument);
+    assert_eq!(frontier(index).0, lsn);
+    // A handle of Y that recorded checkpoints (from an empty index): refused.
+    let empty = index_new(y, 0, 1).unwrap();
+    let a = open_indexed(y, 0, (0, 7), empty).unwrap();
+    read_all(a, y);
+    assert_eq!(absorb(a, index), SbStatus::InvalidArgument);
+    assert!(last_error().contains("another image"), "{}", last_error());
+    assert_eq!(frontier(index).0, lsn);
+    audio_free(a);
+    // An index built from Y: not merged into X's.
+    let of_y = index_new(y, 0, 1).unwrap();
+    while !extend(y, of_y, 5).unwrap() {}
+    // SAFETY: live handles.
+    assert_eq!(unsafe { sb_seek_index_merge(index, of_y) }, SbStatus::InvalidArgument);
+    assert_eq!(frontier(index).0, lsn);
+    // X's own reads go on; a loaded copy takes the image of its first read.
+    while !extend(x, index, 5).unwrap() {}
+    let loaded = load(y, 0, &save(index)).unwrap();
+    assert!(extend(y, loaded, 5).unwrap());
+    assert_eq!(extend(x, loaded, 5).unwrap_err(), SbStatus::InvalidArgument);
+    for i in [index, empty, of_y, loaded] {
+        index_free(i);
+    }
+    free(x);
+    free(y);
+}

@@ -315,11 +315,11 @@ fn a_callers_index() {
         };
         let mut it = disc.read_track_audio(c);
         let got: Vec<_> = it.by_ref().map(Result::unwrap).collect();
-        let c = it.into_cursor();
+        let mut c = it.into_cursor();
         let want: Vec<_> =
             plain.range_audio(Slot::TwoChannel, first, end).unwrap().map(Result::unwrap).collect();
         assert!(got == want, "[{first}, {end})");
-        index.absorb(&c).unwrap();
+        index.absorb(&mut c).unwrap();
         prev = Some(c);
     }
     assert!(index.is_complete());

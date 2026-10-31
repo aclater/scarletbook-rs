@@ -505,8 +505,17 @@ impl RawFrames {
 /// A seek index of one area (`sb_seek_index_new`, `sb_seek_index_load`): the area's
 /// reading state every `interval` sectors, so that a range opened with it
 /// (`sb_range_audio_open_indexed`) starts near its first frame instead of at the area's
-/// first sector. It belongs to no disc: any disc of the same image (the same area and
-/// sector count) can use it.
+/// first sector. It belongs to no disc handle: a disc and its clones (`sb_disc_clone`),
+/// which read the same image, can all use it.
+///
+/// Keep one index per image. Its key (the area and the image's sector count) cannot tell
+/// apart two images of the same size and layout, such as two rips of one disc, and an
+/// index fed from both would mix their state. Within a process an index is therefore of
+/// the image of the first handle it takes checkpoints from (`sb_track_audio_absorb`,
+/// `sb_raw_frames_absorb`, `sb_seek_index_extend`), and refuses handles and discs of any
+/// other image with `SB_STATUS_INVALID_ARGUMENT`. That identity is not saved: a loaded
+/// index (`sb_seek_index_load`) takes the image of its first absorb or extend, and is
+/// trusted to be of it (loading is safe, not exact).
 #[derive(Debug)]
 pub struct SbSeekIndex {
     inner: RefCell<AreaIndex>,
@@ -2782,9 +2791,9 @@ pub unsafe extern "C" fn sb_seek_index_new(
 /// index now covers the whole area. Calling it until complete builds the index in one
 /// pass over the area, for example on a second disc handle of the same image on another
 /// thread. The disc's read and log callbacks run during this call. Fails with
-/// `SB_STATUS_INVALID_ARGUMENT` for an index of another area or image, or one that does
-/// not match the image's sectors; `SB_STATUS_IO` if a read fails (the checkpoints
-/// recorded before stay).
+/// `SB_STATUS_INVALID_ARGUMENT` for an index of another area or image size, one built from
+/// another image in this process (see `SbSeekIndex`), or one that does not match the
+/// image's sectors; `SB_STATUS_IO` if a read fails (the checkpoints recorded before stay).
 ///
 /// # Safety
 ///
@@ -2858,8 +2867,9 @@ pub unsafe extern "C" fn sb_seek_index_memory(index: *const SbSeekIndex, bytes: 
 /// Takes into `into` the checkpoints of `from`, an index of the same area, image size and
 /// interval (for example one built on another thread); `into` then reaches the farther of
 /// the two frontiers. Fails with `SB_STATUS_INVALID_ARGUMENT`, both indexes unchanged,
-/// for indexes of different areas, sizes or intervals, or that disagree (of two images).
-/// Merging an index into itself does nothing.
+/// for indexes of different areas, sizes or intervals, built from two images in this
+/// process (see `SbSeekIndex`), or that disagree. Merging an index into itself does
+/// nothing.
 ///
 /// # Safety
 ///
@@ -3200,9 +3210,11 @@ pub unsafe extern "C" fn sb_raw_frames_open_next_indexed(
 
 /// Takes into `index` the checkpoints a track audio handle recorded past the index's
 /// frontier (one opened with an index; others recorded none, and this does nothing). Call
-/// it whenever convenient, for example before freeing the handle. Fails with
-/// `SB_STATUS_INVALID_ARGUMENT`, `index` unchanged, if the handle's checkpoints are of
-/// another area, image size or interval, or do not join the index.
+/// it whenever convenient, for example before freeing the handle; the handle then drops
+/// what it recorded. Fails with `SB_STATUS_INVALID_ARGUMENT`, `index` unchanged, if the
+/// handle read another image than the one the index was built from in this process (see
+/// `SbSeekIndex`; the handle then stops recording), or its checkpoints are of another
+/// area, image size or interval, or do not join the index.
 ///
 /// # Safety
 ///
@@ -3217,9 +3229,9 @@ pub unsafe extern "C" fn sb_track_audio_absorb(
         let a = unsafe { audio_handle(audio) }?;
         // SAFETY: forwarded contract.
         let i = unsafe { index_handle(index) }?;
-        let cursor = a.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
+        let mut cursor = a.inner.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))?;
         let mut index = i.inner.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))?;
-        index.absorb(&*cursor)?;
+        index.absorb(&mut *cursor)?;
         Ok(SbStatus::Ok)
     })
 }
@@ -3237,9 +3249,9 @@ pub unsafe extern "C" fn sb_raw_frames_absorb(raw: *const SbRawFrames, index: *m
         let r = unsafe { raw_handle(raw) }?;
         // SAFETY: forwarded contract.
         let i = unsafe { index_handle(index) }?;
-        let raw = r.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
+        let mut raw = r.inner.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))?;
         let mut index = i.inner.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))?;
-        match &raw.source {
+        match &mut raw.source {
             Source::Range(c) => index.absorb(c)?,
             Source::List(..) => {}
         }

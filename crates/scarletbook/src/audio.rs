@@ -1020,7 +1020,7 @@ impl<'a> Continuation<'a> {
     /// disc's).
     fn absorb_into(&self, cursor: &mut AreaCursor, index: &mut AreaIndex) {
         let other_image = matches!((cursor.image_id(), self.image_id), (Some(a), Some(b)) if a != b);
-        if !other_image && index.absorb(&*cursor).is_ok() {
+        if !other_image && index.take_from(cursor).is_ok() {
             AreaIndex::drain(cursor);
         }
     }

@@ -320,6 +320,21 @@ const _: () = {
 /// can start a frame range there instead of at the first sector (see the [module
 /// documentation](self)).
 ///
+/// # One index per image
+///
+/// An index holds the reading state of one area of **one image**. Its key (the area's
+/// slot, audio sector range and channel count, and the image's sector count) cannot tell
+/// apart two images of the same size and layout, such as two rips of one disc, and an index
+/// fed from both would mix their state: a later read of one could report the other's
+/// malformed sectors and warnings, or frames under assembly, with no error. So within a
+/// process, an index is of the image of the first cursor it takes checkpoints from
+/// ([`AreaIndex::absorb`], [`AreaIndex::extend`]; [`crate::Image::id`], which the discs
+/// made by [`crate::Disc::share`] and `clone` share), and refuses cursors and reads of any
+/// other. That identity is not saved: an index loaded with [`AreaIndex::from_bytes`] (or
+/// given to [`crate::Disc::set_seek_index`]) takes the image of its first absorb or
+/// extend, and is trusted to be of it (loading is safe, not exact; see the [module
+/// documentation](self#trust)).
+///
 /// # Memory
 ///
 /// At most 24 bytes per `K` existing audio sectors (one checkpoint each), plus the
@@ -330,7 +345,7 @@ const _: () = {
 // Specification 7, 7.1 item 2 (sacd-spec `da6b900`): a constant number of bytes per
 // existing audio sector, plus at most one 65 536-byte frame under assembly per saved state
 // that holds one, their number chosen by the caller (the inline budget).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct AreaIndex {
     key: AreaKey,
     /// The area's existing audio sectors, `[start, end)`.
@@ -345,7 +360,25 @@ pub struct AreaIndex {
     end_state: Option<EndState>,
     /// The first [`MAX_MALFORMED_WARNINGS`] malformed sectors below the frontier.
     malformed: Vec<u32>,
+    /// The image of the first cursor this index took checkpoints from ([`Image::id`],
+    /// unique within the process; not saved), whose cursors alone it takes from then on.
+    image_id: Option<u64>,
 }
+
+/// Two indexes are equal when they hold the same reading state: the image they were
+/// built from in this process is not part of it.
+impl PartialEq for AreaIndex {
+    fn eq(&self, other: &Self) -> bool {
+        (self.key, self.start, self.end, self.interval, self.inline_budget)
+            == (other.key, other.start, other.end, other.interval, other.inline_budget)
+            && self.checkpoints == other.checkpoints
+            && self.stored == other.stored
+            && self.end_state == other.end_state
+            && self.malformed == other.malformed
+    }
+}
+
+impl Eq for AreaIndex {}
 
 impl AreaIndex {
     /// An empty index of `area` in an image of `image_sectors` sectors: its frontier is the
@@ -369,6 +402,7 @@ impl AreaIndex {
             stored: Stored::default(),
             end_state: None,
             malformed: Vec::new(),
+            image_id: None,
         })
     }
 
@@ -413,15 +447,22 @@ impl AreaIndex {
     /// (specification 7, 7.1 item 3), which can be split into calls of any size, for
     /// example on another thread with an image of its own; [`AreaIndex::merge`] then joins
     /// that index with one the reads of the first thread filled ([`AreaIndex::absorb`]).
+    /// The index is of `image` from then on (see [One index per image](Self#one-index-per-image)).
     ///
     /// # Errors
     ///
-    /// [`Error::InvalidArgument`] if `image` has another sector count than the index's,
-    /// [`Error::Io`] if a read fails; the checkpoints recorded before stay.
+    /// [`Error::InvalidArgument`] if `image` has another sector count than the index's, or
+    /// is another image than the one the index was built from in this process;
+    /// [`Error::Io`] if a read fails. The checkpoints recorded before stay.
     pub fn extend<R: Read + Seek>(&mut self, image: &mut Image<R>, max_sectors: u64) -> Result<bool, Error> {
         if image.sector_count() != self.key.image_sectors {
             return Err(Error::InvalidArgument("seek index of another image size"));
         }
+        if self.image_id.is_some_and(|id| id != image.id()) {
+            return Err(Error::InvalidArgument("seek index of another image"));
+        }
+        // Of this image from now on, even if there is nothing left to read.
+        self.image_id = Some(image.id());
         if self.is_complete() {
             return Ok(true);
         }
@@ -434,7 +475,7 @@ impl AreaIndex {
             return Err(Error::InvalidArgument("seek index does not match the image"));
         }
         // A cursor of this index joins it.
-        self.absorb(&cursor)?;
+        self.take_from(&cursor)?;
         scanned.map(|_| self.is_complete())
     }
 
@@ -505,17 +546,52 @@ impl AreaIndex {
     /// [`crate::AreaCursor`], [`crate::TrackCursor`] or [`crate::TrackAudioCursor`]); a
     /// cursor made without an index recorded none. Checkpoints the index already holds
     /// are compared, not added. Frames under assembly past the inline budget are not
-    /// stored: those checkpoints are replayed instead.
+    /// stored: those checkpoints are replayed instead. The cursor then drops what it
+    /// recorded (absorbing it again costs nothing until it records more), and the index
+    /// is of the cursor's image from then on (see [One index per
+    /// image](Self#one-index-per-image)).
     ///
     /// # Errors
     ///
-    /// [`Error::InvalidArgument`], with the index unchanged, if the cursor was made from
-    /// an index of another area, image size or interval, if its checkpoints do not join
-    /// this index's (it started past the frontier), or if they differ from those held
-    /// (another image with the same key).
-    pub fn absorb(&mut self, cursor: &impl crate::audio::SeekCursor) -> Result<(), Error> {
-        let cursor = crate::audio::sealed::Sealed::area_cursor(cursor);
+    /// [`Error::InvalidArgument`], with the index unchanged:
+    /// - if the cursor read another image than the one this index was built from in this
+    ///   process (it then stops recording);
+    /// - if it was made from an index of another area, image size or interval, if its
+    ///   checkpoints do not join this index's (it started past the frontier), or if they
+    ///   differ from those held (another image with the same key).
+    pub fn absorb(&mut self, cursor: &mut impl crate::audio::SeekCursor) -> Result<(), Error> {
+        let cursor = crate::audio::sealed::Sealed::area_cursor_mut(cursor);
+        match self.take_from(cursor) {
+            Ok(()) => {
+                Self::drain(cursor);
+                Ok(())
+            }
+            Err(e) => {
+                if self.of_another_image(cursor) {
+                    cursor.stop_recording();
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Whether `cursor` read another image than the one this index is of.
+    fn of_another_image(&self, cursor: &AreaCursor) -> bool {
+        matches!((self.image_id, cursor.image_id()), (Some(a), Some(b)) if a != b)
+    }
+
+    /// Forgets the image this index was built from, as for an index loaded from bytes:
+    /// the next cursor it takes checkpoints from, or the next `extend`, sets it again.
+    pub(crate) fn forget_image(&mut self) {
+        self.image_id = None;
+    }
+
+    /// [`AreaIndex::absorb`] without draining the cursor.
+    pub(crate) fn take_from(&mut self, cursor: &AreaCursor) -> Result<(), Error> {
         let Some(r) = cursor.recorder() else { return Ok(()) };
+        if self.of_another_image(cursor) {
+            return Err(Error::InvalidArgument("cursor of another image than the seek index's"));
+        }
         if r.key != self.key || r.interval != self.interval {
             return Err(Error::InvalidArgument("cursor of another area, image size or seek interval"));
         }
@@ -558,6 +634,9 @@ impl AreaIndex {
                 .take(MAX_MALFORMED_WARNINGS)
                 .collect();
         }
+        if self.image_id.is_none() {
+            self.image_id = cursor.image_id();
+        }
         Ok(())
     }
 }
@@ -567,7 +646,7 @@ impl AreaIndex {
     /// again costs nothing until it records more; a cursor whose checkpoints cannot join
     /// this index stops recording.
     pub(crate) fn absorb_drain(&mut self, cursor: &mut AreaCursor) {
-        if self.absorb(&*cursor).is_err() {
+        if self.take_from(cursor).is_err() {
             cursor.stop_recording();
             return;
         }
@@ -731,6 +810,7 @@ mod tests {
             stored: Stored::default(),
             end_state: end.map(|a| EndState { next_acceptable: a, malformed: 0 }),
             malformed: Vec::new(),
+            image_id: None,
         }
     }
 

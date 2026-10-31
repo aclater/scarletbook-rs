@@ -259,7 +259,7 @@ pub fn seek_index(data: &[u8]) {
             let mut cursor = scarletbook::TrackCursor::for_range_indexed(&area, first, p, n, &index).unwrap();
             while let Some(Ok(_)) = cursor.next_frame(&mut image) {}
             let mut copy = index.clone();
-            let _ = copy.absorb(&cursor);
+            let _ = copy.absorb(&mut cursor);
         }
         let mut copy = index.clone();
         let _ = copy.extend(&mut image, 1000);

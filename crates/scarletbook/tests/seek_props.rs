@@ -102,15 +102,15 @@ proptest! {
             let straight = disc.range_frames_cursor(Slot::TwoChannel, first, end).unwrap();
             let (want, _) = read(&mut disc, straight, take);
             let sought = TrackCursor::for_range_indexed(&area, first, end, n, &index).unwrap();
-            let (got, cursor) = read(&mut disc, sought, take);
+            let (got, mut cursor) = read(&mut disc, sought, take);
             prop_assert_eq!(&got, &want, "[{}, {}) take {} from {:?}", first, end, take, cursor.resumed_from());
-            index.absorb(&cursor).unwrap();
+            index.absorb(&mut cursor).unwrap();
         }
         // Absorbing again changes nothing.
         let before = index.clone();
         let c = TrackCursor::for_range_indexed(&area, 0, 1, n, &index).unwrap();
-        let (_, c) = read(&mut disc, c, 1);
-        index.absorb(&c).unwrap();
+        let (_, mut c) = read(&mut disc, c, 1);
+        index.absorb(&mut c).unwrap();
         prop_assert_eq!(index.checkpoints() >= before.checkpoints(), true);
     }
 
@@ -129,8 +129,8 @@ proptest! {
         let mut index = AreaIndex::new(&area, n, IndexOptions::new().with_interval(interval)).unwrap();
         // Positions past every accepted frame end only at the end of the area.
         let c = TrackCursor::for_range_indexed(&area, playtime - 1, playtime, n, &index).unwrap();
-        let (_, c) = read(&mut disc, c, usize::MAX);
-        index.absorb(&c).unwrap();
+        let (_, mut c) = read(&mut disc, c, usize::MAX);
+        index.absorb(&mut c).unwrap();
         for a in firsts {
             let first = (a * f64::from(playtime)) as u32;
             let straight = disc.range_audio_cursor(Slot::TwoChannel, first, playtime).unwrap();
@@ -209,8 +209,8 @@ fn long_frames_under_assembly_are_stored_or_replayed() {
         let options = IndexOptions::new().with_interval(8).with_inline_budget(budget);
         let mut index = AreaIndex::new(&area, n, options).unwrap();
         let c = TrackCursor::for_range_indexed(&area, 0, playtime, n, &index).unwrap();
-        let (_, c) = read(&mut disc, c, usize::MAX);
-        index.absorb(&c).unwrap();
+        let (_, mut c) = read(&mut disc, c, usize::MAX);
+        index.absorb(&mut c).unwrap();
         for first in [0, 1, 2, 3] {
             let straight = disc.range_frames_cursor(Slot::TwoChannel, first, playtime).unwrap();
             let (want, _) = read(&mut disc, straight, usize::MAX);
@@ -281,8 +281,8 @@ fn first_position_reads_are_bounded() {
     let c = TrackCursor::for_range_indexed(&area, 999, 1000, n, &index).unwrap();
     let mut it = disc.read_frames(c);
     it.by_ref().for_each(drop);
-    let c = it.into_cursor();
-    index.absorb(&c).unwrap();
+    let mut c = it.into_cursor();
+    index.absorb(&mut c).unwrap();
     assert!(index.is_complete());
     assert_eq!((read.get() - start) / S as u64, sectors);
     println!("index of {sectors} sectors: {} checkpoints, {} bytes", index.checkpoints(), index.memory());
@@ -330,12 +330,12 @@ fn an_index_of_another_area_is_refused() {
     ));
     // A cursor of another interval is not absorbed.
     let mut coarse = AreaIndex::new(&area, n, IndexOptions::new().with_interval(2)).unwrap();
-    let c = TrackCursor::for_range_indexed(&area, 0, playtime, n, &index).unwrap();
-    assert!(matches!(coarse.absorb(&c), Err(scarletbook::Error::InvalidArgument(_))));
+    let mut c = TrackCursor::for_range_indexed(&area, 0, playtime, n, &index).unwrap();
+    assert!(matches!(coarse.absorb(&mut c), Err(scarletbook::Error::InvalidArgument(_))));
     assert_eq!(coarse.checkpoints(), 0);
     // A cursor made without an index records nothing.
-    let plain = TrackCursor::for_range(&area, 0, playtime, n).unwrap();
-    coarse.absorb(&plain).unwrap();
+    let mut plain = TrackCursor::for_range(&area, 0, playtime, n).unwrap();
+    coarse.absorb(&mut plain).unwrap();
     assert_eq!(coarse.checkpoints(), 0);
 }
 
@@ -351,8 +351,8 @@ fn small_seek_round_trip() {
     let (area, n) = area(&disc);
     let mut index = AreaIndex::new(&area, n, IndexOptions::new().with_interval(2)).unwrap();
     let c = TrackCursor::for_range_indexed(&area, 0, playtime, n, &index).unwrap();
-    let (_, c) = read(&mut disc, c, usize::MAX);
-    index.absorb(&c).unwrap();
+    let (_, mut c) = read(&mut disc, c, usize::MAX);
+    index.absorb(&mut c).unwrap();
     assert!(index.is_complete());
     for first in 0..8 {
         let straight = disc.range_frames_cursor(Slot::TwoChannel, first, playtime).unwrap();
