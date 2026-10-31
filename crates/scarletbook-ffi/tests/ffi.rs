@@ -442,9 +442,12 @@ fn callbacks() {
     assert_eq!(audio_read(a, disc, &mut frame).0, SbStatus::Ok);
 
     // The same from inside a raw frames read: the raw handle and the disc are in use.
+    // The track handle is not (only its disc is), so the callback must not be given it: it
+    // would really free it.
     let r = raw_open(disc, 1, 0, 4).unwrap();
     user.probes.clear();
     user.disc = disc;
+    user.audio = ptr::null_mut();
     user.raw = r;
     let mut big = vec![0u8; SB_MAX_FRAME_BYTES];
     let (s, fi) = raw_read(r, disc, &mut big);
