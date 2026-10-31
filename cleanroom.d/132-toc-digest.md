@@ -1,1 +1,1 @@
-| 2026-10-31 | #132 faster TOC digest | in-process digest of the TOC sectors for `Disc::share`, a four-lane multiply-rotate of our own design; no specification involved. No new sources consulted. |
+| 2026-10-31 | #132 faster TOC digest (#138) | in-process digest of the TOC sectors for `Disc::share`, a four-lane multiply-rotate of our own design; no specification involved. No new sources consulted. |
