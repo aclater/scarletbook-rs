@@ -9,7 +9,7 @@
  *   failure, sb_last_error_message() describes the error. The message belongs to the
  *   calling thread and stays valid until that thread's next call into this library.
  *
- * - Handles. SbDisc, SbTrackAudio, SbRawFrames and SbPool are opaque. Each is created by one
+ * - Handles. SbDisc, SbTrackAudio, SbRawFrames, SbPool and SbSeekIndex are opaque. Each is created by one
  *   function and released by exactly one call to its _free function; passing NULL to a
  *   _free function does nothing. A function that creates a handle sets *out to NULL when it fails, so
  *   freeing that pointer afterwards is safe.
@@ -42,7 +42,8 @@
  * - Callbacks and re-entrancy. While a disc's callback runs, that disc and its track
  *   and raw frames handles are in use: calling into this library with them from the
  *   callback returns SB_STATUS_INVALID_ARGUMENT, and their _free functions do
- *   nothing. Other handles may be used. (A log callback invoked by a call that only
+ *   nothing; so is a seek index the call uses (sb_seek_index_extend, the _indexed
+ *   functions). Other handles may be used. (A log callback invoked by a call that only
  *   reads the disc, such as sb_track_check, may read it too; one running on a pool
  *   thread must not use the disc or its track or raw frames handles at all, with any
  *   call, sb_track_audio_set_pool and the _free functions included.)
@@ -185,6 +186,21 @@
  this many threads, which would mostly stay idle.
  */
 #define SB_MAX_POOL_THREADS 256
+
+/*
+ The default checkpoint interval of a seek index, in sectors (`sb_seek_index_new`).
+ */
+#define SB_SEEK_DEFAULT_INTERVAL 64
+
+/*
+ The largest checkpoint interval of a seek index, in sectors.
+ */
+#define SB_SEEK_MAX_INTERVAL 65536
+
+/*
+ The default bound on the bytes of frames under assembly a seek index stores (1 MiB).
+ */
+#define SB_SEEK_DEFAULT_INLINE_BUDGET 1048576
 
 /*
  Result of every call.
@@ -517,6 +533,15 @@ typedef struct SbPool SbPool;
  opened from or a clone of it, as for `SbTrackAudio`.
  */
 typedef struct SbRawFrames SbRawFrames;
+
+/*
+ A seek index of one area (`sb_seek_index_new`, `sb_seek_index_load`): the area's
+ reading state every `interval` sectors, so that a range opened with it
+ (`sb_range_audio_open_indexed`) starts near its first frame instead of at the area's
+ first sector. It belongs to no disc: any disc of the same image (the same area and
+ sector count) can use it.
+ */
+typedef struct SbSeekIndex SbSeekIndex;
 
 /*
  The decoding state of one track or frame range. Each `sb_track_audio_read` call reads through the
@@ -1555,6 +1580,307 @@ enum SbStatus sb_dst_decode(const uint8_t *frame,
                             uint8_t *out,
                             size_t out_len,
                             uint32_t *rule);
+
+/*
+ Makes an empty seek index of the area from `slot` of `disc`, with a checkpoint every
+ `interval` sectors (1 to `SB_SEEK_MAX_INTERVAL`; `SB_SEEK_DEFAULT_INTERVAL` is 64) and
+ at most `inline_budget` bytes of stored frames under assembly
+ (`SB_SEEK_DEFAULT_INLINE_BUDGET`; 0 stores none, which is always correct and only
+ slower on hostile images).
+
+ An index is the reading state of the area: ranges opened with it
+ (`sb_range_audio_open_indexed`, `sb_raw_frames_open_indexed`) start at its last
+ checkpoint before their first frame, with exactly the frames, counts and warnings of a
+ scan from the area's first sector. It fills as handles opened with it read
+ (`sb_track_audio_absorb`, `sb_raw_frames_absorb`), or at once with
+ `sb_seek_index_extend`. It holds about 24 bytes per `interval` audio sectors, plus at
+ most `inline_budget` bytes and 16 KiB (`sb_seek_index_memory`). On failure `*out` is
+ set to NULL: `SB_STATUS_NO_SUCH_AREA`, or `SB_STATUS_INVALID_ARGUMENT` for a bad slot
+ or interval.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `out` NULL or valid for a write.
+ */
+enum SbStatus sb_seek_index_new(const struct SbDisc *disc,
+                                uint32_t slot,
+                                uint32_t interval,
+                                size_t inline_budget,
+                                struct SbSeekIndex **out);
+
+/*
+ Reads the index's area on from its frontier, about `max_sectors` sectors (at least to
+ the next checkpoint), recording checkpoints; `*complete` (if not NULL) says whether the
+ index now covers the whole area. Calling it until complete builds the index in one
+ pass over the area, for example on a second disc handle of the same image on another
+ thread. The disc's read and log callbacks run during this call. Fails with
+ `SB_STATUS_INVALID_ARGUMENT` for an index of another area or image, or one that does
+ not match the image's sectors; `SB_STATUS_IO` if a read fails (the checkpoints
+ recorded before stay).
+
+ # Safety
+
+ `disc` and `index` must be NULL or live handles; `complete` NULL or valid for a write.
+ */
+enum SbStatus sb_seek_index_extend(const struct SbDisc *disc,
+                                   struct SbSeekIndex *index,
+                                   uint64_t max_sectors,
+                                   bool *complete);
+
+/*
+ The LSN up to which the index holds the area's reading state (`*lsn`, required), and
+ whether it covers the whole area (`*complete`, optional).
+
+ # Safety
+
+ `index` must be NULL or a live handle; `lsn` and `complete` NULL or valid for writes.
+ */
+enum SbStatus sb_seek_index_frontier(const struct SbSeekIndex *index,
+                                     uint64_t *lsn,
+                                     bool *complete);
+
+/*
+ The bytes the index holds in memory.
+
+ # Safety
+
+ `index` must be NULL or a live handle; `bytes` NULL or valid for a write.
+ */
+enum SbStatus sb_seek_index_memory(const struct SbSeekIndex *index, size_t *bytes);
+
+/*
+ Takes into `into` the checkpoints of `from`, an index of the same area, image size and
+ interval (for example one built on another thread); `into` then reaches the farther of
+ the two frontiers. Fails with `SB_STATUS_INVALID_ARGUMENT`, both indexes unchanged,
+ for indexes of different areas, sizes or intervals, or that disagree (of two images).
+ Merging an index into itself does nothing.
+
+ # Safety
+
+ `into` and `from` must be NULL or live handles.
+ */
+enum SbStatus sb_seek_index_merge(struct SbSeekIndex *into, const struct SbSeekIndex *from);
+
+/*
+ Saves the index as bytes, to load it with `sb_seek_index_load` the next time the image
+ is opened. `*len` (required) receives the size; with `buf` NULL or `cap` below it, the
+ call returns `SB_STATUS_BUFFER_TOO_SMALL` and writes nothing else (a size query).
+
+ # Safety
+
+ `index` must be NULL or a live handle; `buf` NULL or valid for `cap` bytes of writes;
+ `len` NULL or valid for a write.
+ */
+enum SbStatus sb_seek_index_save(const struct SbSeekIndex *index,
+                                 uint8_t *buf,
+                                 size_t cap,
+                                 size_t *len);
+
+/*
+ Loads a seek index of the area from `slot` of `disc` from `len` bytes saved by
+ `sb_seek_index_save`. The bytes may be anything: every bound and invariant is checked
+ before use, and the memory taken is proportional to `len`. On failure `*out` is set to
+ NULL: `SB_STATUS_INVALID_ARGUMENT` for bytes that are not a valid index of this area
+ and image size, `SB_STATUS_NO_SUCH_AREA`. An index that passes is still checked
+ against the image's sectors as it is used: on a mismatch a handle discards it (a
+ warning in the log) and scans from the area's first sector, with the right result.
+
+ `inline_budget` bounds the bytes of stored frames under assembly the loaded index holds
+ (`SB_SEEK_DEFAULT_INLINE_BUDGET` is 1 MiB, as for `sb_seek_index_new`): its budget is the
+ smaller of the saved one and this, and stored frames beyond it are dropped (their
+ checkpoints replayed instead, with the same results).
+
+ The checks make loading safe, not exact: bytes forged to pass them can make reads
+ return other frames than the image holds. If exact output matters, rebuild an index
+ read from untrusted storage (`sb_seek_index_new` and `sb_seek_index_extend`) instead.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `buf` NULL or valid for `len` bytes of reads;
+ `out` NULL or valid for a write.
+ */
+enum SbStatus sb_seek_index_load(const struct SbDisc *disc,
+                                 uint32_t slot,
+                                 const uint8_t *buf,
+                                 size_t len,
+                                 size_t inline_budget,
+                                 struct SbSeekIndex **out);
+
+/*
+ Frees a seek index. NULL is ignored. Handles opened with it hold no reference to it.
+ A call from one of a disc's callbacks while the index is in use by the call that
+ invoked the callback does nothing.
+
+ # Safety
+
+ `index` must be NULL or a live handle, freed only once.
+ */
+void sb_seek_index_free(struct SbSeekIndex *index);
+
+/*
+ Keeps a seek index of the area from `slot` in `disc`, empty to begin with (see
+ `sb_seek_index_new` for `interval` and `inline_budget`), replacing one kept before:
+ from then on every track audio and raw frames handle of that area opened through the
+ disc or any of its clones (`sb_disc_clone`) starts from it, and reads through them
+ (`sb_track_audio_read`, `sb_raw_frames_read`) and continuations (`_open_next`) build
+ it. The disc and its clones keep one index, used and grown from any thread; a
+ handle's frames, statuses, counts and warnings are those without an index. Fails with
+ `SB_STATUS_NO_SUCH_AREA` or `SB_STATUS_INVALID_ARGUMENT`.
+
+ # Safety
+
+ `disc` must be NULL or a live handle.
+ */
+enum SbStatus sb_disc_seek_index_enable(const struct SbDisc *disc,
+                                        uint32_t slot,
+                                        uint32_t interval,
+                                        size_t inline_budget);
+
+/*
+ Keeps a copy of `index` (for example one loaded with `sb_seek_index_load`) as the seek
+ index of its area in `disc` and its clones, as `sb_disc_seek_index_enable` does an
+ empty one. Fails with `SB_STATUS_INVALID_ARGUMENT` for an index of another area or
+ image size, or `SB_STATUS_NO_SUCH_AREA`.
+
+ # Safety
+
+ `disc` and `index` must be NULL or live handles.
+ */
+enum SbStatus sb_disc_seek_index_set(const struct SbDisc *disc,
+                                     uint32_t slot,
+                                     const struct SbSeekIndex *index);
+
+/*
+ A copy of the seek index `disc` (and its clones) keeps for the area from `slot`, as a
+ new handle in `*out`, for example to save it (`sb_seek_index_save`). Returns
+ `SB_STATUS_ABSENT`, with `*out` NULL, when none is kept.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `out` NULL or valid for a write.
+ */
+enum SbStatus sb_disc_seek_index_get(const struct SbDisc *disc,
+                                     uint32_t slot,
+                                     struct SbSeekIndex **out);
+
+/*
+ Stops keeping a seek index of the area from `slot` in `disc` and its clones.
+
+ # Safety
+
+ `disc` must be NULL or a live handle.
+ */
+enum SbStatus sb_disc_seek_index_disable(const struct SbDisc *disc, uint32_t slot);
+
+/*
+ Reads the area from `slot` on from the frontier of the seek index `disc` keeps, about
+ `max_sectors` sectors, building it (see `sb_seek_index_extend`); `*complete` (if not
+ NULL) says whether it now covers the whole area. Call it on a clone in a thread of its
+ own to build the index while other clones read. Fails with
+ `SB_STATUS_INVALID_ARGUMENT` when no index is kept or it does not match the image,
+ `SB_STATUS_IO` if a read fails.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `complete` NULL or valid for a write.
+ */
+enum SbStatus sb_disc_seek_index_extend(const struct SbDisc *disc,
+                                        uint32_t slot,
+                                        uint64_t max_sectors,
+                                        bool *complete);
+
+/*
+ As `sb_range_audio_open`, starting from `index` (a seek index of the area, or NULL for
+ none): at its last checkpoint before frame `first`, with exactly the frames, counts and
+ warnings of `sb_range_audio_open`. The handle copies what it needs and holds no
+ reference to `index`; it records the checkpoints it crosses past the index's frontier,
+ which `sb_track_audio_absorb` hands to an index. Fails as `sb_range_audio_open`, or
+ with `SB_STATUS_INVALID_ARGUMENT` for an index of another area or image size.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `index` NULL or a live handle; `out` NULL or
+ valid for a write.
+ */
+enum SbStatus sb_range_audio_open_indexed(const struct SbDisc *disc,
+                                          uint32_t slot,
+                                          uint32_t first,
+                                          uint32_t end,
+                                          const struct SbSeekIndex *index,
+                                          struct SbTrackAudio **out);
+
+/*
+ As `sb_range_audio_open_next`, with `index` (NULL for none): `prev`'s recorded
+ checkpoints are first taken into `index`, then `prev` is continued where that gives the
+ same result, or the range starts from the index. Ownership of `prev` is as for
+ `sb_track_audio_open_next`; every check, the index's included, comes before `prev` is
+ taken.
+
+ # Safety
+
+ As `sb_range_audio_open_next`; `index` NULL or a live handle.
+ */
+enum SbStatus sb_range_audio_open_next_indexed(const struct SbDisc *disc,
+                                               struct SbTrackAudio *prev,
+                                               uint32_t slot,
+                                               uint32_t first,
+                                               uint32_t end,
+                                               struct SbSeekIndex *index,
+                                               struct SbTrackAudio **out);
+
+/*
+ As `sb_raw_frames_open`, starting from `index` (NULL for none), as
+ `sb_range_audio_open_indexed` does for decoded audio.
+
+ # Safety
+
+ As `sb_range_audio_open_indexed`.
+ */
+enum SbStatus sb_raw_frames_open_indexed(const struct SbDisc *disc,
+                                         uint32_t slot,
+                                         uint32_t first,
+                                         uint32_t end,
+                                         const struct SbSeekIndex *index,
+                                         struct SbRawFrames **out);
+
+/*
+ As `sb_raw_frames_open_next`, with `index` (NULL for none), as
+ `sb_range_audio_open_next_indexed` does for decoded audio.
+
+ # Safety
+
+ As `sb_raw_frames_open_next`; `index` NULL or a live handle.
+ */
+enum SbStatus sb_raw_frames_open_next_indexed(const struct SbDisc *disc,
+                                              struct SbRawFrames *prev,
+                                              uint32_t slot,
+                                              uint32_t first,
+                                              uint32_t end,
+                                              struct SbSeekIndex *index,
+                                              struct SbRawFrames **out);
+
+/*
+ Takes into `index` the checkpoints a track audio handle recorded past the index's
+ frontier (one opened with an index; others recorded none, and this does nothing). Call
+ it whenever convenient, for example before freeing the handle. Fails with
+ `SB_STATUS_INVALID_ARGUMENT`, `index` unchanged, if the handle's checkpoints are of
+ another area, image size or interval, or do not join the index.
+
+ # Safety
+
+ `audio` and `index` must be NULL or live handles.
+ */
+enum SbStatus sb_track_audio_absorb(const struct SbTrackAudio *audio, struct SbSeekIndex *index);
+
+/*
+ As `sb_track_audio_absorb`, for a raw frames handle (a stored frame list's records
+ none).
+
+ # Safety
+
+ `raw` and `index` must be NULL or live handles.
+ */
+enum SbStatus sb_raw_frames_absorb(const struct SbRawFrames *raw, struct SbSeekIndex *index);
 
 #ifdef __cplusplus
 }  // extern "C"

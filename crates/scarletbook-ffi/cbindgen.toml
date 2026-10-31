@@ -14,7 +14,7 @@ header = """/* SPDX-License-Identifier: MIT OR Apache-2.0 */
  *   failure, sb_last_error_message() describes the error. The message belongs to the
  *   calling thread and stays valid until that thread's next call into this library.
  *
- * - Handles. SbDisc, SbTrackAudio, SbRawFrames and SbPool are opaque. Each is created by one
+ * - Handles. SbDisc, SbTrackAudio, SbRawFrames, SbPool and SbSeekIndex are opaque. Each is created by one
  *   function and released by exactly one call to its _free function; passing NULL to a
  *   _free function does nothing. A function that creates a handle sets *out to NULL when it fails, so
  *   freeing that pointer afterwards is safe.
@@ -47,7 +47,8 @@ header = """/* SPDX-License-Identifier: MIT OR Apache-2.0 */
  * - Callbacks and re-entrancy. While a disc's callback runs, that disc and its track
  *   and raw frames handles are in use: calling into this library with them from the
  *   callback returns SB_STATUS_INVALID_ARGUMENT, and their _free functions do
- *   nothing. Other handles may be used. (A log callback invoked by a call that only
+ *   nothing; so is a seek index the call uses (sb_seek_index_extend, the _indexed
+ *   functions). Other handles may be used. (A log callback invoked by a call that only
  *   reads the disc, such as sb_track_check, may read it too; one running on a pool
  *   thread must not use the disc or its track or raw frames handles at all, with any
  *   call, sb_track_audio_set_pool and the _free functions included.)
