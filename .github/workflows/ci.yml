@@ -194,18 +194,21 @@ jobs:
           SLICE: ${{ matrix.slice }}
         run: |
           # Every named test must exist and run: a renamed test fails the slice instead of
-          # leaving it to pass with nothing run.
-          log=$(mktemp)
+          # leaving it to pass with nothing run. `named N` checks the libtest summaries of the
+          # command just before it (the per-test lines can be split by Miri's warnings).
+          last=0
           miri() {
-            cargo +"$RUST_NIGHTLY" miri test --locked "$@" 2>&1 | tee -a "$log"
-            return "${PIPESTATUS[0]}"
+            local out rc
+            out=$(mktemp)
+            cargo +"$RUST_NIGHTLY" miri test --locked "$@" 2>&1 | tee "$out"
+            rc=${PIPESTATUS[0]}
+            last=$(grep -oE '^test result: ok\. [0-9]+ passed' "$out" | awk '{s += $4} END {print s + 0}')
+            return "$rc"
           }
           tb() { MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-ignore-leaks" miri "$@"; }
           named() {
-            local ran
-            ran=$(tail -n 400 "$log" | grep -c '^test .* \.\.\. ok$' || true)
-            if [[ "$ran" -lt "$1" ]]; then
-              echo "::error::slice $SLICE ran $ran named tests, expected $1"
+            if [[ "$last" -lt "$1" ]]; then
+              echo "::error::slice $SLICE ran $last named tests, expected $1"
               exit 1
             fi
           }
@@ -224,10 +227,8 @@ jobs:
             lanes-3) miri -p scarletbook --lib -- --exact dst::tests::fast_loop_matches_general_3_frames; named 1 ;;
             lanes-4) miri -p scarletbook --lib -- --exact dst::tests::fast_loop_matches_general_4_frames; named 1 ;;
             parallel)
-              : > "$log"
               tb -p scarletbook-ffi --test ffi -- --include-ignored --exact pool_handles_of_a_small_image
               named 1
-              : > "$log"
               tb -p scarletbook --features parallel --test demux_props -- --include-ignored --exact \
                 read_error_after_batches_follows_its_frames
               named 1 ;;
