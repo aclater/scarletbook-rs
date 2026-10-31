@@ -11,7 +11,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use scarletbook_ffi::*;
 
-const LIB: &str = include_str!("../src/lib.rs");
+/// The library's source: `src/lib.rs` and its modules.
+const LIB: &str = concat!(include_str!("../src/lib.rs"), "\n", include_str!("../src/output.rs"));
 const HEADER: &str = include_str!("../include/scarletbook.h");
 
 /// Exported functions without `guard`, and why they cannot panic. Adding one here needs

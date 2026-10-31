@@ -94,6 +94,34 @@ sectors are exactly those of the decoded reads; invalid DST frames show only whe
 In C: `sb_raw_frames_open`, `sb_raw_frames_read`, `sb_raw_frames_read_dst_equivalent` and
 `sb_stored_frame_list_open`, with caller buffers of at most `SB_MAX_FRAME_BYTES`.
 
+### DSF and DSDIFF files
+
+`scarletbook::output` (the default `output` feature) lays out a track, a track with pause or
+any frame range as a DSF file, with an ID3v2.4 tag, or a DSDIFF file, with plain DSD or the
+DST frames unchanged, markers and text, or as an edited master (specification 8). The file's
+size and every byte that isn't audio come from the TOC alone, so a filesystem can list the
+file before reading any audio, and produce any byte range of it:
+
+```rust
+use scarletbook::output::{Format, OutputOptions};
+
+let (first, end) = disc.track_range_with_pause(Slot::TwoChannel, 1)?;
+let layout = disc.output_layout(Slot::TwoChannel, first, end, Format::Dsf, &OutputOptions::default())?;
+let size = layout.size();
+let mut buf = vec![0; 65_536];
+let n = layout.read_at(&mut disc, offset, &mut buf)?;
+// Or with positions from a cache of your own:
+let needed = layout.positions_for(offset..offset + buf.len() as u64);
+let n = layout.fill(offset, &mut buf, &mut my_source)?;
+```
+
+A DST file's size needs the frames' lengths too: `DstLengths::scan` reads them without
+decoding (they can be saved and loaded), and `Disc::output_layout_dst` lays the file out
+from them. Every point where the formats allow more than one valid output (8.6, "writer's
+choices") is a field of `OutputOptions` with a documented default; `TagSet::from_toc` gives
+the tag items, which the caller may change. In C: `sb_output_options_*`, `sb_tags_*`,
+`sb_dst_lengths_*` and `sb_output_layout_*` (see [Output files](#output-files)).
+
 ### Seeking within an area
 
 A range far into an area normally costs a scan of the area up to it: which frames a range
@@ -258,6 +286,29 @@ verdict once: confirmed, or refuted with the frame from which the positions are 
 (`exact_from`; re-read the positions below it with `SB_SEEK_POLICY_EXACT` for those of a
 straight read). A disc that keeps a seek index of the area hands each reading through it to
 that index, also for ranges opened with an index of the caller's.
+
+### Output files
+
+The DSF and DSDIFF layouts of [DSF and DSDIFF files](#dsf-and-dsdiff-files):
+
+```c
+SbOutputOptions *opts = NULL;
+sb_output_options_new(&opts);
+sb_output_options_set(opts, SB_OUTPUT_OPTION_ID3_FOOTER, 0);  /* each writer's choice */
+SbOutputLayout *layout = NULL;
+sb_output_layout_new(disc, slot, first, end, SB_OUTPUT_FORMAT_DSF, opts, &layout);
+SbOutputLayoutInfo info;
+sb_output_layout_info(layout, &info);                        /* info.size, from the TOC */
+size_t n = 0;
+sb_output_layout_read(layout, disc, offset, buf, len, &n);   /* any byte range */
+/* or sb_output_layout_positions + sb_output_layout_fill with positions you hold */
+```
+
+For DST passthrough, `sb_dst_lengths_scan` (or `sb_dst_lengths_load`) and
+`sb_output_layout_new_dst`. Tag items: `sb_tags_from_toc`, `sb_tags_set`, `sb_tags_push`,
+`sb_tags_remove`, then `sb_output_options_set_tags`. An area whose loudspeaker layout is
+unspecified is refused for DSF with `SB_STATUS_OUTPUT_LAYOUT_UNSPECIFIED` unless a channel
+type is given, and an edited master that 8.4.11 excludes with `SB_STATUS_NOT_EDITED_MASTER`.
 
 ### Parallel decoding
 

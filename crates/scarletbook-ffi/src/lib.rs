@@ -19,6 +19,9 @@ use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
+mod output;
+
+pub use output::*;
 use scarletbook::log::{Level, Log};
 use scarletbook::toc::{AreaTextItem, DiscTextItem, TrackTextItem};
 use scarletbook::{
@@ -80,6 +83,12 @@ pub enum SbStatus {
     /// The call stopped because cancellation was requested (`sb_cancel_request`); the
     /// handle stays where it was and continues once the request is withdrawn.
     Cancelled = -19,
+    /// An output file can't be written for the area's unspecified loudspeaker layout
+    /// without a channel type (specification 8, 8.2.4 item 2; `sb_output_layout_new`).
+    OutputLayoutUnspecified = -20,
+    /// An edited master can't be written for the area or range (specification 8, 8.4.11);
+    /// the message names the check that failed (`sb_output_layout_new`).
+    NotEditedMaster = -21,
 }
 
 /// Area slots, as passed in `slot` arguments.
@@ -703,6 +712,10 @@ impl From<Error> for Failure {
             Error::InvalidArgument(_) => SbStatus::InvalidArgument,
             Error::Io(_) => SbStatus::Io,
             Error::Cancelled => SbStatus::Cancelled,
+            Error::OutputRefused(scarletbook::OutputRefusal::UnspecifiedLayout { .. }) => {
+                SbStatus::OutputLayoutUnspecified
+            }
+            Error::OutputRefused(scarletbook::OutputRefusal::NotEditedMaster(_)) => SbStatus::NotEditedMaster,
             _ => SbStatus::Panic,
         };
         Failure(status, e.to_string())
@@ -1137,6 +1150,8 @@ pub extern "C" fn sb_status_name(status: i32) -> *const c_char {
         -17 => c"out-of-memory",
         -18 => c"sector-range-invalid",
         -19 => c"cancelled",
+        -20 => c"output-layout-unspecified",
+        -21 => c"not-edited-master",
         _ => c"unknown",
     };
     name.as_ptr()

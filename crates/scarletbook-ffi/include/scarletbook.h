@@ -425,6 +425,16 @@ enum SbStatus
    handle stays where it was and continues once the request is withdrawn.
    */
   SB_STATUS_CANCELLED = -19,
+  /*
+   An output file can't be written for the area's unspecified loudspeaker layout
+   without a channel type (specification 8, 8.2.4 item 2; `sb_output_layout_new`).
+   */
+  SB_STATUS_OUTPUT_LAYOUT_UNSPECIFIED = -20,
+  /*
+   An edited master can't be written for the area or range (specification 8, 8.4.11);
+   the message names the check that failed (`sb_output_layout_new`).
+   */
+  SB_STATUS_NOT_EDITED_MASTER = -21,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -723,6 +733,434 @@ typedef uint32_t SbTrackString;
 #endif // __cplusplus
 
 /*
+ Output file formats, as passed in `format` arguments.
+ */
+enum SbOutputFormat
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint32_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  /*
+   DSF with the tag of the options (specification 8, 8.2).
+   */
+  SB_OUTPUT_FORMAT_DSF = 0,
+  /*
+   DSDIFF with plain DSD sound data (8.4.5).
+   */
+  SB_OUTPUT_FORMAT_DSDIFF_DSD = 1,
+  /*
+   DSDIFF with DST sound data (8.4.6); made with `sb_output_layout_new_dst`.
+   */
+  SB_OUTPUT_FORMAT_DSDIFF_DST = 2,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum SbOutputFormat SbOutputFormat;
+#else
+typedef uint32_t SbOutputFormat;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+/*
+ The integer-valued output options of `sb_output_options_set`: specification 8, 8.6's
+ writer's choices (W numbers). Each value's meaning and the default are given per option.
+ */
+enum SbOutputOption
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint32_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  /*
+   W1: 1 (bits reversed, the default) or 8 (unchanged).
+   */
+  SB_OUTPUT_OPTION_DSF_BITS_PER_SAMPLE = 0,
+  /*
+   W2: 0 refuses an unspecified layout (the default), or a DSF channel type 1 to 7
+   with the area's channel count.
+   */
+  SB_OUTPUT_OPTION_DSF_UNSPECIFIED_CHANNEL_TYPE = 1,
+  /*
+   W15: 1 writes `LSCO` 65 535 for an unspecified layout; 0 (the default) none.
+   */
+  SB_OUTPUT_OPTION_DSDIFF_UNSPECIFIED_LOUDSPEAKER_CONFIGURATION = 2,
+  /*
+   W16: 1 (the default) writes `LSCO` for a defined layout; 0 none.
+   */
+  SB_OUTPUT_OPTION_DSDIFF_LOUDSPEAKER_CONFIGURATION = 3,
+  /*
+   W17: the absolute start frame `A`, or -1 (the default) for no `ABSS`.
+   */
+  SB_OUTPUT_OPTION_DSDIFF_ABSOLUTE_START = 4,
+  /*
+   W19: 1 writes a `DSTC` frame CRC after each `DSTF`; 0 (the default) none.
+   */
+  SB_OUTPUT_OPTION_DSDIFF_DST_CRC = 5,
+  /*
+   W20: 1 (the default) writes the `DSTI` sound index; 0 none.
+   */
+  SB_OUTPUT_OPTION_DSDIFF_DST_INDEX = 6,
+  /*
+   W21: 0 (the default) for `DSTI` offsets at the `DSTF` chunk header, 1 at its frame
+   data.
+   */
+  SB_OUTPUT_OPTION_DSDIFF_DST_INDEX_OFFSET = 7,
+  /*
+   W29: -1 (the default) finds the source track; 0 none; 1 to 255 that track.
+   */
+  SB_OUTPUT_OPTION_SOURCE_TRACK = 8,
+  /*
+   1 writes an edited master (8.4.11); 0 (the default) does not.
+   */
+  SB_OUTPUT_OPTION_DSDIFF_EDITED_MASTER = 9,
+  /*
+   W24: 1 writes `DIIN`; 0 (the default) does not (an edited master always has one).
+   */
+  SB_OUTPUT_OPTION_DSDIFF_EDITED_MASTER_INFO = 10,
+  /*
+   W28: 1 gives a file with a source track its one-track program; 0 (the default) not.
+   */
+  SB_OUTPUT_OPTION_DSDIFF_SOURCE_TRACK_MARKERS = 11,
+  /*
+   W30: 1 gives a frame range without a source track its clipped program; 0 (the
+   default) not.
+   */
+  SB_OUTPUT_OPTION_DSDIFF_CLIPPED_PROGRAM = 12,
+  /*
+   W22: 1 counts the pad byte of odd text in `D`; 0 (the default) not.
+   */
+  SB_OUTPUT_OPTION_DSDIFF_TEXT_PAD_COUNTED = 13,
+  /*
+   W24: -1 (the default) writes `DIAR` and `DITI` in an edited master only; 0 never;
+   1 whenever `DIIN` is written.
+   */
+  SB_OUTPUT_OPTION_DSDIFF_ARTIST_TITLE = 14,
+  /*
+   W23: 0 (the default) for markers without text, 1 for the track title on track
+   starts.
+   */
+  SB_OUTPUT_OPTION_DSDIFF_MARKER_TEXT = 15,
+  /*
+   W26: -1 removes other code points from DSDIFF text; a byte 0x20 to 0x7E replaces
+   them (the default `?`).
+   */
+  SB_OUTPUT_OPTION_DSDIFF_TEXT_REPLACEMENT = 16,
+  /*
+   W31: 1 writes empty DSDIFF text with `k = 0`; 0 (the default) leaves it out.
+   */
+  SB_OUTPUT_OPTION_DSDIFF_EMPTY_TEXT = 17,
+  /*
+   W3: 0 (the default) tags a DSF file from the TOC, 1 writes no tag (a tag set or raw
+   tag is set with `sb_output_options_set_tags` or `sb_output_options_set_raw_tag`).
+   */
+  SB_OUTPUT_OPTION_TAGS = 18,
+  /*
+   W11: 0 the disc's text, 1 the album's, 2 (the default) the disc's or else the
+   album's.
+   */
+  SB_OUTPUT_OPTION_TEXT_SOURCE = 19,
+  /*
+   W11: the genre sources, a bit mask: 1 the track's, 2 the album's, 4 the disc's (the
+   default 7).
+   */
+  SB_OUTPUT_OPTION_GENRES = 20,
+  /*
+   W4: 1 (the default) writes an ID3 footer; 0 none.
+   */
+  SB_OUTPUT_OPTION_ID3_FOOTER = 21,
+  /*
+   W5: ID3 padding bytes without a footer (default 0).
+   */
+  SB_OUTPUT_OPTION_ID3_PADDING = 22,
+  /*
+   W7: 0 UTF-8 (the default), 1 ISO 8859-1 where allowed, else UTF-8, 2 UTF-16 LE with
+   BOM, 3 UTF-16 BE with BOM, 4 UTF-16BE without.
+   */
+  SB_OUTPUT_OPTION_ID3_ENCODING = 23,
+  /*
+   W8: 1 terminates the last string of text frames; 0 (the default) not.
+   */
+  SB_OUTPUT_OPTION_ID3_TERMINATE_LAST = 24,
+  /*
+   W9: -1 (the default) removes control characters; a code point replaces them.
+   */
+  SB_OUTPUT_OPTION_ID3_CONTROL_REPLACEMENT = 25,
+  /*
+   W11: 0 (the default) the arranger in `TIPL`, 1 in `TXXX`.
+   */
+  SB_OUTPUT_OPTION_ID3_ARRANGER = 26,
+  /*
+   W11: 1 writes `TSOT` and `TSOP`; 0 (the default) not.
+   */
+  SB_OUTPUT_OPTION_ID3_PHONETIC = 27,
+  /*
+   W11: 1 (the default) writes `TRCK` with `/count`; 0 without.
+   */
+  SB_OUTPUT_OPTION_ID3_TRACK_COUNT = 28,
+  /*
+   W11: 0 (the default) no album-artist frame, 1 `TPE2`, 2 `TXXX`.
+   */
+  SB_OUTPUT_OPTION_ID3_ALBUM_ARTIST = 29,
+  /*
+   W11: 1 (the default) writes `TCOP`; 0 not.
+   */
+  SB_OUTPUT_OPTION_ID3_COPYRIGHT = 30,
+  /*
+   W11: 1 writes a sequence number outside the set alone in `TPOS`; 0 (the default)
+   not.
+   */
+  SB_OUTPUT_OPTION_ID3_ALBUM_SET_ALONE = 31,
+  /*
+   W11: 0 (the default) the date in `TDRL`, 1 in `TDRC`.
+   */
+  SB_OUTPUT_OPTION_ID3_DATE = 32,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum SbOutputOption SbOutputOption;
+#else
+typedef uint32_t SbOutputOption;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+/*
+ The string-valued output options of `sb_output_options_set_string`.
+ */
+enum SbOutputString
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint32_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  /*
+   W24: the text of `EMID` (default empty); text bytes 0x20 to 0x7E.
+   */
+  SB_OUTPUT_STRING_DSDIFF_EDITED_MASTER_ID = 0,
+  /*
+   W10: a separator at which ID3 values are split; NULL (the default) for none.
+   */
+  SB_OUTPUT_STRING_ID3_SPLIT = 1,
+  /*
+   W11, W12: the separator joining both messages in one `COMM`; NULL (the default)
+   for one frame each.
+   */
+  SB_OUTPUT_STRING_ID3_JOIN_MESSAGES = 2,
+  /*
+   W12: the `COMM` language, three lower-case letters or `XXX` (the default).
+   */
+  SB_OUTPUT_STRING_ID3_LANGUAGE = 3,
+  /*
+   W12: the description of the message's `COMM` (default empty).
+   */
+  SB_OUTPUT_STRING_ID3_MESSAGE_DESCRIPTION = 4,
+  /*
+   W12: the description of the extra message's `COMM` (default `extra message`).
+   */
+  SB_OUTPUT_STRING_ID3_EXTRA_MESSAGE_DESCRIPTION = 5,
+  /*
+   W12: the `TXXX` description of the arranger (default `arranger`).
+   */
+  SB_OUTPUT_STRING_ID3_ARRANGER_DESCRIPTION = 6,
+  /*
+   W12: the `TXXX` description of the album artist (default `album artist`).
+   */
+  SB_OUTPUT_STRING_ID3_ALBUM_ARTIST_DESCRIPTION = 7,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum SbOutputString SbOutputString;
+#else
+typedef uint32_t SbOutputString;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+/*
+ The chunk orders of `sb_output_options_set_order`.
+ */
+enum SbOutputOrder
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint32_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  /*
+   W14, inside `PROP`: 0 `FS  `, 1 `CHNL`, 2 `CMPR`, 3 `ABSS`, 4 `LSCO`, each once
+   (the default 0 1 2 3 4).
+   */
+  SB_OUTPUT_ORDER_PROPERTY = 0,
+  /*
+   W13, the local chunks after `FVER`: 0 `PROP`, 1 the sound data, 2 `DSTI`, 3 `DIIN`,
+   4 `COMT`, each the file holds once, `PROP` before the sound data (the default 0 4
+   3 1 2).
+   */
+  SB_OUTPUT_ORDER_LOCAL = 1,
+  /*
+   W14, inside `DIIN`: 0 `EMID`, 1 the markers, 2 `DIAR`, 3 `DITI`, each once (the
+   default 0 1 2 3).
+   */
+  SB_OUTPUT_ORDER_INFO = 2,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum SbOutputOrder SbOutputOrder;
+#else
+typedef uint32_t SbOutputOrder;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+/*
+ Tag items (specification 8, 8.3.5), as passed in `item` arguments.
+ */
+enum SbTagItem
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint32_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  /*
+   Track title.
+   */
+  SB_TAG_ITEM_TRACK_TITLE = 0,
+  /*
+   Track performer.
+   */
+  SB_TAG_ITEM_PERFORMER = 1,
+  /*
+   Songwriter.
+   */
+  SB_TAG_ITEM_SONGWRITER = 2,
+  /*
+   Composer.
+   */
+  SB_TAG_ITEM_COMPOSER = 3,
+  /*
+   Arranger.
+   */
+  SB_TAG_ITEM_ARRANGER = 4,
+  /*
+   Message.
+   */
+  SB_TAG_ITEM_MESSAGE = 5,
+  /*
+   Extra message.
+   */
+  SB_TAG_ITEM_EXTRA_MESSAGE = 6,
+  /*
+   Track title, phonetic.
+   */
+  SB_TAG_ITEM_TITLE_PHONETIC = 7,
+  /*
+   Track performer, phonetic.
+   */
+  SB_TAG_ITEM_PERFORMER_PHONETIC = 8,
+  /*
+   The source track's number.
+   */
+  SB_TAG_ITEM_TRACK_NUMBER = 9,
+  /*
+   The area's track count.
+   */
+  SB_TAG_ITEM_TRACK_COUNT = 10,
+  /*
+   ISRC.
+   */
+  SB_TAG_ITEM_ISRC = 11,
+  /*
+   Genre names.
+   */
+  SB_TAG_ITEM_GENRE = 12,
+  /*
+   Album or disc title.
+   */
+  SB_TAG_ITEM_ALBUM = 13,
+  /*
+   Album or disc artist.
+   */
+  SB_TAG_ITEM_ALBUM_ARTIST = 14,
+  /*
+   Album or disc publisher.
+   */
+  SB_TAG_ITEM_PUBLISHER = 15,
+  /*
+   Album or disc copyright.
+   */
+  SB_TAG_ITEM_COPYRIGHT = 16,
+  /*
+   Album sequence number.
+   */
+  SB_TAG_ITEM_DISC_NUMBER = 17,
+  /*
+   Album set size.
+   */
+  SB_TAG_ITEM_DISC_COUNT = 18,
+  /*
+   Date, `yyyy-MM-dd`, `yyyy-MM` or `yyyy`.
+   */
+  SB_TAG_ITEM_DATE = 19,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum SbTagItem SbTagItem;
+#else
+typedef uint32_t SbTagItem;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+/*
+ What a layout's `sb_output_layout_fill` needs per position (`SbOutputLayoutInfo`).
+ */
+enum SbOutputInput
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint32_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  /*
+   The content (decoded, `C x 4704` bytes).
+   */
+  SB_OUTPUT_INPUT_CONTENT = 0,
+  /*
+   The DST equivalents.
+   */
+  SB_OUTPUT_INPUT_DST_EQUIVALENTS = 1,
+  /*
+   The DST equivalents, and the content for the frame CRCs.
+   */
+  SB_OUTPUT_INPUT_DST_EQUIVALENTS_AND_CONTENT = 2,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum SbOutputInput SbOutputInput;
+#else
+typedef uint32_t SbOutputInput;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+/*
+ What a region of an output file holds.
+ */
+enum SbOutputRegionKind
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint32_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  /*
+   Bytes before the sound data.
+   */
+  SB_OUTPUT_REGION_KIND_HEADER = 0,
+  /*
+   The sound data.
+   */
+  SB_OUTPUT_REGION_KIND_SOUND_DATA = 1,
+  /*
+   Chunks after the sound data, or the DSF tag.
+   */
+  SB_OUTPUT_REGION_KIND_TRAILER = 2,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum SbOutputRegionKind SbOutputRegionKind;
+#else
+typedef uint32_t SbOutputRegionKind;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+/*
  The cancellation request of a disc's reads (`sb_disc_cancel_token`): one per image,
  shared by the disc, its clones and their track and raw frames handles. Unlike those
  handles it may be used by several threads at once.
@@ -737,6 +1175,21 @@ typedef struct SbCancel SbCancel;
  state borrowed and fails cleanly instead of aliasing it.
  */
 typedef struct SbDisc SbDisc;
+
+/*
+ The lengths of a range's DST equivalents (specification 8, 8.4.6 "Sizes").
+ */
+typedef struct SbDstLengths SbDstLengths;
+
+/*
+ The layout of one output file.
+ */
+typedef struct SbOutputLayout SbOutputLayout;
+
+/*
+ Output options: the writer's choices of specification 8, 8.6.
+ */
+typedef struct SbOutputOptions SbOutputOptions;
 
 /*
  A pool of decoding threads (`sb_pool_new`), shared by the track audio handles given it.
@@ -776,6 +1229,11 @@ typedef struct SbRawFrames SbRawFrames;
  trusted to be of it (loading is safe, not exact).
  */
 typedef struct SbSeekIndex SbSeekIndex;
+
+/*
+ Tag items of a file (specification 8, 8.3.5).
+ */
+typedef struct SbTags SbTags;
 
 /*
  The decoding state of one track or frame range. Each `sb_track_audio_read` call reads through the
@@ -1204,6 +1662,181 @@ typedef struct SbSpeculation {
    */
   uint32_t reserved;
 } SbSpeculation;
+
+/*
+ A DSDIFF comment for `sb_output_options_add_comment` (specification 8, 8.4.8).
+
+ Layout: `text` at offset 0, three `uint32_t`, then four `uint8_t`; 24 bytes on 64-bit
+ targets, 20 on 32-bit ones, without padding.
+ */
+typedef struct SbComment {
+  /*
+   NUL-terminated UTF-8 text, written as text bytes (8.4.9); NULL for empty.
+   */
+  const char *text;
+  /*
+   Year, 0 to 65 535.
+   */
+  uint32_t year;
+  /*
+   0 general, 1 channel, 2 sound source, 3 file history.
+   */
+  uint32_t kind;
+  /*
+   The reference of its kind (8.4.8), 0 to 65 535.
+   */
+  uint32_t reference;
+  /*
+   Month, 0 to 12.
+   */
+  uint8_t month;
+  /*
+   Day, 0 to 31.
+   */
+  uint8_t day;
+  /*
+   Hour, 0 to 23.
+   */
+  uint8_t hour;
+  /*
+   Minutes, 0 to 59.
+   */
+  uint8_t minutes;
+} SbComment;
+
+/*
+ A DSDIFF marker for `sb_output_options_add_marker` (specification 8, 8.4.7).
+
+ Layout: `text` at offset 0, then four `uint32_t`; 24 bytes on 64-bit targets, 20 on
+ 32-bit ones, without padding.
+ */
+typedef struct SbMarker {
+  /*
+   NUL-terminated text bytes 0x20 to 0x7E, or NULL for none.
+   */
+  const char *text;
+  /*
+   The frame of the area's timeline, from the range's first to its end.
+   */
+  uint32_t frame;
+  /*
+   0 track start, 1 track stop, 2 program start, 4 index.
+   */
+  uint32_t kind;
+  /*
+   Track flags (0 to 65 535), written on a track start only.
+   */
+  uint32_t track_flags;
+  /*
+   0.
+   */
+  uint32_t reserved;
+} SbMarker;
+
+/*
+ A layout's description (`sb_output_layout_info`).
+
+ Layout: 48 bytes, aligned to 8, without padding (2 fields of 8 bytes, then 8 of 4).
+ */
+typedef struct SbOutputLayoutInfo {
+  /*
+   The file's size in bytes.
+   */
+  uint64_t size;
+  /*
+   The memory the layout holds, in bytes.
+   */
+  uint64_t memory;
+  /*
+   The format (`SbOutputFormat`).
+   */
+  uint32_t format;
+  /*
+   The area's slot.
+   */
+  uint32_t slot;
+  /*
+   The range's first frame.
+   */
+  uint32_t first;
+  /*
+   The range's end frame (exclusive).
+   */
+  uint32_t end;
+  /*
+   The area's channel count.
+   */
+  uint32_t channels;
+  /*
+   The source track's number, or 0.
+   */
+  uint32_t source_track;
+  /*
+   What `sb_output_layout_fill` needs (`SbOutputInput`).
+   */
+  uint32_t input;
+  /*
+   The number of regions.
+   */
+  uint32_t regions;
+} SbOutputLayoutInfo;
+
+/*
+ A region of an output file (`sb_output_layout_region`).
+
+ Layout: 24 bytes, aligned to 8, without padding.
+ */
+typedef struct SbOutputRegion {
+  /*
+   Its first byte's offset.
+   */
+  uint64_t offset;
+  /*
+   Its length.
+   */
+  uint64_t len;
+  /*
+   What it holds (`SbOutputRegionKind`).
+   */
+  uint32_t kind;
+  /*
+   0.
+   */
+  uint32_t reserved;
+} SbOutputRegion;
+
+/*
+ The content a caller holds of one position, for `sb_output_layout_fill`.
+
+ Layout: two pointer and length pairs, then two `uint32_t`; 40 bytes on 64-bit targets,
+ 24 on 32-bit ones, without padding.
+ */
+typedef struct SbPositionData {
+  /*
+   Its content (`C x 4704` bytes), or NULL when the layout doesn't need it.
+   */
+  const uint8_t *content;
+  /*
+   The content's length.
+   */
+  size_t content_len;
+  /*
+   Its DST equivalent as the file holds it, or NULL when the layout doesn't need it.
+   */
+  const uint8_t *dst_equivalent;
+  /*
+   The DST equivalent's length.
+   */
+  size_t dst_equivalent_len;
+  /*
+   The position's frame number.
+   */
+  uint32_t number;
+  /*
+   0.
+   */
+  uint32_t reserved;
+} SbPositionData;
 
 /*
  The header of a `sb_disc_toc` layout, at offset 0.
@@ -3143,6 +3776,430 @@ SbStatus sb_disc_toc(const struct SbDisc *disc,
                      uint8_t *buf,
                      size_t cap,
                      size_t *len);
+
+/*
+ Makes output options with their defaults (specification 8, 8.6, as documented per
+ option). On failure `*out` is set to NULL.
+
+ # Safety
+
+ `out` must be NULL or valid for a write.
+ */
+SbStatus sb_output_options_new(struct SbOutputOptions **out);
+
+/*
+ Frees output options. NULL is ignored.
+
+ # Safety
+
+ `options` must be NULL or a live handle, freed only once.
+ */
+void sb_output_options_free(struct SbOutputOptions *options);
+
+/*
+ Sets the integer option `option` (`SbOutputOption`) to `value`, as documented per
+ option. `SB_STATUS_INVALID_ARGUMENT` for an unknown option or value.
+
+ # Safety
+
+ `options` must be NULL or a live handle.
+ */
+SbStatus sb_output_options_set(const struct SbOutputOptions *options,
+                               uint32_t option,
+                               int64_t value);
+
+/*
+ Sets the string option `which` (`SbOutputString`) to the NUL-terminated UTF-8 string
+ `value`; NULL sets the options that allow it to none, and the others to their
+ defaults.
+
+ # Safety
+
+ `options` must be NULL or a live handle; `value` NULL or a NUL-terminated string.
+ */
+SbStatus sb_output_options_set_string(const struct SbOutputOptions *options,
+                                      uint32_t which,
+                                      const char *value);
+
+/*
+ Sets the chunk order `which` (`SbOutputOrder`) to the `count` chunk numbers of
+ `items`, as documented per order.
+
+ # Safety
+
+ `options` must be NULL or a live handle; `items` NULL or valid for `count` reads.
+ */
+SbStatus sb_output_options_set_order(const struct SbOutputOptions *options,
+                                     uint32_t which,
+                                     const uint32_t *items,
+                                     size_t count);
+
+/*
+ Sets the ID3 frame order (W6) to the `count` frame IDs of `ids`, 4 bytes each with no
+ separator (for example `"TIT2TPE1"`); frames with other IDs follow in the order they
+ are made.
+
+ # Safety
+
+ `options` must be NULL or a live handle; `ids` NULL or valid for `4 x count` reads.
+ */
+SbStatus sb_output_options_set_id3_frame_order(const struct SbOutputOptions *options,
+                                               const char *ids,
+                                               size_t count);
+
+/*
+ Sets the DSDIFF channel numbers (0 to 999, written `C000` to `C999`) of an area whose
+ layout is unspecified (W15); NULL and 0 restore the default `C000`, `C001`, ...
+
+ # Safety
+
+ `options` must be NULL or a live handle; `numbers` NULL or valid for `count` reads.
+ */
+SbStatus sb_output_options_set_channel_numbers(const struct SbOutputOptions *options,
+                                               const uint16_t *numbers,
+                                               size_t count);
+
+/*
+ Adds a DSDIFF comment (W25). Its fields are checked when a layout is made.
+
+ # Safety
+
+ `options` must be NULL or a live handle; `comment` NULL or valid for a read, with
+ `text` NULL or NUL-terminated.
+ */
+SbStatus sb_output_options_add_comment(const struct SbOutputOptions *options,
+                                       const struct SbComment *comment);
+
+/*
+ Removes every DSDIFF comment.
+
+ # Safety
+
+ `options` must be NULL or a live handle.
+ */
+SbStatus sb_output_options_clear_comments(const struct SbOutputOptions *options);
+
+/*
+ Adds a marker of the caller's own: the file's markers are then the ones added, in
+ order, instead of the TOC's (specification 8, 8.4.10). They are checked when a layout
+ is made.
+
+ # Safety
+
+ `options` must be NULL or a live handle; `marker` NULL or valid for a read, with `text`
+ NULL or NUL-terminated.
+ */
+SbStatus sb_output_options_add_marker(const struct SbOutputOptions *options,
+                                      const struct SbMarker *marker);
+
+/*
+ Removes the caller's markers: the file's markers are the TOC's again.
+
+ # Safety
+
+ `options` must be NULL or a live handle.
+ */
+SbStatus sb_output_options_clear_markers(const struct SbOutputOptions *options);
+
+/*
+ Sets the tag items of the file to a copy of `tags` (W3): a DSF file's ID3 tag and
+ the DSDIFF artist and title. NULL tags from the TOC again.
+
+ # Safety
+
+ `options` must be NULL or a live handle; `tags` NULL or a live handle.
+ */
+SbStatus sb_output_options_set_tags(const struct SbOutputOptions *options,
+                                    const struct SbTags *tags);
+
+/*
+ Sets a DSF file's tag to a copy of the `len` bytes of `tag`, an ID3v2.4 tag written as
+ it is (W3); checked for its header and size when a layout is made.
+
+ # Safety
+
+ `options` must be NULL or a live handle; `tag` NULL or valid for `len` reads.
+ */
+SbStatus sb_output_options_set_raw_tag(const struct SbOutputOptions *options,
+                                       const uint8_t *tag,
+                                       size_t len);
+
+/*
+ Makes an empty set of tag items. On failure `*out` is set to NULL.
+
+ # Safety
+
+ `out` must be NULL or valid for a write.
+ */
+SbStatus sb_tags_new(struct SbTags **out);
+
+/*
+ The tag items the TOC gives a file of the area from `slot` with source track
+ `source_track` (0 for none), with the album-text and genre choices of `options` (NULL
+ for the defaults). On failure `*out` is set to NULL.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `options` NULL or a live handle; `out` NULL or
+ valid for a write.
+ */
+SbStatus sb_tags_from_toc(const struct SbDisc *disc,
+                          uint32_t slot,
+                          uint32_t source_track,
+                          const struct SbOutputOptions *options,
+                          struct SbTags **out);
+
+/*
+ Sets `item` (`SbTagItem`) to the NUL-terminated UTF-8 `value` alone.
+
+ # Safety
+
+ `tags` must be NULL or a live handle; `value` NULL or NUL-terminated.
+ */
+SbStatus sb_tags_set(const struct SbTags *tags, uint32_t item, const char *value);
+
+/*
+ Adds the NUL-terminated UTF-8 `value` as a further value of `item` (`SbTagItem`).
+
+ # Safety
+
+ `tags` must be NULL or a live handle; `value` NULL or NUL-terminated.
+ */
+SbStatus sb_tags_push(const struct SbTags *tags, uint32_t item, const char *value);
+
+/*
+ Removes `item` (`SbTagItem`).
+
+ # Safety
+
+ `tags` must be NULL or a live handle.
+ */
+SbStatus sb_tags_remove(const struct SbTags *tags, uint32_t item);
+
+/*
+ Sets the user-defined item `description` (an ID3 `TXXX` frame) to `value`; both are
+ NUL-terminated UTF-8.
+
+ # Safety
+
+ `tags` must be NULL or a live handle; `description` and `value` NULL or NUL-terminated.
+ */
+SbStatus sb_tags_set_custom(const struct SbTags *tags, const char *description, const char *value);
+
+/*
+ The number of values of `item` (`SbTagItem`), 0 if it is absent.
+
+ # Safety
+
+ `tags` must be NULL or a live handle; `count` NULL or valid for a write.
+ */
+SbStatus sb_tags_count(const struct SbTags *tags, uint32_t item, uint32_t *count);
+
+/*
+ Copies value `index` of `item` (`SbTagItem`) out as a string (see the conventions):
+ `SB_STATUS_ABSENT` if there is no such value.
+
+ # Safety
+
+ `tags` must be NULL or a live handle; `buf` NULL or valid for `cap` bytes of writes;
+ `len` NULL or valid for a write.
+ */
+SbStatus sb_tags_get(const struct SbTags *tags,
+                     uint32_t item,
+                     uint32_t index,
+                     char *buf,
+                     size_t cap,
+                     size_t *len);
+
+/*
+ Frees tag items. NULL is ignored.
+
+ # Safety
+
+ `tags` must be NULL or a live handle, freed only once.
+ */
+void sb_tags_free(struct SbTags *tags);
+
+/*
+ Reads the lengths of the DST equivalents of the frame range `[first, end)` of the area
+ from `slot` (specification 8, 8.4.6 "Sizes"): without decoding, unless
+ `replace_invalid` is 1, which decodes every DST frame and gives invalid ones the length
+ of the 0x55-fill equivalent (W18). The disc's read and log callbacks run during this
+ call. Fails as `sb_range_check` does; on failure `*out` is set to NULL.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `out` NULL or valid for a write.
+ */
+SbStatus sb_dst_lengths_scan(const struct SbDisc *disc,
+                             uint32_t slot,
+                             uint32_t first,
+                             uint32_t end,
+                             uint32_t replace_invalid,
+                             struct SbDstLengths **out);
+
+/*
+ Lengths saved from `sb_dst_lengths_get` of the frame range `[first, end)` of the area
+ from `slot`, `count` of them, scanned with `replace_invalid` as given: checked for
+ their count and bounds (1 to 65 536), not against the image. On failure `*out` is set
+ to NULL.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `lengths` NULL or valid for `count` reads; `out`
+ NULL or valid for a write.
+ */
+SbStatus sb_dst_lengths_load(const struct SbDisc *disc,
+                             uint32_t slot,
+                             uint32_t first,
+                             uint32_t end,
+                             uint32_t replace_invalid,
+                             const uint32_t *lengths,
+                             size_t count,
+                             struct SbDstLengths **out);
+
+/*
+ Copies the lengths out: `*count` receives their number; with `cap` at least that,
+ they are written to `out`, else `SB_STATUS_BUFFER_TOO_SMALL`.
+
+ # Safety
+
+ `lengths` must be NULL or a live handle; `out` NULL or valid for `cap` writes; `count`
+ NULL or valid for a write.
+ */
+SbStatus sb_dst_lengths_get(const struct SbDstLengths *lengths,
+                            uint32_t *out,
+                            size_t cap,
+                            size_t *count);
+
+/*
+ Frees DST lengths. NULL is ignored.
+
+ # Safety
+
+ `lengths` must be NULL or a live handle, freed only once.
+ */
+void sb_dst_lengths_free(struct SbDstLengths *lengths);
+
+/*
+ The layout of the frame range `[first, end)` of the area from `slot` as a `format`
+ file (`SbOutputFormat`, DSF or DSDIFF with plain DSD), with `options` (NULL for the
+ defaults): its exact size and every byte that isn't audio, from the TOC alone. Fails as
+ `sb_range_check` does, with `SB_STATUS_OUTPUT_LAYOUT_UNSPECIFIED` or
+ `SB_STATUS_NOT_EDITED_MASTER`, or `SB_STATUS_INVALID_ARGUMENT` for an option the area
+ can't take; on failure `*out` is set to NULL.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `options` NULL or a live handle; `out` NULL or
+ valid for a write.
+ */
+SbStatus sb_output_layout_new(const struct SbDisc *disc,
+                              uint32_t slot,
+                              uint32_t first,
+                              uint32_t end,
+                              uint32_t format,
+                              const struct SbOutputOptions *options,
+                              struct SbOutputLayout **out);
+
+/*
+ The layout of a DSDIFF file with DST sound data holding the range of `lengths`
+ (specification 8, 8.4.6), with `options` (NULL for the defaults). Fails as
+ `sb_output_layout_new`; on failure `*out` is set to NULL.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `lengths` NULL or a live handle; `options` NULL
+ or a live handle; `out` NULL or valid for a write.
+ */
+SbStatus sb_output_layout_new_dst(const struct SbDisc *disc,
+                                  const struct SbDstLengths *lengths,
+                                  const struct SbOutputOptions *options,
+                                  struct SbOutputLayout **out);
+
+/*
+ Describes a layout.
+
+ # Safety
+
+ `layout` must be NULL or a live handle; `info` NULL or valid for a write.
+ */
+SbStatus sb_output_layout_info(const struct SbOutputLayout *layout,
+                               struct SbOutputLayoutInfo *info);
+
+/*
+ Region `index` of a layout, in file order: `SB_STATUS_INVALID_ARGUMENT` past the last.
+
+ # Safety
+
+ `layout` must be NULL or a live handle; `region` NULL or valid for a write.
+ */
+SbStatus sb_output_layout_region(const struct SbOutputLayout *layout,
+                                 uint32_t index,
+                                 struct SbOutputRegion *region);
+
+/*
+ The timeline positions `[*first, *end)` that producing the file's bytes
+ `[offset, offset + len)` may read; empty (`*first == *end`) when they need none.
+
+ # Safety
+
+ `layout` must be NULL or a live handle; `first` and `end` NULL or valid for writes.
+ */
+SbStatus sb_output_layout_positions(const struct SbOutputLayout *layout,
+                                    uint64_t offset,
+                                    uint64_t len,
+                                    uint32_t *first,
+                                    uint32_t *end);
+
+/*
+ Reads the file's bytes from `offset` into `buf` (`len` bytes), taking the positions
+ from `disc`, which must be of the image the layout was made from
+ (`SB_STATUS_INVALID_ARGUMENT` otherwise); `*written` receives the bytes written, fewer
+ than `len` at the end of the file. The disc's read and log callbacks run during this
+ call.
+
+ # Safety
+
+ `layout` and `disc` must be NULL or live handles; `buf` NULL or valid for `len` bytes
+ of writes; `written` NULL or valid for a write.
+ */
+SbStatus sb_output_layout_read(const struct SbOutputLayout *layout,
+                               const struct SbDisc *disc,
+                               uint64_t offset,
+                               uint8_t *buf,
+                               size_t len,
+                               size_t *written);
+
+/*
+ Fills `buf` (`len` bytes) with the file's bytes from `offset`, from the `count`
+ positions the caller gives: those of `sb_output_layout_positions` for the same bytes,
+ with what `SbOutputLayoutInfo.input` says they need. `*written` receives the bytes
+ written, fewer than `len` at the end of the file. `SB_STATUS_INVALID_ARGUMENT` if a
+ needed position, or its content or DST equivalent, is missing or of the wrong size.
+
+ # Safety
+
+ `layout` must be NULL or a live handle; `buf` NULL or valid for `len` bytes of writes;
+ `positions` NULL or valid for `count` reads, each with its non-NULL pointers valid for
+ their lengths; `written` NULL or valid for a write.
+ */
+SbStatus sb_output_layout_fill(const struct SbOutputLayout *layout,
+                               uint64_t offset,
+                               uint8_t *buf,
+                               size_t len,
+                               const struct SbPositionData *positions,
+                               size_t count,
+                               size_t *written);
+
+/*
+ Frees a layout. NULL is ignored.
+
+ # Safety
+
+ `layout` must be NULL or a live handle, freed only once.
+ */
+void sb_output_layout_free(struct SbOutputLayout *layout);
 
 #ifdef __cplusplus
 }  // extern "C"

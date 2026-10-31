@@ -1,0 +1,1 @@
+| 2026-10-31 | #131 DSF and DSDIFF output, C interface | `sb_output_*`, `sb_tags_*`, `sb_dst_lengths_*` over `scarletbook::output`; README sections. Specification 8 at sacd-spec `6db1251`. No new sources consulted. |
