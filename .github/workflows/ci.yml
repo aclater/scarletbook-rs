@@ -5,6 +5,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # A manual run on any branch takes the full path, Miri included (e.g. before a PR that
+  # touches the core crate's internals).
+  workflow_dispatch:
 
 permissions:
   contents: read
