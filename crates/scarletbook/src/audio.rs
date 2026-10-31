@@ -1710,9 +1710,12 @@ mod pool {
             let job = Arc::new(Job::default());
             let out = Arc::clone(&job);
             let work = move || {
-                // The owner dropped its handle (a cursor continued or dropped with frames
-                // in flight): nobody will take these frames, so skip decoding them. Jobs
-                // already decoding finish; see MAX_PARALLEL_BATCH.
+                // Besides `out` here, the only handles are the owner's, one per frame of the
+                // group in its window. A count of 1 means it dropped them all (a cursor
+                // continued or dropped with frames in flight): nobody will take these
+                // frames, so skip decoding them. The count cannot rise again; any new
+                // handle to a job breaks this test. Jobs already decoding finish; see
+                // MAX_PARALLEL_BATCH.
                 if Arc::strong_count(&out) == 1 {
                     return;
                 }
