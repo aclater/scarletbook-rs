@@ -11,6 +11,17 @@
 #define SB_LOG_INFO 3
 #define SB_LOG_DEBUG 4
 #define SB_LOG_TRACE 5
+#define SB_LAYOUT_UNSPECIFIED 0
+#define SB_LAYOUT_STEREO 1
+#define SB_LAYOUT_THREE_TWO 2
+#define SB_LAYOUT_FIVE_POINT_ONE 3
+#define SB_SPEAKER_UNSPECIFIED 0
+#define SB_SPEAKER_FRONT_LEFT 1
+#define SB_SPEAKER_FRONT_RIGHT 2
+#define SB_SPEAKER_CENTRE 3
+#define SB_SPEAKER_LOW_FREQUENCY_EFFECTS 4
+#define SB_SPEAKER_SURROUND_LEFT 5
+#define SB_SPEAKER_SURROUND_RIGHT 6
 #define SB_MAX_POOL_THREADS 256
 typedef enum SbStatus {
 SB_STATUS_OK = 0,
@@ -176,6 +187,8 @@ void sb_disc_free(struct SbDisc *disc);
 enum SbStatus sb_disc_info(const struct SbDisc *disc, struct SbDiscInfo *out);
 enum SbStatus sb_disc_string(const struct SbDisc *disc, uint32_t field, char *buf, size_t cap, size_t *len);
 enum SbStatus sb_disc_area(const struct SbDisc *disc, uint32_t index, struct SbAreaInfo *out);
+enum SbStatus sb_area_loudspeaker_layout(const struct SbDisc *disc, uint32_t slot, uint32_t *layout);
+enum SbStatus sb_area_channel_speaker(const struct SbDisc *disc, uint32_t slot, uint32_t index, uint32_t *speaker);
 enum SbStatus sb_area_string(const struct SbDisc *disc, uint32_t slot, uint32_t field, char *buf, size_t cap, size_t *len);
 enum SbStatus sb_track_info(const struct SbDisc *disc, uint32_t slot, uint32_t number, struct SbTrackInfo *out);
 enum SbStatus sb_track_string(const struct SbDisc *disc, uint32_t slot, uint32_t number, uint32_t field, char *buf, size_t cap, size_t *len);

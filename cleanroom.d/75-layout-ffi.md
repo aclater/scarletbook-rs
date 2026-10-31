@@ -1,0 +1,1 @@
+| 2026-10-31 | C interface for loudspeaker layouts (#75) | `sb_area_loudspeaker_layout`, `sb_area_channel_speaker` and the `SB_LAYOUT_*` and `SB_SPEAKER_*` constants over the core's layouts (specification 3, 3.4.1); no new interpretation. No new sources consulted. |

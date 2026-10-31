@@ -374,6 +374,84 @@ fn warnings_and_rejections() {
     assert_eq!(status_name(12345), "unknown");
 }
 
+fn layout(disc: *const SbDisc, slot: u32) -> (SbStatus, u32) {
+    let mut l = 99;
+    // SAFETY: `disc` is NULL or a live handle; `&mut l` is a valid out-pointer.
+    (unsafe { sb_area_loudspeaker_layout(disc, slot, &mut l) }, l)
+}
+
+fn speaker(disc: *const SbDisc, slot: u32, index: u32) -> (SbStatus, u32) {
+    let mut s = 99;
+    // SAFETY: `disc` is NULL or a live handle; `&mut s` is a valid out-pointer.
+    (unsafe { sb_area_channel_speaker(disc, slot, index, &mut s) }, s)
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "reads whole corpus images")]
+fn loudspeaker_layouts() {
+    let (fl, fr, c, lfe, sl, sr) = (
+        SB_SPEAKER_FRONT_LEFT,
+        SB_SPEAKER_FRONT_RIGHT,
+        SB_SPEAKER_CENTRE,
+        SB_SPEAKER_LOW_FREQUENCY_EFFECTS,
+        SB_SPEAKER_SURROUND_LEFT,
+        SB_SPEAKER_SURROUND_RIGHT,
+    );
+    // A defined layout of each kind, 1, 3 and 4 channels, and combinations outside the
+    // table of specification 3, 3.4.1 (0 and 255 channels, 6 with 0, 2 and 5 with 4).
+    for id in [
+        "dst-features-2ch-6ch",
+        "dst-features-5ch",
+        "dst-features-1ch",
+        "dst-features-3ch",
+        "dst-features-4ch",
+        "area-channels-0",
+        "area-channels-255",
+        "area-channels-6-in-stereo",
+        "area-mch-channels-2",
+        "area-mch-channels-5",
+    ] {
+        let disc = open(&image(id)).unwrap();
+        let exp = expected(id);
+        let (_, i) = info(disc);
+        assert_eq!(i.area_count as usize, exp["toc"]["areas"].as_array().unwrap().len(), "{id}");
+        for index in 0..i.area_count {
+            let (_, a) = area(disc, index);
+            let e = &exp["toc"]["areas"][index as usize];
+            let (channels, config) = (a.channel_count, a.area_config);
+            assert_eq!(u64::from(channels), e["channel_count"].as_u64().unwrap(), "{id}");
+            assert_eq!(u64::from(config), e["area_config"].as_u64().unwrap(), "{id}");
+            let (want_layout, want): (u32, &[u32]) = match (channels, config & 7) {
+                (2, 0) => (SB_LAYOUT_STEREO, &[fl, fr]),
+                (5, 3) => (SB_LAYOUT_THREE_TWO, &[fl, fr, c, sl, sr]),
+                (6, 4) => (SB_LAYOUT_FIVE_POINT_ONE, &[fl, fr, c, lfe, sl, sr]),
+                _ => (SB_LAYOUT_UNSPECIFIED, &[]),
+            };
+            assert_eq!(layout(disc, a.slot), (SbStatus::Ok, want_layout), "{id} {}", a.slot);
+            for ch in 0..channels {
+                let w = want.get(ch as usize).copied().unwrap_or(SB_SPEAKER_UNSPECIFIED);
+                assert_eq!(speaker(disc, a.slot, ch), (SbStatus::Ok, w), "{id} {} {ch}", a.slot);
+            }
+            assert_eq!(speaker(disc, a.slot, channels), (SbStatus::InvalidArgument, 99), "{id}");
+            assert_eq!(speaker(disc, a.slot, u32::MAX).0, SbStatus::InvalidArgument, "{id}");
+        }
+        free(disc);
+    }
+    // Hostile arguments: no area, a bad slot, NULL pointers.
+    let disc = open(&image("dst-features-5ch")).unwrap();
+    assert_eq!(layout(disc, 0), (SbStatus::NoSuchArea, 99));
+    assert_eq!(speaker(disc, 0, 0), (SbStatus::NoSuchArea, 99));
+    assert_eq!(layout(disc, 9).0, SbStatus::InvalidArgument);
+    assert_eq!(speaker(disc, 9, 0).0, SbStatus::InvalidArgument);
+    assert_eq!(layout(ptr::null(), 1).0, SbStatus::InvalidArgument);
+    assert_eq!(speaker(ptr::null(), 1, 0).0, SbStatus::InvalidArgument);
+    // SAFETY: `disc` is a live handle; NULL out-pointers are rejected.
+    assert_eq!(unsafe { sb_area_loudspeaker_layout(disc, 1, ptr::null_mut()) }, SbStatus::InvalidArgument);
+    // SAFETY: as above.
+    assert_eq!(unsafe { sb_area_channel_speaker(disc, 1, 0, ptr::null_mut()) }, SbStatus::InvalidArgument);
+    free(disc);
+}
+
 #[test]
 #[cfg_attr(miri, ignore = "reads whole corpus images")]
 fn hostile_arguments() {
