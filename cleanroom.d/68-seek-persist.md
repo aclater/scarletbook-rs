@@ -1,0 +1,1 @@
+| 2026-10-31 | #68 seek index, persistence | saving, loading, merging and checking seek indexes; a fuzz target. Specification 4, 4.2 item 7, and 7.1 item 2, at sacd-spec `da6b900`. FNV-1a (a public-domain hash) written from memory. No new sources consulted. |

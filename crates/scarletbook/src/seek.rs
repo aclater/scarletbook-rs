@@ -33,7 +33,22 @@
 //!
 //! An index is the reading state of one area of one image. It is keyed by the area (slot,
 //! audio sector range, channel count) and the image's sector count, and a cursor refuses
-//! an index of another key; within one key it cannot tell two images apart.
+//! an index of another key. Each checkpoint also holds a digest (64-bit FNV-1a) of the
+//! sector at its LSN, which a cursor resuming there compares with that sector when it
+//! reads it (it reads it anyway), before it returns anything: on a mismatch it discards
+//! the index, logs a warning and scans from the first sector ([`ResumedFrom::Discarded`]).
+//!
+//! What that digest catches: an index of another image of the same size and layout, or of
+//! an image changed since, whenever the checkpoint's own sector differs (with a 2^-64
+//! chance of missing it). What it does not: a change only in the other sectors before the
+//! checkpoint, which can change the reading state there without changing that sector (the
+//! replayed sectors and the stored frame under assembly are not checked either); and a
+//! cursor that reads nothing at all (a range wholly past the last accepted frame of a
+//! complete index), which has no sector to compare. An index is thus **trusted for correctness and validated for safety**, like
+//! the image itself: [`AreaIndex::from_bytes`] checks every bound and invariant before it
+//! allocates, so that hostile bytes give an error, never a panic or an unbounded
+//! allocation, but an index forged to pass those checks can make a cursor return other
+//! frames than the image holds (still within the bounds of any read).
 //!
 //! # Specification
 //!
@@ -45,6 +60,8 @@
 //! include those the earlier pass found (4.4.5 item 4), and replayed sectors are not
 //! reported again (4.4.5 item 2). Specification 7, 7.1 items 2 and 3 bound the memory and
 //! the passes.
+
+mod persist;
 
 use std::io::{Read, Seek};
 
@@ -84,7 +101,8 @@ pub struct IndexOptions {
     /// past its checkpoint before the range's first frame is known.
     pub interval: u32,
     /// The most bytes of frames under assembly the index stores, over all its checkpoints
-    /// (see [`REPLAY_SECTORS`]); 0 stores none.
+    /// (see [`REPLAY_SECTORS`]); 0 stores none. A cursor made from the index may hold as
+    /// much again while it records. Saved indexes keep at most 4 GiB of it.
     pub inline_budget: usize,
 }
 
@@ -128,6 +146,13 @@ pub enum ResumedFrom {
     /// Nowhere: the index is complete and no frame at or after the range's first is
     /// accepted, so every position is missing and nothing is read.
     End,
+    /// At the area's first audio sector, after finding that the index does not hold
+    /// sector `lsn` as the image has it (its digest differs): a stale index, or one of
+    /// another image of the same size. The index was not used; the cursor records nothing.
+    Discarded {
+        /// The checkpoint whose sector differs.
+        lsn: u64,
+    },
 }
 
 /// The reading state of the scan at a boundary `c = S0 + jK`, before sector `c`
@@ -145,14 +170,104 @@ pub(crate) struct Checkpoint {
     pub(crate) digest: u64,
 }
 
-/// A frame under assembly stored with the checkpoint numbered `at`.
+/// The bytes of a frame under assembly that started in sector `start`: the longest prefix
+/// any checkpoint holds. A frame under assembly only grows, so the checkpoints within one
+/// frame share one buffer, and a frame spread over many checkpoints costs its bytes once.
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Frame {
+    pub(crate) start: u64,
+    pub(crate) bytes: Vec<u8>,
+}
+
+/// The frame under assembly of the checkpoint numbered `at`: the first `len` bytes of
+/// frame `frame`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Held {
     pub(crate) at: u32,
+    pub(crate) frame: u32,
+    pub(crate) len: u32,
     pub(crate) number: u32,
     pub(crate) kind: FrameKind,
     pub(crate) remaining: i32,
-    pub(crate) bytes: Box<[u8]>,
+}
+
+/// Stored frames under assembly, by increasing checkpoint number and start sector.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Stored {
+    pub(crate) frames: Vec<Frame>,
+    pub(crate) held: Vec<Held>,
+    /// Bytes of `frames`.
+    pub(crate) used: usize,
+}
+
+impl Stored {
+    /// Stores the frame under assembly of checkpoint `at` (after every one stored), which
+    /// started in sector `start` and holds `data`, if its new bytes fit in `budget` bytes
+    /// in all: whether it was stored. Bytes the last frame already holds cost nothing.
+    pub(crate) fn add(
+        &mut self,
+        at: u32,
+        start: u64,
+        (number, kind, remaining): (u32, FrameKind, i32),
+        data: &[u8],
+        budget: usize,
+    ) -> bool {
+        if data.len() > MAX_FRAME_BYTES {
+            return false;
+        }
+        let frame = match self.frames.last_mut() {
+            Some(f) if f.start == start => {
+                let common = f.bytes.len().min(data.len());
+                // Always a prefix of the same frame; anything else is not stored.
+                if f.bytes[..common] != data[..common] {
+                    return false;
+                }
+                let grow = data.len() - common;
+                if self.used + grow > budget {
+                    return false;
+                }
+                f.bytes.extend_from_slice(&data[common..]);
+                self.used += grow;
+                self.frames.len() - 1
+            }
+            _ => {
+                if self.used + data.len() > budget {
+                    return false;
+                }
+                self.frames.push(Frame { start, bytes: data.to_vec() });
+                self.used += data.len();
+                self.frames.len() - 1
+            }
+        };
+        // At most MAX_FRAME_BYTES bytes, and fewer frames than checkpoints.
+        let (frame, len) = (frame as u32, data.len() as u32);
+        self.held.push(Held { at, frame, len, number, kind, remaining });
+        true
+    }
+
+    /// The frame under assembly of checkpoint `at`, if stored.
+    pub(crate) fn get(&self, at: u32) -> Option<(&Held, &[u8])> {
+        let h = &self.held[self.held.binary_search_by_key(&at, |h| h.at).ok()?];
+        Some((h, self.bytes(h)))
+    }
+
+    pub(crate) fn bytes(&self, h: &Held) -> &[u8] {
+        self.frames.get(h.frame as usize).and_then(|f| f.bytes.get(..h.len as usize)).unwrap_or(&[])
+    }
+
+    fn memory(&self) -> usize {
+        self.held.capacity() * std::mem::size_of::<Held>()
+            + self.frames.capacity() * std::mem::size_of::<Frame>()
+            + self.frames.iter().map(|f| f.bytes.capacity()).sum::<usize>()
+    }
+
+    /// Copies the frame under assembly of `other`'s checkpoint `at` (which started in
+    /// sector `start`) as this one's, within `budget`.
+    fn take(&mut self, other: &Stored, at: u32, start: u64, budget: usize) {
+        if let Some((h, bytes)) = other.get(at) {
+            self.add(at, start, (h.number, h.kind, h.remaining), bytes, budget);
+        }
+    }
 }
 
 /// The state once the scan has ended (specification 4, 4.4.4).
@@ -174,7 +289,7 @@ pub(crate) enum Plan<'a> {
         lsn: u64,
         checkpoint: Checkpoint,
         /// Its frame under assembly when stored, else replayed from `lsn - back`.
-        held: Option<&'a Held>,
+        held: Option<(&'a Held, &'a [u8])>,
     },
     /// After the end.
     End(EndState),
@@ -193,6 +308,12 @@ pub(crate) struct Assembling<'a> {
 pub(crate) fn digest(sector: &[u8; SECTOR_SIZE]) -> u64 {
     sector.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
 }
+
+// Indexes are built on one thread and used on others.
+const _: () = {
+    const fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<AreaIndex>();
+};
 
 /// Saved reading state of one area: the scan's state every [`IndexOptions::interval`]
 /// sectors from the area's first audio sector up to the index's frontier, so that a cursor
@@ -217,12 +338,10 @@ pub struct AreaIndex {
     end: u64,
     interval: u32,
     inline_budget: usize,
-    /// Bytes of `held`.
-    inline_used: usize,
     /// The checkpoints at `start + j x interval`, `j = 0, 1, ...`, without gaps.
     checkpoints: Vec<Checkpoint>,
-    /// Stored frames under assembly, by increasing checkpoint number.
-    held: Vec<Held>,
+    /// Stored frames under assembly.
+    stored: Stored,
     end_state: Option<EndState>,
     /// The first [`MAX_MALFORMED_WARNINGS`] malformed sectors below the frontier.
     malformed: Vec<u32>,
@@ -246,9 +365,8 @@ impl AreaIndex {
             end,
             interval: options.interval,
             inline_budget: options.inline_budget,
-            inline_used: 0,
             checkpoints: Vec::new(),
-            held: Vec::new(),
+            stored: Stored::default(),
             end_state: None,
             malformed: Vec::new(),
         })
@@ -283,8 +401,7 @@ impl AreaIndex {
     pub fn memory(&self) -> usize {
         std::mem::size_of::<Self>()
             + self.checkpoints.capacity() * std::mem::size_of::<Checkpoint>()
-            + self.held.capacity() * std::mem::size_of::<Held>()
-            + self.inline_used
+            + self.stored.memory()
             + self.malformed.capacity() * std::mem::size_of::<u32>()
     }
 
@@ -294,8 +411,8 @@ impl AreaIndex {
     /// records its checkpoints: whether the index is now complete. Building an index
     /// ahead of the reads that use it ("eager") costs one pass over the area in all
     /// (specification 7, 7.1 item 3), which can be split into calls of any size, for
-    /// example on another thread with an image of its own: [`AreaIndex::absorb`] the
-    /// cursors that read meanwhile, or merge the indexes.
+    /// example on another thread with an image of its own; [`AreaIndex::merge`] then joins
+    /// that index with one the reads of the first thread filled ([`AreaIndex::absorb`]).
     ///
     /// # Errors
     ///
@@ -313,6 +430,9 @@ impl AreaIndex {
         let next = self.checkpoint_lsn(self.checkpoints.len());
         let stop = self.frontier().saturating_add(max_sectors).max(next.saturating_add(1));
         let scanned = cursor.scan_to(image, stop);
+        if let ResumedFrom::Discarded { .. } = cursor.resumed_from() {
+            return Err(Error::InvalidArgument("seek index does not match the image"));
+        }
         // A cursor of this index joins it.
         self.absorb(&cursor)?;
         scanned.map(|_| self.is_complete())
@@ -349,7 +469,7 @@ impl AreaIndex {
         let j = self.checkpoints.partition_point(|c| c.next_acceptable <= first);
         let Some(j) = j.checked_sub(1) else { return Plan::Start };
         let checkpoint = self.checkpoints[j];
-        let held = self.held.binary_search_by_key(&(j as u32), |h| h.at).ok().map(|i| &self.held[i]);
+        let held = self.stored.get(j as u32);
         Plan::At { lsn: self.checkpoint_lsn(j), checkpoint, held }
     }
 
@@ -371,9 +491,11 @@ impl AreaIndex {
             first: first as u32,
             next: self.checkpoint_lsn(first),
             from,
-            budget: self.inline_budget.saturating_sub(self.inline_used),
+            // The cursor's own bound; this index charges only what it adds when it takes
+            // the frames (a frame it holds a prefix of costs its growth).
+            budget: self.inline_budget,
             checkpoints: Vec::new(),
-            held: Vec::new(),
+            stored: Stored::default(),
             end_state: None,
         }))
     }
@@ -390,8 +512,8 @@ impl AreaIndex {
     /// an index of another area, image size or interval, if its checkpoints do not join
     /// this index's (it started past the frontier), or if they differ from those held
     /// (another image with the same key).
-    pub fn absorb(&mut self, cursor: &impl AsRef<crate::AreaCursor>) -> Result<(), Error> {
-        let cursor = cursor.as_ref();
+    pub fn absorb(&mut self, cursor: &impl crate::audio::SeekCursor) -> Result<(), Error> {
+        let cursor = crate::audio::sealed::Sealed::area_cursor(cursor);
         let Some(r) = cursor.recorder() else { return Ok(()) };
         if r.key != self.key || r.interval != self.interval {
             return Err(Error::InvalidArgument("cursor of another area, image size or seek interval"));
@@ -417,11 +539,8 @@ impl AreaIndex {
             let j = r.first + i as u32;
             // A frame under assembly past the budget is replayed from its first sector
             // instead: still exact.
-            let held = r.held.iter().find(|h| h.at == j);
-            if let Some(h) = held.filter(|h| self.inline_used + h.bytes.len() <= self.inline_budget) {
-                self.inline_used += h.bytes.len();
-                self.held.push(h.clone());
-            }
+            let start = self.checkpoint_lsn(j as usize) - u64::from(c.back);
+            self.stored.take(&r.stored, j, start, self.inline_budget);
             self.checkpoints.push(*c);
         }
         if r.end_state.is_some() && self.checkpoints.len() == self.boundaries() {
@@ -456,7 +575,7 @@ pub(crate) struct Recorder {
     /// Bytes of frames under assembly still to store.
     budget: usize,
     checkpoints: Vec<Checkpoint>,
-    held: Vec<Held>,
+    stored: Stored,
     end_state: Option<EndState>,
 }
 
@@ -481,15 +600,8 @@ impl Recorder {
         if let Some(a) = assembling {
             // The frame started in an audio sector at or before this one: below 2^32.
             back = u32::try_from(lsn - a.start_lsn).unwrap_or(u32::MAX).max(1);
-            if u64::from(back) > REPLAY_SECTORS && a.data.len() <= self.budget.min(MAX_FRAME_BYTES) {
-                self.budget -= a.data.len();
-                self.held.push(Held {
-                    at,
-                    number: a.number,
-                    kind: a.kind,
-                    remaining: a.remaining,
-                    bytes: a.data.into(),
-                });
+            if u64::from(back) > REPLAY_SECTORS {
+                self.stored.add(at, a.start_lsn, (a.number, a.kind, a.remaining), a.data, self.budget);
             }
         }
         self.checkpoints.push(Checkpoint { next_acceptable, back, malformed_before, digest: digest(sector) });
@@ -513,12 +625,11 @@ mod tests {
             end: 200,
             interval: 10,
             inline_budget: 0,
-            inline_used: 0,
             checkpoints: next
                 .iter()
                 .map(|&a| Checkpoint { next_acceptable: a, back: 0, malformed_before: 0, digest: 0 })
                 .collect(),
-            held: Vec::new(),
+            stored: Stored::default(),
             end_state: end.map(|a| EndState { next_acceptable: a, malformed: 0 }),
             malformed: Vec::new(),
         }

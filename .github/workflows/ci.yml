@@ -319,7 +319,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [toc, demux, dst]
+        target: [toc, demux, dst, seek_index]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -335,7 +335,7 @@ jobs:
         working-directory: fuzz
         run: |
           listed=$(cargo +"$RUST_NIGHTLY" fuzz list | sort | tr '\n' ' ')
-          if [[ "$listed" != "demux dst toc " ]]; then
+          if [[ "$listed" != "demux dst seek_index toc " ]]; then
             echo "::error::fuzz targets are now: $listed; update the fuzz job's matrix"
             exit 1
           fi

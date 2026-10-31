@@ -36,7 +36,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [toc, demux, dst]
+        target: [toc, demux, dst, seek_index]
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:

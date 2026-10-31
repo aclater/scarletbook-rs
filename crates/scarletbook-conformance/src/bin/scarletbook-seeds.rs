@@ -6,11 +6,16 @@
 //! `demux`: for each area of each accepted case, its channel count followed by its first
 //! 64 audio sectors.
 //! `dst`: up to 8 DST frames of each area, each preceded by its channel count minus 1.
+//! `seek_index`: saved seek indexes of the fuzz harness's synthetic area, without their
+//! checksums (not from the corpus).
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use scarletbook::Disc;
+
+#[path = "../../../scarletbook/tests/harness/mod.rs"]
+mod harness;
 use scarletbook_conformance::{corpus_dir, load_cases};
 
 const TOC_SEED_SECTORS: usize = 160;
@@ -39,10 +44,15 @@ fn run(out: &std::path::Path) -> Result<usize, String> {
     let toc_dir = out.join("toc");
     let demux_dir = out.join("demux");
     let dst_dir = out.join("dst");
-    for d in [&toc_dir, &demux_dir, &dst_dir] {
+    let seek_dir = out.join("seek_index");
+    for d in [&toc_dir, &demux_dir, &dst_dir, &seek_dir] {
         std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
     }
     let mut n = 0;
+    for (i, seed) in harness::seek_index_seeds().into_iter().enumerate() {
+        std::fs::write(seek_dir.join(format!("index-{i}")), seed).map_err(|e| e.to_string())?;
+        n += 1;
+    }
     for case in load_cases(&corpus)? {
         let id = case["id"].as_str().unwrap_or_default();
         let bytes =
