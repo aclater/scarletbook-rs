@@ -13,7 +13,8 @@ cleanroom.d/<name>.md   one row of the CLEANROOM.md Log table, starting with `| 
 
 `check` validates every fragment. `require BASE_REF` fails if the change since BASE_REF
 touches library or program code (crates/*/src, Cargo.toml or Cargo.lock) without adding a
-fragment to both directories; tests, corpus, fuzz targets, docs and CI need none. `assemble` moves the CHANGELOG.md `## [Unreleased]` entries and
+fragment to both directories; tests, corpus, fuzz targets, docs and CI need none, and nor
+does a release assembly (it changes CHANGELOG.md and removes changelog fragments). `assemble` moves the CHANGELOG.md `## [Unreleased]` entries and
 every changelog fragment under `## [VERSION] - DATE`, appends the cleanroom rows to the Log,
 and deletes the fragments.
 """
@@ -63,12 +64,18 @@ def require(base):
         ["git", "diff", "--name-status", "--no-renames", f"{base}...HEAD"],
         check=True, capture_output=True, text=True,
     ).stdout
-    changed, added = [], set()
+    changed, added, deleted = [], set(), set()
     for line in out.splitlines():
         status, path = line.split("\t", 1)
         changed.append(path)
         if status == "A":
             added.add(path)
+        elif status == "D":
+            deleted.add(path)
+    # A release assembly (`assemble`) folds the fragments into CHANGELOG.md and bumps the
+    # version in the manifests: it removes fragments rather than adding them.
+    if "CHANGELOG.md" in changed and any(p.startswith(f"{CHANGELOG_D}/") for p in deleted):
+        return
     code = [p for p in changed if re.match(r"^crates/[^/]+/src/", p) or p in ("Cargo.toml", "Cargo.lock")]
     if not code:
         return

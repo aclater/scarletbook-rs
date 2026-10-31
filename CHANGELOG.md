@@ -9,6 +9,8 @@ is shared by every crate of the workspace; releases carry the `bench` program an
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-31
+
 ### Added
 
 - Loudspeaker layouts (#75): `Area::loudspeaker_layout` gives an area's `LoudspeakerLayout`
@@ -44,6 +46,71 @@ is shared by every crate of the workspace; releases carry the `bench` program an
 - CI runs the `parallel` decoding path under Miri with Tree Borrows (#28): the C
   interface's pools and the read-error test on pull requests, plus the continuation
   property test and the window cap on `main`.
+- Seek index measurements and corpus checks (#68, part 5): `scarletbook-seekcost` prints
+  the cost of opening a range against its position with and without an index (flat with
+  one: 32 to 96 sectors and 2.3 to 2.4 ms on a 50-minute DST area, against up to 470 272
+  sectors and 146 ms without). Conformance tests read every corpus area's tracks, tracks
+  with pause and random ranges through indexes (K = 1 and 64), fresh and continued, and on
+  two threads at once through a clone and a share of one disc keeping one index, against
+  plain reads.
+- Seek indexes kept by a `Disc` (#68), opt-in per area: `Disc::enable_seek_index`,
+  `set_seek_index`, `take_seek_index`, `seek_index`, `extend_seek_index` and
+  `absorb_seek_checkpoints`. With one enabled, every track and range cursor the disc makes
+  starts from it, its borrowing iterators and continuations hand recorded checkpoints back
+  as they read, and a continuation resumes from the index instead of the area's first
+  sector when it cannot reuse the earlier cursor (or jumps ahead when the index is more than
+  two checkpoints ahead of it). Results are those without an index; the opening is logged
+  "from the seek index" at Info, the resume point at Debug. The indexes live in the state
+  that discs of one image share (`Disc::share`, `clone`, #74): every disc of the image, on
+  any thread, uses and grows the same index (a read lock to make a cursor, a write lock to
+  take checkpoints); only cursors that read that image give it checkpoints.
+  `Continuation::log_audio` and `log_frames` now return the `Opening` they log (the
+  earlier scan continues, a start from the index, or a new scan), which `audio_as` and
+  `frames_as` follow, so that the log and the cursor agree. README section "Seeking within
+  an area".
+- Seek indexes in the C interface (#68, part 4): the `SbSeekIndex` handle (`sb_seek_index_new`,
+  `_extend`, `_frontier`, `_memory`, `_merge`, `_save`, `_load`, `_free`),
+  `sb_range_audio_open_indexed`, `sb_range_audio_open_next_indexed`,
+  `sb_raw_frames_open_indexed`, `sb_raw_frames_open_next_indexed`, `sb_track_audio_absorb`
+  and `sb_raw_frames_absorb`, and `SB_SEEK_DEFAULT_INTERVAL`, `SB_SEEK_MAX_INTERVAL` and
+  `SB_SEEK_DEFAULT_INLINE_BUDGET`; `sb_seek_index_load` takes the caller's inline budget.
+  A disc can keep the index itself (`sb_disc_seek_index_enable`, `_set`, `_get`,
+  `_disable`, `_extend`), shared with its clones (`sb_disc_clone`): handles opened through
+  any of them start from it and their reads build it. Additive: the ABI version stays 1. The `_open_next`
+  forms log while `prev` is still borrowed and run no callback once it is taken (#43).
+- Seeking within an area (#68, #73): `AreaIndex` keeps the reading state of an area every
+  `K` sectors (default 64), and `TrackCursor::for_range_indexed` /
+  `TrackAudioCursor::for_range_indexed` start a range at its last checkpoint whose next
+  acceptable frame number is at most the range's first frame, instead of at the area's
+  first sector (sacd-spec `da6b900`: specification 4, 4.2 item 7, 4.4.5 items 2 and 4, 4.5
+  item 6 and 4.7.1 item 6, and 7.1 items 2 and 3). Results, missing counts, malformed
+  counts and warnings equal those of a scan from the first sector; only reads and log lines
+  differ. Once the index covers a range, opening it reads at most `W + K` sectors (`W` = 32)
+  before the range's own frames, wherever it lies. Indexes are built lazily by the cursors
+  made from them (`AreaIndex::absorb`) or eagerly in steps (`AreaIndex::extend`). Frames
+  under assembly spread over more than `W` sectors are stored up to an inline budget
+  (default 1 MiB). Opt-in; no change to existing cursors.
+- Saved seek indexes (#68, #83): `AreaIndex::to_bytes` and `AreaIndex::from_bytes` (a
+  versioned little-endian format with the area's key and a checksum; every count, bound and
+  invariant is checked before anything is allocated, so untrusted bytes give an error; the
+  loaded inline budget is at most the caller's, stored frames beyond it are replayed instead),
+  and `AreaIndex::merge` for indexes built apart. A cursor compares each checkpoint's sector
+  digest with the sector it reads there, and on a mismatch (a stale index, or one of another
+  image of the same size) discards the index, logs a warning and scans from the area's first
+  sector (`ResumedFrom::Discarded`); `extend` on such an index fails. A `seek_index` fuzz
+  target loads untrusted index bytes and reads through them.
+- Seek index refinements (#68, review of #73): the checkpoints within one frame under
+  assembly share one stored buffer (one frame's bytes, however many checkpoints it spans);
+  a read error during a replay no longer counts replayed malformed sectors twice;
+  `AreaIndex::absorb` takes any `SeekCursor` (a sealed trait of `AreaCursor`,
+  `TrackCursor` and `TrackAudioCursor`) instead of `AsRef<AreaCursor>`; the documentation
+  says what the sector digest catches and that a cursor continued backwards without its
+  index scans from the area's first sector.
+- Positional reads (#74): `ReadAt` (a source read at an offset through a shared reference: `File` with `pread` on Unix and `seek_read` on Windows, `[u8]`, `Vec<u8>`, `&T`, `Box<T>`, `Arc<T>`, and `read_at::Locked` for any `Read + Seek` reader, serialised) and `ReadAtReader`, a `Read + Seek` reader with a position of its own over such a source, so that readers of one shared file or buffer can run on several threads at once.
+- Discs of one image on several threads (#74): `Disc::share` and `Disc::share_with_log` open the same image through another reader, checked against the image's length and its TOC sectors, and `clone` does so for a disc read through a `ReadAtReader` with no I/O. They share the parsed TOC, warnings, sector format and image identifier, so a cursor made or read through one reads through any other; reads, bounds and errors are those of one reader. `Image::id` is now shared by such discs.
+- `sb_disc_clone` and `sb_disc_clone_with_log` (#74): a clone of a disc opened from a file or from memory, with a reading position of its own, for reads of one image on several threads at once; track and raw frames handles may be read and continued through any clone of their disc. Discs opened from a file now read it at offsets through one shared handle. Additive: the ABI version stays 1.
+- `sb_disc_open_callbacks_at[_with_log]` and `sb_disc_clone_callbacks[_with_log]` (#74): discs read through a positional read callback (`SbReadAtFn`, which may be called from several threads at once), which can be cloned, and clones of any disc through new read and seek callbacks. Additive: the ABI version stays 1.
+- Loudspeaker layouts through the C interface: `sb_area_loudspeaker_layout` gives an area's `SB_LAYOUT_*` (stereo, 3/2, 5.1, or `SB_LAYOUT_UNSPECIFIED` for a combination specification 3, 3.4.1 does not define) and `sb_area_channel_speaker` the `SB_SPEAKER_*` of each channel in decoded-frame order (`SB_SPEAKER_UNSPECIFIED` without a defined layout). Additive: the ABI version stays 1 (#75).
 
 ### Changed
 
@@ -59,6 +126,18 @@ is shared by every crate of the workspace; releases carry the `bench` program an
   a pool decode on rayon's global pool, as before. On x86_64 Linux (`dist` profile) the
   shared library grows from 2.01 MB to 2.17 MB (1.85 MB to 1.97 MB stripped) and the
   static library from 25.2 MB to 25.6 MB.
+- CI: fuzz targets run as parallel jobs (30 s each on pull requests, 60 s on main), Miri runs as parallel slices with the long core check split by frame count, and a newer push to main cancels an older run instead of queuing behind it (#76).
+- Change records: each pull request adds `changelog.d/` and `cleanroom.d/` fragments, folded into CHANGELOG.md and the CLEANROOM.md Log when a release is prepared (`.github/scripts/fragments.py`), so that independent pull requests no longer conflict (#76).
+- CI: the long Miri slices (core unit tests, fast-loop checks, long parallel-path tests) move to `miri-full.yml`, which runs on every push to main, nightly and on demand, and queues instead of cancelling, so later merges can no longer keep them from completing (#84).
+- A seek index is of one image (#90): within a process, an `AreaIndex` (and an
+  `SbSeekIndex`) is of the image of the first cursor it takes checkpoints from or the first
+  `extend`, and refuses cursors, reads and indexes of any other image of the same size and
+  layout with `Error::InvalidArgument` (`SB_STATUS_INVALID_ARGUMENT`; a refused cursor stops
+  recording), so that two images can no longer mix their state in one index. The identity
+  is not saved: a loaded index takes the image of its first absorb or extend.
+  `AreaIndex::absorb` takes the cursor by `&mut` and drops what it took from it;
+  `sb_track_audio_absorb` and `sb_raw_frames_absorb` do likewise. Docs: keep one index per
+  image; loading is safe, not exact.
 
 ### Fixed
 
@@ -72,7 +151,6 @@ is shared by every crate of the workspace; releases carry the `bench` program an
   `guard`); it now returns its status, and `sb_last_error_message` returns an empty
   string (#39). A new test checks, on the source, that every function the header declares
   runs under `guard` or is on a short list of functions that cannot panic.
-
 
 ## [0.3.0] - 2026-10-31
 
@@ -178,7 +256,8 @@ First release: a clean-room reader for SACD images, written from sacd-spec, pass
 - DST decoding about 3.8 times faster on one thread, and parallel decoding that overlaps
   demultiplexing with decoding within a bounded memory (#16, #17, #19).
 
-[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/aclater/scarletbook-rs/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/aclater/scarletbook-rs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/aclater/scarletbook-rs/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/aclater/scarletbook-rs/releases/tag/v0.1.0

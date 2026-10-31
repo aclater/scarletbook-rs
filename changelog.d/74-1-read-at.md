@@ -1,2 +1,0 @@
-Added
-- Positional reads (#74): `ReadAt` (a source read at an offset through a shared reference: `File` with `pread` on Unix and `seek_read` on Windows, `[u8]`, `Vec<u8>`, `&T`, `Box<T>`, `Arc<T>`, and `read_at::Locked` for any `Read + Seek` reader, serialised) and `ReadAtReader`, a `Read + Seek` reader with a position of its own over such a source, so that readers of one shared file or buffer can run on several threads at once.
