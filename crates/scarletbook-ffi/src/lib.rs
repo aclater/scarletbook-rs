@@ -18,8 +18,8 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use scarletbook::log::{Level, Log};
 use scarletbook::toc::{AreaTextItem, DiscTextItem, TrackTextItem};
 use scarletbook::{
-    Area, AreaCursor, DecodeOn, Disc, Error, FrameContent, FrameKind, FrameStatus, Slot, TrackAudioCursor,
-    TrackCursor, TrackFrame, WarningCode,
+    Area, AreaCursor, DecodeOn, Disc, Error, FrameContent, FrameKind, FrameStatus, LoudspeakerLayout, Slot,
+    Speaker, TrackAudioCursor, TrackCursor, TrackFrame, WarningCode,
 };
 
 /// Result of every call.
@@ -1289,6 +1289,97 @@ pub unsafe extern "C" fn sb_disc_area(disc: *const SbDisc, index: u32, out: *mut
         };
         // SAFETY: forwarded contract.
         unsafe { write_out(out, info) }?;
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// Loudspeaker layouts (`sb_area_loudspeaker_layout`), from the channel count and the low 3
+/// bits of the area configuration byte (specification 3, 3.4.1). Any other combination has
+/// no defined layout: `SB_LAYOUT_UNSPECIFIED`, with both fields in `SbAreaInfo` as stored.
+pub const SB_LAYOUT_UNSPECIFIED: u32 = 0;
+/// Stereo: 2 channels, configuration 0.
+pub const SB_LAYOUT_STEREO: u32 = 1;
+/// 5-channel (3/2): 5 channels, configuration 3.
+pub const SB_LAYOUT_THREE_TWO: u32 = 2;
+/// 5.1-channel: 6 channels, configuration 4.
+pub const SB_LAYOUT_FIVE_POINT_ONE: u32 = 3;
+
+/// Loudspeakers (`sb_area_channel_speaker`). `SB_SPEAKER_UNSPECIFIED` is every channel of
+/// an area without a defined layout.
+pub const SB_SPEAKER_UNSPECIFIED: u32 = 0;
+/// Front left; "left" in stereo.
+pub const SB_SPEAKER_FRONT_LEFT: u32 = 1;
+/// Front right; "right" in stereo.
+pub const SB_SPEAKER_FRONT_RIGHT: u32 = 2;
+/// Centre.
+pub const SB_SPEAKER_CENTRE: u32 = 3;
+/// Low-frequency effects.
+pub const SB_SPEAKER_LOW_FREQUENCY_EFFECTS: u32 = 4;
+/// Surround left.
+pub const SB_SPEAKER_SURROUND_LEFT: u32 = 5;
+/// Surround right.
+pub const SB_SPEAKER_SURROUND_RIGHT: u32 = 6;
+
+/// Writes the loudspeaker layout (`SB_LAYOUT_*`) of the area from `slot` to `*layout`.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle; `layout` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_area_loudspeaker_layout(
+    disc: *const SbDisc,
+    slot: u32,
+    layout: *mut u32,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?.get()?;
+        let value = match find_area(&d, slot)?.loudspeaker_layout() {
+            LoudspeakerLayout::Stereo => SB_LAYOUT_STEREO,
+            LoudspeakerLayout::ThreeTwo => SB_LAYOUT_THREE_TWO,
+            LoudspeakerLayout::FivePointOne => SB_LAYOUT_FIVE_POINT_ONE,
+            LoudspeakerLayout::Unspecified { .. } => SB_LAYOUT_UNSPECIFIED,
+        };
+        // SAFETY: forwarded contract.
+        unsafe { write_out(layout, value) }?;
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// Writes the loudspeaker (`SB_SPEAKER_*`) of channel `index` of the area from `slot` to
+/// `*speaker`. Channels are numbered from 0 in the order they appear in a decoded frame,
+/// up to the channel count less 1; a larger index is an invalid argument. The order is
+/// informative (specification 3, 3.4.1). An area without a defined layout gives
+/// `SB_SPEAKER_UNSPECIFIED` for every channel.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle; `speaker` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_area_channel_speaker(
+    disc: *const SbDisc,
+    slot: u32,
+    index: u32,
+    speaker: *mut u32,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?.get()?;
+        let area = find_area(&d, slot)?;
+        if index >= u32::from(area.channel_count) {
+            return Err(Failure::arg("channel index out of range"));
+        }
+        let value = match area.channel_speakers().and_then(|s| s.get(index as usize)) {
+            None => SB_SPEAKER_UNSPECIFIED,
+            Some(Speaker::FrontLeft) => SB_SPEAKER_FRONT_LEFT,
+            Some(Speaker::FrontRight) => SB_SPEAKER_FRONT_RIGHT,
+            Some(Speaker::Centre) => SB_SPEAKER_CENTRE,
+            Some(Speaker::LowFrequencyEffects) => SB_SPEAKER_LOW_FREQUENCY_EFFECTS,
+            Some(Speaker::SurroundLeft) => SB_SPEAKER_SURROUND_LEFT,
+            Some(Speaker::SurroundRight) => SB_SPEAKER_SURROUND_RIGHT,
+        };
+        // SAFETY: forwarded contract.
+        unsafe { write_out(speaker, value) }?;
         Ok(SbStatus::Ok)
     })
 }

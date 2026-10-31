@@ -119,6 +119,64 @@
 #define SB_LOG_TRACE 5
 
 /*
+ Loudspeaker layouts (`sb_area_loudspeaker_layout`), from the channel count and the low 3
+ bits of the area configuration byte (specification 3, 3.4.1). Any other combination has
+ no defined layout: `SB_LAYOUT_UNSPECIFIED`, with both fields in `SbAreaInfo` as stored.
+ */
+#define SB_LAYOUT_UNSPECIFIED 0
+
+/*
+ Stereo: 2 channels, configuration 0.
+ */
+#define SB_LAYOUT_STEREO 1
+
+/*
+ 5-channel (3/2): 5 channels, configuration 3.
+ */
+#define SB_LAYOUT_THREE_TWO 2
+
+/*
+ 5.1-channel: 6 channels, configuration 4.
+ */
+#define SB_LAYOUT_FIVE_POINT_ONE 3
+
+/*
+ Loudspeakers (`sb_area_channel_speaker`). `SB_SPEAKER_UNSPECIFIED` is every channel of
+ an area without a defined layout.
+ */
+#define SB_SPEAKER_UNSPECIFIED 0
+
+/*
+ Front left; "left" in stereo.
+ */
+#define SB_SPEAKER_FRONT_LEFT 1
+
+/*
+ Front right; "right" in stereo.
+ */
+#define SB_SPEAKER_FRONT_RIGHT 2
+
+/*
+ Centre.
+ */
+#define SB_SPEAKER_CENTRE 3
+
+/*
+ Low-frequency effects.
+ */
+#define SB_SPEAKER_LOW_FREQUENCY_EFFECTS 4
+
+/*
+ Surround left.
+ */
+#define SB_SPEAKER_SURROUND_LEFT 5
+
+/*
+ Surround right.
+ */
+#define SB_SPEAKER_SURROUND_RIGHT 6
+
+/*
  Most threads of a decoding pool (`sb_pool_new`). A handle keeps at most
  `16 x threads` frames ahead, and never more than 512: fewer than 2 per thread beyond
  this many threads, which would mostly stay idle.
@@ -923,6 +981,33 @@ enum SbStatus sb_disc_string(const struct SbDisc *disc,
  `disc` must be NULL or a live handle; `out` NULL or valid for a write.
  */
 enum SbStatus sb_disc_area(const struct SbDisc *disc, uint32_t index, struct SbAreaInfo *out);
+
+/*
+ Writes the loudspeaker layout (`SB_LAYOUT_*`) of the area from `slot` to `*layout`.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `layout` NULL or valid for a write.
+ */
+enum SbStatus sb_area_loudspeaker_layout(const struct SbDisc *disc,
+                                         uint32_t slot,
+                                         uint32_t *layout);
+
+/*
+ Writes the loudspeaker (`SB_SPEAKER_*`) of channel `index` of the area from `slot` to
+ `*speaker`. Channels are numbered from 0 in the order they appear in a decoded frame,
+ up to the channel count less 1; a larger index is an invalid argument. The order is
+ informative (specification 3, 3.4.1). An area without a defined layout gives
+ `SB_SPEAKER_UNSPECIFIED` for every channel.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `speaker` NULL or valid for a write.
+ */
+enum SbStatus sb_area_channel_speaker(const struct SbDisc *disc,
+                                      uint32_t slot,
+                                      uint32_t index,
+                                      uint32_t *speaker);
 
 /*
  Copies an area string (`SbAreaString`) of the area from `slot`.
