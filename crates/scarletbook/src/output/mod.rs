@@ -32,6 +32,7 @@
 
 mod dsdiff;
 mod dsdiff_dst;
+mod dsdiff_text;
 mod dsf;
 mod id3;
 mod markers;
@@ -52,9 +53,10 @@ use crate::toc::{Area, Toc, TocDigests, Track};
 
 pub use dsdiff::{LocalChunk, PropertyChunk};
 pub use dsdiff_dst::{DstIndexOffset, DstLengths, InvalidDst};
+pub use dsdiff_text::{Comment, CommentKind};
 pub use dsf::DsfBitsPerSample;
 pub use id3::{AlbumArtistFrame, ArrangerFrame, DateFrame, Id3Encoding, Id3Options, MAX_TAG_BYTES};
-pub use markers::{Marker, MarkerKind, Markers};
+pub use markers::{InfoChunk, Marker, MarkerKind, MarkerText, Markers};
 pub use tags::{GenreSources, TagItem, TagSet, TextSource};
 
 /// An output file format (specification 8).
@@ -189,6 +191,25 @@ pub struct OutputOptions {
     pub genres: GenreSources,
     /// W4 to W12, the ID3 writer's choices.
     pub id3: Id3Options,
+    /// W24, whether `DIIN` has the artist (`DIAR`) and title (`DITI`): the album artist
+    /// and album items of the tag ([`OutputOptions::tags`]; none for raw or no tags).
+    /// Default `None`: in an edited master, as the DSDIFF document recommends; otherwise
+    /// not.
+    pub dsdiff_artist_title: Option<bool>,
+    /// W14, the order of the chunks inside `DIIN` (8.4.8): each [`InfoChunk`] once.
+    /// Default [`InfoChunk::TABLE_ORDER`]: `EMID`, the markers, `DIAR`, `DITI`.
+    pub dsdiff_info_order: [InfoChunk; 4],
+    /// W23, the text of the markers made from the TOC (8.4.7 item 5). Default
+    /// [`MarkerText::Empty`].
+    pub dsdiff_marker_text: MarkerText,
+    /// W25, the comments of `COMT` (8.4.8), in order. Default none, and so no `COMT`.
+    pub dsdiff_comments: Vec<Comment>,
+    /// W26, the text byte that replaces a code point outside U+0020 to U+007E in DSDIFF
+    /// text (8.4.9); `None` removes it. Default `Some(b'?')`.
+    pub dsdiff_text_replacement: Option<u8>,
+    /// W31, whether a `DIAR`, `DITI` or comment whose text is empty, or becomes empty under
+    /// W26, is written with `k = 0` (8.4.8). Default `false`: it is left out.
+    pub dsdiff_empty_text: bool,
 }
 
 impl Default for OutputOptions {
@@ -217,6 +238,12 @@ impl Default for OutputOptions {
             text_source: TextSource::DiscThenAlbum,
             genres: GenreSources::default(),
             id3: Id3Options::default(),
+            dsdiff_artist_title: None,
+            dsdiff_info_order: InfoChunk::TABLE_ORDER,
+            dsdiff_marker_text: MarkerText::Empty,
+            dsdiff_comments: Vec::new(),
+            dsdiff_text_replacement: Some(b'?'),
+            dsdiff_empty_text: false,
         }
     }
 }
@@ -295,6 +322,36 @@ impl OutputOptions {
     /// These options with ID3 choices `id3` (W4 to W12).
     pub fn with_id3(self, id3: Id3Options) -> Self {
         OutputOptions { id3, ..self }
+    }
+
+    /// These options with or without the DSDIFF artist and title (W24).
+    pub fn with_dsdiff_artist_title(self, write: Option<bool>) -> Self {
+        OutputOptions { dsdiff_artist_title: write, ..self }
+    }
+
+    /// These options with `DIIN` chunk order `order` (W14).
+    pub fn with_dsdiff_info_order(self, order: [InfoChunk; 4]) -> Self {
+        OutputOptions { dsdiff_info_order: order, ..self }
+    }
+
+    /// These options with marker text `text` (W23).
+    pub fn with_dsdiff_marker_text(self, text: MarkerText) -> Self {
+        OutputOptions { dsdiff_marker_text: text, ..self }
+    }
+
+    /// These options with DSDIFF comments `comments` (W25).
+    pub fn with_dsdiff_comments(self, comments: Vec<Comment>) -> Self {
+        OutputOptions { dsdiff_comments: comments, ..self }
+    }
+
+    /// These options with DSDIFF text replacement `replacement` (W26).
+    pub fn with_dsdiff_text_replacement(self, replacement: Option<u8>) -> Self {
+        OutputOptions { dsdiff_text_replacement: replacement, ..self }
+    }
+
+    /// These options with empty DSDIFF text written, or not (W31).
+    pub fn with_dsdiff_empty_text(self, write: bool) -> Self {
+        OutputOptions { dsdiff_empty_text: write, ..self }
     }
 
     /// These options with source track `track` (W29).
@@ -488,7 +545,7 @@ impl Layout {
                 let tag = layout.tag(toc, area, options)?;
                 dsf::build(&mut layout, area, options, tag)?
             }
-            Format::DsdiffDsd => dsdiff::build_dsd(&mut layout, area, options)?,
+            Format::DsdiffDsd => dsdiff::build_dsd(&mut layout, toc, area, options)?,
             Format::DsdiffDst => {
                 return Err(Error::InvalidArgument("a DST layout needs the frame lengths: Layout::new_dst"));
             }
@@ -527,7 +584,7 @@ impl Layout {
             },
         };
         let data = dsdiff_dst::DstData::new(&layout, lengths, options)?;
-        dsdiff::assemble(&mut layout, area, options, dsdiff::Sound::Dst(data))?;
+        dsdiff::assemble(&mut layout, toc, area, options, dsdiff::Sound::Dst(data))?;
         Ok(layout)
     }
 

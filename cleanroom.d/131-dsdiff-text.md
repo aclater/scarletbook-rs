@@ -1,0 +1,1 @@
+| 2026-10-31 | #131 DSDIFF text | `DIAR`, `DITI`, `COMT`, marker text, `output::Comment`, `InfoChunk`, `MarkerText`. Specification 8, 8.4.1 item 4, 8.4.7 item 5, 8.4.8, 8.4.9 and 8.6 rows 14, 22 to 26 and 31, at sacd-spec `6db1251`. No new sources consulted. |

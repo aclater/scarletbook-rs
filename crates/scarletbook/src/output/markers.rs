@@ -4,6 +4,7 @@
 //! 8.4.10 and 8.4.11).
 
 use super::dsdiff::{MAX_TIME_FRAMES, chunk, time};
+use super::dsdiff_text::{diin_text, text_bytes};
 use super::{Layout, OutputOptions};
 use crate::error::{EditedMasterCheck, Error, OutputRefusal};
 use crate::toc::{Area, LoudspeakerLayout, Track};
@@ -71,6 +72,16 @@ pub enum Markers {
     Custom(Vec<Marker>),
 }
 
+/// The text of the markers made from the TOC (specification 8, 8.4.7 item 5; W23).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum MarkerText {
+    /// None.
+    Empty,
+    /// On a track start, the track's title as text bytes (8.4.9).
+    TrackTitle,
+}
+
 /// The tracks of an area with each one's `[s_i, s_i + d_i)`.
 fn spans(area: &Area) -> impl Iterator<Item = (&Track, u32, u32)> {
     area.tracks.iter().map(|t| (t, t.start_frame, t.end_frame()))
@@ -83,10 +94,15 @@ fn exact(spans: &[(u32, u32)]) -> bool {
 
 /// A program: a program start at `start`, then each span's track start, and its track
 /// stop when it is the last span or the next one starts later (8.4.10).
-fn program(start: u32, spans: &[(u32, u32)]) -> Vec<Marker> {
+fn program(start: u32, spans: &[(u32, u32)], tracks: &[&Track], options: &OutputOptions) -> Vec<Marker> {
     let mut m = vec![Marker::new(start, MarkerKind::ProgramStart)];
     for (i, &(s, e)) in spans.iter().enumerate() {
-        m.push(Marker::new(s, MarkerKind::TrackStart));
+        let mut marker = Marker::new(s, MarkerKind::TrackStart);
+        if options.dsdiff_marker_text == MarkerText::TrackTitle {
+            let title = tracks.get(i).and_then(|t| t.text.get(crate::toc::TrackTextItem::Title));
+            marker.text = title.map_or_else(Vec::new, |t| text_bytes(t, options.dsdiff_text_replacement));
+        }
+        m.push(marker);
         if spans.get(i + 1).is_none_or(|&(next, _)| e < next) {
             m.push(Marker::new(e, MarkerKind::TrackStop));
         }
@@ -105,10 +121,14 @@ pub(super) fn from_toc(
     if let Some(t) = source {
         // Item 3: a one-track program, when the writer chooses one (W28).
         let (s, e) = (a.max(t.start_frame), b.min(t.end_frame()));
-        return if options.dsdiff_source_track_markers && s < e { program(a, &[(s, e)]) } else { Vec::new() };
+        return if options.dsdiff_source_track_markers && s < e {
+            program(a, &[(s, e)], &[t], options)
+        } else {
+            Vec::new()
+        };
     }
-    let clipped: Vec<(u32, u32)> =
-        spans(area).map(|(_, s, e)| (a.max(s), b.min(e))).filter(|&(s, e)| s < e).collect();
+    let (tracks, clipped): (Vec<&Track>, Vec<(u32, u32)>) =
+        spans(area).map(|(t, s, e)| (t, (a.max(s), b.min(e)))).filter(|&(_, (s, e))| s < e).unzip();
     let play = (a, b) == (0, area.playtime_frames());
     if !(play || options.dsdiff_clipped_program) || clipped.is_empty() {
         return Vec::new();
@@ -119,7 +139,7 @@ pub(super) fn from_toc(
     if play && !exact(&all) || !exact(&clipped) {
         return Vec::new();
     }
-    program(a, &clipped)
+    program(a, &clipped, &tracks, options)
 }
 
 /// The checks of 8.4.11 for an edited master of `[a, b)`.
@@ -148,8 +168,8 @@ pub(super) fn check_edited_master(area: &Area, a: u32, b: u32) -> Result<(), Err
     Ok(())
 }
 
-/// Text bytes of a string the caller gives (8.4.1 item 4).
-pub(super) fn text_bytes(s: &[u8]) -> Result<(), Error> {
+/// Checks that a caller's bytes are text bytes (8.4.1 item 4).
+pub(super) fn check_text(s: &[u8]) -> Result<(), Error> {
     if s.iter().all(|b| (0x20..=0x7E).contains(b)) {
         Ok(())
     } else {
@@ -178,20 +198,63 @@ fn mark(out: &mut Vec<u8>, marker: &Marker, a: u32, start: u64, pad_counted: boo
     chunk(out, b"MARK", &d);
 }
 
-/// The `DIIN` chunk (8.4.8): `EMID`, then the markers, in the table's order.
-pub(super) fn diin(layout: &Layout, markers: &[Marker], options: &OutputOptions) -> Result<Vec<u8>, Error> {
-    text_bytes(options.dsdiff_edited_master_id.as_bytes())?;
+/// A chunk of the edited master information chunk (specification 8, 8.4.8), for
+/// [`OutputOptions::dsdiff_info_order`] (W14).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum InfoChunk {
+    /// `EMID`.
+    EditedMasterId,
+    /// The `MARK` chunks, in their order.
+    Markers,
+    /// `DIAR`, the artist.
+    Artist,
+    /// `DITI`, the title.
+    Title,
+}
+
+impl InfoChunk {
+    /// The order of the table of 8.4.8, the default.
+    pub const TABLE_ORDER: [InfoChunk; 4] =
+        [InfoChunk::EditedMasterId, InfoChunk::Markers, InfoChunk::Artist, InfoChunk::Title];
+}
+
+/// The `DIIN` chunk (8.4.8): `EMID`, the markers, the artist and the title, in the order of
+/// the options.
+pub(super) fn diin(
+    layout: &Layout,
+    markers: &[Marker],
+    artist: Option<&str>,
+    title: Option<&str>,
+    options: &OutputOptions,
+) -> Result<Vec<u8>, Error> {
+    let mut sorted = options.dsdiff_info_order;
+    sorted.sort_by_key(|c| InfoChunk::TABLE_ORDER.iter().position(|t| t == c));
+    if sorted != InfoChunk::TABLE_ORDER {
+        return Err(Error::InvalidArgument("the DIIN order must name each chunk once"));
+    }
+    check_text(options.dsdiff_edited_master_id.as_bytes())?;
     let a = layout.first;
     let start = u64::from(options.dsdiff_absolute_start.unwrap_or(0));
     let mut data = Vec::new();
-    chunk(&mut data, b"EMID", options.dsdiff_edited_master_id.as_bytes());
-    for m in markers {
-        if m.frame < layout.first || m.frame > layout.end {
-            return Err(Error::InvalidArgument("a marker lies outside the range"));
+    for c in options.dsdiff_info_order {
+        match c {
+            InfoChunk::EditedMasterId => {
+                chunk(&mut data, b"EMID", options.dsdiff_edited_master_id.as_bytes())
+            }
+            InfoChunk::Markers => {
+                for m in markers {
+                    if m.frame < layout.first || m.frame > layout.end {
+                        return Err(Error::InvalidArgument("a marker lies outside the range"));
+                    }
+                    check_text(&m.text)?;
+                    debug_assert!(start + u64::from(layout.end - a) <= MAX_TIME_FRAMES);
+                    mark(&mut data, m, a, start, options.dsdiff_text_pad_counted);
+                }
+            }
+            InfoChunk::Artist => diin_text(&mut data, b"DIAR", artist, options),
+            InfoChunk::Title => diin_text(&mut data, b"DITI", title, options),
         }
-        text_bytes(&m.text)?;
-        debug_assert!(start + u64::from(layout.end - a) <= MAX_TIME_FRAMES);
-        mark(&mut data, m, a, start, options.dsdiff_text_pad_counted);
     }
     let mut out = Vec::new();
     chunk(&mut out, b"DIIN", &data);
