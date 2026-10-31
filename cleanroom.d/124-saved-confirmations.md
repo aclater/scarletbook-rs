@@ -1,1 +1,1 @@
-| 2026-10-31 | #124 saved confirmations | Confirmed provisional starts saved with the seek index and reported confirmed after a remount. Specification 4, 4.2 items 8 and 9, and 7, 7.1 item 2, at sacd-spec `cb9530b`. No new sources consulted. |
+| 2026-10-31 | #124 saved confirmations (#144) | Confirmed provisional starts saved with the seek index and reported confirmed after a remount. Specification 4, 4.2 items 8 and 9, and 7, 7.1 item 2, at sacd-spec `cb9530b`. No new sources consulted. |

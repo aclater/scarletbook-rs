@@ -5,4 +5,4 @@ Added
   written when there is nothing to add), and after a remount reports a reading from that hint
   for positions `u_L` or more `Speculation::Confirmed` at once, when sector `L` has that digest.
   `AreaIndex::confirmations`; `AreaIndex::without_checkpoints` keeps only the hints,
-  confirmations and fingerprint, a few kilobytes to save per area (#124)
+  confirmations and fingerprint, a few kilobytes to save per area (#124, #144).
