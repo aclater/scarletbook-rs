@@ -142,7 +142,18 @@ fn audio_free(audio: *mut SbTrackAudio) {
 
 /// Decodes a track through the C ABI and hashes each channel.
 fn hash_track(disc: *const SbDisc, slot: u32, number: u32) -> (Vec<String>, u64, u64) {
+    hash_track_on(disc, slot, number, ptr::null())
+}
+
+/// `hash_track`, decoding on `pool` (NULL: on the calling thread).
+fn hash_track_on(
+    disc: *const SbDisc,
+    slot: u32,
+    number: u32,
+    pool: *const SbPool,
+) -> (Vec<String>, u64, u64) {
     let a = audio_open(disc, slot, number).unwrap_or_else(|s| panic!("{s:?}: {}", last_error()));
+    assert_eq!(set_pool(a, pool), SbStatus::Ok);
     let ch = audio_channels(a) as usize;
     let mut hashers: Vec<Sha256> = (0..ch).map(|_| Sha256::new()).collect();
     let mut buf = vec![0u8; ch * 4704];
@@ -194,6 +205,113 @@ fn decodes_corpus_tracks_through_the_abi() {
         }
         free(disc);
     }
+}
+
+/// Several discs decoded at once, one per thread, through the C ABI (as a ctypes caller
+/// running several conversions would): each thread opens its own disc (from memory or
+/// from a file), decodes every track with audio, on the calling thread or on a pool all
+/// the threads share, and gets the manifest's hashes and counts. Each thread's error
+/// message stays its own while the others fail and succeed around it, and a handle
+/// opened on one thread is refused with another thread's disc.
+#[test]
+#[cfg_attr(miri, ignore = "reads whole corpus images")]
+fn discs_decode_concurrently_on_threads() {
+    const THREADS: usize = 8;
+    let ids = ["dst-features-2ch-6ch", "dst-invalid-frames-5ch", "hostile-base", "dst-invalid-frames-6ch"];
+    let pool = pool_new(2).unwrap();
+    let shared = pool.expose_provenance();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(THREADS));
+    let threads: Vec<_> = (0..THREADS)
+        .map(|i| {
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                let id = ids[i % ids.len()];
+                let disc = if i % 2 == 0 {
+                    open(&image(id)).unwrap()
+                } else {
+                    let path =
+                        CString::new(corpus().join("images").join(format!("{id}.iso")).to_str().unwrap())
+                            .unwrap();
+                    let mut d = ptr::null_mut();
+                    // SAFETY: `path` is NUL-terminated; `&mut d` is a valid out-pointer.
+                    assert_eq!(unsafe { sb_disc_open_file(path.as_ptr(), &mut d) }, SbStatus::Ok);
+                    d
+                };
+                let pool: *const SbPool =
+                    if i % 4 < 2 { ptr::null() } else { ptr::with_exposed_provenance(shared) };
+                // Every track with audio. A failure is raised only after the barriers below,
+                // which the other threads would otherwise wait at forever.
+                let decoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let mut first = None;
+                    for area in expected(id)["audio"].as_array().unwrap() {
+                        let slot = if area["area"] == "2ch" { 0 } else { 1 };
+                        for t in area["tracks"].as_array().unwrap() {
+                            let n = t["number"].as_u64().unwrap() as u32;
+                            if t["outcome"] != "ok" {
+                                assert_ne!(check(disc, slot, n), SbStatus::Ok);
+                                continue;
+                            }
+                            let (sha, missing, invalid) = hash_track_on(disc, slot, n, pool);
+                            let exp: Vec<_> =
+                                t["sha256"].as_array().unwrap().iter().map(|h| h.as_str().unwrap()).collect();
+                            assert_eq!(sha, exp, "thread {i}: {id} {slot} {n}");
+                            assert_eq!(missing, t["missing_frames"].as_u64().unwrap());
+                            assert_eq!(invalid, t["invalid_dst_frames"].as_u64().unwrap());
+                            first.get_or_insert((slot, n));
+                        }
+                    }
+                    first.unwrap_or_else(|| panic!("{id}: no track decoded"))
+                }));
+                let slot = area(disc, 0).1.slot;
+                // Half the threads fail with a message of their own while the other half
+                // fail and succeed; each message survives the other threads' calls.
+                let mut messages = Vec::new();
+                for phase in 0..2 {
+                    if i % 2 == phase {
+                        let number = 200 + i as u32;
+                        let failed = track(disc, slot, number).0;
+                        barrier.wait();
+                        barrier.wait();
+                        messages.push((failed, last_error(), format!("no track {number} in area")));
+                    } else {
+                        barrier.wait();
+                        let failed = track(disc, slot, 255).0;
+                        // A successful call clears the message.
+                        let ok = info(disc).0;
+                        let message = if ok == SbStatus::Ok { last_error() } else { format!("{ok:?}") };
+                        messages.push((failed, message, String::new()));
+                        barrier.wait();
+                    }
+                }
+                let (slot, number) = decoded.unwrap_or_else(|e| std::panic::resume_unwind(e));
+                for (failed, message, prefix) in messages {
+                    assert_eq!(failed, SbStatus::NoSuchTrack);
+                    if prefix.is_empty() {
+                        assert_eq!(message, "");
+                    } else {
+                        assert!(message.starts_with(&prefix), "thread {i}: {message:?}");
+                    }
+                }
+                let audio = audio_open(disc, slot, number).unwrap();
+                (disc.expose_provenance(), audio.expose_provenance())
+            })
+        })
+        .collect();
+    let handles: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+    // Every disc has an identity of its own: a track handle is refused with any other disc.
+    let (disc, audio): (Vec<*mut SbDisc>, Vec<*mut SbTrackAudio>) = handles
+        .iter()
+        .map(|&(d, a)| (ptr::with_exposed_provenance_mut(d), ptr::with_exposed_provenance_mut(a)))
+        .unzip();
+    let mut buf = vec![0u8; 6 * 4704];
+    for (i, &a) in audio.iter().enumerate() {
+        let other = disc[(i + 1) % THREADS];
+        assert_eq!(audio_read(a, other, &mut buf).0, SbStatus::InvalidArgument);
+        assert!(last_error().contains("another disc"), "{}", last_error());
+        audio_free(a);
+    }
+    disc.into_iter().for_each(free);
+    pool_free(pool);
 }
 
 #[test]
