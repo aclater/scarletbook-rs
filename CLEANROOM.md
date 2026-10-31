@@ -440,6 +440,19 @@ None of the forbidden sources listed under "Rules followed" was read, searched f
 or installed while writing this repository. Every behaviour implemented here comes from the
 sacd-spec specifications at the commit above, checked against its corpus.
 
+**Update to `1517ab7` and `6db1251`** (sacd-spec PRs #34 and #36, answers to sacd-spec#33 and
+#35, for issue #131). They add specification 8, "Output containers": DSF with an ID3v2.4 tag,
+and DSDIFF with plain DSD or DST frames, markers, text and the edited master. The
+specification side wrote it from three published documents, which its table cites (Sony's
+DSF File Format Specification 1.01, Philips' DSDIFF 1.5 and ID3v2.4.0). This side has read
+none of those documents, and no writer code; the formats come in only through specification
+8. `6db1251` adds 8.4.10 item 4 (the clipped program of a frame range), the edited master's
+range and post-roll (8.4.11) and empty text (8.4.8), and writer's choices 30 and 31. The
+range `82eac6c..6db1251` also changes specifications 0, 3, 4 and 7 (sacd-spec#31); the #131
+work uses only specification 8 from it, together with sections of 0, 2, 3 and 4 that it
+doesn't change. The corpus and the charset tables are unchanged
+(`git diff --stat 82eac6c 6db1251 -- corpus/ spec/charsets/` is empty).
+
 ## Specification issues filed
 
 | Issue | Gap | Resolution | scarletbook-rs |
@@ -450,6 +463,8 @@ sacd-spec specifications at the commit above, checked against its corpus.
 | [aclater/sacd-spec#16](https://github.com/aclater/sacd-spec/issues/16) | frame ranges other than tracks (#35): no normative end of the area timeline, the 4.8 checks and per-track counts defined for tracks only, "tracks with pauses" informative | answered in `fa602f9` (sacd-spec PR #20; 4.7.1 frame ranges, play range, tracks with pauses, 4.8 applied to ranges), refined in `e52a42b` | implemented as specified (#44) |
 | [aclater/sacd-spec#17](https://github.com/aclater/sacd-spec/issues/17) | raw frames (#37): no normative undecoded view of a position; plain and missing positions in DST passthrough undefined; "invalid" undefined without decoding | answered in `fa602f9` (sacd-spec PR #20; 4.6.1 stored content and DST equivalents), refined in `e52a42b` (stored frame list and per-range stored content) | implemented as specified, both forms and DST equivalents (#49) |
 | [aclater/sacd-spec#18](https://github.com/aclater/sacd-spec/issues/18) | 7.1 item 3 described one pass over an area's sectors; range and out-of-order reads rescan | answered in `34f78a3` (4.2 item 6, 7.1 item 3): one pass per track or range is allowed; restated in `e52a42b` | conformant as written; the code cites 4.2 item 6 (#44) |
+| [aclater/sacd-spec#33](https://github.com/aclater/sacd-spec/issues/33) | DSF and DSDIFF output (#131): no container format in the specifications; the published format documents are outside the clean room | answered in `1517ab7` (specification 8) | implemented as specified, every writer's choice of 8.6 an option (#131) |
+| [aclater/sacd-spec#35](https://github.com/aclater/sacd-spec/issues/35) | specification 8: the edited master's range, markers of a frame range without a source track, post-roll, empty DSDIFF text | answered in `6db1251` (8.4.8, 8.4.10 item 4, 8.4.11; 8.6 rows 30 and 31) | implemented as specified (#131) |
 
 Stages 1 to 4 met no gap that required a guess. Both issues concern optional warnings
 that the corpus does not compare, found while working through the review follow-ups.
