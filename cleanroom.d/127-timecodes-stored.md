@@ -1,0 +1,1 @@
+| 2026-10-31 | #127 TOC timecodes as stored | `Disc::track_timecodes_stored`, `SbTimecode`, `sb_area_playtime_stored`, `sb_track_timecodes_stored`. Specification 3, 3.7.2 and 3.9.2 at sacd-spec `82eac6c`. No new sources consulted. |

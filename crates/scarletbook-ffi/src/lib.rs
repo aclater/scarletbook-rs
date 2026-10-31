@@ -2066,6 +2066,80 @@ pub unsafe extern "C" fn sb_disc_manufacturer(
     })
 }
 
+/// A timecode as stored: its three bytes, minutes, seconds and frames (specification 0,
+/// 0.5), not validated (a stored 255:255:255 is given as such).
+///
+/// Layout: 3 bytes, aligned to 1, without padding (3 fields of 1 byte).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SbTimecode {
+    /// Minutes.
+    pub minutes: u8,
+    /// Seconds.
+    pub seconds: u8,
+    /// Frames.
+    pub frames: u8,
+}
+
+impl From<scarletbook::toc::Timecode> for SbTimecode {
+    fn from(t: scarletbook::toc::Timecode) -> Self {
+        SbTimecode { minutes: t.minutes, seconds: t.seconds, frames: t.frames }
+    }
+}
+
+/// The total play time of the area from `slot` as stored (area TOC offset 64,
+/// specification 3); `SbAreaInfo.playtime_frames` is its frame number.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle; `out` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_area_playtime_stored(
+    disc: *const SbDisc,
+    slot: u32,
+    out: *mut SbTimecode,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?.get()?;
+        let a = find_area(&d, slot)?;
+        // SAFETY: forwarded contract.
+        unsafe { write_out(out, SbTimecode::from(a.playtime)) }?;
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// The start and duration of track `number` of the area from `slot` as stored in the area
+/// TOC's `SACDTRL2` (specification 3, 3.7.2): before the clamping of 3.9.2, whatever their
+/// range. `SbTrackInfo.start_frame` and `duration_frames` are their frame numbers after
+/// clamping. Both outputs are required.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle; `start` and `duration` NULL or valid for writes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_track_timecodes_stored(
+    disc: *const SbDisc,
+    slot: u32,
+    number: u32,
+    start: *mut SbTimecode,
+    duration: *mut SbTimecode,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?.get()?;
+        if start.is_null() || duration.is_null() {
+            return Err(Failure::arg("NULL output pointer"));
+        }
+        let (s, l) = d.track_timecodes_stored(slot_from(slot)?, number)?;
+        // SAFETY: forwarded contract (checked non-NULL above).
+        unsafe { write_out(start, SbTimecode::from(s)) }?;
+        // SAFETY: forwarded contract (checked non-NULL above).
+        unsafe { write_out(duration, SbTimecode::from(l)) }?;
+        Ok(SbStatus::Ok)
+    })
+}
+
 /// More TOC fields of the area from `slot` (`SbAreaDetails`).
 ///
 /// # Safety
