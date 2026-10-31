@@ -37,8 +37,9 @@ header = """/* SPDX-License-Identifier: MIT OR Apache-2.0 */
  *   threads of the pools decoding for the disc's track handles (sb_track_audio_set_pool;
  *   in a library built with the parallel feature, rayon's global pool by default). The
  *   library has no other threads, and no global state besides the per-thread error
- *   message and an atomic counter that numbers the discs opened (so that a handle can
- *   tell the disc it belongs to).
+ *   message, two atomic counters that number the discs and images opened (so that a
+ *   handle can tell the disc and image it belongs to), and, on each pool thread, a DST
+ *   decoder reused from frame to frame (a cache, not shared between threads).
  *
  * - Callbacks and re-entrancy. While a disc's callback runs, that disc and its track
  *   and raw frames handles are in use: calling into this library with them from the

@@ -32,8 +32,9 @@
  *   threads of the pools decoding for the disc's track handles (sb_track_audio_set_pool;
  *   in a library built with the parallel feature, rayon's global pool by default). The
  *   library has no other threads, and no global state besides the per-thread error
- *   message and an atomic counter that numbers the discs opened (so that a handle can
- *   tell the disc it belongs to).
+ *   message, two atomic counters that number the discs and images opened (so that a
+ *   handle can tell the disc and image it belongs to), and, on each pool thread, a DST
+ *   decoder reused from frame to frame (a cache, not shared between threads).
  *
  * - Callbacks and re-entrancy. While a disc's callback runs, that disc and its track
  *   and raw frames handles are in use: calling into this library with them from the
@@ -203,6 +204,11 @@ typedef enum SbStatus {
    The operating system could not start a decoding pool's threads (`sb_pool_new`).
    */
   SB_STATUS_THREADS_UNAVAILABLE = -16,
+  /*
+   Memory for a copy the caller asked for could not be allocated
+   (`sb_disc_open_memory`).
+   */
+  SB_STATUS_OUT_OF_MEMORY = -17,
 } SbStatus;
 
 /*
@@ -768,7 +774,8 @@ enum SbStatus sb_disc_open_file_with_log(const char *path,
 
 /*
  Opens a disc image held in memory. The bytes are copied; the caller may free `data`
- when the call returns. On failure `*out` is set to NULL.
+ when the call returns. On failure `*out` is set to NULL; `SB_STATUS_OUT_OF_MEMORY` if
+ the copy cannot be allocated.
 
  # Safety
 

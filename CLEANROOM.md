@@ -458,3 +458,4 @@ on 2026-10-30: the name `scarletbook` is not taken on crates.io. Nothing was pub
 | 2026-10-31 | #39 ctypes README | README section on using the C library from Python's ctypes, checked by clib-smoke.py. Python `ctypes` documentation (docs.python.org/3/library/ctypes.html) from memory, not fetched; a general reference. No SACD or DST sources. |
 | 2026-10-31 | #39 guard coverage | every exported function under `guard` (source check), no panic from the error message's thread-local during thread exit. No new sources consulted. |
 | 2026-10-31 | #28 Miri on the parallel path | a CI step runs the `parallel` tests and the C pool test under Miri with Tree Borrows; no change to the library. No new sources consulted. |
+| 2026-10-31 | #39 audit follow-ups | `SB_STATUS_OUT_OF_MEMORY` for a failed image copy in `sb_disc_open_memory`; the header lists all global state. No new sources consulted. |
