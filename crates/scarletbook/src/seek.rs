@@ -105,11 +105,23 @@ pub struct IndexOptions {
     /// (see [`REPLAY_SECTORS`]); 0 stores none. A cursor made from the index may hold as
     /// much again while it records. Saved indexes keep at most 4 GiB of it.
     pub inline_budget: usize,
+    /// Seek hints ([`AreaIndex#seek-hints`]): a sample is recorded at least this many
+    /// frames after the one before. Default [`DEFAULT_HINT_SPACING`]; 0 records none.
+    pub hint_spacing: u32,
+    /// The most seek hints kept, at most [`MAX_HINTS`]; past it, those closest (in frames)
+    /// to the hint before them are dropped. Default [`DEFAULT_MAX_HINTS`] (8 bytes each, saved and in memory).
+    /// An index loaded with [`AreaIndex::from_bytes`] keeps at most its `max_inline_budget / 8`.
+    pub max_hints: usize,
 }
 
 impl Default for IndexOptions {
     fn default() -> Self {
-        IndexOptions { interval: DEFAULT_INTERVAL, inline_budget: DEFAULT_INLINE_BUDGET }
+        IndexOptions {
+            interval: DEFAULT_INTERVAL,
+            inline_budget: DEFAULT_INLINE_BUDGET,
+            hint_spacing: DEFAULT_HINT_SPACING,
+            max_hints: DEFAULT_MAX_HINTS,
+        }
     }
 }
 
@@ -128,7 +140,25 @@ impl IndexOptions {
     pub fn with_inline_budget(self, bytes: usize) -> Self {
         IndexOptions { inline_budget: bytes, ..self }
     }
+
+    /// These options with seek hints `spacing` frames apart (0 for none), at most `max`.
+    pub fn with_hints(self, spacing: u32, max: usize) -> Self {
+        IndexOptions { hint_spacing: spacing, max_hints: max, ..self }
+    }
 }
+
+/// Default [`IndexOptions::hint_spacing`], in frames (about 0.1 s, 16 sectors of DST).
+pub const DEFAULT_HINT_SPACING: u32 = 8;
+
+/// Default [`IndexOptions::max_hints`]: 16 KiB.
+pub const DEFAULT_MAX_HINTS: usize = 2048;
+
+/// Most seek hints an index keeps or loads.
+pub const MAX_HINTS: usize = 65_536;
+
+/// A seek hint is used for a range whose first frame lies at most this many frames after
+/// the hint's.
+pub const HINT_REACH: u32 = 64;
 
 /// Where a cursor made from an index started its scan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -513,6 +543,64 @@ impl ProvisionalRecorder {
     }
 }
 
+/// The seek hints a cursor records as it reads: sectors whose first frame record is at
+/// least the spacing after the last one recorded (or below it).
+#[derive(Clone, Debug)]
+pub(crate) struct HintRecorder {
+    spacing: u32,
+    last: Option<u32>,
+    pub(crate) list: Vec<(u32, u32)>,
+    /// The last sector with a frame record seen and not recorded: recorded when the reading
+    /// ends, so that the hints reach the end of what was read.
+    tail: Option<(u32, u32)>,
+    /// The reading has ended: whatever is recorded is news.
+    flushed: bool,
+}
+
+/// Seek hints a cursor holds before an index takes them.
+const HINTS_PER_TAKE: usize = 64;
+
+impl HintRecorder {
+    /// Notes sector `lsn`, whose bytes are `sector`.
+    #[inline]
+    pub(crate) fn see(&mut self, lsn: u64, sector: &[u8; SECTOR_SIZE]) {
+        let Some(t) = first_record(sector) else { return };
+        // Audio LSNs come from u32 fields.
+        let Ok(lsn) = u32::try_from(lsn) else { return };
+        if self.last.is_none_or(|l| t >= l.saturating_add(self.spacing) || t < l)
+            && self.list.len() < MAX_HINTS
+        {
+            self.list.push((lsn, t));
+            self.last = Some(t);
+            self.tail = None;
+        } else {
+            self.tail = Some((lsn, t));
+        }
+    }
+
+    /// The reading has ended: records the last sector seen, and makes the hints news.
+    pub(crate) fn flush(&mut self) {
+        if let Some(tail) = self.tail.take() {
+            if self.list.len() < MAX_HINTS {
+                self.list.push(tail);
+            }
+        }
+        self.flushed = true;
+    }
+
+    /// The hints recorded, taken.
+    pub(crate) fn take(&mut self) -> Vec<(u32, u32)> {
+        self.flushed = false;
+        std::mem::take(&mut self.list)
+    }
+
+    /// Whether enough hints wait for an index to take them, or the reading has ended.
+    #[inline]
+    pub(crate) fn has_news(&self) -> bool {
+        self.list.len() >= HINTS_PER_TAKE || (self.flushed && !self.list.is_empty())
+    }
+}
+
 /// A provisional start still to be chosen: on the cursor's first read, from the area's
 /// play time and the exact plan the cursor holds meanwhile.
 #[derive(Debug)]
@@ -529,10 +617,13 @@ pub(crate) struct Speculate {
     pub(crate) exact: Box<AreaCursor>,
     /// Where the exact start begins: the search looks past it.
     pub(crate) from: u64,
+    /// A seek hint to begin at instead of searching: (sector, its first record's frame
+    /// number, the end of the read to make there).
+    pub(crate) hint: Option<(u64, u32, u64)>,
 }
 
 /// The first frame record of a sector, as a frame number (specification 4, 4.3.2).
-fn first_record(sector: &[u8]) -> Option<u32> {
+pub(crate) fn first_record(sector: &[u8]) -> Option<u32> {
     let header = *sector.first()?;
     let (f, k) = ((header >> 2) & 7, usize::from(header >> 5));
     if f == 0 {
@@ -552,8 +643,12 @@ const PROBE_SPAN: u64 = 32;
 const CLOSE_SECTORS: u64 = 16;
 
 /// Most sectors a cursor reads in one call (1 MiB): after a provisional start, a cursor reads
-/// up to the range's estimated end in calls of up to this many sectors; every other read is
-/// at most 32 sectors. A cancellation request ([`crate::CancelToken`]) that arrives during
+/// up to the range's estimated end in calls of up to this many sectors, and after a resume
+/// from a seek index its first read is sized to the range (at most the replay, the interval
+/// and 64 sectors); every other read is at most 32 sectors. A sized read trades bytes for
+/// round trips: a range of a frame or two after a resume reads up to `W + K + 64` sectors in
+/// one call where 32-sector reads would have stopped earlier in two or three, and a failing
+/// device fails that one read before frames the smaller reads would have returned. A cancellation request ([`crate::CancelToken`]) that arrives during
 /// such a read takes effect once it completes.
 pub const MAX_READ_SECTORS: u64 = 512;
 
@@ -914,6 +1009,32 @@ const _: () = {
 /// [`MAX_FRAME_BYTES`]), plus the LSNs of the first [`MAX_MALFORMED_WARNINGS`] malformed
 /// sectors (16 KiB): [`AreaIndex::memory`] reports it. A 50-minute 2-channel DST area
 /// (475 000 sectors) at `K = 64` takes about 180 KB.
+///
+/// # Seek hints
+///
+/// An index also keeps **seek hints** (the locator samples of specification 4, 4.2 item 8,
+/// sacd-spec `cb9530b`): sectors whose first frame record its cursors read, with that
+/// record's frame number, at least [`IndexOptions::hint_spacing`] frames apart, at most
+/// [`IndexOptions::max_hints`] of them (8 bytes each). They are saved with the index, so
+/// that after a remount a provisional reading ([`SeekPolicy::Speculative`]) of a range near
+/// one read before needs no search: it begins at the hint with the largest frame number
+/// below the range's first frame (at most [`HINT_REACH`] frames below), and reads from
+/// there through the next hint past the range in **one read call** (at most
+/// [`MAX_READ_SECTORS`]). A hint only chooses `L`: the positions are provisional
+/// ([`Speculation::Pending`]) as from any provisional start, never exact, whatever the hint
+/// says. The hint's sector is read anyway; if its first record is not the hint's, the
+/// hints are of another image or a stale one: the cursor logs a warning, searches as
+/// without hints, and the index drops them.
+///
+/// A disc that keeps the index ([`crate::Disc::enable_seek_index`],
+/// [`crate::Disc::set_seek_index`]) also gives it a fingerprint of its TOC (the image's
+/// sector count and format, the master TOC's version, album and disc catalogue numbers,
+/// genres, area pointers, flags and date, and the area TOC's fields and track list; not
+/// text), saved with it: a disc with another TOC refuses it, at no cost in reads.
+// TODO(sacd-spec#31): a confirmation (`L`, `u_L`) saved with a hint would let later
+// readings from it be reported confirmed (4.2 item 9); not saved yet.
+// Specification 7, 7.1 item 2 (sacd-spec `cb9530b`): saved locator samples, a constant
+// number of bytes each, their number chosen by the caller and checked when loaded.
 // Specification 7, 7.1 item 2 (sacd-spec `da6b900`): a constant number of bytes per
 // existing audio sector, plus at most one 65 536-byte frame under assembly per saved state
 // that holds one, their number chosen by the caller (the inline budget).
@@ -941,6 +1062,12 @@ pub struct AreaIndex {
     provisional: std::collections::BTreeMap<u64, Provisional>,
     /// Verdicts not yet taken.
     events: Vec<SeekEvent>,
+    /// Seek hints: (sector, its first frame record's number), by increasing sector.
+    samples: Vec<(u32, u32)>,
+    hint_spacing: u32,
+    max_hints: usize,
+    /// The disc's TOC fingerprint ([`toc_fingerprint`]), once a disc kept the index.
+    fingerprint: Option<u64>,
 }
 
 /// Two indexes are equal when they hold the same reading state: the image they were
@@ -984,12 +1111,21 @@ impl AreaIndex {
             claims: Vec::new(),
             provisional: std::collections::BTreeMap::new(),
             events: Vec::new(),
+            samples: Vec::new(),
+            hint_spacing: options.hint_spacing,
+            max_hints: options.max_hints.min(MAX_HINTS),
+            fingerprint: None,
         })
     }
 
     /// The options the index was made with.
     pub fn options(&self) -> IndexOptions {
-        IndexOptions { interval: self.interval, inline_budget: self.inline_budget }
+        IndexOptions {
+            interval: self.interval,
+            inline_budget: self.inline_budget,
+            hint_spacing: self.hint_spacing,
+            max_hints: self.max_hints,
+        }
     }
 
     /// The LSN up to which the index holds the scan's state: the area's first audio sector
@@ -1018,6 +1154,130 @@ impl AreaIndex {
             + self.checkpoints.capacity() * std::mem::size_of::<Checkpoint>()
             + self.stored.memory()
             + self.malformed.capacity() * std::mem::size_of::<u32>()
+            + self.samples.capacity() * std::mem::size_of::<(u32, u32)>()
+    }
+
+    /// The seek hints held (see [Seek hints](Self#seek-hints)).
+    pub fn hints(&self) -> usize {
+        self.samples.len()
+    }
+
+    /// A recorder of seek hints for a cursor made from this index, if it keeps any.
+    pub(crate) fn hint_recorder(&self) -> Option<Box<HintRecorder>> {
+        (self.hint_spacing > 0 && self.max_hints > 0).then(|| {
+            Box::new(HintRecorder {
+                spacing: self.hint_spacing,
+                last: None,
+                list: Vec::new(),
+                tail: None,
+                flushed: false,
+            })
+        })
+    }
+
+    /// Takes seek hints a cursor recorded (spaced as it recorded them, plus where its reading
+    /// ended): merged by sector, and, past [`IndexOptions::max_hints`], thinned to three
+    /// quarters of it (see [`AreaIndex::thin_hints`]).
+    pub(crate) fn add_hints(&mut self, list: Vec<(u32, u32)>) {
+        if list.is_empty() || self.max_hints == 0 {
+            return;
+        }
+        let (start, end) = (self.start, self.end);
+        let after = self.samples.last().map_or(0, |s| u64::from(s.0) + 1);
+        let sorted = list.windows(2).all(|w| w[0].0 < w[1].0);
+        let ahead = sorted && list.first().is_some_and(|s| u64::from(s.0) >= after);
+        self.samples.extend(list.into_iter().filter(|&(l, _)| (start..end).contains(&u64::from(l))));
+        if !ahead {
+            self.samples.sort_unstable_by_key(|s| s.0);
+            self.samples.dedup_by_key(|s| s.0);
+        }
+        if self.samples.len() > self.max_hints {
+            // Down to three quarters, so that a long reading thins rarely.
+            self.thin_hints(self.max_hints - self.max_hints / 4);
+        }
+    }
+
+    /// Keeps at most `most` seek hints, dropping those closest (in frames) to the one before
+    /// them: the regions read keep a hint each, and long reads get sparser.
+    pub(crate) fn thin_hints(&mut self, most: usize) {
+        let excess = self.samples.len().saturating_sub(most);
+        if excess == 0 {
+            return;
+        }
+        let gap = |i: usize| match i.checked_sub(1).map(|p| self.samples[p].1) {
+            Some(p) if p < self.samples[i].1 => self.samples[i].1 - p,
+            _ => u32::MAX,
+        };
+        let mut order: Vec<(u32, usize)> = (0..self.samples.len()).map(|i| (gap(i), i)).collect();
+        order.sort_unstable();
+        let mut drop = vec![false; self.samples.len()];
+        for &(_, i) in order.iter().take(excess) {
+            drop[i] = true;
+        }
+        let mut i = 0;
+        self.samples.retain(|_| {
+            i += 1;
+            !drop[i - 1]
+        });
+    }
+
+    /// Drops the seek hints: one did not match the image.
+    pub(crate) fn drop_hints(&mut self) {
+        self.samples = Vec::new();
+    }
+
+    /// The seek hint to begin a range `[first, end)` at (see [Seek hints](Self#seek-hints)):
+    /// the sample with the largest frame number below `first` (the last of those, if
+    /// several), at most [`HINT_REACH`] frames below it, and the end of the read to make
+    /// there: through the first later sample numbered `end` or more, if at most
+    /// [`HINT_REACH`] frames past it (`true`), or else the
+    /// range's frames at the density of the samples before it (at least the area's average
+    /// over `playtime` frames), plus a quarter and a few sectors (`false`).
+    pub(crate) fn hint(&self, first: u32, end: u32, playtime: u32) -> Option<(u64, u32, u64, bool)> {
+        let (i, &(lsn, t)) =
+            self.samples.iter().enumerate().filter(|(_, s)| s.1 < first).max_by_key(|(_, s)| (s.1, s.0))?;
+        if first - t > HINT_REACH {
+            return None;
+        }
+        let lsn = u64::from(lsn);
+        let next = self.samples[i + 1..].iter().find(|s| s.1 >= end);
+        if let Some(&(l, _)) = next.filter(|s| s.1 - end <= HINT_REACH) {
+            return Some((lsn, t, u64::from(l) + 1, true));
+        }
+        // From the last sample of this run below `end` (the range's sectors already read
+        // there), at the density between the hint and it, or before the hint.
+        let run = self.samples[i + 1..].iter().take_while(|s| s.1 > t && s.1 < end).last().copied();
+        let (from, from_t) = run.map_or((lsn, t), |(l, n)| (u64::from(l), n));
+        let average = (self.end - self.start, playtime.max(1));
+        let local = match run {
+            Some((l, n)) if n - t >= 3 => Some((u64::from(l) - lsn, n - t)),
+            _ => i
+                .checked_sub(1)
+                .map(|p| self.samples[p])
+                .filter(|&(pl, pt)| u64::from(pl) < lsn && pt < t)
+                .map(|(pl, pt)| (lsn - u64::from(pl), t - pt)),
+        };
+        // The larger density: reading a few sectors too many costs less than another call.
+        let (s, f) = match local {
+            Some(l) if u128::from(l.0) * u128::from(average.1) > u128::from(average.0) * u128::from(l.1) => l,
+            _ => average,
+        };
+        let span = u128::from(end - from_t) * u128::from(s) / u128::from(f.max(1));
+        let span = u64::try_from(span + span / 4 + 4).unwrap_or(u64::MAX);
+        Some((lsn, t, from.saturating_add(span), false))
+    }
+
+    /// Sets the disc's TOC fingerprint, or checks it against the one the index has.
+    pub(crate) fn bind_fingerprint(&mut self, fingerprint: u64) -> Result<(), Error> {
+        match self.fingerprint {
+            Some(f) if f != fingerprint => {
+                Err(Error::InvalidArgument("seek index of another disc (TOC differs)"))
+            }
+            _ => {
+                self.fingerprint = Some(fingerprint);
+                Ok(())
+            }
+        }
     }
 
     /// Reads the area on from the frontier, about `max_sectors` sectors (at least to the
@@ -1049,6 +1309,7 @@ impl AreaIndex {
             return Ok(true);
         }
         let mut cursor = AreaCursor::resume(self, u32::MAX);
+        cursor.record_hints(self.hint_recorder());
         // Past the next boundary, which is recorded when its sector is read.
         let next = self.checkpoint_lsn(self.checkpoints.len());
         let stop = self.frontier().saturating_add(max_sectors).max(next.saturating_add(1));
@@ -1058,6 +1319,7 @@ impl AreaIndex {
         }
         // A cursor of this index joins it.
         self.take_from(&cursor)?;
+        self.add_hints(cursor.take_hints());
         scanned?;
         self.verify(image)?;
         Ok(self.is_complete())
@@ -1314,6 +1576,10 @@ impl AreaIndex {
             }
             self.claims.push(claim);
         }
+        if cursor.hints_stale() {
+            self.drop_hints();
+        }
+        self.add_hints(cursor.take_hints());
         let frontier = self.frontier();
         let most = self.boundaries();
         for (lsn, p) in cursor.take_provisional_checkpoints() {
@@ -1582,6 +1848,80 @@ impl Recorder {
     }
 }
 
+/// A fingerprint of the disc's TOC as it bears on the area of `slot` (FNV-1a, 64-bit): it
+/// tells a seek index saved for one disc from one loaded for another, even of the same
+/// layout, at no cost in reads. It covers the image's sector count and sector format; the
+/// master TOC's version, album set size and sequence number, stored catalogue numbers,
+/// genres, area pointers, disc flags and date; and the area TOC's version, maximum byte
+/// rate, sample frequency code, frame format, channel count, area configuration, maximum
+/// available channels, mute flags, track attribute, play time, track offset, audio
+/// sector range, and each track's number, start LSN, length, start frame, duration, flags
+/// and ISRC. Text is not covered.
+pub(crate) fn toc_fingerprint(toc: &crate::Toc, slot: crate::Slot) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut put = |bytes: &[u8]| {
+        for &b in bytes {
+            h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    put(&toc.sectors.to_le_bytes());
+    put(&[match toc.sector_format {
+        crate::SectorFormat::Plain => 0,
+        crate::SectorFormat::Raw2054 => 1,
+        crate::SectorFormat::Raw2064 => 2,
+    }]);
+    let m = &toc.master;
+    put(&[m.version.major, m.version.minor]);
+    put(&m.album_set_size.to_le_bytes());
+    put(&m.album_sequence_number.to_le_bytes());
+    for stored in [&m.album_catalog_number_stored, &m.disc_catalog_number_stored] {
+        put(&(stored.len() as u32).to_le_bytes());
+        put(stored);
+    }
+    for g in m.album_genres.iter().chain(&m.disc_genres) {
+        put(&[g.category, g.index]);
+    }
+    for p in [m.two_channel, m.multichannel] {
+        put(&p.toc1_lsn.to_le_bytes());
+        put(&p.toc2_lsn.to_le_bytes());
+        put(&p.toc_sectors.to_le_bytes());
+    }
+    put(&[m.disc_flags]);
+    put(&m.date.year.to_le_bytes());
+    put(&[m.date.month, m.date.day]);
+    if let Some(a) = toc.area(slot) {
+        put(&[a.version.major, a.version.minor]);
+        put(&a.max_byte_rate.to_le_bytes());
+        put(&[
+            a.sample_frequency_code,
+            a.frame_format,
+            a.channel_count,
+            a.area_config,
+            a.max_available_channels,
+            a.area_mute_flags,
+            a.track_attribute,
+            a.playtime.minutes,
+            a.playtime.seconds,
+            a.playtime.frames,
+            a.track_offset,
+        ]);
+        put(&a.audio_start_lsn.to_le_bytes());
+        put(&a.audio_end_lsn.to_le_bytes());
+        put(&(a.tracks.len() as u32).to_le_bytes());
+        for t in &a.tracks {
+            put(&[t.number, t.start_flags, t.duration_flags]);
+            put(&t.start_lsn.to_le_bytes());
+            put(&t.length_sectors.to_le_bytes());
+            put(&t.start_frame.to_le_bytes());
+            put(&t.duration_frames.to_le_bytes());
+            let isrc = t.isrc.as_deref().unwrap_or("");
+            put(&(isrc.len() as u32).to_le_bytes());
+            put(isrc.as_bytes());
+        }
+    }
+    h
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1604,6 +1944,10 @@ mod tests {
             claims: Vec::new(),
             provisional: std::collections::BTreeMap::new(),
             events: Vec::new(),
+            samples: Vec::new(),
+            hint_spacing: DEFAULT_HINT_SPACING,
+            max_hints: DEFAULT_MAX_HINTS,
+            fingerprint: None,
         }
     }
 
@@ -1678,6 +2022,22 @@ mod tests {
         // Only bounds narrower than the knots.
         assert_eq!(bracket((250, 24), (280, 28), &knots, 25), ((250, 24), (280, 28)));
         assert_eq!(bracket((100, 0), (1000, 100), &[], 7), ((100, 0), (1000, 100)));
+    }
+
+    /// Thinning keeps a hint per region read and drops the closest ones first.
+    #[test]
+    fn hints_thin_by_gap() {
+        let mut ix = index(&[], None);
+        ix.add_hints(vec![(110, 10), (111, 11), (112, 12), (150, 500), (151, 508), (190, 900)]);
+        ix.thin_hints(4);
+        assert_eq!(ix.samples.len(), 4, "{:?}", ix.samples);
+        assert!(
+            ix.samples.contains(&(110, 10))
+                && ix.samples.contains(&(150, 500))
+                && ix.samples.contains(&(190, 900))
+        );
+        assert_eq!(ix.hint(505, 520, 1000).map(|h| h.0), Some(150));
+        assert_eq!(ix.hint(700, 710, 1000), None, "beyond the reach");
     }
 
     #[test]

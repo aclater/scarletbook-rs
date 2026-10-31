@@ -11,8 +11,8 @@ use crate::error::{Error, Slot, Warning, WarningCode};
 use crate::image::{Image, ReadOutcome, SECTOR_SIZE};
 use crate::log::{Level, Log, sb_log};
 use crate::seek::{
-    AreaIndex, Assembling, Claim, Plan, Provisional, ProvisionalRecorder, Recorder, ResumedFrom, SeekIndexes,
-    SeekPolicy, Speculate, Speculation, digest, locate,
+    AreaIndex, Assembling, Claim, HintRecorder, Plan, Provisional, ProvisionalRecorder, Recorder,
+    ResumedFrom, SeekIndexes, SeekPolicy, Speculate, Speculation, digest, first_record, locate,
 };
 use crate::toc::{Area, Track};
 
@@ -116,7 +116,7 @@ impl std::fmt::Display for Malformed {
 /// holds at most `512 x (65 536 + 6 x 4704)` bytes, about 48 MB, whatever the host (plus
 /// the frame under assembly, and its read buffer: 64 KiB, or up to 1 MiB,
 /// [`crate::seek::MAX_READ_SECTORS`] sectors, kept for the cursor's life once it has made a
-/// read sized to a provisional range); DST frames of 40 % of their decoded size need about 6.8 MB
+/// read sized to its range, after a provisional start or a resume from a seek index); DST frames of 40 % of their decoded size need about 6.8 MB
 /// at 2 channels and 20 MB at 6. The cap is a constant so that the memory held does not
 /// grow with the host's thread count. It keeps 16 positions per thread up to 32 threads:
 /// with groups of 2 or 3 frames per job, a cap of 256 left under 3 jobs per thread at 32
@@ -455,9 +455,14 @@ pub struct AreaCursor {
     /// Records provisional checkpoints, for a provisional reading.
     provisional: Option<Box<ProvisionalRecorder>>,
     /// Reads below this LSN reach up to it, in calls of at most
-    /// [`crate::seek::MAX_READ_SECTORS`] (reads sized to a provisional range); others read
+    /// [`crate::seek::MAX_READ_SECTORS`] (reads sized to the range after a provisional start
+    /// or a resume from a seek index); others read
     /// [`READ_CHUNK`] sectors at a time.
     read_to: u64,
+    /// Records seek hints, when made from an index that keeps them.
+    hints: Option<Box<HintRecorder>>,
+    /// A seek hint this cursor began at did not match the image: the index drops its hints.
+    hints_stale: bool,
     /// Sectors read through the image by this cursor (its reading, see [`Progress`]).
     sectors_read: u64,
     /// Where the reading is expected to end: the sector after the range's estimated last.
@@ -512,6 +517,8 @@ impl AreaCursor {
             claim_registered: false,
             provisional: None,
             read_to: 0,
+            hints: None,
+            hints_stale: false,
             sectors_read: 0,
             progress_end: end,
             progress: None,
@@ -583,7 +590,7 @@ impl AreaCursor {
         exact: AreaCursor,
         (first, end): (u32, u32),
         (playtime, knots): (u32, Vec<(u64, u32)>),
-        interval: u32,
+        (interval, hint): (u32, Option<(u64, u32, u64)>),
         options: crate::seek::SpeculativeOptions,
     ) -> Self {
         let from = match exact.resumed {
@@ -594,16 +601,55 @@ impl AreaCursor {
         cursor.next_lsn = from;
         cursor.resumed = ResumedFrom::Speculative { lsn: 0, probes: 0 };
         cursor.claim = Some(Claim::new(cursor.slot, first));
-        cursor.speculate =
-            Some(Speculate { first, end, playtime, interval, options, knots, exact: Box::new(exact), from });
+        cursor.speculate = Some(Speculate {
+            first,
+            end,
+            playtime,
+            interval,
+            options,
+            knots,
+            exact: Box::new(exact),
+            from,
+            hint,
+        });
         cursor
     }
 
     /// Chooses the provisional start (see [`AreaCursor::speculative`]), reading through
     /// `image`; or takes the exact start, if the search finds nothing past it.
     /// A cancelled search keeps `sp` for the next read.
-    fn begin<R: Read + Seek>(&mut self, image: &mut Image<R>, sp: Speculate) -> Result<(), Error> {
+    fn begin<R: Read + Seek>(&mut self, image: &mut Image<R>, mut sp: Speculate) -> Result<(), Error> {
         let (start, _) = self.key.audio_sector_range();
+        if let Some((l, t, to)) = sp.hint {
+            // A seek hint: one read from its sector to the range's end. Its first record
+            // must be the hint's, or the hints are of another image (or a stale one).
+            self.read_to = to;
+            let sector = match self.sector(image, l) {
+                Err(Error::Cancelled) => {
+                    self.speculate = Some(sp);
+                    return Err(Error::Cancelled);
+                }
+                r => r?,
+            };
+            if first_record(&sector) == Some(t) && t < sp.first {
+                // TODO(sacd-spec#31): a hint that was the `L` of a confirmed reading could
+                // report its positions confirmed at once (sacd-spec#32, 4.2 item 9); until
+                // then they are provisional like any other.
+                self.start_provisional(start, (l, 0), &sp);
+                return Ok(());
+            }
+            sb_log!(
+                image.log(),
+                Warn,
+                "area {}: seek hint at LSN {l} (frame {t}) does not match the image (first record {:?}): \
+                 hints dropped, searching",
+                self.slot,
+                first_record(&sector)
+            );
+            self.hints_stale = true;
+            self.read_to = 0;
+            sp.hint = None;
+        }
         let range = (sp.from, self.end_lsn);
         let located = locate(image, range, (sp.first, sp.playtime), &sp.knots, &sp.options, &mut |n| {
             self.count_read(n, sp.from)
@@ -617,9 +663,10 @@ impl AreaCursor {
         };
         let (l, probes) = (located.lsn, located.reads);
         if l <= sp.from {
-            let (image_id, counts) = (self.image_id, self.take_progress());
+            let (image_id, counts, stale) = (self.image_id, self.take_progress(), self.hints_stale);
             *self = *sp.exact;
             self.image_id = image_id;
+            self.hints_stale = stale;
             self.keep_progress(counts);
             sb_log!(
                 image.log(),
@@ -634,12 +681,7 @@ impl AreaCursor {
         // Begins at the sector found (4.2 item 8): on an image whose frames start in
         // non-decreasing number order, every frame that starts before it is numbered at most
         // its first record's, which is below `first`, so (a) and (b) hold there.
-        self.next_lsn = l;
-        self.demux.next_acceptable = sp.first;
-        self.resumed = ResumedFrom::Speculative { lsn: l, probes };
-        if let Some(claim) = &self.claim {
-            claim.set_lsn(l);
-        }
+        self.start_provisional(start, (l, probes), &sp);
         // Reads on from the probe that found `l`, without reading it again.
         if let Some((at, bytes)) = located.chunk {
             self.buf_sectors = (bytes.len() / SECTOR_SIZE) as u64;
@@ -653,8 +695,49 @@ impl AreaCursor {
             u128::from(sp.end.saturating_sub(located.frame)) * u128::from(sectors) / u128::from(frames);
         let span = u64::try_from(span + span / 4 + 4).unwrap_or(u64::MAX);
         self.read_to = l.saturating_add(span);
-        self.provisional = Some(ProvisionalRecorder::new(start, l, sp.interval));
         Ok(())
+    }
+
+    /// Begins a provisional reading at sector `l`, chosen after `probes` reads (4.2 item 8):
+    /// no frame under assembly, `sp.first` as the next acceptable frame number.
+    fn start_provisional(&mut self, start: u64, (l, probes): (u64, u32), sp: &Speculate) {
+        self.next_lsn = l;
+        self.demux.next_acceptable = sp.first;
+        self.resumed = ResumedFrom::Speculative { lsn: l, probes };
+        if let Some(claim) = &self.claim {
+            claim.set_lsn(l);
+        }
+        self.provisional = Some(ProvisionalRecorder::new(start, l, sp.interval));
+    }
+
+    /// The seek hints recorded since the last call.
+    pub(crate) fn take_hints(&mut self) -> Vec<(u32, u32)> {
+        self.hints.as_mut().map(|h| h.take()).unwrap_or_default()
+    }
+
+    /// The reading has ended: its last seek hint is recorded, and the hints are news.
+    pub(crate) fn flush_hints(&mut self) {
+        if let Some(h) = self.hints.as_deref_mut() {
+            h.flush();
+        }
+    }
+
+    /// Whether a seek hint this cursor began at did not match the image (once).
+    pub(crate) fn hints_stale(&mut self) -> bool {
+        std::mem::take(&mut self.hints_stale)
+    }
+
+    /// Records seek hints from now on, with `recorder`.
+    pub(crate) fn record_hints(&mut self, recorder: Option<Box<HintRecorder>>) {
+        if let Some(sp) = self.speculate.as_mut() {
+            sp.exact.hints = recorder.as_ref().map(|r| Box::new(HintRecorder::clone(r)));
+        }
+        self.hints = recorder;
+    }
+
+    /// Reads up to `lsn` (exclusive) in one call when the next read starts below it.
+    pub(crate) fn size_first_read(&mut self, lsn: u64) {
+        self.read_to = lsn;
     }
 
     /// A provisional reading for positions `first` or more that starts at the provisional
@@ -755,6 +838,8 @@ impl AreaCursor {
         self.recorder.as_deref().is_some_and(Recorder::has_news)
             || (!self.claim_registered && self.claim.as_ref().is_some_and(|c| c.lsn() > 0))
             || self.provisional.as_ref().is_some_and(|p| !p.list.is_empty())
+            || self.hints_stale
+            || self.hints.as_deref().is_some_and(HintRecorder::has_news)
     }
 
     /// A cursor of the area of `index` that starts from it for positions `first` or more
@@ -1090,6 +1175,9 @@ impl AreaCursor {
                                 self.discard_index(image.log(), at);
                                 continue;
                             }
+                        }
+                        if let Some(h) = self.hints.as_deref_mut() {
+                            h.see(lsn, &s);
                         }
                         if let Some(pr) = self.provisional.as_deref_mut().filter(|p| p.due(lsn)) {
                             let under = self.demux.assembling.as_ref().map(|a| (lsn - a.start_lsn, a.number));
@@ -1766,8 +1854,30 @@ impl TrackCursor {
         image_sectors: u64,
         index: &AreaIndex,
     ) -> Self {
-        TrackCursor { area: AreaCursor::resume(index, first), ..Self::start(area, first, end, image_sectors) }
-            .estimated(area)
+        let mut cursor = TrackCursor {
+            area: AreaCursor::resume(index, first),
+            ..Self::start(area, first, end, image_sectors)
+        }
+        .estimated(area);
+        if let ResumedFrom::Checkpoint { lsn, replay_from } = cursor.area.resumed {
+            // One read from the replay to the range's end: through the seek hint after it,
+            // or the range's frames at the area's average density from the checkpoint (whose
+            // successor is past `first`, so frame `first` starts within an interval of it),
+            // plus a quarter and a few sectors.
+            let (s0, s1) = audio_sector_range(area, image_sectors);
+            let hinted = index.hint(first, end, area.playtime_frames()).filter(|h| h.3).map(|h| h.2);
+            let to = hinted.filter(|&to| to > lsn).unwrap_or_else(|| {
+                let frames = u128::from(end - first);
+                let span = frames * u128::from(s1 - s0) / u128::from(area.playtime_frames().max(1));
+                let span = u64::try_from(span + span / 4 + 4).unwrap_or(u64::MAX);
+                lsn.saturating_add(u64::from(index.interval())).saturating_add(span)
+            });
+            // At most the replay, an interval and 64 sectors of the range (128 KiB): a range
+            // to the area's end is not read ahead further than that.
+            let most = lsn + u64::from(index.interval()) + 64;
+            cursor.area.size_first_read(to.min(most).min(replay_from + crate::seek::MAX_READ_SECTORS));
+        }
+        cursor
     }
 
     /// This cursor, expecting its reading to end where the range's end lies in proportion
@@ -1829,7 +1939,9 @@ impl TrackCursor {
             None => Self::start(area, first, end, image_sectors),
         };
         let interval = index.map_or(crate::seek::DEFAULT_INTERVAL, AreaIndex::interval);
-        exact.speculate(area, first, (interval, index), policy).estimated(area)
+        let mut cursor = exact.speculate(area, (first, end), (interval, index), policy).estimated(area);
+        cursor.area.record_hints(index.and_then(AreaIndex::hint_recorder));
+        cursor
     }
 
     /// This cursor, or a provisional one in its place when `policy` allows it and the
@@ -1837,7 +1949,7 @@ impl TrackCursor {
     fn speculate(
         self,
         area: &Area,
-        first: u32,
+        (first, end): (u32, u32),
         (interval, provisional): (u32, Option<&AreaIndex>),
         policy: SeekPolicy,
     ) -> Self {
@@ -1848,18 +1960,27 @@ impl TrackCursor {
             // Reads nothing, or a cursor already chosen: keep it.
             _ => return self,
         };
-        let (start, end) = audio_sector_range(area, self.area_key.image_sectors);
+        let (start, stop) = audio_sector_range(area, self.area_key.image_sectors);
         let playtime = area.playtime_frames();
         if playtime == 0 {
             return self;
         }
         // The range's position in proportion to the play time.
-        let estimate = start + (u128::from(end - start) * u128::from(first) / u128::from(playtime)) as u64;
+        let estimate = start + (u128::from(stop - start) * u128::from(first) / u128::from(playtime)) as u64;
         if estimate <= from.saturating_add(options.min_gap_sectors) {
             return self;
         }
+        // A seek hint near `first` (seek hints, 4.2 item 8 locator samples): one read from it,
+        // no search; the read ends through the next hint past the range, or is estimated.
+        let hint = provisional
+            .and_then(|i| i.hint(first, end, playtime))
+            .filter(|h| h.0 > from)
+            .map(|(lsn, t, to, _)| (lsn, t, to));
         // An earlier provisional reading's checkpoint around `first`: no search needed.
-        if let Some(p) = provisional.and_then(|i| i.plan_provisional(first)).filter(|&(lsn, _)| lsn > from) {
+        if let Some(p) = provisional
+            .and_then(|i| i.plan_provisional(first))
+            .filter(|&(lsn, _)| lsn > from && hint.is_none())
+        {
             return TrackCursor { area: AreaCursor::provisional_at(&self.area, p, first, interval), ..self };
         }
         // Track starts inside the audio sectors, as points to interpolate between (4.2 item
@@ -1868,10 +1989,15 @@ impl TrackCursor {
             .tracks
             .iter()
             .map(|t| (u64::from(t.start_lsn), t.start_frame))
-            .filter(|&(l, _)| (start..end).contains(&l))
+            .filter(|&(l, _)| (start..stop).contains(&l))
             .collect();
-        let area_cursor =
-            AreaCursor::speculative(self.area, (first, self.end), (playtime, knots), interval, options);
+        let area_cursor = AreaCursor::speculative(
+            self.area,
+            (first, self.end),
+            (playtime, knots),
+            (interval, hint),
+            options,
+        );
         TrackCursor { area: area_cursor, ..self }
     }
 
@@ -2133,6 +2259,7 @@ impl TrackCursor {
         self.next += 1;
         if self.next >= self.end {
             self.area.progress_done();
+            self.area.flush_hints();
         }
         if let Some(claim) = &self.area.claim {
             claim.returned(t);

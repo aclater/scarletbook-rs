@@ -6,12 +6,15 @@
 //! reading whose positions differ from an exact read is refuted, never confirmed, and its
 //! positions from `exact_from` on are exact; on the valid images every reading equals the
 //! exact one. The corpus image `area-audio-past-end` (whose 2-channel area runs over the
-//! multichannel sectors) gives refuted readings.
+//! multichannel sectors) gives refuted readings. Each range is also read after a remount,
+//! from the seek hints a first session saved (#124), with the same checks.
 
 use std::fs::File;
 use std::io::BufReader;
 
-use scarletbook::{Disc, IndexOptions, SeekPolicy, Slot, Speculation, SpeculativeOptions, TrackFrame};
+use scarletbook::{
+    AreaIndex, Disc, IndexOptions, SeekPolicy, Slot, Speculation, SpeculativeOptions, TrackFrame,
+};
 use scarletbook_conformance::{corpus_dir, load_cases};
 
 type Frames = Vec<TrackFrame>;
@@ -66,17 +69,38 @@ fn corpus_provisional_readings_are_exact_or_refuted() {
         let Some(mut plain) = open() else { continue };
         for slot in Slot::ALL {
             let ranges = ranges(&plain, slot);
+            let options = SpeculativeOptions::new().with_min_gap_sectors(0);
+            // A first session reads every range on one disc, keeping an index: its seek
+            // hints (#124) are saved.
+            let saved = open().and_then(|mut d| {
+                d.enable_seek_index(slot, IndexOptions::new()).ok()?;
+                d.set_seek_policy(slot, SeekPolicy::Speculative(options)).ok()?;
+                for &range in &ranges {
+                    read(&mut d, slot, range);
+                }
+                d.seek_index(slot).map(|i| i.to_bytes())
+            });
             let mut cursors = Vec::new();
             for &range in &ranges {
                 let (want, _) = read(&mut plain, slot, range);
-                // A disc of its own per reading: a cold seek; the index checks it.
-                let mut disc = open().unwrap();
-                disc.enable_seek_index(slot, IndexOptions::new()).unwrap();
-                let options = SpeculativeOptions::new().with_min_gap_sectors(0);
-                disc.set_seek_policy(slot, SeekPolicy::Speculative(options)).unwrap();
-                let (got, c) = read(&mut disc, slot, range);
-                while !disc.verify_speculation(slot, 1 << 20).unwrap() {}
-                cursors.push((range, want, got, c.speculation()));
+                // A disc of its own per reading: a cold seek, then one after a remount (from
+                // the saved hints); the index checks each.
+                for hinted in [false, true] {
+                    let mut disc = open().unwrap();
+                    match saved.as_ref().filter(|_| hinted) {
+                        Some(bytes) => {
+                            let area = disc.toc().area(slot).unwrap().clone();
+                            let n = disc.toc().sectors;
+                            let index = AreaIndex::from_bytes(&area, n, bytes, usize::MAX).unwrap();
+                            disc.set_seek_index(slot, index).unwrap();
+                        }
+                        None => disc.enable_seek_index(slot, IndexOptions::new()).unwrap(),
+                    }
+                    disc.set_seek_policy(slot, SeekPolicy::Speculative(options)).unwrap();
+                    let (got, c) = read(&mut disc, slot, range);
+                    while !disc.verify_speculation(slot, 1 << 20).unwrap() {}
+                    cursors.push((range, want.clone(), got, c.speculation()));
+                }
             }
             for ((first, end), want, got, speculation) in cursors {
                 readings += 1;

@@ -1,0 +1,1 @@
+| 2026-10-31 | #124 seek hints (#133) | Locator samples saved with the seek index, TOC fingerprint, sized exact resumes. Specification 4, 4.2 items 7, 8 (locator samples) and 9, and 7, 7.1 items 2 and 3, at sacd-spec `cb9530b` (see "Specification version"). No new sources consulted. |

@@ -142,6 +142,18 @@ for example on a clone in another thread): confirmed, or refuted with the frame 
 positions are exact; the cursor's `speculation()` and `disc.take_seek_events(slot)` report it,
 so that a caller can drop and re-read what it served.
 
+The seek index also keeps **seek hints** (the locator samples of specification 4, 4.2 item 8):
+sectors its cursors read with the frame number of their first frame record, every 8 frames,
+at most 2 048 (8 bytes each, `IndexOptions::with_hints`). They are saved with the index
+(`AreaIndex::to_bytes`), so that after a remount or a restart a provisional reading near a
+range read before begins at the hint below it and reads through the hint past it: **one read
+call**, the range's sectors and a few more, with no search and no pass from the area's start.
+Its positions are provisional all the same; a hint only chooses where to begin. A hint whose
+sector no longer has its frame record (a stale index, or one of another image) is dropped
+with a warning, and the cursor searches instead; an index saved by a disc carries a
+fingerprint of its TOC, and a disc with another TOC refuses it (`Disc::set_seek_index`). With
+a complete saved index, an exact read starts with one read sized to the range.
+
 Features: `parallel` decodes DST frames on rayon's thread pool, ahead of the caller: the
 current pool by default, or the pool chosen for a cursor with
 `TrackAudioCursor::set_decode_on(DecodeOn::Pool(pool))`, whichever thread reads it
@@ -301,14 +313,15 @@ sb_cancel_request(token);                  /* e.g. on Ctrl-C */
 While cancellation is requested, every call that reads audio sectors through the disc or
 its clones returns `SB_STATUS_CANCELLED`, distinct from `SB_STATUS_IO`: at once for a call
 that starts then, after at most 32 more sectors for one in progress (or, during the reads
-sized to the range after a provisional start, after the read in progress, of at most 512
-sectors, 1 MiB),
+sized to the range after a provisional start or a resume from a seek index, after the read
+in progress, of at most 512 sectors, 1 MiB),
 the scan before a range's first frame included, whatever the disc reads through (a file, memory or
 callbacks). The request is sticky: it holds for the disc and its clones until
 `sb_cancel_withdraw` (a disc opened afresh has a token of its own). The handles keep their
 state: after `sb_cancel_withdraw` they continue exactly where they stopped; or free them. `sb_progress_get` gives the sectors a handle has read
 (exact, updated at least every 32 sectors, or every read of at most 512 sized to a
-provisional range, also during the scan before its first frame)
+range after a provisional start or a resume from a seek index, also during the scan before
+its first frame)
 and the sectors it expects to read (an estimate, equal to the count read once done), for
 track, range and raw frames handles. Neither handle borrows the disc or the handle it came
 from, so polling it never collides with the reading thread; free each with its `_free`.

@@ -265,7 +265,8 @@ impl<R: Read + Seek> Disc<R> {
     /// [`Error::NoSuchArea`], or [`Error::InvalidArgument`] for invalid options.
     pub fn enable_seek_index(&mut self, slot: Slot, options: IndexOptions) -> Result<(), Error> {
         let area = self.shared.toc.area(slot).ok_or(Error::NoSuchArea(slot))?;
-        let index = AreaIndex::new(area, self.image.sector_count(), options)?;
+        let mut index = AreaIndex::new(area, self.image.sector_count(), options)?;
+        index.bind_fingerprint(crate::seek::toc_fingerprint(&self.shared.toc, slot))?;
         sb_log!(self.log(), Debug, "area {slot}: seek index enabled, interval {} sectors", options.interval);
         self.shared.seek.write(slot, |kept| *kept = Some(index));
         Ok(())
@@ -277,13 +278,20 @@ impl<R: Read + Seek> Disc<R> {
     /// image](AreaIndex#one-index-per-image)): whatever image it was built from in this
     /// process, it takes this disc's from then on.
     ///
+    /// An index a disc kept before (saved with [`AreaIndex::to_bytes`] from version 2 of
+    /// its format on) holds a fingerprint of that disc's TOC (the master TOC, the area TOC
+    /// and the image's sector count; see [`AreaIndex#seek-hints`]): an index of another disc
+    /// of the same layout is refused. One without (made with [`AreaIndex::new`], or saved
+    /// in version 1) takes this disc's.
+    ///
     /// # Errors
     ///
     /// [`Error::NoSuchArea`], or [`Error::InvalidArgument`] if `index` is of another area
-    /// or image size.
+    /// or image size, or of a disc with another TOC.
     pub fn set_seek_index(&mut self, slot: Slot, mut index: AreaIndex) -> Result<(), Error> {
         let area = self.shared.toc.area(slot).ok_or(Error::NoSuchArea(slot))?;
         index.check_key(area, self.image.sector_count())?;
+        index.bind_fingerprint(crate::seek::toc_fingerprint(&self.shared.toc, slot))?;
         // Trusted to be of this image, as a loaded one is: it is this image's from its
         // first absorb on.
         index.forget_image();

@@ -2,7 +2,7 @@
 
 //! Saving and loading an [`AreaIndex`], and merging two.
 //!
-//! The format (version 1) is little-endian:
+//! The format is little-endian. Version 1:
 //!
 //! | Offset | Size | Field |
 //! |---|---|---|
@@ -33,14 +33,33 @@
 //!
 //! A buffer holds the longest prefix of one frame under assembly that any checkpoint
 //! holds; the checkpoints within that frame refer to it with their own lengths.
+//!
+//! Version 2 (issue #124) is version 1 with the version field 2, flags bit 1 set when the
+//! TOC fingerprint is known, and, before the checksum:
+//!
+//! | Size | Field |
+//! |---|---|
+//! | 8 | TOC fingerprint (`toc_fingerprint`), 0 when not known |
+//! | 4 | seek hint spacing in frames |
+//! | 4 | most seek hints kept, at most `MAX_HINTS` |
+//! | 4 | seek hints `s`, at most that |
+//! | 4 | 0 |
+//! | 8 `s` | seek hints by increasing LSN: LSN (4), frame number of its first record (4) |
+//!
+//! An index is saved as version 1 when it has no fingerprint, no hints and the default
+//! hint options, so that version 1 bytes load and save unchanged; version 2 bytes that add
+//! nothing to version 1 are refused, so that each index has one saved form.
 
-use super::{AreaIndex, Checkpoint, EndState, Frame, Held, MAX_INTERVAL, Stored};
+use super::{AreaIndex, Checkpoint, EndState, Frame, Held, MAX_HINTS, MAX_INTERVAL, Stored};
 use crate::audio::{AreaKey, FrameKind, MAX_FRAME_BYTES, MAX_MALFORMED_WARNINGS};
 use crate::error::{Error, Slot};
 use crate::toc::Area;
 
 const MAGIC: &[u8; 8] = b"SBSEEKIX";
 const VERSION: u32 = 1;
+const VERSION_HINTS: u32 = 2;
+const HINTS_HEADER: usize = 24;
+const HINT: usize = 8;
 const HEADER: usize = 80;
 const CHECKPOINT: usize = 24;
 const FRAME_HEADER: usize = 8;
@@ -107,14 +126,18 @@ impl AreaIndex {
         );
         let u32s = |out: &mut Vec<u8>, v: u32| out.extend_from_slice(&v.to_le_bytes());
         let u64s = |out: &mut Vec<u8>, v: u64| out.extend_from_slice(&v.to_le_bytes());
+        let defaults = super::IndexOptions::new();
+        let v2 = self.fingerprint.is_some()
+            || !self.samples.is_empty()
+            || (self.hint_spacing, self.max_hints) != (defaults.hint_spacing, defaults.max_hints);
         out.extend_from_slice(MAGIC);
-        u32s(&mut out, VERSION);
+        u32s(&mut out, if v2 { VERSION_HINTS } else { VERSION });
         out.push(match self.key.slot {
             Slot::TwoChannel => 0,
             Slot::Multichannel => 1,
         });
         out.push(self.key.channels);
-        out.push(u8::from(self.end_state.is_some()));
+        out.push(u8::from(self.end_state.is_some()) | u8::from(v2 && self.fingerprint.is_some()) << 1);
         out.push(0);
         u32s(&mut out, self.key.start);
         u32s(&mut out, self.key.end);
@@ -154,6 +177,18 @@ impl AreaIndex {
         for &m in &self.malformed {
             u32s(&mut out, m);
         }
+        if v2 {
+            u64s(&mut out, self.fingerprint.unwrap_or(0));
+            u32s(&mut out, self.hint_spacing);
+            // At most MAX_HINTS.
+            u32s(&mut out, self.max_hints as u32);
+            u32s(&mut out, self.samples.len() as u32);
+            u32s(&mut out, 0);
+            for &(lsn, t) in &self.samples {
+                u32s(&mut out, lsn);
+                u32s(&mut out, t);
+            }
+        }
         let sum = fnv(&out);
         u64s(&mut out, sum);
         out
@@ -178,7 +213,13 @@ impl AreaIndex {
     /// The loaded index's inline budget is the smaller of the saved one and
     /// `max_inline_budget`, the caller's bound on the memory of stored frames under
     /// assembly (specification 7, 7.1 item 2): stored frames beyond it are dropped, and
-    /// their checkpoints are replayed instead (exact, only slower). Pass
+    /// their checkpoints are replayed instead (exact, only slower). The seek hints (format
+    /// version 2: at most [`MAX_HINTS`] and the saved maximum, inside the area, by
+    /// increasing LSN) have an allowance of the same size, separate from the stored frames
+    /// (so the two together take at most twice `max_inline_budget`): the loaded index keeps
+    /// at most `max_inline_budget / 8` hints, now and as it grows
+    /// ([`super::IndexOptions::max_hints`] becomes the smaller of the saved one and that), dropping
+    /// those closest to the one before them (specification 7, 7.1 item 2, sacd-spec `cb9530b`). Pass
     /// [`crate::seek::DEFAULT_INLINE_BUDGET`] or the [`IndexOptions`](super::IndexOptions)
     /// the caller builds with.
     ///
@@ -207,7 +248,8 @@ impl AreaIndex {
             return Err(bad("seek index checksum does not match"));
         }
         let mut input = Input { bytes: body, at: 8 };
-        if input.u32()? != VERSION {
+        let version = input.u32()?;
+        if version != VERSION && version != VERSION_HINTS {
             return Err(bad("seek index version not supported"));
         }
         let slot = match input.u8()? {
@@ -217,7 +259,8 @@ impl AreaIndex {
         };
         let channels = input.u8()?;
         let flags = input.u8()?;
-        if flags & !1 != 0 || input.u8()? != 0 {
+        let known = if version == VERSION_HINTS { 3 } else { 1 };
+        if flags & !known != 0 || input.u8()? != 0 {
             return Err(bad("seek index flags invalid"));
         }
         let key =
@@ -245,7 +288,8 @@ impl AreaIndex {
             return Err(bad("seek index reserved field not 0"));
         }
         let end_malformed = input.u64()?;
-        let mut index = AreaIndex::new(area, image_sectors, super::IndexOptions { interval, inline_budget })?;
+        let options = super::IndexOptions { interval, inline_budget, ..super::IndexOptions::new() };
+        let mut index = AreaIndex::new(area, image_sectors, options)?;
         let boundaries = index.boundaries();
         let complete = flags & 1 != 0;
         // Sizes before any allocation: the fixed parts must fit in what is left.
@@ -258,6 +302,7 @@ impl AreaIndex {
                 .saturating_add(f.saturating_mul(FRAME_HEADER))
                 .saturating_add(h.saturating_mul(HELD))
                 .saturating_add(4 * m)
+                .saturating_add(if version == VERSION_HINTS { HINTS_HEADER } else { 0 })
                 > input.left()
         {
             return Err(bad("seek index counts invalid"));
@@ -366,6 +411,39 @@ impl AreaIndex {
             }
             malformed.push(lsn);
         }
+        if version == VERSION_HINTS {
+            let fingerprint = input.u64()?;
+            let (spacing, most, s) = (input.u32()?, input.u32()? as usize, input.u32()? as usize);
+            if input.u32()? != 0 {
+                return Err(bad("seek index reserved field not 0"));
+            }
+            let defaults = super::IndexOptions::new();
+            // Version 2 only when it adds something: one way to save each index.
+            let adds =
+                flags & 2 != 0 || s > 0 || (spacing, most) != (defaults.hint_spacing, defaults.max_hints);
+            if !adds
+                || (flags & 2 == 0 && fingerprint != 0)
+                || most > MAX_HINTS
+                || s > most
+                || s.saturating_mul(HINT) > input.left()
+            {
+                return Err(bad("seek index hints invalid"));
+            }
+            // At most the bytes given: checked above.
+            let mut samples: Vec<(u32, u32)> = Vec::with_capacity(s);
+            for _ in 0..s {
+                let (lsn, t) = (input.u32()?, input.u32()?);
+                if !(index.start..index.end).contains(&u64::from(lsn))
+                    || t >= MAX_NEXT_ACCEPTABLE
+                    || samples.last().is_some_and(|&(p, _)| lsn <= p)
+                {
+                    return Err(bad("seek index hints invalid"));
+                }
+                samples.push((lsn, t));
+            }
+            index.fingerprint = (flags & 2 != 0).then_some(fingerprint);
+            (index.hint_spacing, index.max_hints, index.samples) = (spacing, most, samples);
+        }
         if input.left() != 0 {
             return Err(bad("seek index has trailing bytes"));
         }
@@ -380,6 +458,10 @@ impl AreaIndex {
         }
         index.stored = stored;
         index.malformed = malformed;
+        // The caller's bound also bounds the hints, now and as the index grows: at most
+        // `max_inline_budget / 8` of them, in addition to the stored frames.
+        index.max_hints = index.max_hints.min(max_inline_budget / HINT);
+        index.thin_hints(index.max_hints);
         Ok(index)
     }
 
@@ -398,7 +480,9 @@ impl AreaIndex {
         if other.key != self.key || other.interval != self.interval {
             return Err(bad("seek index of another area, image size or interval"));
         }
-        if matches!((self.image_id, other.image_id), (Some(a), Some(b)) if a != b) {
+        if matches!((self.image_id, other.image_id), (Some(a), Some(b)) if a != b)
+            || matches!((self.fingerprint, other.fingerprint), (Some(a), Some(b)) if a != b)
+        {
             return Err(bad("seek indexes of two images"));
         }
         let both = self.checkpoints.len().min(other.checkpoints.len());
@@ -411,6 +495,8 @@ impl AreaIndex {
         if self.image_id.is_none() {
             self.image_id = other.image_id;
         }
+        self.fingerprint = self.fingerprint.or(other.fingerprint);
+        self.add_hints(other.samples.clone());
         // Provisional readings and checkpoints: the union (they are of the same image).
         for c in &other.claims {
             if !self.claims.iter().any(|m| m.id == c.id) {

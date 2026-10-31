@@ -206,7 +206,8 @@ fn lazy_index_bounds_later_reads() {
         let f = disc.range_frames(Slot::TwoChannel, first, playtime).unwrap().next().unwrap().unwrap();
         assert_eq!(f.number, first);
         let cost = (read.get() - start) / S as u64;
-        assert!(cost <= 32 + 64 + 32 + 5, "first {first}: {cost} sectors");
+        // One read sized to the range (#124): the replay, an interval and 64 sectors.
+        assert!(cost <= 32 + 64 + 64, "first {first}: {cost} sectors");
     }
     // A continuation from the start into a range near the end jumps through the index.
     let c = disc.range_frames_cursor(Slot::TwoChannel, 0, 10).unwrap();

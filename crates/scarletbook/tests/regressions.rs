@@ -49,7 +49,7 @@ fn seek_index_regressions() {
 #[cfg_attr(miri, ignore = "slow under Miri")]
 fn seek_index_seeds_load() {
     let (image, area) = harness::seek_area();
-    let mut stored = false;
+    let (mut stored, mut hinted) = (false, false);
     for seed in harness::seek_index_seeds() {
         let mut bytes = seed.clone();
         let sum = seed
@@ -60,7 +60,10 @@ fn seek_index_seeds_load() {
             scarletbook::AreaIndex::from_bytes(&area, image.sector_count(), &bytes, usize::MAX).unwrap();
         let bare = scarletbook::AreaIndex::from_bytes(&area, image.sector_count(), &bytes, 0).unwrap();
         stored |= bare.memory() < full.memory();
+        // Format version 2 (#124): seek hints recorded by extend.
+        hinted |= full.hints() > 0;
         harness::seek_index(&seed);
     }
     assert!(stored, "no seed stores a frame under assembly");
+    assert!(hinted, "no seed holds seek hints");
 }

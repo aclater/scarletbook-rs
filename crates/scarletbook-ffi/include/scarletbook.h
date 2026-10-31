@@ -2023,7 +2023,7 @@ void sb_pool_free(struct SbPool *pool);
  (`SB_MAX_FRAME_BYTES`) and one decoded frame (channels x 4704 bytes): about 48 MB at
  most, about 6.8 MB for 2 channels and 20 MB for 6 with typical DST frames, plus its read
  buffer: 64 KiB, or up to 1 MiB, kept for the handle's life, once it has made a read sized
- to a provisional range. Each of the pool's threads also keeps decoder tables of up to
+ to its range (after a provisional start or a resume from a seek index). Each of the pool's threads also keeps decoder tables of up to
  about 3.4 MB.
 
  Returns `SB_STATUS_INVALID_ARGUMENT` when the handle is in use by a callback.
@@ -2032,7 +2032,8 @@ void sb_pool_free(struct SbPool *pool);
 
  `audio` and `pool` must be NULL or live handles.
  */
-SbStatus sb_track_audio_set_pool(const struct SbTrackAudio *audio, const struct SbPool *pool);
+SbStatus sb_track_audio_set_pool(const struct SbTrackAudio *audio,
+                                 const struct SbPool *pool);
 
 /*
  Opens the frames of the frame range `[first, end)` of the area from `slot` without
@@ -2657,7 +2658,8 @@ SbStatus sb_disc_cancel_token(const struct SbDisc *disc, struct SbCancel **out);
  (`sb_track_audio_read`, `sb_raw_frames_read`, the seek index extension and verification
  calls) returns `SB_STATUS_CANCELLED`: a call that starts then at once, a call in
  progress after at most 32 more sectors read (or, during the reads sized to the range
- after a provisional start, after the read in progress, of at most 512 sectors, 1 MiB),
+ after a provisional start or a resume from a seek index, after the read in progress, of
+ at most 512 sectors, 1 MiB),
  plus the decoding of one group of frames
  already started for the frame it is returning. The handles keep their state, frames
  read ahead included: once the request is withdrawn they continue exactly where they
@@ -2734,8 +2736,8 @@ SbStatus sb_raw_frames_progress(const struct SbRawFrames *raw, struct SbProgress
  have read once done (an estimate placing the range's end in proportion to the area's
  play time, revised as it reads; at least `*sectors_read`, and equal to it once the
  handle has read its range to the end). They count every read the handle makes, at most
- 32 sectors at a time (except the reads sized to the range after a provisional start, of
- at most 512 each): the scan before a range's first frame, a provisional search, a
+ 32 sectors at a time (except the reads sized to the range after a provisional start or a
+ resume from a seek index, of at most 512 each): the scan before a range's first frame, a provisional search, a
  seek index's replay and the range itself. Both outputs are required.
 
  # Safety

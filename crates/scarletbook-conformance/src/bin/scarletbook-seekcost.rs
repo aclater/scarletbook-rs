@@ -26,6 +26,11 @@
 //! and the table gives the read calls and KiB up to its first frame (stored, before
 //! decoding) and for the whole range decoded, as mean and maximum, and how many ranges
 //! equal the exact ones.
+//!
+//! A fourth table measures seeks after a remount (issue #124): the same ranges read in a
+//! first session with a seek index kept, its saved form (seek hints) loaded on a newly
+//! opened disc for each range and for one 3 frames later; and the same from a complete
+//! saved index with exact reads.
 
 use std::cell::Cell;
 use std::fs::File;
@@ -256,6 +261,99 @@ fn run(args: &Args) -> Result<(), String> {
     }
     if args.positions > 0 {
         fresh(args, &mut disc, &index, p)?;
+        warm(args, &mut disc, &index, p)?;
+    }
+    Ok(())
+}
+
+/// The ranges of the third and fourth tables: `args.positions` starts spread over the area
+/// (Weyl sequence of the golden ratio), `args.frames` frames each.
+fn positions(args: &Args, p: u32) -> Vec<(u32, u32)> {
+    let span = p.saturating_sub(args.frames).max(1);
+    let mut x = 0.5f64;
+    (0..args.positions)
+        .map(|_| {
+            x = (x + 0.618_033_988_749_895) % 1.0;
+            let first = (f64::from(span) * x) as u32;
+            (first, (first + args.frames).min(p))
+        })
+        .collect()
+}
+
+/// The fourth table: seeks after a remount (issue #124). A first session reads every range
+/// provisionally with a seek index kept and saves it (its seek hints); then each range, and
+/// one 3 frames later, is read on a newly opened disc that loads the saved index. The same
+/// with a complete index (one full pass, saved) and exact reads.
+fn warm(args: &Args, exact: &mut Image, complete: &AreaIndex, p: u32) -> Result<(), String> {
+    let slot = args.slot;
+    let ranges = positions(args, p);
+    let (mut first, _, _) = open_cold(args)?;
+    first
+        .enable_seek_index(slot, IndexOptions::new().with_interval(args.interval))
+        .map_err(|e| e.to_string())?;
+    for &(a, b) in &ranges {
+        let cursor = first.range_frames_cursor(slot, a, b).map_err(|e| e.to_string())?;
+        first.read_frames(cursor).try_for_each(|f| f.map(drop)).map_err(|e| e.to_string())?;
+    }
+    let hinted = first.seek_index(slot).ok_or("no index")?.to_bytes();
+    let mut full = complete.clone();
+    // Kept by a disc: with its TOC fingerprint, as a consumer saves it.
+    let (mut d, _, _) = open_cold(args)?;
+    d.set_seek_index(slot, full.clone()).map_err(|e| e.to_string())?;
+    full = d.seek_index(slot).ok_or("no index")?;
+    let full_bytes = full.to_bytes();
+    println!();
+    println!(
+        "Seeks after a remount, {} ranges read before and each 3 frames later, {} frames each \
+         (mean / max): saved hints {} bytes ({} hints), complete index {} bytes",
+        ranges.len(),
+        args.frames,
+        hinted.len(),
+        first.seek_index(slot).map_or(0, |i| i.hints()),
+        full_bytes.len()
+    );
+    println!();
+    println!("| Saved state | Read calls | KiB | Equal to exact | Provisional |");
+    println!("|---|---|---|---|---|");
+    for (name, saved, policy) in [
+        ("seek hints, provisional", &hinted, SeekPolicy::Speculative(SpeculativeOptions::new())),
+        ("complete index, exact", &full_bytes, SeekPolicy::Exact),
+    ] {
+        let (mut calls_v, mut kib_v, mut equal, mut provisional) = (Vec::new(), Vec::new(), 0, 0);
+        for &(a, b) in ranges
+            .iter()
+            .flat_map(|&(a, b)| [(a, b), ((a + 3).min(p - 1), (b + 3).min(p))])
+            .collect::<Vec<_>>()
+            .iter()
+        {
+            let (mut disc, read, calls) = open_cold(args)?;
+            let area = disc.toc().area(slot).ok_or("no such area")?.clone();
+            let n = disc.toc().sectors;
+            let index = AreaIndex::from_bytes(&area, n, saved, scarletbook::seek::DEFAULT_INLINE_BUDGET)
+                .map_err(|e| e.to_string())?;
+            disc.set_seek_index(slot, index).map_err(|e| e.to_string())?;
+            disc.set_seek_policy(slot, policy).map_err(|e| e.to_string())?;
+            let (r0, c0) = (read.get(), calls.get());
+            let cursor = disc.range_audio_cursor(slot, a, b).map_err(|e| e.to_string())?;
+            let mut audio = disc.read_track_audio(cursor);
+            let got: Vec<AudioFrame> =
+                audio.by_ref().map(|f| f.map_err(|e| e.to_string())).collect::<Result<_, _>>()?;
+            if audio.into_cursor().speculation() != scarletbook::Speculation::Exact {
+                provisional += 1;
+            }
+            calls_v.push((calls.get() - c0) as f64);
+            kib_v.push((read.get() - r0) as f64 / 1024.0);
+            let cursor = exact.range_audio_cursor_indexed(slot, a, b, complete).map_err(|e| e.to_string())?;
+            if got == decode(exact, cursor)? {
+                equal += 1;
+            }
+        }
+        println!(
+            "| {name} | {} | {} | {equal} of {} | {provisional} |",
+            stats(&calls_v),
+            stats(&kib_v),
+            calls_v.len()
+        );
     }
     Ok(())
 }
@@ -286,16 +384,10 @@ fn stats(v: &[f64]) -> String {
 /// The third table: cold seeks to `args.positions` positions, each on a newly opened disc.
 fn fresh(args: &Args, exact: &mut Image, index: &AreaIndex, p: u32) -> Result<(), String> {
     let slot = args.slot;
-    let span = p.saturating_sub(args.frames).max(1);
     // Read calls and KiB to the first frame and for the whole range, by kind of start.
     let mut costs: [[Vec<f64>; 4]; 2] = Default::default();
     let (mut equal, mut provisional, mut probes) = (0, 0, Vec::new());
-    // A fixed spread over the area (Weyl sequence of the golden ratio).
-    let mut x = 0.5f64;
-    for _ in 0..args.positions {
-        x = (x + 0.618_033_988_749_895) % 1.0;
-        let first = (f64::from(span) * x) as u32;
-        let end = (first + args.frames).min(p);
+    for (first, end) in positions(args, p) {
         // Up to the first stored frame.
         let (mut disc, read, calls) = open_cold(args)?;
         let cursor = disc.range_frames_cursor(slot, first, end).map_err(|e| e.to_string())?;
