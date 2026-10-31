@@ -852,6 +852,19 @@ cargo bench -p scarletbook-ffi --bench toc_read           # open + every TOC que
   corpus images with the most text and tracks and a synthetic disc of 2 x 255 tracks.
   `SCARLETBOOK_PERF_BENCH=list` prints the calls, read callbacks and bytes read per disc.
 
+`decode_pool` (in `scarletbook-ffi`, not criterion) decodes every track of an area on a
+pool the way a consumer of the C interface does, and prints wall and CPU time per round
+(#146): `rust-install` (`TrackAudio` inside `pool.install`, as `bench decode`),
+`rust-pool` (`DecodeOn::Pool`, the caller outside the pool), `c-read`
+(`sb_track_audio_set_pool` and `sb_track_audio_read` into one caller buffer per frame) and
+`c-stored` (`sb_track_audio_read_with_stored`), into a null sink or the raw output of
+`bench decode --sink raw`:
+
+```sh
+scarletbook-synth dst50.iso --minutes 50 --area 2ch --kind dst
+cargo bench -p scarletbook-ffi --bench decode_pool -- dst50.iso c-read --threads 0 --rounds 3 --sink raw /dev/shm/out
+```
+
 The scripts in `perf/` need Linux and `perf`:
 
 | Script | What it does |
