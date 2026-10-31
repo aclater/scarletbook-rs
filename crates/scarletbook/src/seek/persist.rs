@@ -411,6 +411,17 @@ impl AreaIndex {
         if self.image_id.is_none() {
             self.image_id = other.image_id;
         }
+        // Provisional readings and checkpoints: the union (they are of the same image).
+        for c in &other.claims {
+            if !self.claims.iter().any(|m| m.id == c.id) {
+                self.claims.push(std::sync::Arc::clone(c));
+            }
+        }
+        self.claims.retain(|c| c.verdict().is_none());
+        for (&lsn, &p) in &other.provisional {
+            self.provisional.entry(lsn).or_insert(p);
+        }
+        self.prune_provisional();
         if other.frontier() <= self.frontier() {
             return Ok(());
         }
@@ -423,6 +434,7 @@ impl AreaIndex {
         }
         self.end_state = other.end_state;
         self.malformed.clone_from(&other.malformed);
+        self.prune_provisional();
         Ok(())
     }
 }

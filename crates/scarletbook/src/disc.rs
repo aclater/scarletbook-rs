@@ -303,7 +303,9 @@ impl<R: Read + Seek> Disc<R> {
     /// Reads the area from `slot` on from its seek index's frontier, about `max_sectors`
     /// sectors, recording checkpoints (see [`AreaIndex::extend`]): whether the index is
     /// now complete. Reading a whole area this way builds the index for all its ranges at
-    /// the cost of one pass.
+    /// the cost of one pass. It also checks the provisional readings the index now reaches
+    /// ([`AreaIndex::verify`]): their verdicts go to [`Disc::take_seek_events`] and to the
+    /// cursors that made them.
     ///
     /// # Errors
     ///
@@ -316,6 +318,7 @@ impl<R: Read + Seek> Disc<R> {
             return Err(Error::InvalidArgument("no seek index kept for the area"));
         };
         let result = index.extend(&mut self.image, max_sectors);
+        self.shared.seek.push_events(slot, index.take_events());
         let merged = self.shared.seek.write(slot, |kept| match kept {
             Some(kept) => kept.merge(&index).map(|()| kept.is_complete()),
             None => Ok(false),
@@ -324,6 +327,31 @@ impl<R: Read + Seek> Disc<R> {
             (Err(e), _) | (Ok(_), Err(e)) => Err(e),
             (Ok(_), Ok(complete)) => Ok(complete),
         }
+    }
+
+    /// Builds the seek index of the area from `slot` by about `max_sectors` more sectors
+    /// and checks the provisional readings it then reaches (specification 4, 4.2 item 8):
+    /// [`Disc::extend_seek_index`], named for what a caller of [`SeekPolicy::Speculative`]
+    /// runs it for, typically in a loop on a clone of the disc in another thread. Returns
+    /// whether the index is complete; every provisional reading of the area has its verdict
+    /// then.
+    ///
+    /// # Errors
+    ///
+    /// As [`Disc::extend_seek_index`].
+    pub fn verify_speculation(&mut self, slot: Slot, max_sectors: u64) -> Result<bool, Error> {
+        self.extend_seek_index(slot, max_sectors)
+    }
+
+    /// Takes the verdicts on provisional readings of the area from `slot` reached since the
+    /// last call, by this disc or any disc made from it by [`Disc::share`] or `clone`
+    /// (they share the queue): [`Speculation::Confirmed`], [`Speculation::Refuted`] (the
+    /// positions below its `exact_from` are possibly different from the specification's:
+    /// drop or re-read what was served from them; an exact read of them is now cheap, from
+    /// the index) or [`Speculation::Unverified`]. A provisional reading is checked only
+    /// when the disc keeps a seek index of its area ([`Disc::enable_seek_index`]).
+    pub fn take_seek_events(&self, slot: Slot) -> Vec<crate::seek::SeekEvent> {
+        self.shared.seek.take_events(slot)
     }
 
     /// Takes into the seek index of its area the checkpoints `cursor` recorded, for a

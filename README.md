@@ -135,7 +135,11 @@ search of the frame timecodes, a few small reads wherever the range lies. Their 
 marked provisional (`speculation()`): they equal a straight read on well-formed discs, but no
 reader can know that without reading the sectors before the range, and on hostile images they
 can differ (see `SeekPolicy`). Their malformed counts begin at the provisional start
-(`counts_from()`).
+(`counts_from()`). With a seek index enabled for the area, each provisional reading is
+checked once the index reaches it (build it with `disc.verify_speculation(slot, sectors)`,
+for example on a clone in another thread): confirmed, or refuted with the frame from which its
+positions are exact; the cursor's `speculation()` and `disc.take_seek_events(slot)` report it,
+so that a caller can drop and re-read what it served.
 
 Features: `parallel` decodes DST frames on rayon's thread pool, ahead of the caller: the
 current pool by default, or the pool chosen for a cursor with

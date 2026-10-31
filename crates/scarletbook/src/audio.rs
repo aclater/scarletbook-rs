@@ -10,8 +10,8 @@ use crate::error::{Error, Slot, Warning, WarningCode};
 use crate::image::{Image, ReadOutcome, SECTOR_SIZE};
 use crate::log::{Level, Log, sb_log};
 use crate::seek::{
-    AreaIndex, Assembling, Plan, Recorder, ResumedFrom, SeekIndexes, SeekPolicy, Speculate, Speculation,
-    digest, locate, provisional_start,
+    AreaIndex, Assembling, Claim, Plan, Provisional, ProvisionalRecorder, Recorder, ResumedFrom, SeekIndexes,
+    SeekPolicy, Speculate, Speculation, digest, locate, provisional_start,
 };
 use crate::toc::{Area, Track};
 
@@ -223,6 +223,9 @@ pub struct Demuxer {
     reason: Option<Malformed>,
     /// Lines written about discarded frames.
     discarded_lines: LineCap,
+    /// One more than the largest number of a complete frame delivered, accepted or not; 0
+    /// before any (for provisional checkpoints).
+    seen: u32,
 }
 
 impl Demuxer {
@@ -237,6 +240,7 @@ impl Demuxer {
             slot: None,
             reason: None,
             discarded_lines: LineCap::default(),
+            seen: 0,
         }
     }
 
@@ -351,6 +355,9 @@ impl Demuxer {
                 FrameKind::Dst => a.remaining == 0,
                 FrameKind::Dsd => a.data.len() == usize::from(self.channels) * FRAME_BYTES_PER_CHANNEL,
             };
+        if complete {
+            self.seen = self.seen.max(a.number.saturating_add(1));
+        }
         if complete && a.number >= self.next_acceptable {
             let (start_lsn, len) = (a.start_lsn, a.data.len());
             // Frame numbers are at most 1 166 880.
@@ -438,8 +445,12 @@ pub struct AreaCursor {
     before_read: Option<Box<(u64, Vec<Warning>)>>,
     /// A provisional start to choose on the first read (specification 4, 4.2 item 8).
     speculate: Option<Speculate>,
-    /// Whether the positions are provisional.
-    speculation: Speculation,
+    /// The provisional reading this cursor makes, if any (shared with the index that
+    /// checks it), and whether that index has it.
+    claim: Option<std::sync::Arc<Claim>>,
+    claim_registered: bool,
+    /// Records provisional checkpoints, for a provisional reading.
+    provisional: Option<Box<ProvisionalRecorder>>,
 }
 
 /// The state a resumed scan takes once its replay reaches the checkpoint.
@@ -484,7 +495,9 @@ impl AreaCursor {
             key,
             before_read: None,
             speculate: None,
-            speculation: Speculation::Exact,
+            claim: None,
+            claim_registered: false,
+            provisional: None,
         }
     }
 
@@ -504,7 +517,7 @@ impl AreaCursor {
         let mut cursor = Self::with_key(exact.key);
         cursor.next_lsn = from;
         cursor.resumed = ResumedFrom::Speculative { lsn: 0, probes: 0 };
-        cursor.speculation = Speculation::Pending { lsn: 0, first };
+        cursor.claim = Some(Claim::new(cursor.slot, first));
         cursor.speculate =
             Some(Speculate { first, playtime, interval, options, exact: Box::new(exact), from });
         cursor
@@ -533,22 +546,100 @@ impl AreaCursor {
         self.next_lsn = l;
         self.demux.next_acceptable = sp.first;
         self.resumed = ResumedFrom::Speculative { lsn: l, probes };
-        self.speculation = Speculation::Pending { lsn: l, first: sp.first };
+        if let Some(claim) = &self.claim {
+            claim.set_lsn(l);
+        }
+        self.provisional = Some(ProvisionalRecorder::new(start, l, sp.interval));
         Ok(())
+    }
+
+    /// A provisional reading for positions `first` or more that starts at the provisional
+    /// checkpoint `p` at sector `lsn` (an earlier provisional reading's), instead of
+    /// searching; `exact` gives the area.
+    pub(crate) fn provisional_at(
+        exact: &AreaCursor,
+        (lsn, p): (u64, Provisional),
+        first: u32,
+        interval: u32,
+    ) -> Self {
+        let mut cursor = Self::with_key(exact.key);
+        let (start, _) = cursor.key.audio_sector_range();
+        let from = lsn - u64::from(p.back);
+        cursor.next_lsn = from;
+        cursor.demux.next_acceptable = first;
+        if from < lsn {
+            // Lemma B of #68, as for an exact resume: rebuilds the frame under assembly.
+            cursor.replay = Some(Replay { until: lsn, next_acceptable: first, malformed: 0 });
+        }
+        cursor.verify = Some((lsn, p.digest));
+        cursor.resumed = ResumedFrom::Speculative { lsn, probes: 0 };
+        let claim = Claim::new(cursor.slot, first);
+        claim.set_lsn(lsn);
+        cursor.claim = Some(claim);
+        cursor.provisional = Some(ProvisionalRecorder::new(start, lsn, interval));
+        cursor
+    }
+
+    /// The state at `lsn` (at or before the frontier of `index`) of a reader processing
+    /// from the area's first sector: its next acceptable frame number, the number of its
+    /// frame under assembly, and its malformed count; rebuilt from the checkpoint at or
+    /// before `lsn`, reading through `image`. `None` if the index does not match the image
+    /// there.
+    pub(crate) fn state_at<R: Read + Seek>(
+        index: &AreaIndex,
+        lsn: u64,
+        image: &mut Image<R>,
+    ) -> Result<Option<(u32, Option<u32>, u64)>, Error> {
+        let mut cursor = Self::with_key(index.key());
+        if let Some(j) = index.checkpoint_before(lsn) {
+            cursor.resume_at(index, index.plan_at(j));
+        }
+        cursor.recorder = None;
+        cursor.scan_to(image, lsn)?;
+        if let ResumedFrom::Discarded { .. } = cursor.resumed {
+            return Ok(None);
+        }
+        let d = &cursor.demux;
+        Ok(Some((d.next_acceptable, d.assembling.as_ref().map(|a| a.number), d.malformed)))
     }
 
     /// Whether this cursor's positions are provisional (see [`SeekPolicy`]).
     pub fn speculation(&self) -> Speculation {
-        self.speculation
+        self.claim.as_ref().map_or(Speculation::Exact, |c| c.speculation())
+    }
+
+    /// The number of this cursor's provisional reading, as events name it
+    /// ([`crate::seek::SeekEvent::claim`]); `None` for an exact cursor.
+    pub fn speculation_id(&self) -> Option<u64> {
+        self.claim.as_ref().map(|c| c.id)
     }
 
     /// The sector the malformed count and warnings begin at: `None` for the area's first
     /// sector, `Some(L)` for a provisional reading (specification 4, 4.4.5 item 5).
     pub fn counts_from(&self) -> Option<u64> {
-        match self.speculation {
-            Speculation::Pending { lsn, .. } if lsn > 0 => Some(lsn),
-            _ => None,
-        }
+        self.claim.as_ref().map(|c| c.lsn()).filter(|&l| l > 0)
+    }
+
+    /// The provisional reading, the first time it is asked for once `L` is chosen.
+    pub(crate) fn unregistered_claim(&mut self) -> Option<std::sync::Arc<Claim>> {
+        let claim = self.claim.as_ref().filter(|c| !self.claim_registered && c.lsn() > 0)?;
+        let claim = std::sync::Arc::clone(claim);
+        self.claim_registered = true;
+        Some(claim)
+    }
+
+    /// The provisional checkpoints recorded since the last call.
+    pub(crate) fn take_provisional_checkpoints(&mut self) -> Vec<(u64, Provisional)> {
+        self.provisional.as_mut().map(|p| std::mem::take(&mut p.list)).unwrap_or_default()
+    }
+
+    /// Whether this cursor has anything for an index: checkpoints, a provisional reading
+    /// or provisional checkpoints.
+    #[inline]
+    pub(crate) fn has_news(&self) -> bool {
+        self.recorder.as_deref().is_some_and(Recorder::has_news)
+            || (!self.claim_registered && self.claim.as_ref().is_some_and(|c| c.lsn() > 0))
+            || self.provisional.as_ref().is_some_and(|p| !p.list.is_empty())
     }
 
     /// A cursor of the area of `index` that starts from it for positions `first` or more
@@ -576,43 +667,54 @@ impl AreaCursor {
                 cursor.warnings = index.malformed_below(cursor.end_lsn).map(warn).collect();
                 cursor.resumed = ResumedFrom::End;
             }
-            Plan::At { lsn, checkpoint, held } => {
-                // Specification 4, 4.4.5 item 4: a late reader MAY report the malformed
-                // sectors an earlier pass found; this one reports them all, as a scan from
-                // the first sector would.
-                cursor.warnings = index.malformed_below(lsn).map(warn).collect();
-                let replay_from = match held {
-                    Some((h, bytes)) => {
-                        cursor.demux.assembling = Some(Assembly {
-                            number: h.number,
-                            kind: h.kind,
-                            data: bytes.to_vec(),
-                            remaining: h.remaining,
-                            start_lsn: lsn - u64::from(checkpoint.back),
-                        });
-                        lsn
-                    }
-                    None => lsn - u64::from(checkpoint.back),
-                };
-                cursor.demux.next_acceptable = checkpoint.next_acceptable;
-                cursor.demux.malformed = checkpoint.malformed_before;
-                if replay_from < lsn {
-                    // Lemma B1 of #68: from the first start packet the replay processes, its
-                    // frame under assembly is the scan's; the frames it delivers are all
-                    // numbered below the checkpoint's `a`, and are dropped.
-                    cursor.replay = Some(Replay {
-                        until: lsn,
-                        next_acceptable: checkpoint.next_acceptable,
-                        malformed: checkpoint.malformed_before,
-                    });
-                }
-                cursor.next_lsn = replay_from;
-                cursor.verify = Some((lsn, checkpoint.digest));
-                cursor.recorder = index.recorder(lsn);
-                cursor.resumed = ResumedFrom::Checkpoint { lsn, replay_from };
-            }
+            plan @ Plan::At { .. } => cursor.resume_at(index, plan),
         }
         cursor
+    }
+
+    /// Resumes at the checkpoint `plan` names (a [`Plan::At`] of `index`).
+    fn resume_at(&mut self, index: &AreaIndex, plan: Plan<'_>) {
+        let slot = self.slot;
+        let warn = |lsn: u32| Warning {
+            code: WarningCode::AudioSectorMalformed,
+            slot: Some(slot),
+            track: None,
+            lsn: Some(lsn),
+        };
+        let Plan::At { lsn, checkpoint, held } = plan else { return };
+        // Specification 4, 4.4.5 item 4: a late reader MAY report the malformed
+        // sectors an earlier pass found; this one reports them all, as a scan from
+        // the first sector would.
+        self.warnings = index.malformed_below(lsn).map(warn).collect();
+        let replay_from = match held {
+            Some((h, bytes)) => {
+                self.demux.assembling = Some(Assembly {
+                    number: h.number,
+                    kind: h.kind,
+                    data: bytes.to_vec(),
+                    remaining: h.remaining,
+                    start_lsn: lsn - u64::from(checkpoint.back),
+                });
+                lsn
+            }
+            None => lsn - u64::from(checkpoint.back),
+        };
+        self.demux.next_acceptable = checkpoint.next_acceptable;
+        self.demux.malformed = checkpoint.malformed_before;
+        if replay_from < lsn {
+            // Lemma B1 of #68: from the first start packet the replay processes, its
+            // frame under assembly is the scan's; the frames it delivers are all
+            // numbered below the checkpoint's `a`, and are dropped.
+            self.replay = Some(Replay {
+                until: lsn,
+                next_acceptable: checkpoint.next_acceptable,
+                malformed: checkpoint.malformed_before,
+            });
+        }
+        self.next_lsn = replay_from;
+        self.verify = Some((lsn, checkpoint.digest));
+        self.recorder = index.recorder(lsn);
+        self.resumed = ResumedFrom::Checkpoint { lsn, replay_from };
     }
 
     /// Starts afresh at the area's first audio sector: the seek index this cursor started
@@ -823,6 +925,15 @@ impl AreaCursor {
             if self.finished {
                 return None;
             }
+            if let Some(r) = self.replay.filter(|r| self.next_lsn >= r.until) {
+                // The replay has rebuilt the frame under assembly: the checkpoint's state
+                // from here (before reading sector `until`, so that a scan stopping there
+                // sees the state at it).
+                self.demux.ready.clear();
+                self.demux.next_acceptable = r.next_acceptable;
+                self.demux.malformed = r.malformed;
+                self.replay = None;
+            }
             if self.next_lsn >= self.stop_lsn && self.replay.is_none() && self.next_lsn < self.end_lsn {
                 return None;
             }
@@ -843,10 +954,6 @@ impl AreaCursor {
                                 self.demux.ready.clear();
                                 continue;
                             }
-                            self.demux.ready.clear();
-                            self.demux.next_acceptable = r.next_acceptable;
-                            self.demux.malformed = r.malformed;
-                            self.replay = None;
                         }
                         if let Some((at, want)) = self.verify.filter(|&(at, _)| at == lsn) {
                             self.verify = None;
@@ -854,6 +961,10 @@ impl AreaCursor {
                                 self.discard_index(image.log(), at);
                                 continue;
                             }
+                        }
+                        if let Some(pr) = self.provisional.as_deref_mut().filter(|p| p.due(lsn)) {
+                            let under = self.demux.assembling.as_ref().map(|a| (lsn - a.start_lsn, a.number));
+                            pr.record(lsn, under, self.demux.seen, &s);
                         }
                         if let Some(rec) = self.recorder.as_deref_mut().filter(|r| r.due(lsn)) {
                             let d = &self.demux;
@@ -1557,12 +1668,18 @@ impl TrackCursor {
             None => Self::start(area, first, end, image_sectors),
         };
         let interval = index.map_or(crate::seek::DEFAULT_INTERVAL, AreaIndex::interval);
-        exact.speculate(area, first, interval, policy)
+        exact.speculate(area, first, (interval, index), policy)
     }
 
     /// This cursor, or a provisional one in its place when `policy` allows it and the
     /// exact start lies more than the options' gap before the range's estimated position.
-    fn speculate(self, area: &Area, first: u32, interval: u32, policy: SeekPolicy) -> Self {
+    fn speculate(
+        self,
+        area: &Area,
+        first: u32,
+        (interval, provisional): (u32, Option<&AreaIndex>),
+        policy: SeekPolicy,
+    ) -> Self {
         let SeekPolicy::Speculative(options) = policy else { return self };
         let from = match self.area.resumed {
             ResumedFrom::Checkpoint { lsn, .. } => lsn,
@@ -1580,6 +1697,10 @@ impl TrackCursor {
         if estimate <= from.saturating_add(options.min_gap_sectors) {
             return self;
         }
+        // An earlier provisional reading's checkpoint around `first`: no search needed.
+        if let Some(p) = provisional.and_then(|i| i.plan_provisional(first)).filter(|&(lsn, _)| lsn > from) {
+            return TrackCursor { area: AreaCursor::provisional_at(&self.area, p, first, interval), ..self };
+        }
         TrackCursor { area: AreaCursor::speculative(self.area, first, playtime, interval, options), ..self }
     }
 
@@ -1591,6 +1712,12 @@ impl TrackCursor {
     /// Where its malformed count and warnings begin (see [`AreaCursor::counts_from`]).
     pub fn counts_from(&self) -> Option<u64> {
         self.area.counts_from()
+    }
+
+    /// The number of the provisional reading, as events name it ([`crate::SeekEvent`]);
+    /// `None` for exact positions.
+    pub fn speculation_id(&self) -> Option<u64> {
+        self.area.speculation_id()
     }
 
     /// Where this cursor's scan started (see [`ResumedFrom`]); continued cursors keep it.
@@ -1818,6 +1945,9 @@ impl TrackCursor {
             }
         }
         self.next += 1;
+        if let Some(claim) = &self.area.claim {
+            claim.returned(t);
+        }
         let content = match self.peeked.take_if(|f| f.number == t) {
             Some(f) => match f.kind {
                 FrameKind::Dsd => FrameContent::Dsd(f.data),
@@ -1912,6 +2042,12 @@ impl<'a, R: Read + Seek> TrackFrames<'a, R> {
     /// Where the malformed count and warnings begin (see [`AreaCursor::counts_from`]).
     pub fn counts_from(&self) -> Option<u64> {
         self.cursor.counts_from()
+    }
+
+    /// The number of the provisional reading, as events name it ([`crate::SeekEvent`]);
+    /// `None` for exact positions.
+    pub fn speculation_id(&self) -> Option<u64> {
+        self.cursor.speculation_id()
     }
 }
 
@@ -2172,6 +2308,12 @@ impl TrackAudioCursor {
     /// Where its malformed count and warnings begin (see [`AreaCursor::counts_from`]).
     pub fn counts_from(&self) -> Option<u64> {
         self.frames.counts_from()
+    }
+
+    /// The number of the provisional reading, as events name it ([`crate::SeekEvent`]);
+    /// `None` for exact positions.
+    pub fn speculation_id(&self) -> Option<u64> {
+        self.frames.speculation_id()
     }
 
     /// A cursor at the start of `track`, continuing this one's reading state where that
@@ -2745,6 +2887,12 @@ impl<'a, R: Read + Seek> TrackAudio<'a, R> {
     /// Where the malformed count and warnings begin (see [`AreaCursor::counts_from`]).
     pub fn counts_from(&self) -> Option<u64> {
         self.cursor.counts_from()
+    }
+
+    /// The number of the provisional reading, as events name it ([`crate::SeekEvent`]);
+    /// `None` for exact positions.
+    pub fn speculation_id(&self) -> Option<u64> {
+        self.cursor.speculation_id()
     }
 }
 

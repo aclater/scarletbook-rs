@@ -1,0 +1,1 @@
+| 2026-10-31 | #94 provisional reading, verification | verdicts on provisional readings, the event queue, provisional checkpoints. Specification 4, 4.2 item 8, at sacd-spec `82eac6c`. No new sources consulted. |
