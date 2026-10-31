@@ -423,7 +423,9 @@ impl AreaIndex {
             self.provisional.entry(lsn).or_insert(p);
         }
         self.prune_provisional();
-        if other.frontier() <= self.frontier() {
+        // An area without existing audio sectors has its frontier at its end from the
+        // start: completeness is then all there is to take.
+        if other.frontier() <= self.frontier() && (self.is_complete() || !other.is_complete()) {
             return Ok(());
         }
         for j in self.checkpoints.len()..other.checkpoints.len() {
