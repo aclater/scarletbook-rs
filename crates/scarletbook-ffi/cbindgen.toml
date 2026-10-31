@@ -14,9 +14,9 @@ header = """/* SPDX-License-Identifier: MIT OR Apache-2.0 */
  *   failure, sb_last_error_message() describes the error. The message belongs to the
  *   calling thread and stays valid until that thread's next call into this library.
  *
- * - Handles. SbDisc and SbTrackAudio are opaque. Each is created by one function and
- *   released by exactly one call to its _free function; passing NULL to a _free function
- *   does nothing. A function that creates a handle sets *out to NULL when it fails, so
+ * - Handles. SbDisc, SbTrackAudio and SbRawFrames are opaque. Each is created by one
+ *   function and released by exactly one call to its _free function; passing NULL to a
+ *   _free function does nothing. A function that creates a handle sets *out to NULL when it fails, so
  *   freeing that pointer afterwards is safe.
  *
  * - Pointers. Pointer arguments must be NULL or valid for the access the function
@@ -36,11 +36,11 @@ header = """/* SPDX-License-Identifier: MIT OR Apache-2.0 */
  *   in a library built with the parallel feature, on the library's worker threads.
  *
  * - Callbacks and re-entrancy. While a disc's callback runs, that disc and its track
- *   handles are in use: calling into this library with them from the callback returns
- *   SB_STATUS_INVALID_ARGUMENT, and sb_disc_free / sb_track_audio_free on them do
+ *   and raw frames handles are in use: calling into this library with them from the
+ *   callback returns SB_STATUS_INVALID_ARGUMENT, and their _free functions do
  *   nothing. Other handles may be used. (A log callback invoked by a call that only
  *   reads the disc, such as sb_track_check, may read it too; one running on a worker
- *   thread must not use the disc or its track handles at all.)
+ *   thread must not use the disc or its track or raw frames handles at all.)
  *
  * - Panics. No panic crosses the boundary: an internal error returns SB_STATUS_PANIC.
  *   The handles involved should then be freed and not used further. If the library is
@@ -58,4 +58,4 @@ rename_variants = "ScreamingSnakeCase"
 prefix_with_name = true
 
 [export]
-include = ["SbStatus", "SbFrameStatus", "SbSlot", "SbDiscString", "SbAreaString", "SbTrackString"]
+include = ["SbStatus", "SbFrameStatus", "SbFrameKind", "SbSlot", "SbDiscString", "SbAreaString", "SbTrackString"]

@@ -9,9 +9,9 @@
  *   failure, sb_last_error_message() describes the error. The message belongs to the
  *   calling thread and stays valid until that thread's next call into this library.
  *
- * - Handles. SbDisc and SbTrackAudio are opaque. Each is created by one function and
- *   released by exactly one call to its _free function; passing NULL to a _free function
- *   does nothing. A function that creates a handle sets *out to NULL when it fails, so
+ * - Handles. SbDisc, SbTrackAudio and SbRawFrames are opaque. Each is created by one
+ *   function and released by exactly one call to its _free function; passing NULL to a
+ *   _free function does nothing. A function that creates a handle sets *out to NULL when it fails, so
  *   freeing that pointer afterwards is safe.
  *
  * - Pointers. Pointer arguments must be NULL or valid for the access the function
@@ -31,11 +31,11 @@
  *   in a library built with the parallel feature, on the library's worker threads.
  *
  * - Callbacks and re-entrancy. While a disc's callback runs, that disc and its track
- *   handles are in use: calling into this library with them from the callback returns
- *   SB_STATUS_INVALID_ARGUMENT, and sb_disc_free / sb_track_audio_free on them do
+ *   and raw frames handles are in use: calling into this library with them from the
+ *   callback returns SB_STATUS_INVALID_ARGUMENT, and their _free functions do
  *   nothing. Other handles may be used. (A log callback invoked by a call that only
  *   reads the disc, such as sb_track_check, may read it too; one running on a worker
- *   thread must not use the disc or its track handles at all.)
+ *   thread must not use the disc or its track or raw frames handles at all.)
  *
  * - Panics. No panic crosses the boundary: an internal error returns SB_STATUS_PANIC.
  *   The handles involved should then be freed and not used further. If the library is
@@ -50,6 +50,12 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+/*
+ The largest frame `sb_raw_frames_read` returns, in bytes (specification 4, 4.4.3): a
+ buffer of this size always suffices.
+ */
+#define SB_MAX_FRAME_BYTES 65536
 
 /*
  The version of this C ABI. It is incremented on every breaking change: a function,
@@ -194,6 +200,24 @@ typedef enum SbFrameStatus {
    */
   SB_FRAME_STATUS_INVALID = 3,
 } SbFrameStatus;
+
+/*
+ What a timeline position holds, undecoded (`SbRawFrameInfo.kind`).
+ */
+typedef enum SbFrameKind {
+  /*
+   A plain DSD frame: channels x 4704 bytes, interleaved.
+   */
+  SB_FRAME_KIND_DSD = 0,
+  /*
+   A DST-coded frame: its bytes as stored (the DST frame, 1 to 65 536 bytes).
+   */
+  SB_FRAME_KIND_DST = 1,
+  /*
+   No frame fills the position: no bytes (decoded reads fill it with 0x69).
+   */
+  SB_FRAME_KIND_MISSING = 2,
+} SbFrameKind;
 
 /*
  Area slots, as passed in `slot` arguments.
@@ -385,6 +409,13 @@ typedef enum SbTrackString {
  state borrowed and fails cleanly instead of aliasing it.
  */
 typedef struct SbDisc SbDisc;
+
+/*
+ The reading state of one frame range's stored content, or of an area's stored frame
+ list, without decoding. Each `sb_raw_frames_read` call reads through the disc it was
+ opened from, as for `SbTrackAudio`.
+ */
+typedef struct SbRawFrames SbRawFrames;
 
 /*
  The decoding state of one track or frame range. Each `sb_track_audio_read` call reads through the
@@ -616,6 +647,25 @@ typedef struct SbFrameInfo {
   size_t size;
 } SbFrameInfo;
 
+/*
+ Information about one undecoded timeline position.
+ */
+typedef struct SbRawFrameInfo {
+  /*
+   The frame number.
+   */
+  uint32_t number;
+  /*
+   `SbFrameKind`.
+   */
+  uint32_t kind;
+  /*
+   The frame's size in bytes (0 for a missing position): the bytes written, or with
+   `SB_STATUS_BUFFER_TOO_SMALL` the bytes needed. At most `SB_MAX_FRAME_BYTES`.
+   */
+  size_t size;
+} SbRawFrameInfo;
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -695,10 +745,11 @@ enum SbStatus sb_disc_open_memory_with_log(const uint8_t *data,
 /*
  Opens a disc image read through callbacks. On failure `*out` is set to NULL.
 
- The callbacks run during this call and during `sb_track_audio_read`, on the calling
- thread. A callback that calls back into this library with this disc or one of its
- track handles gets `SB_STATUS_INVALID_ARGUMENT` (and `sb_disc_free` /
- `sb_track_audio_free` do nothing); other handles may be used.
+ The callbacks run during this call and during `sb_track_audio_read` and
+ `sb_raw_frames_read`, on the calling thread. A callback that calls back into this
+ library with this disc or one of its track audio or raw frames handles gets
+ `SB_STATUS_INVALID_ARGUMENT` (and their _free functions do nothing); other handles may
+ be used.
 
  # Safety
 
@@ -1055,6 +1106,177 @@ enum SbStatus sb_track_audio_warning(const struct SbTrackAudio *audio,
  `audio` must be NULL or a live handle, freed only once.
  */
 void sb_track_audio_free(struct SbTrackAudio *audio);
+
+/*
+ Opens the frames of the frame range `[first, end)` of the area from `slot` without
+ decoding them (for example to copy DST frames unchanged into a DSDIFF file): for each
+ position from `first` to `end - 1`, its number, its kind and its bytes as stored. The
+ positions, missing frames and malformed sectors are exactly those of
+ `sb_range_audio_open` on the same range; decoding a DST frame's bytes with
+ `sb_dst_decode` gives that position's decoded audio. A track's frames are the range
+ `[start_frame, start_frame + duration_frames)` of its `SbTrackInfo`; `[0, P)`, with
+ `P` the area's play time, is the whole area. Fails as `sb_range_check` does; on
+ failure `*out` is set to NULL.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `out` NULL or valid for a write.
+ */
+enum SbStatus sb_raw_frames_open(const struct SbDisc *disc,
+                                 uint32_t slot,
+                                 uint32_t first,
+                                 uint32_t end,
+                                 struct SbRawFrames **out);
+
+/*
+ Opens the frames of the frame range `[first, end)` of the area from `slot` without
+ decoding them, continuing `prev` (an earlier range's raw frames handle from the same
+ disc) without rescanning the area where the result is the same: reading an area's
+ ranges in increasing order this way reads each audio sector once. The ownership rules
+ are those of `sb_track_audio_open_next`: on success `prev` is consumed, on failure it
+ is left untouched (except after `SB_STATUS_PANIC`). With `prev` NULL this is
+ `sb_raw_frames_open`.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `prev` NULL or a live handle, not used again
+ after a successful call; `out` NULL or valid for a write.
+ */
+enum SbStatus sb_raw_frames_open_next(const struct SbDisc *disc,
+                                      struct SbRawFrames *prev,
+                                      uint32_t slot,
+                                      uint32_t first,
+                                      uint32_t end,
+                                      struct SbRawFrames **out);
+
+/*
+ Opens the **stored frame list** of the area from `slot` (specification 4, 4.6.1 item
+ 2): every accepted frame of the area in frame number order, including frames numbered
+ at or past the play time, read with `sb_raw_frames_read` (each as stored, never
+ `SB_FRAME_KIND_MISSING`: positions not listed are missing). Every audio sector is
+ processed. `sb_raw_frames_missing` gives 0 and `sb_raw_frames_read_dst_equivalent`
+ refuses: DST equivalents are written only for tracks and ranges (4.6.1 item 4). Fails
+ with `SB_STATUS_NO_SUCH_AREA` or `SB_STATUS_CHANNEL_COUNT_UNSUPPORTED` (4.6.1 item 1);
+ on failure `*out` is set to NULL. The handle may be passed as `prev` to
+ `sb_raw_frames_open_next`, which then opens its range afresh.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `out` NULL or valid for a write.
+ */
+enum SbStatus sb_stored_frame_list_open(const struct SbDisc *disc,
+                                        uint32_t slot,
+                                        struct SbRawFrames **out);
+
+/*
+ The channel count of a raw frames handle's area (1 to 6), or 0 for NULL or a handle
+ in use.
+
+ # Safety
+
+ `raw` must be NULL or a live handle.
+ */
+uint32_t sb_raw_frames_channels(const struct SbRawFrames *raw);
+
+/*
+ Copies the next position's frame, as stored, into `buf` and describes it in `*info`:
+ its number, its `SbFrameKind` and its size (`channels x 4704` for a plain frame, the
+ DST frame's length for a DST frame, 0 for a missing position, never more than
+ `SB_MAX_FRAME_BYTES`). Returns `SB_STATUS_END` after the last position. `disc` must be
+ the live disc the handle was opened from; its read callbacks, if any, run during this
+ call. Invalid DST frames are not reported: validity is known only by decoding
+ (`sb_dst_decode`).
+
+ The kind is fixed by the DST flag of the sector the frame starts in (specification 4,
+ 4.3.1). A frame of a DST area stored as an uncoded DST frame (the byte 0x00, a plain DST
+ frame header, then `channels x 4704` bytes; specification 5, 5.2.1) is
+ `SB_FRAME_KIND_DST`, returned with its 0x00 prefix as stored; `SB_FRAME_KIND_DSD` is a
+ frame of a plain sector, without a prefix.
+
+ On any failure other than `SB_STATUS_BUFFER_TOO_SMALL` (an I/O error, a handle in use,
+ a handle of another disc) and on `SB_STATUS_END`, `*info` is not written.
+
+ If `buf` is NULL or `cap` is below the frame's size, nothing is copied, `*info` (if not
+ NULL) still receives the number, kind and needed size, and the call returns
+ `SB_STATUS_BUFFER_TOO_SMALL`: the same frame is returned by the next call. A buffer of
+ `SB_MAX_FRAME_BYTES` bytes always suffices; a missing position needs none.
+
+ # Safety
+
+ `raw` and `disc` must be NULL or live handles; `buf` NULL or valid for `cap` bytes of
+ writes; `info` NULL or valid for a write.
+ */
+enum SbStatus sb_raw_frames_read(const struct SbRawFrames *raw,
+                                 const struct SbDisc *disc,
+                                 uint8_t *buf,
+                                 size_t cap,
+                                 struct SbRawFrameInfo *info);
+
+/*
+ As `sb_raw_frames_read`, but copies the position's **DST equivalent** (specification 4,
+ 4.6.1 item 3): a DST frame that decodes to exactly the position's audio. For a DST
+ frame its stored bytes; for a plain frame the byte 0x00 followed by its
+ `channels x 4704` bytes; for a missing position 0x00 followed by `channels x 4704`
+ bytes of 0x69. `*info` gives the stored kind and the equivalent's size (at most
+ `SB_MAX_FRAME_BYTES`, so a buffer of that size always suffices; every position needs
+ one). An uncoded DST frame (`SB_FRAME_KIND_DST` with its 0x00 prefix) is already its
+ own equivalent and is passed through unchanged, like every DST frame. Positions may be
+ read with either function in any mix. `*info` is written as for `sb_raw_frames_read`;
+ a stored frame list handle gets `SB_STATUS_INVALID_ARGUMENT`.
+
+ # Safety
+
+ As `sb_raw_frames_read`.
+ */
+enum SbStatus sb_raw_frames_read_dst_equivalent(const struct SbRawFrames *raw,
+                                                const struct SbDisc *disc,
+                                                uint8_t *buf,
+                                                size_t cap,
+                                                struct SbRawFrameInfo *info);
+
+/*
+ The number of missing positions returned so far by `sb_raw_frames_read` (those
+ decoded reads fill with 0x69).
+
+ # Safety
+
+ `raw` must be NULL or a live handle; `missing` NULL or valid for a write.
+ */
+enum SbStatus sb_raw_frames_missing(const struct SbRawFrames *raw, uint64_t *missing);
+
+/*
+ The number of malformed audio sectors processed so far by this handle's scan of its
+ area, as `sb_track_audio_malformed_sectors`. The scan stops at the first frame at or
+ after the position asked for, so it may count sectors of that next frame before the
+ frame is returned (no further: a raw frames handle does not read ahead in groups).
+
+ # Safety
+
+ `raw` must be NULL or a live handle; `count` NULL or valid for a write.
+ */
+enum SbStatus sb_raw_frames_malformed_sectors(const struct SbRawFrames *raw, uint64_t *count);
+
+/*
+ `audio-sector-malformed` warning `index` of this handle's scan of its area so far, as
+ `sb_track_audio_warning`. Returns `SB_STATUS_INVALID_ARGUMENT` past the last one.
+
+ # Safety
+
+ `raw` must be NULL or a live handle; `out` NULL or valid for a write.
+ */
+enum SbStatus sb_raw_frames_warning(const struct SbRawFrames *raw,
+                                    uint32_t index,
+                                    struct SbWarning *out);
+
+/*
+ Frees a raw frames handle. NULL is ignored, and so is a handle whose read is running
+ (the call is then a no-op).
+
+ # Safety
+
+ `raw` must be NULL or a live handle, freed only once.
+ */
+void sb_raw_frames_free(struct SbRawFrames *raw);
 
 /*
  Decodes one DST frame of `channels` channels (1 to 6) into the first `channels x 4704`

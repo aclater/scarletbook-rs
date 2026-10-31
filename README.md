@@ -59,6 +59,40 @@ for frame in disc.range_audio(Slot::TwoChannel, first, end)? {
 }
 ```
 
+### Stored content (DSDIFF passthrough)
+
+To copy DST frames unchanged (for example into a DSDIFF file), read positions without
+decoding them (specification 4, 4.6.1):
+
+```rust
+use scarletbook::FrameContent;
+
+// A track's or range's positions as stored: DST bytes, plain DSD bytes, or missing.
+let mut frames = disc.range_frames(Slot::TwoChannel, first, end)?;
+while let Some(frame) = frames.next() {
+    let frame = frame?;
+    match &frame.content {
+        FrameContent::Dst(bytes) => { /* the DST frame as stored */ }
+        FrameContent::Dsd(bytes) => { /* C x 4704 plain bytes */ }
+        FrameContent::Missing => { /* no frame: decoded reads fill it with 0x69 */ }
+    }
+    // Or one DST frame for every position, plain and missing ones included, that decodes
+    // to exactly the position's audio.
+    let dst = frames.dst_equivalent(&frame.content);
+}
+let missing = frames.missing_frames();
+// Every accepted frame of the area, in frame number order, frames past the play time
+// included; positions not listed are missing.
+for frame in disc.stored_frame_list(Slot::TwoChannel)? {
+    let frame = frame?;
+}
+```
+
+`Disc::track_frames` does the same for a track. Positions, missing frames and malformed
+sectors are exactly those of the decoded reads; invalid DST frames show only when decoded.
+In C: `sb_raw_frames_open`, `sb_raw_frames_read`, `sb_raw_frames_read_dst_equivalent` and
+`sb_stored_frame_list_open`, with caller buffers of at most `SB_MAX_FRAME_BYTES`.
+
 Features: `parallel` decodes DST frames on rayon's thread pool, ahead of the caller.
 
 ## C library

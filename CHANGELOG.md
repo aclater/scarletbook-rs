@@ -37,6 +37,14 @@ assets. Nothing is published on crates.io yet.
   nothing formatted without a sink. In C, `sb_disc_set_log`, the `_with_log` variants of the
   three openers and `SB_LOG_OFF` to `SB_LOG_TRACE`; the callback may also run on worker
   threads. Additive: the ABI version stays 1.
+- Stored content without decoding, for DSDIFF passthrough of DST audio (#37, #49):
+  each position of a track or frame range as stored (DST bytes, plain bytes or missing,
+  with the missing count), the area's stored frame list, and DST equivalents
+  (specification 4, 4.6.1): `Disc::range_frames`, `stored_frame_list`, `dst_equivalent` and
+  their cursor forms. In C, the `SbRawFrames` handle (`sb_raw_frames_open`, `_open_next`,
+  `_read`, `_read_dst_equivalent`, `sb_stored_frame_list_open`, ...), `SbFrameKind`,
+  `SbRawFrameInfo` and `SB_MAX_FRAME_BYTES`, with caller-provided buffers. Additive: the ABI
+  version stays 1.
 
 ### Changed
 

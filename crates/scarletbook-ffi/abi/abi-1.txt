@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#define SB_MAX_FRAME_BYTES 65536
 #define SB_ABI_VERSION 1
 #define SB_LOG_OFF 0
 #define SB_LOG_ERROR 1
@@ -36,6 +37,11 @@ SB_FRAME_STATUS_DECODED = 1,
 SB_FRAME_STATUS_MISSING = 2,
 SB_FRAME_STATUS_INVALID = 3,
 } SbFrameStatus;
+typedef enum SbFrameKind {
+SB_FRAME_KIND_DSD = 0,
+SB_FRAME_KIND_DST = 1,
+SB_FRAME_KIND_MISSING = 2,
+} SbFrameKind;
 typedef enum SbSlot {
 SB_SLOT_TWO_CHANNEL = 0,
 SB_SLOT_MULTICHANNEL = 1,
@@ -84,6 +90,7 @@ SB_TRACK_STRING_EXTRA_MESSAGE_PHONETIC = 13,
 SB_TRACK_STRING_ISRC = 14,
 } SbTrackString;
 typedef struct SbDisc SbDisc;
+typedef struct SbRawFrames SbRawFrames;
 typedef struct SbTrackAudio SbTrackAudio;
 typedef void(*SbLogFn)(void *user, int32_t level, const char *message);
 typedef int64_t(*SbReadFn)(void *user, uint8_t *buf, size_t len);
@@ -142,6 +149,11 @@ uint32_t status;
 uint32_t dst_rule;
 size_t size;
 } SbFrameInfo;
+typedef struct SbRawFrameInfo {
+uint32_t number;
+uint32_t kind;
+size_t size;
+} SbRawFrameInfo;
 #ifdef __cplusplus
 extern " C " {
 #endif
@@ -177,6 +189,16 @@ enum SbStatus sb_track_audio_counts(const struct SbTrackAudio *audio, uint64_t *
 enum SbStatus sb_track_audio_malformed_sectors(const struct SbTrackAudio *audio, uint64_t *count);
 enum SbStatus sb_track_audio_warning(const struct SbTrackAudio *audio, uint32_t index, struct SbWarning *out);
 void sb_track_audio_free(struct SbTrackAudio *audio);
+enum SbStatus sb_raw_frames_open(const struct SbDisc *disc, uint32_t slot, uint32_t first, uint32_t end, struct SbRawFrames **out);
+enum SbStatus sb_raw_frames_open_next(const struct SbDisc *disc, struct SbRawFrames *prev, uint32_t slot, uint32_t first, uint32_t end, struct SbRawFrames **out);
+enum SbStatus sb_stored_frame_list_open(const struct SbDisc *disc, uint32_t slot, struct SbRawFrames **out);
+uint32_t sb_raw_frames_channels(const struct SbRawFrames *raw);
+enum SbStatus sb_raw_frames_read(const struct SbRawFrames *raw, const struct SbDisc *disc, uint8_t *buf, size_t cap, struct SbRawFrameInfo *info);
+enum SbStatus sb_raw_frames_read_dst_equivalent(const struct SbRawFrames *raw, const struct SbDisc *disc, uint8_t *buf, size_t cap, struct SbRawFrameInfo *info);
+enum SbStatus sb_raw_frames_missing(const struct SbRawFrames *raw, uint64_t *missing);
+enum SbStatus sb_raw_frames_malformed_sectors(const struct SbRawFrames *raw, uint64_t *count);
+enum SbStatus sb_raw_frames_warning(const struct SbRawFrames *raw, uint32_t index, struct SbWarning *out);
+void sb_raw_frames_free(struct SbRawFrames *raw);
 enum SbStatus sb_dst_decode(const uint8_t *frame, size_t len, uint32_t channels, uint8_t *out, size_t out_len, uint32_t *rule);
 #ifdef __cplusplus
 }
