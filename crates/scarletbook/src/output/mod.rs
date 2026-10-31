@@ -45,7 +45,7 @@ use crate::audio::{
 use crate::disc::Disc;
 use crate::dst::DstDecoder;
 use crate::error::{Error, Slot};
-use crate::toc::Area;
+use crate::toc::{Area, TocDigests};
 
 pub use dsdiff::{LocalChunk, PropertyChunk};
 pub use dsdiff_dst::{DstIndexOffset, DstLengths, InvalidDst};
@@ -285,6 +285,9 @@ pub struct Layout {
     /// For DST layouts, what invalid DST frames are given as.
     invalid: Option<InvalidDst>,
     crc: bool,
+    /// The image's TOC digests, for a layout made from a [`Disc`]: [`Layout::read_at`]
+    /// refuses a disc of another image.
+    image: Option<TocDigests>,
 }
 
 impl Layout {
@@ -317,6 +320,7 @@ impl Layout {
             parts: Vec::new(),
             invalid: None,
             crc: false,
+            image: None,
         };
         match format {
             Format::Dsf => dsf::build(&mut layout, area, options)?,
@@ -355,6 +359,7 @@ impl Layout {
             parts: Vec::new(),
             invalid: Some(lengths.invalid()),
             crc: options.dsdiff_dst_crc,
+            image: None,
         };
         let data = dsdiff_dst::DstData::new(&layout, lengths, options)?;
         dsdiff::assemble(&mut layout, area, options, dsdiff::Sound::Dst(data))?;
@@ -488,18 +493,23 @@ impl Layout {
 
     /// Reads the file's bytes from `offset` into `out` as [`Layout::fill`] does, taking the
     /// positions' content from `disc` (decoded, with its seek index when one is enabled).
-    /// `disc` must be the disc, or a disc of the same image, that the layout was made from.
+    /// `disc` must be a disc of the image the layout was made from: for a layout of
+    /// [`Disc::output_layout`] or [`Disc::output_layout_dst`], that is checked against the
+    /// digests of the TOC sectors (as [`Disc::share`] checks a reader), at no cost.
     ///
     /// # Errors
     ///
-    /// The errors of [`Disc::range_audio`], and [`Error::InvalidArgument`] if `disc` has no
-    /// such area or one of another channel count.
+    /// The errors of [`Disc::range_audio`], and [`Error::InvalidArgument`] if `disc` is of
+    /// another image, has no such area, or one of another channel count.
     pub fn read_at<R: Read + Seek>(
         &self,
         disc: &mut Disc<R>,
         offset: u64,
         out: &mut [u8],
     ) -> Result<usize, Error> {
+        if self.image.as_ref().is_some_and(|d| d != disc.toc_digests()) {
+            return Err(Error::InvalidArgument("the layout is of another image"));
+        }
         let area = disc.toc().area(self.slot).ok_or(Error::NoSuchArea(self.slot))?;
         if area.channel_count != self.channels {
             return Err(Error::InvalidArgument("the layout is of another area"));
@@ -547,7 +557,9 @@ impl<R: Read + Seek> Disc<R> {
         options: &OutputOptions,
     ) -> Result<Layout, Error> {
         let area = self.toc().area(slot).ok_or(Error::NoSuchArea(slot))?;
-        Layout::new(area, self.image_sectors(), first, end, format, options)
+        let mut layout = Layout::new(area, self.image_sectors(), first, end, format, options)?;
+        layout.image = Some(self.toc_digests().clone());
+        Ok(layout)
     }
 
     /// The [`Format::DsdiffDst`] [`Layout`] of the range of `lengths` of their area (see
@@ -558,7 +570,9 @@ impl<R: Read + Seek> Disc<R> {
     /// [`Error::NoSuchArea`], then those of [`Layout::new_dst`].
     pub fn output_layout_dst(&self, lengths: &DstLengths, options: &OutputOptions) -> Result<Layout, Error> {
         let area = self.toc().area(lengths.slot()).ok_or(Error::NoSuchArea(lengths.slot()))?;
-        Layout::new_dst(area, self.image_sectors(), lengths, options)
+        let mut layout = Layout::new_dst(area, self.image_sectors(), lengths, options)?;
+        layout.image = Some(self.toc_digests().clone());
+        Ok(layout)
     }
 }
 

@@ -17,7 +17,7 @@ use common::TrackSpec;
 use output_common::{Held, Lcg, check, contents, corpus, corpus_ranges, enough, plain, synthetic, variants};
 use proptest::prelude::*;
 use scarletbook::audio::FRAME_BYTES_PER_CHANNEL;
-use scarletbook::output::{DsfBitsPerSample, Format, OutputOptions, RegionKind};
+use scarletbook::output::{DsfBitsPerSample, Format, Layout, OutputOptions, RegionKind};
 use scarletbook::{Disc, Error, OutputRefusal, Slot};
 
 /// Reverses a byte's bits one at a time (8.2.3).
@@ -166,4 +166,21 @@ proptest! {
         let expected = sequential(&content, usize::from(channels), channel_type, 1);
         check(&mut disc, &layout, &expected, &content, &mut Lcg(seed));
     }
+}
+
+#[test]
+fn read_at_refuses_a_disc_of_another_image() {
+    let disc = synthetic(2, &plain(2, 2), vec![TrackSpec { start: 0, duration: 2 }], 2);
+    let layout = disc.output_layout(Slot::TwoChannel, 0, 2, Format::Dsf, &OutputOptions::default()).unwrap();
+    // Another image with the same area: same channel count, other TOC sectors.
+    let mut other = synthetic(2, &plain(2, 3), vec![TrackSpec { start: 0, duration: 3 }], 3);
+    let e = layout.read_at(&mut other, 0, &mut [0; 200]).unwrap_err();
+    assert!(matches!(e, Error::InvalidArgument(_)), "{e}");
+    // The same image opened again is the same image.
+    let mut again = synthetic(2, &plain(2, 2), vec![TrackSpec { start: 0, duration: 2 }], 2);
+    assert_eq!(layout.read_at(&mut again, 0, &mut [0; 200]).unwrap(), 200);
+    // A layout made without a disc is checked only for its area.
+    let area = again.toc().area(Slot::TwoChannel).unwrap().clone();
+    let free = Layout::new(&area, 1 << 20, 0, 2, Format::Dsf, &OutputOptions::default()).unwrap();
+    assert_eq!(free.read_at(&mut other, 0, &mut [0; 200]).unwrap(), 200);
 }

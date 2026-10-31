@@ -215,6 +215,12 @@ impl<R: Read + Seek> Disc<R> {
         self.image.sector_count()
     }
 
+    /// The digests of the TOC sectors the parse used, which tell images apart.
+    #[cfg(feature = "output")]
+    pub(crate) fn toc_digests(&self) -> &TocDigests {
+        &self.shared.digests
+    }
+
     /// The log this disc reports to.
     pub fn log(&self) -> &Log {
         self.image.log()
