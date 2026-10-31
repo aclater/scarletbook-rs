@@ -711,12 +711,13 @@ read call) and decodes the same ranges cold, exact and provisional: on the same 
 read calls (164 to 285 KB, 3.5 to 5.6 ms modelled) for a provisional range anywhere in the area,
 against up to 14 696 read calls (963 MB) for an exact one at 99 %.
 
-Two criterion benchmarks track the decoder between releases:
+Three criterion benchmarks track the decoder and the TOC between releases:
 
 ```sh
 cargo bench -p scarletbook --bench dst_frames             # DstDecoder::decode, one frame per iteration
 cargo bench -p scarletbook --bench dst_frames -- stress/2ch
 cargo bench -p scarletbook-conformance --bench pipeline   # Disc::open + TrackAudio, in-memory images
+cargo bench -p scarletbook-ffi --bench toc_read           # open + every TOC query, one disc per iteration
 ```
 
 - `dst_frames` reports the time per frame and symbols per second (37 632 x channels per
@@ -727,6 +728,12 @@ cargo bench -p scarletbook-conformance --bench pipeline   # Disc::open + TrackAu
   several filter and ptable segments). The stress frames are identical on every run.
 - `pipeline` reads every track of a 2-channel and a 6-channel area of small synthetic
   images (plain DSD, DST, DST in 2064-byte sectors) on one thread.
+- `toc_read` opens a disc and reads its whole TOC, as a consumer listing a library does
+  (#132): `c/IMAGE` through `sb_disc_open_callbacks_at` over the image in memory and every
+  TOC query of the C interface (disc, areas, tracks, strings, genres, text channels,
+  timecodes, warnings), `rust/IMAGE` the same through `Disc::open`. The images are the
+  corpus images with the most text and tracks and a synthetic disc of 2 x 255 tracks.
+  `SCARLETBOOK_PERF_BENCH=list` prints the calls, read callbacks and bytes read per disc.
 
 The scripts in `perf/` need Linux and `perf`:
 

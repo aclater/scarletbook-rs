@@ -491,8 +491,10 @@ dependencies = [
 name = "scarletbook-ffi"
 version = "0.5.1"
 dependencies = [
+ "criterion",
  "rayon",
  "scarletbook",
+ "scarletbook-conformance",
  "serde_json",
  "sha2",
 ]
