@@ -30,6 +30,7 @@
 //! Every point where the formats allow more than one valid output (specification 8, 8.6,
 //! "writer's choices") is a field of [`OutputOptions`], with a documented default.
 
+mod dsdiff;
 mod dsf;
 
 use std::borrow::Cow;
@@ -42,6 +43,7 @@ use crate::disc::Disc;
 use crate::error::{Error, Slot};
 use crate::toc::Area;
 
+pub use dsdiff::PropertyChunk;
 pub use dsf::DsfBitsPerSample;
 
 /// An output file format (specification 8).
@@ -50,6 +52,8 @@ pub use dsf::DsfBitsPerSample;
 pub enum Format {
     /// DSF (8.2), without a tag.
     Dsf,
+    /// DSDIFF with plain DSD sound data (8.4.5).
+    DsdiffDsd,
 }
 
 /// The writer's choices of specification 8, 8.6 ("W" numbers below are its rows), each
@@ -65,11 +69,38 @@ pub struct OutputOptions {
     /// 4 or 5 for 4, 6 for 5 and 7 for 6. Default `None`: such an area is refused with
     /// [`crate::OutputRefusal::UnspecifiedLayout`]. Areas with a defined layout ignore it.
     pub dsf_unspecified_channel_type: Option<u32>,
+    /// W14, the order of the chunks inside the DSDIFF property chunk (8.4.3): each
+    /// [`PropertyChunk`] once. Chunks that aren't written are skipped. Default
+    /// [`PropertyChunk::TABLE_ORDER`]: `FS  `, `CHNL`, `CMPR`, `ABSS`, `LSCO`.
+    pub dsdiff_property_order: [PropertyChunk; 5],
+    /// W15, the DSDIFF channel IDs of an area whose layout is unspecified (8.4.4 item 2):
+    /// one distinct number from 0 to 999 per channel, written as `C000` to `C999`. Default
+    /// `None`: `C000`, `C001`, ... in channel order.
+    pub dsdiff_unspecified_channel_numbers: Option<Vec<u16>>,
+    /// W15, whether an area whose layout is unspecified gets an `LSCO` chunk with 65 535
+    /// ("undefined channel set-up", 8.4.4 item 2). Default `false`: no `LSCO`.
+    pub dsdiff_unspecified_loudspeaker_configuration: bool,
+    /// W16, whether an area with a defined layout gets an `LSCO` chunk (8.4.3, 8.4.4).
+    /// Default `true`.
+    pub dsdiff_loudspeaker_configuration: bool,
+    /// W17, the frame count `A` of the DSDIFF absolute start time (8.4.8): the `ABSS`
+    /// chunk gives the time of frame `A`, and `A + N` must be at most 6 479 999. Default
+    /// `None`: no `ABSS`, which means `A = 0`. `Some(first)` makes times equal timeline
+    /// positions.
+    pub dsdiff_absolute_start: Option<u32>,
 }
 
 impl Default for OutputOptions {
     fn default() -> Self {
-        OutputOptions { dsf_bits_per_sample: DsfBitsPerSample::One, dsf_unspecified_channel_type: None }
+        OutputOptions {
+            dsf_bits_per_sample: DsfBitsPerSample::One,
+            dsf_unspecified_channel_type: None,
+            dsdiff_property_order: PropertyChunk::TABLE_ORDER,
+            dsdiff_unspecified_channel_numbers: None,
+            dsdiff_unspecified_loudspeaker_configuration: false,
+            dsdiff_loudspeaker_configuration: true,
+            dsdiff_absolute_start: None,
+        }
     }
 }
 
@@ -87,6 +118,31 @@ impl OutputOptions {
     /// These options with DSF channel type `channel_type` for unspecified layouts (W2).
     pub fn with_dsf_unspecified_channel_type(self, channel_type: Option<u32>) -> Self {
         OutputOptions { dsf_unspecified_channel_type: channel_type, ..self }
+    }
+
+    /// These options with DSDIFF property chunk order `order` (W14).
+    pub fn with_dsdiff_property_order(self, order: [PropertyChunk; 5]) -> Self {
+        OutputOptions { dsdiff_property_order: order, ..self }
+    }
+
+    /// These options with DSDIFF channel numbers `numbers` for unspecified layouts (W15).
+    pub fn with_dsdiff_unspecified_channel_numbers(self, numbers: Option<Vec<u16>>) -> Self {
+        OutputOptions { dsdiff_unspecified_channel_numbers: numbers, ..self }
+    }
+
+    /// These options with or without `LSCO` 65 535 for unspecified layouts (W15).
+    pub fn with_dsdiff_unspecified_loudspeaker_configuration(self, write: bool) -> Self {
+        OutputOptions { dsdiff_unspecified_loudspeaker_configuration: write, ..self }
+    }
+
+    /// These options with or without `LSCO` for defined layouts (W16).
+    pub fn with_dsdiff_loudspeaker_configuration(self, write: bool) -> Self {
+        OutputOptions { dsdiff_loudspeaker_configuration: write, ..self }
+    }
+
+    /// These options with DSDIFF absolute start frame `frame` (W17).
+    pub fn with_dsdiff_absolute_start(self, frame: Option<u32>) -> Self {
+        OutputOptions { dsdiff_absolute_start: frame, ..self }
     }
 }
 
@@ -120,6 +176,8 @@ enum Part {
     Bytes(Vec<u8>),
     /// DSF sound data (8.2.2).
     Dsf(dsf::DsfData),
+    /// DSDIFF plain DSD sound data (8.4.5).
+    Dsd(dsdiff::DsdData),
 }
 
 /// The content of timeline positions, which [`Layout::fill`] reads.
@@ -179,6 +237,7 @@ impl Layout {
         };
         match format {
             Format::Dsf => dsf::build(&mut layout, area, options)?,
+            Format::DsdiffDsd => dsdiff::build_dsd(&mut layout, area, options)?,
         }
         Ok(layout)
     }
@@ -241,6 +300,7 @@ impl Layout {
             let p = match part {
                 Part::Bytes(_) => continue,
                 Part::Dsf(d) => d.positions(start - region.offset..end - region.offset),
+                Part::Dsd(d) => d.positions(start - region.offset..end - region.offset),
             };
             if !p.is_empty() {
                 lo = lo.min(p.start);
@@ -281,6 +341,7 @@ impl Layout {
                     dst.copy_from_slice(&b[rel..rel + n]);
                 }
                 Part::Dsf(d) => d.fill(rel, dst, self.first, &mut source)?,
+                Part::Dsd(d) => d.fill(rel, dst, self.first, &mut source)?,
             }
             done += n;
         }
