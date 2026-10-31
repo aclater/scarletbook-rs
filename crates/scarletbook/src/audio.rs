@@ -114,7 +114,9 @@ impl std::fmt::Display for Malformed {
 /// Each position held ahead is at most one DST frame's bytes (at most 65 536,
 /// [`MAX_FRAME_BYTES`]) and, once decoded, its audio (at most 6 x 4704 bytes): a cursor
 /// holds at most `512 x (65 536 + 6 x 4704)` bytes, about 48 MB, whatever the host (plus
-/// the frame under assembly); DST frames of 40 % of their decoded size need about 6.8 MB
+/// the frame under assembly, and its read buffer: 64 KiB, or up to 1 MiB,
+/// [`crate::seek::MAX_READ_SECTORS`] sectors, kept for the cursor's life once it has made a
+/// read sized to a provisional range); DST frames of 40 % of their decoded size need about 6.8 MB
 /// at 2 channels and 20 MB at 6. The cap is a constant so that the memory held does not
 /// grow with the host's thread count. It keeps 16 positions per thread up to 32 threads:
 /// with groups of 2 or 3 frames per job, a cap of 256 left under 3 jobs per thread at 32

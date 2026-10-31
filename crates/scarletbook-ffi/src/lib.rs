@@ -3024,8 +3024,10 @@ pub unsafe extern "C" fn sb_pool_free(pool: *mut SbPool) {
 /// Memory stays bounded whatever the image: a handle holds at most `16 x threads` frame
 /// positions ahead of the caller, and never more than 512, each at most one stored frame
 /// (`SB_MAX_FRAME_BYTES`) and one decoded frame (channels x 4704 bytes): about 48 MB at
-/// most, about 6.8 MB for 2 channels and 20 MB for 6 with typical DST frames. Each of the
-/// pool's threads also keeps decoder tables of up to about 3.4 MB.
+/// most, about 6.8 MB for 2 channels and 20 MB for 6 with typical DST frames, plus its read
+/// buffer: 64 KiB, or up to 1 MiB, kept for the handle's life, once it has made a read sized
+/// to a provisional range. Each of the pool's threads also keeps decoder tables of up to
+/// about 3.4 MB.
 ///
 /// Returns `SB_STATUS_INVALID_ARGUMENT` when the handle is in use by a callback.
 ///
