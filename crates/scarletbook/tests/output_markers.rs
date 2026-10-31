@@ -176,7 +176,9 @@ fn corpus_markers_and_edited_masters() {
             checked += 1;
 
             // The edited master: refused as 8.4.11 says, or the program with `ABSS` and `LSCO`.
-            let master = OutputOptions::default().with_dsdiff_edited_master(true);
+            let master = OutputOptions::default()
+                .with_dsdiff_edited_master(true)
+                .with_dsdiff_artist_title(Some(false));
             match (
                 edited_master_check(&area),
                 disc.output_layout(area.slot, 0, p, Format::DsdiffDsd, &master),
@@ -373,7 +375,8 @@ fn edited_master_refusals() {
     let tracks = |v: &[(u32, u32)]| {
         v.iter().map(|&(start, duration)| TrackSpec { start, duration }).collect::<Vec<_>>()
     };
-    let master = OutputOptions::default().with_dsdiff_edited_master(true);
+    let master =
+        OutputOptions::default().with_dsdiff_edited_master(true).with_dsdiff_artist_title(Some(false));
     type Case<'a> = (&'a [(u32, u32)], u32, Option<EditedMasterCheck>);
     let cases: &[Case<'_>] = &[
         (&[(0, 75), (75, 75)], 160, None),
