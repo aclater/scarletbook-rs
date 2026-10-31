@@ -669,3 +669,42 @@ fn provisional_reading_arguments() {
     audio_free(a);
     free(disc);
 }
+
+/// Two images of the same size and layout, different contents (#102): a caller-kept index
+/// that took a provisional reading of one refuses to be extended or verified with the
+/// other, and the reading is not confirmed against it.
+#[test]
+#[cfg_attr(miri, ignore = "reads a corpus image")]
+fn a_reading_is_not_checked_against_another_image() {
+    let a_bytes = image("dst-features-2ch-6ch");
+    let a = open(&a_bytes);
+    let mut info = SbAreaInfo::default();
+    // SAFETY: a live handle and a valid out-pointer.
+    assert_eq!(unsafe { sb_disc_area(a, 0, &mut info) }, SbStatus::Ok);
+    // B: every audio sector of A with its bytes past the headers (at most 43 bytes) changed.
+    let mut b_bytes = a_bytes.clone();
+    for lsn in info.audio_start_lsn as usize..=info.audio_end_lsn as usize {
+        for byte in &mut b_bytes[lsn * 2048 + 64..(lsn + 1) * 2048] {
+            *byte ^= 0x5A;
+        }
+    }
+    let b = open(&b_bytes);
+    assert_eq!(policy(a, 0, SB_SEEK_POLICY_SPECULATIVE, 0), SbStatus::Ok);
+    let index = index_new(a, 0, 4).unwrap();
+    let p = playtime(a, 0);
+    let h = open_indexed(a, 0, (p / 2, p / 2 + 2), index).unwrap();
+    read_all(h, a);
+    assert_eq!(speculation(h).state, SB_SPECULATION_PENDING);
+    assert_eq!(absorb(h, index), SbStatus::Ok);
+    assert_eq!(extend(b, index, 1 << 20).unwrap_err(), SbStatus::InvalidArgument);
+    let mut settled = 0;
+    // SAFETY: live handles and a valid out-pointer.
+    assert_eq!(unsafe { sb_seek_index_verify(b, index, &mut settled) }, SbStatus::InvalidArgument);
+    assert_eq!(speculation(h).state, SB_SPECULATION_PENDING);
+    while !extend(a, index, 1 << 20).unwrap() {}
+    assert_eq!(speculation(h).state, SB_SPECULATION_CONFIRMED);
+    audio_free(h);
+    index_free(index);
+    free(a);
+    free(b);
+}

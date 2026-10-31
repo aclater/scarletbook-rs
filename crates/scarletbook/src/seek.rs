@@ -1230,10 +1230,14 @@ impl AreaIndex {
     ///
     /// # Errors
     ///
-    /// [`Error::InvalidArgument`] if `image` is another image than the index's (see [One
-    /// index per image](AreaIndex#one-index-per-image)); [`Error::Io`] if a read fails (the
-    /// readings not yet checked stay pending).
+    /// [`Error::InvalidArgument`] if `image` has another sector count than the index's, or
+    /// is another image than the index's (see [One index per
+    /// image](AreaIndex#one-index-per-image)); [`Error::Io`] if a read fails (the readings
+    /// not yet checked stay pending).
     pub fn verify<R: Read + Seek>(&mut self, image: &mut Image<R>) -> Result<usize, Error> {
+        if image.sector_count() != self.key.image_sectors {
+            return Err(Error::InvalidArgument("seek index of another image size"));
+        }
         if self.image_id.is_some_and(|id| id != image.id()) {
             return Err(Error::InvalidArgument("seek index of another image"));
         }

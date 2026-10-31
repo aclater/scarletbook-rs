@@ -3545,7 +3545,9 @@ impl SbSpeculation {
                 (SB_SPECULATION_REFUTED, lsn, first, last_returned.unwrap_or(none), exact_from)
             }
             Speculation::Unverified { lsn, first } => (SB_SPECULATION_UNVERIFIED, lsn, first, none, 0),
-            _ => (SB_SPECULATION_EXACT, 0, 0, none, 0),
+            Speculation::Exact => (SB_SPECULATION_EXACT, 0, 0, none, 0),
+            // A state this interface does not know yet is never reported as exact.
+            _ => (SB_SPECULATION_UNVERIFIED, 0, 0, none, 0),
         };
         SbSpeculation { claim, lsn, slot, state, first, last_returned, exact_from, reserved: 0 }
     }
@@ -3567,7 +3569,9 @@ impl SbSpeculation {
 /// returned by `sb_disc_seek_event_next`.
 ///
 /// A provisional start is used when the exact start lies more than `min_gap_sectors`
-/// (`SB_SEEK_DEFAULT_MIN_GAP`) before the range's estimated position. The policy is the
+/// (`SB_SEEK_DEFAULT_MIN_GAP`) before the range's estimated position; 0 allows one whenever
+/// the exact start lies before it at all. `min_gap_sectors` is ignored with
+/// `SB_SEEK_POLICY_EXACT`. The policy is the
 /// handle's own: clones (`sb_disc_clone`) start with a copy. Fails with
 /// `SB_STATUS_NO_SUCH_AREA`, or `SB_STATUS_INVALID_ARGUMENT` for another `policy`.
 ///
@@ -3675,7 +3679,10 @@ pub unsafe extern "C" fn sb_disc_seek_verify(
 /// what was served from positions `first` to `exact_from - 1`; an exact read of them is now
 /// cheap) or `SB_SPECULATION_UNVERIFIED`. Returns `SB_STATUS_END` when there is none. The
 /// disc and its clones share one queue, which keeps the last 1 024 verdicts; each verdict
-/// is returned once, by whichever handle asks first.
+/// is returned once, by whichever handle asks first. A call moves the verdicts queued so
+/// far to the asking handle, which returns them one by one: verdicts it has not returned
+/// when it is freed are lost (a handle's own reports, `sb_track_audio_speculation`, keep
+/// them).
 ///
 /// # Safety
 ///
@@ -3768,6 +3775,11 @@ pub unsafe extern "C" fn sb_seek_index_event_next(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_default_gap_is_the_librarys() {
+        assert_eq!(SB_SEEK_DEFAULT_MIN_GAP, scarletbook::SpeculativeOptions::default().min_gap_sectors);
+    }
 
     #[test]
     fn guard_turns_a_panic_into_a_status() {

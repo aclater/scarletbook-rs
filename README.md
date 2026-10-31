@@ -359,6 +359,11 @@ class SbFrameInfo(C.Structure):
 class SbRawFrameInfo(C.Structure):
     _fields_ = [("number", C.c_uint32), ("kind", C.c_uint32), ("size", C.c_uint32)]
 
+class SbSpeculation(C.Structure):
+    _fields_ = [("claim", C.c_uint64), ("lsn", C.c_uint64), ("slot", C.c_uint32), ("state", C.c_uint32),
+                ("first", C.c_uint32), ("last_returned", C.c_uint32), ("exact_from", C.c_uint32),
+                ("reserved", C.c_uint32)]
+
 # Handles are opaque pointers; SbStatus is an int32_t (0 OK, 1 END, 2 ABSENT, negative:
 # failure); size_t is only the length of a buffer of yours.
 H, S, P, U32, SIZE = C.c_void_p, C.c_int32, C.POINTER, C.c_uint32, C.c_size_t
@@ -395,6 +400,13 @@ bind("sb_raw_frames_open", S, H, U32, U32, U32, P(H))
 bind("sb_raw_frames_read", S, H, H, C.c_char_p, SIZE, P(SbRawFrameInfo))
 bind("sb_raw_frames_free", None, H)
 bind("sb_dst_decode", S, C.c_char_p, SIZE, U32, C.c_char_p, SIZE, P(U32))
+bind("sb_disc_seek_policy_set", S, H, U32, U32, C.c_uint64)
+bind("sb_track_audio_speculation", S, H, P(SbSpeculation))
+bind("sb_raw_frames_speculation", S, H, P(SbSpeculation))
+bind("sb_disc_seek_verify", S, H, U32, C.c_uint64, P(C.c_uint8))
+bind("sb_disc_seek_event_next", S, H, U32, P(SbSpeculation))
+bind("sb_seek_index_verify", S, H, H, P(U32))
+bind("sb_seek_index_event_next", S, H, P(SbSpeculation))
 ```
 
 The other functions bind the same way from their declarations in `scarletbook.h`. Then:
