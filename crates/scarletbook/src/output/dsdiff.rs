@@ -182,9 +182,10 @@ pub enum LocalChunk {
 }
 
 impl LocalChunk {
-    /// The default order: `PROP`, the sound data, `DSTI`.
-    pub const DEFAULT_ORDER: [LocalChunk; 3] =
-        [LocalChunk::Property, LocalChunk::SoundData, LocalChunk::DstIndex];
+    /// The default order: `PROP`, the sound data, `DSTI`. Chunks added later take their
+    /// place in it, so it is a slice.
+    pub const DEFAULT_ORDER: &'static [LocalChunk] =
+        &[LocalChunk::Property, LocalChunk::SoundData, LocalChunk::DstIndex];
 }
 
 /// The sound data of a file, for [`assemble`].
