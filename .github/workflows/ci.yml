@@ -180,7 +180,8 @@ jobs:
       - run: rustup toolchain install "$RUST_NIGHTLY" --profile minimal -c miri,rust-src
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          key: miri-${{ matrix.slice }}
+          # One cache per feature set, shared by the slices (they build the same crates).
+          key: miri-${{ startsWith(matrix.slice, 'parallel') && 'parallel' || 'default' }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # The `parallel` slices use Tree Borrows, not Miri's default Stacked Borrows: under
       # Stacked Borrows Miri reports undefined behaviour inside crossbeam-epoch (rayon's
@@ -192,8 +193,22 @@ jobs:
         env:
           SLICE: ${{ matrix.slice }}
         run: |
-          miri() { cargo +"$RUST_NIGHTLY" miri test --locked "$@"; }
+          # Every named test must exist and run: a renamed test fails the slice instead of
+          # leaving it to pass with nothing run.
+          log=$(mktemp)
+          miri() {
+            cargo +"$RUST_NIGHTLY" miri test --locked "$@" 2>&1 | tee -a "$log"
+            return "${PIPESTATUS[0]}"
+          }
           tb() { MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-ignore-leaks" miri "$@"; }
+          named() {
+            local ran
+            ran=$(tail -n 400 "$log" | grep -c '^test .* \.\.\. ok$' || true)
+            if [[ "$ran" -lt "$1" ]]; then
+              echo "::error::slice $SLICE ran $ran named tests, expected $1"
+              exit 1
+            fi
+          }
           case "$SLICE" in
             ffi) miri -p scarletbook-ffi ;;
             core)
@@ -202,18 +217,28 @@ jobs:
               if [[ "$GITHUB_EVENT_NAME" != pull_request ]]; then
                 miri -p scarletbook --lib -- --skip fast_loop_matches_general
               fi ;;
-            lanes-1-2) miri -p scarletbook --lib -- fast_loop_matches_general_1_frame fast_loop_matches_general_2_frames ;;
-            lanes-3) miri -p scarletbook --lib -- --exact dst::tests::fast_loop_matches_general_3_frames ;;
-            lanes-4) miri -p scarletbook --lib -- --exact dst::tests::fast_loop_matches_general_4_frames ;;
+            lanes-1-2)
+              miri -p scarletbook --lib -- --exact dst::tests::fast_loop_matches_general_1_frame \
+                dst::tests::fast_loop_matches_general_2_frames
+              named 2 ;;
+            lanes-3) miri -p scarletbook --lib -- --exact dst::tests::fast_loop_matches_general_3_frames; named 1 ;;
+            lanes-4) miri -p scarletbook --lib -- --exact dst::tests::fast_loop_matches_general_4_frames; named 1 ;;
             parallel)
-              tb -p scarletbook-ffi --test ffi -- --include-ignored pool_handles_of_a_small_image
-              tb -p scarletbook --features parallel --test demux_props -- --include-ignored \
-                read_error_after_batches_follows_its_frames ;;
+              : > "$log"
+              tb -p scarletbook-ffi --test ffi -- --include-ignored --exact pool_handles_of_a_small_image
+              named 1
+              : > "$log"
+              tb -p scarletbook --features parallel --test demux_props -- --include-ignored --exact \
+                read_error_after_batches_follows_its_frames
+              named 1 ;;
             parallel-window)
-              tb -p scarletbook --features parallel --lib -- --include-ignored parallel_window_is_capped ;;
+              tb -p scarletbook --features parallel --lib -- --include-ignored --exact \
+                audio::tests::parallel_window_is_capped
+              named 1 ;;
             parallel-continuation)
-              tb -p scarletbook --features parallel --test demux_props -- --include-ignored \
-                continuation_across_batches_equals_fresh_scans ;;
+              tb -p scarletbook --features parallel --test demux_props -- --include-ignored --exact \
+                continuation_across_batches_equals_fresh_scans
+              named 1 ;;
             *) echo "::error::unknown Miri slice $SLICE"; exit 1 ;;
           esac
 
