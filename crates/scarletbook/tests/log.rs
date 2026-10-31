@@ -322,25 +322,31 @@ fn no_sink_or_a_quiet_level_changes_nothing() {
 }
 
 /// Decoding on a pool: the frame lines, logged on the calling thread as frames are
-/// returned, are those of a serial run in the same order; the pool's threads report the
-/// groups they decode.
+/// returned, are those of a serial run in the same order; the groups are reported by the
+/// pool's threads. Which of them decodes a group is the scheduler's choice: the caller is
+/// one of the pool's threads and may decode every group itself while it waits (a small
+/// image on a runner with few cores), so only "on this pool" is checked.
 #[cfg(feature = "parallel")]
 #[test]
 #[cfg_attr(miri, ignore = "reads whole corpus images")]
 fn parallel_decoding_logs_from_the_pool_in_order() {
-    use std::thread::ThreadId;
     for id in ["dst-features-2ch-6ch", "dst-invalid-frames-2ch"] {
         let serial = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
         let (serial_lines, serial_frames, _) = serial.install(|| trail(id, Level::Trace));
-        let lines: Arc<Mutex<Vec<(ThreadId, Level, String)>>> = Arc::default();
+        let lines: Arc<Mutex<Vec<(String, Level, String)>>> = Arc::default();
         let sink = Arc::clone(&lines);
         let log = Log::new(Level::Trace, move |l, m| {
-            sink.lock().unwrap().push((std::thread::current().id(), l, m.to_string()));
+            let name = std::thread::current().name().unwrap_or("").to_owned();
+            sink.lock().unwrap().push((name, l, m.to_string()));
         });
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .thread_name(|i| format!("logpool-{i}"))
+            .build()
+            .unwrap();
         let (caller, frames) = pool.install(|| {
             let mut disc = Disc::open_with_log(Cursor::new(image(id)), log).unwrap();
-            (std::thread::current().id(), decode_all(&mut disc))
+            (std::thread::current().name().unwrap_or("").to_owned(), decode_all(&mut disc))
         });
         assert_eq!(frames, serial_frames, "{id}");
         let lines = lines.lock().unwrap();
@@ -354,9 +360,15 @@ fn parallel_decoding_logs_from_the_pool_in_order() {
                 .filter(|(_, _, m)| !m.starts_with("decoding DST frames"))
                 .all(|(t, _, _)| *t == caller)
         );
+        let groups: Vec<&String> = lines
+            .iter()
+            .filter(|(_, _, m)| m.starts_with("decoding DST frames"))
+            .map(|(t, _, _)| t)
+            .collect();
+        assert!(!groups.is_empty(), "{id}: no group decoded");
         assert!(
-            lines.iter().any(|(t, _, m)| m.starts_with("decoding DST frames") && *t != caller),
-            "{id}: no group decoded on another thread of the pool"
+            groups.iter().all(|t| t.starts_with("logpool-")),
+            "{id}: a group decoded off the pool: {groups:?}"
         );
     }
 }
