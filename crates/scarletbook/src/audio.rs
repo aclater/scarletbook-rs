@@ -114,6 +114,12 @@ impl std::fmt::Display for Malformed {
 /// grow with the host's thread count; 256 positions still keep 8 frames per thread in
 /// flight at 32 threads.
 ///
+/// A cursor continued ([`TrackAudioCursor::continue_to`] and its range form) or dropped
+/// while DST frames are in flight drops its handles on them: queued jobs then skip
+/// decoding, and only jobs already decoding run to their end, at most one group of
+/// [`crate::dst::lanes`] frames per pool thread. That memory is held briefly beside the
+/// new cursor's window, and freed as those jobs finish.
+///
 /// Besides the window, each decoder holds its tables: per lane of
 /// [`DstDecoder::decode_many`], at most 12 filters' byte tables (64 KiB each) and 12
 /// ptables' probability tables (8 KiB each), about 0.85 MB. A cursor's own decoder, and
@@ -1350,7 +1356,9 @@ impl TrackAudioCursor {
 
     /// A cursor at the start of `track`, continuing this one's reading state where that
     /// gives the same result (see [`TrackCursor::continue_to`]). Frames of this cursor
-    /// not yet returned are dropped; the counts start again at 0.
+    /// not yet returned are dropped; the counts start again at 0. With `parallel`, DST
+    /// frames of this cursor still queued on the pool are then not decoded (see
+    /// [`MAX_PARALLEL_BATCH`] for the frames being decoded at that moment).
     ///
     /// # Errors
     ///
@@ -1702,6 +1710,12 @@ mod pool {
             let job = Arc::new(Job::default());
             let out = Arc::clone(&job);
             let work = move || {
+                // The owner dropped its handle (a cursor continued or dropped with frames
+                // in flight): nobody will take these frames, so skip decoding them. Jobs
+                // already decoding finish; see MAX_PARALLEL_BATCH.
+                if Arc::strong_count(&out) == 1 {
+                    return;
+                }
                 let range = (frames.first().map(|f| f.number), frames.last().map(|f| f.number));
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                     DECODER.with(|d| match d.try_borrow_mut() {

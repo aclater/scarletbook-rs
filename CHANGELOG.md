@@ -25,6 +25,8 @@ is shared by every crate of the workspace; releases carry the `bench` program an
 
 ### Changed
 
+- A cursor continued or dropped with DST frames still queued on the pool no longer has
+  them decoded for nothing: the abandoned jobs skip decoding (#29).
 - The C library now always links rayon; its `parallel` feature only makes handles without
   a pool decode on rayon's global pool, as before.
 
