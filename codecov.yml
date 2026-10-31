@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Coverage is reported on every pull request but does not mark it failing (#110): the patch
+# status flagged tooling-only diffs (benchmark binaries, CI scripts) that the coverage job does
+# not measure. Revisit once a threshold is agreed.
+coverage:
+  status:
+    project:
+      default:
+        informational: true
+    patch:
+      default:
+        informational: true
