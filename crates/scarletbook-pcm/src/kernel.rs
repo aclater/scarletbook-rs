@@ -101,6 +101,12 @@ pub(crate) fn lut(half: &[i32]) -> Lut {
 static LUT_S1: OnceLock<Lut> = OnceLock::new();
 static LUT_S1_WIDE: OnceLock<Lut> = OnceLock::new();
 
+/// `2^e`, built from its bits: exact, unlike `powi`, whose precision Rust does not specify.
+fn pow2(e: i32) -> f64 {
+    debug_assert!((-1022..=1023).contains(&e));
+    f64::from_bits(((1023 + e) as u64) << 52)
+}
+
 /// A symmetric filter, from its table (taps from the centre out).
 #[derive(Clone, Debug)]
 struct Sym {
@@ -122,7 +128,7 @@ impl Sym {
             even.pop();
         }
         let odd = full.iter().skip(1).step_by(2).copied().collect();
-        Sym { full, even, odd, scale: 2f64.powi(-q) }
+        Sym { full, even, odd, scale: pow2(-q) }
     }
 
     /// The largest tap offset.
@@ -455,6 +461,13 @@ fn interp2_odd(s: &Sym, w: &[f64], out: &mut [f64]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pow2_is_exact() {
+        assert_eq!(pow2(0), 1.0);
+        assert_eq!(pow2(-24), 1.0 / 16_777_216.0);
+        assert_eq!(pow2(3), 8.0);
+    }
 
     #[test]
     fn round_even_matches_std() {
