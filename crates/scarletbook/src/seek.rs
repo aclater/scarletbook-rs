@@ -461,6 +461,11 @@ impl Claim {
         *self.verdict.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Settles the claim as confirmed from saved established state (4.2 item 9).
+    pub(crate) fn confirm_saved(&self) {
+        self.settle(Verdict::Confirmed);
+    }
+
     /// Settles the claim, once: whether this call did.
     fn settle(&self, verdict: Verdict) -> bool {
         let mut v = self.verdict.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -601,6 +606,11 @@ impl HintRecorder {
     }
 }
 
+/// A seek hint to begin at: (sector, its first record's frame number, the end of the read
+/// to make there, and the digest the sector must have when a saved confirmation covers the
+/// range).
+pub(crate) type Hint = (u64, u32, u64, Option<u64>);
+
 /// A provisional start still to be chosen: on the cursor's first read, from the area's
 /// play time and the exact plan the cursor holds meanwhile.
 #[derive(Debug)]
@@ -618,8 +628,9 @@ pub(crate) struct Speculate {
     /// Where the exact start begins: the search looks past it.
     pub(crate) from: u64,
     /// A seek hint to begin at instead of searching: (sector, its first record's frame
-    /// number, the end of the read to make there).
-    pub(crate) hint: Option<(u64, u32, u64)>,
+    /// number, the end of the read to make there, and the digest the sector must have when
+    /// a saved confirmation covers the range).
+    pub(crate) hint: Option<Hint>,
 }
 
 /// The first frame record of a sector, as a frame number (specification 4, 4.3.2).
@@ -1021,8 +1032,8 @@ const _: () = {
 /// below the range's first frame (at most [`HINT_REACH`] frames below), and reads from
 /// there through the next hint past the range in **one read call** (at most
 /// [`MAX_READ_SECTORS`]). A hint only chooses `L`: the positions are provisional
-/// ([`Speculation::Pending`]) as from any provisional start, never exact, whatever the hint
-/// says. The hint's sector is read anyway; if its first record is not the hint's, the
+/// ([`Speculation::Pending`]) as from any provisional start, whatever the hint says, unless
+/// a saved confirmation covers them (below). The hint's sector is read anyway; if its first record is not the hint's, the
 /// hints are of another image or a stale one: the cursor logs a warning, searches as
 /// without hints, and the index drops them.
 ///
@@ -1031,8 +1042,34 @@ const _: () = {
 /// sector count and format, the master TOC's version, album and disc catalogue numbers,
 /// genres, area pointers, flags and date, and the area TOC's fields and track list; not
 /// text), saved with it: a disc with another TOC refuses it, at no cost in reads.
-// TODO(sacd-spec#31): a confirmation (`L`, `u_L`) saved with a hint would let later
-// readings from it be reported confirmed (4.2 item 9); not saved yet.
+///
+/// # Saved confirmations
+///
+/// Saved confirmations are used and kept only by an index whose TOC fingerprint a disc of
+/// this process has checked against its own TOC ([`crate::Disc::enable_seek_index`],
+/// [`crate::Disc::set_seek_index`]; not saved): an index loaded with
+/// [`AreaIndex::from_bytes`] and used directly (`for_range_speculative`,
+/// `for_range_indexed`, [`AreaIndex::extend`]) keeps its readings provisional and records
+/// no confirmation, whatever image it reads.
+///
+/// When verification ([`AreaIndex::verify`]) confirms a provisional reading from `L` for
+/// positions `u_L` or more, such an index keeps (`L`, `u_L`) and the
+/// digest of sector `L`, and saves them (16 bytes each, at most
+/// [`IndexOptions::max_hints`]). What that pass established, (a) and (b) of 4.2 item 8 at
+/// `L`, holds for every later reading from `L` with `u >= u_L`, and stays established after
+/// saving and loading for an image whose sectors before `L` are the bytes the pass read
+/// (specification 4, 4.2 item 9, sacd-spec `cb9530b`). So a hinted reading from such an `L`
+/// for `u >= u_L` is reported [`Speculation::Confirmed`] at once, without another pass,
+/// when the index is bound to this disc (its key and TOC fingerprint, checked by
+/// [`crate::Disc::set_seek_index`]) and sector `L`, read anyway, has the digest kept. That
+/// sameness check is the index's trust model ([module documentation](self#trust)): it covers
+/// the sectors before `L` by the disc's identity, not by reading them; an index saved for one
+/// image and loaded for a re-rip of the same disc with the same TOC and a different sector
+/// before `L` would be trusted. **Trust boundary:** saved confirmations, like saved exact
+/// checkpoints, are trusted for any image whose TOC fingerprint and key match, so a re-rip
+/// with different audio bytes would get confirmed readings that differ from its own; key
+/// saved indexes by the image file's identity (path, size and modification time, or a
+/// content hash) as well.
 // Specification 7, 7.1 item 2 (sacd-spec `cb9530b`): saved locator samples, a constant
 // number of bytes each, their number chosen by the caller and checked when loaded.
 // Specification 7, 7.1 item 2 (sacd-spec `da6b900`): a constant number of bytes per
@@ -1068,6 +1105,13 @@ pub struct AreaIndex {
     max_hints: usize,
     /// The disc's TOC fingerprint ([`toc_fingerprint`]), once a disc kept the index.
     fingerprint: Option<u64>,
+    /// Whether a disc of this process checked the fingerprint against its own TOC
+    /// ([`AreaIndex::bind_fingerprint`]): only then are confirmations used or kept (4.2
+    /// item 9). Not saved: a loaded index has it only once a disc has checked it.
+    fingerprint_checked: bool,
+    /// Established provisional starts (specification 4, 4.2 item 9): (`L`, `u_L`, digest of
+    /// sector `L`), by increasing `L`, for an index with a fingerprint.
+    confirmed: Vec<(u32, u32, u64)>,
 }
 
 /// Two indexes are equal when they hold the same reading state: the image they were
@@ -1115,6 +1159,8 @@ impl AreaIndex {
             hint_spacing: options.hint_spacing,
             max_hints: options.max_hints.min(MAX_HINTS),
             fingerprint: None,
+            fingerprint_checked: false,
+            confirmed: Vec::new(),
         })
     }
 
@@ -1155,6 +1201,77 @@ impl AreaIndex {
             + self.stored.memory()
             + self.malformed.capacity() * std::mem::size_of::<u32>()
             + self.samples.capacity() * std::mem::size_of::<(u32, u32)>()
+            + self.confirmed.capacity() * std::mem::size_of::<(u32, u32, u64)>()
+    }
+
+    /// This index without its exact checkpoints (an empty frontier) but with its seek hints,
+    /// saved confirmations and TOC fingerprint: a few kilobytes to save for an area instead of
+    /// about 24 bytes per interval, for a caller that keeps many discs' state and accepts
+    /// provisional (or, from saved confirmations, confirmed) readings after a remount.
+    pub fn without_checkpoints(&self) -> AreaIndex {
+        AreaIndex { samples: self.samples.clone(), confirmed: self.confirmed.clone(), ..self.empty_clone() }
+    }
+
+    /// A copy of the key, options, image and fingerprint, with nothing recorded.
+    fn empty_clone(&self) -> AreaIndex {
+        AreaIndex {
+            key: self.key,
+            start: self.start,
+            end: self.end,
+            interval: self.interval,
+            inline_budget: self.inline_budget,
+            checkpoints: Vec::new(),
+            stored: Stored::default(),
+            end_state: None,
+            malformed: Vec::new(),
+            image_id: self.image_id,
+            claims: Vec::new(),
+            provisional: std::collections::BTreeMap::new(),
+            events: Vec::new(),
+            samples: Vec::new(),
+            hint_spacing: self.hint_spacing,
+            max_hints: self.max_hints,
+            fingerprint: self.fingerprint,
+            fingerprint_checked: self.fingerprint_checked,
+            confirmed: Vec::new(),
+        }
+    }
+
+    /// The provisional starts confirmed and kept (see [Saved
+    /// confirmations](Self#saved-confirmations)).
+    pub fn confirmations(&self) -> usize {
+        self.confirmed.len()
+    }
+
+    /// Keeps that a provisional reading from `lsn` for positions `u` or more was confirmed
+    /// (4.2 item 9), with the digest of sector `lsn`: the smallest `u` per sector, at most
+    /// [`IndexOptions::max_hints`] of them (the lowest sectors go first), and only for an
+    /// index bound to a disc's TOC.
+    fn keep_confirmation(&mut self, lsn: u64, u: u32, digest: u64) {
+        let Ok(lsn) = u32::try_from(lsn) else { return };
+        if !self.fingerprint_checked || self.max_hints == 0 {
+            return;
+        }
+        match self.confirmed.binary_search_by_key(&lsn, |c| c.0) {
+            Ok(i) if self.confirmed[i].2 == digest => self.confirmed[i].1 = self.confirmed[i].1.min(u),
+            Ok(i) => self.confirmed[i] = (lsn, u, digest),
+            Err(i) => self.confirmed.insert(i, (lsn, u, digest)),
+        }
+        if self.confirmed.len() > self.max_hints {
+            self.confirmed.remove(0);
+        }
+    }
+
+    /// The saved confirmation of a provisional start at `lsn` for positions `u` or more:
+    /// the digest sector `lsn` must have (4.2 item 9: established for `u_L <= u`).
+    pub(crate) fn confirmation(&self, lsn: u64, u: u32) -> Option<u64> {
+        if !self.fingerprint_checked {
+            return None;
+        }
+        let lsn = u32::try_from(lsn).ok()?;
+        let i = self.confirmed.binary_search_by_key(&lsn, |c| c.0).ok()?;
+        let (_, u_l, digest) = self.confirmed[i];
+        (u_l <= u).then_some(digest)
     }
 
     /// The seek hints held (see [Seek hints](Self#seek-hints)).
@@ -1227,18 +1344,22 @@ impl AreaIndex {
     }
 
     /// The seek hint to begin a range `[first, end)` at (see [Seek hints](Self#seek-hints)):
-    /// the sample with the largest frame number below `first` (the last of those, if
-    /// several), at most [`HINT_REACH`] frames below it, and the end of the read to make
+    /// among the samples at most [`HINT_REACH`] frames below `first`, the one with the
+    /// largest frame number (the last of those, if several) of a reading confirmed for
+    /// `first` ([Saved confirmations](Self#saved-confirmations)) if any, else of all, and the end of the read to make
     /// there: through the first later sample numbered `end` or more, if at most
     /// [`HINT_REACH`] frames past it (`true`), or else the
     /// range's frames at the density of the samples before it (at least the area's average
     /// over `playtime` frames), plus a quarter and a few sectors (`false`).
     pub(crate) fn hint(&self, first: u32, end: u32, playtime: u32) -> Option<(u64, u32, u64, bool)> {
-        let (i, &(lsn, t)) =
-            self.samples.iter().enumerate().filter(|(_, s)| s.1 < first).max_by_key(|(_, s)| (s.1, s.0))?;
-        if first - t > HINT_REACH {
-            return None;
-        }
+        let below =
+            || self.samples.iter().enumerate().filter(|(_, s)| s.1 < first && first - s.1 <= HINT_REACH);
+        // A hint whose reading was confirmed for this range first (4.2 item 9), then the
+        // nearest.
+        let (i, &(lsn, t)) = below()
+            .filter(|(_, s)| self.confirmation(u64::from(s.0), first).is_some())
+            .max_by_key(|(_, s)| (s.1, s.0))
+            .or_else(|| below().max_by_key(|(_, s)| (s.1, s.0)))?;
         let lsn = u64::from(lsn);
         let next = self.samples[i + 1..].iter().find(|s| s.1 >= end);
         if let Some(&(l, _)) = next.filter(|s| s.1 - end <= HINT_REACH) {
@@ -1275,6 +1396,7 @@ impl AreaIndex {
             }
             _ => {
                 self.fingerprint = Some(fingerprint);
+                self.fingerprint_checked = true;
                 Ok(())
             }
         }
@@ -1308,8 +1430,8 @@ impl AreaIndex {
             self.verify(image)?;
             return Ok(true);
         }
+        // No seek hints: they are of what a caller read, which a pass would crowd out.
         let mut cursor = AreaCursor::resume(self, u32::MAX);
-        cursor.record_hints(self.hint_recorder());
         // Past the next boundary, which is recorded when its sector is read.
         let next = self.checkpoint_lsn(self.checkpoints.len());
         let stop = self.frontier().saturating_add(max_sectors).max(next.saturating_add(1));
@@ -1319,7 +1441,6 @@ impl AreaIndex {
         }
         // A cursor of this index joins it.
         self.take_from(&cursor)?;
-        self.add_hints(cursor.take_hints());
         scanned?;
         self.verify(image)?;
         Ok(self.is_complete())
@@ -1637,7 +1758,10 @@ impl AreaIndex {
     /// assembly there is none or numbered below `u`, and refuted ("possibly different")
     /// otherwise; its cursors see the verdict at once ([`crate::TrackCursor::speculation`]),
     /// and it becomes an event ([`AreaIndex::take_events`]). Refutations are logged at
-    /// warning level. Returns the number of readings settled. [`AreaIndex::extend`] does
+    /// warning level. A confirmed reading is kept, with the digest of its sector `L` (one
+    /// more sector read), for later readings from `L` (see [Saved
+    /// confirmations](AreaIndex#saved-confirmations)). Returns the number of readings
+    /// settled. [`AreaIndex::extend`] does
     /// this itself.
     ///
     /// # Errors
@@ -1676,6 +1800,10 @@ impl AreaIndex {
                 Some((a, held, _)) => {
                     let u = claim.first;
                     if a <= u && held.is_none_or(|g| g < u) {
+                        if self.fingerprint_checked && lsn < self.end {
+                            let d = digest(&crate::audio::read_sector(image, lsn)?);
+                            self.keep_confirmation(lsn, u, d);
+                        }
                         Verdict::Confirmed
                     } else {
                         Verdict::Refuted { exact_from: a.max(held.map_or(0, |g| g.saturating_add(1))) }
@@ -1948,6 +2076,8 @@ mod tests {
             hint_spacing: DEFAULT_HINT_SPACING,
             max_hints: DEFAULT_MAX_HINTS,
             fingerprint: None,
+            fingerprint_checked: false,
+            confirmed: Vec::new(),
         }
     }
 

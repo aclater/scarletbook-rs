@@ -230,9 +230,34 @@ pub fn seek_index_seeds() -> Vec<Vec<u8>> {
             }
             None => while !index.extend(&mut image, 1000).unwrap() {},
         }
+        if k == 4 {
+            // Seek hints (format version 2): those of a read through the index.
+            let p = area.playtime_frames();
+            let mut cursor = scarletbook::TrackCursor::for_range_indexed(&area, 0, p, n, &index).unwrap();
+            while let Some(Ok(_)) = cursor.next_frame(&mut image) {}
+            index.absorb(&mut cursor).unwrap();
+        }
         let mut bytes = index.to_bytes();
         bytes.truncate(bytes.len() - 8);
         out.push(bytes);
+    }
+    // Format version 3 (#124): the first version 2 seed with a TOC fingerprint and one saved
+    // confirmation, at the area's first sector.
+    if let Some(v2) = out.iter().find(|b| b[8] == 2).cloned() {
+        let mut sum = v2.clone();
+        sum.extend_from_slice(&fnv(&v2).to_le_bytes());
+        let hints = AreaIndex::from_bytes(&area, n, &sum, usize::MAX).unwrap().hints();
+        let mut v3 = v2;
+        v3[8] = 3;
+        v3[14] |= 2;
+        let at = v3.len() - 8 * hints - 24;
+        v3[at..at + 8].copy_from_slice(&1u64.to_le_bytes());
+        v3.extend_from_slice(&1u32.to_le_bytes());
+        v3.extend_from_slice(&0u32.to_le_bytes());
+        v3.extend_from_slice(&area.audio_start_lsn.to_le_bytes());
+        v3.extend_from_slice(&0u32.to_le_bytes());
+        v3.extend_from_slice(&7u64.to_le_bytes());
+        out.push(v3);
     }
     out
 }

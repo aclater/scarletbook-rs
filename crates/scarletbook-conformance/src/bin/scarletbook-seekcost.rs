@@ -296,6 +296,10 @@ fn warm(args: &Args, exact: &mut Image, complete: &AreaIndex, p: u32) -> Result<
         first.read_frames(cursor).try_for_each(|f| f.map(drop)).map_err(|e| e.to_string())?;
     }
     let hinted = first.seek_index(slot).ok_or("no index")?.to_bytes();
+    // The same session after one pass that verified its readings: hints and confirmations
+    // (specification 4, 4.2 item 9), saved without the exact checkpoints.
+    while !first.verify_speculation(slot, 1 << 20).map_err(|e| e.to_string())? {}
+    let confirmed = first.seek_index(slot).ok_or("no index")?.without_checkpoints().to_bytes();
     let mut full = complete.clone();
     // Kept by a disc: with its TOC fingerprint, as a consumer saves it.
     let (mut d, _, _) = open_cold(args)?;
@@ -305,21 +309,24 @@ fn warm(args: &Args, exact: &mut Image, complete: &AreaIndex, p: u32) -> Result<
     println!();
     println!(
         "Seeks after a remount, {} ranges read before and each 3 frames later, {} frames each \
-         (mean / max): saved hints {} bytes ({} hints), complete index {} bytes",
+         (mean / max): saved hints {} bytes ({} hints), with confirmations {} bytes, complete index {} bytes",
         ranges.len(),
         args.frames,
         hinted.len(),
         first.seek_index(slot).map_or(0, |i| i.hints()),
+        confirmed.len(),
         full_bytes.len()
     );
     println!();
-    println!("| Saved state | Read calls | KiB | Equal to exact | Provisional |");
-    println!("|---|---|---|---|---|");
+    println!("| Saved state | Read calls | KiB | Equal to exact | Provisional | Confirmed at once |");
+    println!("|---|---|---|---|---|---|");
     for (name, saved, policy) in [
         ("seek hints, provisional", &hinted, SeekPolicy::Speculative(SpeculativeOptions::new())),
+        ("seek hints and confirmations", &confirmed, SeekPolicy::Speculative(SpeculativeOptions::new())),
         ("complete index, exact", &full_bytes, SeekPolicy::Exact),
     ] {
-        let (mut calls_v, mut kib_v, mut equal, mut provisional) = (Vec::new(), Vec::new(), 0, 0);
+        let (mut calls_v, mut kib_v, mut equal, mut provisional, mut at_once) =
+            (Vec::new(), Vec::new(), 0, 0, 0);
         for &(a, b) in ranges
             .iter()
             .flat_map(|&(a, b)| [(a, b), ((a + 3).min(p - 1), (b + 3).min(p))])
@@ -338,8 +345,10 @@ fn warm(args: &Args, exact: &mut Image, complete: &AreaIndex, p: u32) -> Result<
             let mut audio = disc.read_track_audio(cursor);
             let got: Vec<AudioFrame> =
                 audio.by_ref().map(|f| f.map_err(|e| e.to_string())).collect::<Result<_, _>>()?;
-            if audio.into_cursor().speculation() != scarletbook::Speculation::Exact {
-                provisional += 1;
+            match audio.into_cursor().speculation() {
+                scarletbook::Speculation::Exact => {}
+                scarletbook::Speculation::Confirmed { .. } => at_once += 1,
+                _ => provisional += 1,
             }
             calls_v.push((calls.get() - c0) as f64);
             kib_v.push((read.get() - r0) as f64 / 1024.0);
@@ -349,7 +358,7 @@ fn warm(args: &Args, exact: &mut Image, complete: &AreaIndex, p: u32) -> Result<
             }
         }
         println!(
-            "| {name} | {} | {} | {equal} of {} | {provisional} |",
+            "| {name} | {} | {} | {equal} of {} | {provisional} | {at_once} |",
             stats(&calls_v),
             stats(&kib_v),
             calls_v.len()

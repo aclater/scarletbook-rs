@@ -7,7 +7,8 @@
 //! positions from `exact_from` on are exact; on the valid images every reading equals the
 //! exact one. The corpus image `area-audio-past-end` (whose 2-channel area runs over the
 //! multichannel sectors) gives refuted readings. Each range is also read after a remount,
-//! from the seek hints a first session saved (#124), with the same checks.
+//! from the seek hints and confirmations a first session saved (#124), with the same checks:
+//! a reading confirmed at once from a saved confirmation (4.2 item 9) must equal the exact one.
 
 use std::fs::File;
 use std::io::BufReader;
@@ -60,7 +61,7 @@ fn corpus_provisional_readings_are_exact_or_refuted() {
     let dir = corpus_dir();
     let cases = load_cases(&dir).unwrap_or_else(|e| panic!("manifest: {e}"));
     let (mut readings, mut provisional, mut refuted) = (0, 0, 0);
-    let mut past_end_refuted = 0;
+    let (mut past_end_refuted, mut from_saved) = (0, 0);
     for case in &cases {
         let id = case["id"].as_str().unwrap_or_default();
         let valid = case["category"].as_str() == Some("valid");
@@ -69,16 +70,21 @@ fn corpus_provisional_readings_are_exact_or_refuted() {
         let Some(mut plain) = open() else { continue };
         for slot in Slot::ALL {
             let ranges = ranges(&plain, slot);
+            if ranges.is_empty() {
+                continue;
+            }
             let options = SpeculativeOptions::new().with_min_gap_sectors(0);
-            // A first session reads every range on one disc, keeping an index: its seek
-            // hints (#124) are saved.
+            // A first session reads every range on one disc, keeping an index, and verifies
+            // them: its seek hints and the confirmed readings (#124; 4.2 item 9) are saved,
+            // without the exact checkpoints, so that later readings use them.
             let saved = open().and_then(|mut d| {
                 d.enable_seek_index(slot, IndexOptions::new()).ok()?;
                 d.set_seek_policy(slot, SeekPolicy::Speculative(options)).ok()?;
                 for &range in &ranges {
                     read(&mut d, slot, range);
                 }
-                d.seek_index(slot).map(|i| i.to_bytes())
+                while !d.verify_speculation(slot, 1 << 20).ok()? {}
+                d.seek_index(slot).map(|i| i.without_checkpoints().to_bytes())
             });
             let mut cursors = Vec::new();
             for &range in &ranges {
@@ -98,6 +104,11 @@ fn corpus_provisional_readings_are_exact_or_refuted() {
                     }
                     disc.set_seek_policy(slot, SeekPolicy::Speculative(options)).unwrap();
                     let (got, c) = read(&mut disc, slot, range);
+                    if matches!(c.speculation(), Speculation::Confirmed { .. }) {
+                        // From a saved confirmation, before any pass of this session.
+                        assert_eq!(got, want, "{id} {slot} {range:?}: confirmed from saved state");
+                        from_saved += 1;
+                    }
                     while !disc.verify_speculation(slot, 1 << 20).unwrap() {}
                     cursors.push((range, want.clone(), got, c.speculation()));
                 }
@@ -128,7 +139,10 @@ fn corpus_provisional_readings_are_exact_or_refuted() {
             }
         }
     }
-    eprintln!("{readings} readings, {provisional} provisional, {refuted} refuted");
+    eprintln!(
+        "{readings} readings, {provisional} provisional, {refuted} refuted, {from_saved} confirmed from saved state"
+    );
+    assert!(from_saved > 100, "{from_saved}");
     assert!(provisional > 100, "{provisional}");
     assert!(past_end_refuted > 0, "area-audio-past-end gave no refuted reading");
 }
