@@ -4408,7 +4408,9 @@ unsafe fn cancel_handle<'a>(token: *const SbCancel) -> Result<&'a SbCancel, Fail
 /// Until `sb_cancel_withdraw`, every call that reads audio sectors through them
 /// (`sb_track_audio_read`, `sb_raw_frames_read`, the seek index extension and verification
 /// calls) returns `SB_STATUS_CANCELLED`: a call that starts then at once, a call in
-/// progress after at most 32 more sectors read, plus the decoding of one group of frames
+/// progress after at most 32 more sectors read (or, during the reads sized to the range
+/// after a provisional start, after the read in progress, of at most 512 sectors, 1 MiB),
+/// plus the decoding of one group of frames
 /// already started for the frame it is returning. The handles keep their state, frames
 /// read ahead included: once the request is withdrawn they continue exactly where they
 /// were (a provisional search, `SB_SEEK_POLICY_SPECULATIVE`, cancelled before it chose its
@@ -4551,7 +4553,8 @@ pub unsafe extern "C" fn sb_raw_frames_progress(
 /// have read once done (an estimate placing the range's end in proportion to the area's
 /// play time, revised as it reads; at least `*sectors_read`, and equal to it once the
 /// handle has read its range to the end). They count every read the handle makes, at most
-/// 32 sectors at a time: the scan before a range's first frame, a provisional search, a
+/// 32 sectors at a time (except the reads sized to the range after a provisional start, of
+/// at most 512 each): the scan before a range's first frame, a provisional search, a
 /// seek index's replay and the range itself. Both outputs are required.
 ///
 /// # Safety

@@ -180,11 +180,15 @@ pub enum ResumedFrom {
 ///
 /// A cursor that would have to read more than [`SpeculativeOptions::min_gap_sectors`]
 /// sectors before the range's estimated position chooses a sector `L` instead: it searches
-/// the frame records' timecodes for a sector close before the range's first frame `u`
-/// (interpolation with a bisection safeguard, a few small reads; at most a constant times
+/// the frame records' timecodes for a sector whose first frame record is numbered below the
+/// range's first frame `u`, close before frame `u` (interpolation between the area's
+/// track starts, then at the density of the frames last read, with a bisection safeguard:
+/// a few reads of [`SpeculativeOptions::probe_sectors`]; at most a constant times
 /// `log2(n + 1)` sectors for an area of `n` audio sectors, as 7.1 item 3 allows), and
-/// begins at the seek index's checkpoint boundary at least [`REPLAY_SECTORS`] before it,
-/// with no frame under assembly and `u` as the next acceptable frame number.
+/// begins at that sector, with no frame under assembly and `u` as the next acceptable frame
+/// number. It reads on from its last probe, and then up to the range's estimated end in
+/// one call (or more, of at most [`MAX_READ_SECTORS`] each): the range the caller asks for
+/// sizes the read.
 ///
 /// Its positions are exactly the specification's when both (4.2 item 8):
 /// - (a) `a_L <= u`: no frame numbered `u` or more was accepted before `L` by a reader
@@ -192,8 +196,9 @@ pub enum ResumedFrom {
 /// - (b) the frame under assembly at `L` is none or has a frame number below `u`.
 ///
 /// They hold on every image whose frames start in increasing frame number order (any
-/// well-formed disc), but no read of `L` or later sectors can establish them: one earlier
-/// sector can break (a). So the positions are **provisional** ([`Speculation::Pending`])
+/// well-formed disc, repeated frame numbers included: the frames that start before `L` are
+/// numbered at most `L`'s first record, which is below `u`; 4.3.3 and 4.4.3 item 3.3), but no read of `L` or later sectors can establish
+/// them: one earlier sector can break (a). So the positions are **provisional** ([`Speculation::Pending`])
 /// until a pass from the first sector establishes or refutes them. When (a) or (b) fails,
 /// positions numbered `a*` or more are still exact, where `a*` is the next acceptable frame
 /// number of a reader processing from the first sector just after it delivered or
@@ -205,6 +210,21 @@ pub enum ResumedFrom {
 /// The malformed sectors and warnings of a provisional reading cover the sectors it
 /// processes from `L` only (4.4.5 item 5); [`crate::TrackCursor::counts_from`] says so.
 /// Its missing and invalid counts are provisional too (4.7.1 item 6).
+///
+/// # Not serving positions that will be refuted
+///
+/// No test of the sectors a provisional reading reads can tell that it will be refuted (4.2
+/// item 8). A caller that must not serve positions that may differ can:
+/// - wait for [`Speculation::Confirmed`] before serving: with a seek index kept,
+///   [`crate::Disc::verify_speculation`] (on a clone, in another thread) settles a reading
+///   once its pass reaches `L`, which costs that pass;
+/// - serve at once, and on [`Speculation::Refuted`] (an event of
+///   [`crate::Disc::take_seek_events`]) invalidate and re-read positions `first` to
+///   `exact_from - 1`: the library cannot take back what it returned;
+/// - read exactly ([`SeekPolicy::Exact`]) in an area whose TOC is implausible, for example
+///   one whose audio sectors run past the image's end or over the other area's TOC or audio
+///   sectors: a provisional reading there can land in sectors that are not this area's
+///   audio, as on the corpus image `area-audio-past-end`, and is then refuted.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SeekPolicy {
@@ -498,9 +518,13 @@ impl ProvisionalRecorder {
 #[derive(Debug)]
 pub(crate) struct Speculate {
     pub(crate) first: u32,
+    /// The range's end, to size the first read.
+    pub(crate) end: u32,
     pub(crate) playtime: u32,
     pub(crate) interval: u32,
     pub(crate) options: SpeculativeOptions,
+    /// The area's track starts (LSN, frame number), to steer the search.
+    pub(crate) knots: Vec<(u64, u32)>,
     /// The exact start, used when the search finds nothing better.
     pub(crate) exact: Box<AreaCursor>,
     /// Where the exact start begins: the search looks past it.
@@ -523,18 +547,68 @@ fn first_record(sector: &[u8]) -> Option<u32> {
 /// spans at most 31 sectors on well-formed discs, 4.3.3).
 const PROBE_SPAN: u64 = 32;
 
-/// Searches `[lo, hi)` for a sector holding a frame record whose timecode is at most
-/// `first`, as close before the frame numbered `first` as the probes allow: the sector
-/// found (`lo` itself if none) and the number of reads made. `on_read` is told the
-/// sectors of each read; a cancellation request ([`crate::CancelToken`]) is honoured
-/// before each.
+/// The search stops once the sector found is estimated to lie at most this many sectors
+/// before the frame wanted: reading them costs less than another probe.
+const CLOSE_SECTORS: u64 = 16;
+
+/// Most sectors a cursor reads in one call (1 MiB): after a provisional start, a cursor reads
+/// up to the range's estimated end in calls of up to this many sectors; every other read is
+/// at most 32 sectors. A cancellation request ([`crate::CancelToken`]) that arrives during
+/// such a read takes effect once it completes.
+pub const MAX_READ_SECTORS: u64 = 512;
+
+/// What [`locate`] found.
+#[derive(Debug)]
+pub(crate) struct Located {
+    /// The sector found (the search interval's start if none): its first frame record is
+    /// numbered below the frame wanted.
+    pub(crate) lsn: u64,
+    /// The reads made.
+    pub(crate) reads: u32,
+    /// The last read that holds `lsn`, as (first sector, bytes), to read on from.
+    pub(crate) chunk: Option<(u64, Vec<u8>)>,
+    /// The frame number of `lsn`'s first record (0 if none was found).
+    pub(crate) frame: u32,
+    /// Sectors per frame around `lsn`, as (sectors, frames), frames at least 1.
+    pub(crate) density: (u64, u32),
+}
+
+/// The point to interpolate the frame `first` between, within `[lo, hi)`: the tightest of the
+/// bounds and the knots (track starts) inside it, which steer the guess but never narrow the
+/// interval (a hostile TOC costs probes, not correctness).
+fn bracket(lo: (u64, u32), hi: (u64, u32), knots: &[(u64, u32)], first: u32) -> ((u64, u32), (u64, u32)) {
+    let inside = |&&(l, t): &&(u64, u32)| l > lo.0 && l < hi.0 && t >= lo.1 && t <= hi.1;
+    // The nearest frame numbers on each side, then the nearest sectors.
+    let a = knots
+        .iter()
+        .filter(inside)
+        .filter(|k| k.1 <= first)
+        .max_by_key(|k| (k.1, k.0))
+        .copied()
+        .unwrap_or(lo);
+    let b = knots
+        .iter()
+        .filter(inside)
+        .filter(|k| k.1 > first && k.0 > a.0)
+        .min_by_key(|k| (k.1, k.0))
+        .copied()
+        .unwrap_or(hi);
+    if b.1 > a.1 { (a, b) } else { (lo, hi) }
+}
+
+/// Searches `[lo, hi)` for a sector whose first frame record's timecode is below
+/// `first`, as close before the frame numbered `first` as the probes allow (see
+/// [`Located`]). `knots` are (LSN, frame number) points to interpolate between, such as
+/// the track starts. `on_read` is told the sectors of each read; a cancellation request
+/// ([`crate::CancelToken`]) is honoured before each.
 pub(crate) fn locate<R: Read + Seek>(
     image: &mut Image<R>,
     (mut lo, mut hi): (u64, u64),
     (first, playtime): (u32, u32),
+    knots: &[(u64, u32)],
     options: &SpeculativeOptions,
     on_read: &mut dyn FnMut(u64),
-) -> Result<(u64, u32), Error> {
+) -> Result<Located, Error> {
     let per = u64::from(options.probe_sectors.clamp(1, 32));
     // Specification 7, 7.1 item 3: at most a constant times log2(n + 1) sectors.
     let n = hi.saturating_sub(lo);
@@ -542,52 +616,114 @@ pub(crate) fn locate<R: Read + Seek>(
     let max = options.max_probes.min(2 * log + 4);
     let mut buf = vec![0u8; per as usize * SECTOR_SIZE];
     let (mut lo_t, mut hi_t) = (0u32, playtime.max(first.saturating_add(1)));
-    let (mut reads, mut halve) = (0u32, false);
+    let (mut reads, mut halve, mut found_lo, mut slow) = (0u32, false, false, 0u32);
+    let mut chunk: Option<(u64, Vec<u8>)> = None;
+    // The records the last two probes found nearest `first` (sector, frame number), and the
+    // last probe's own sectors per frame (sectors, frames): on a disc of uneven bit rate
+    // they predict the frame's sector better than an average over a long interval.
+    let (mut anchor, mut previous) = (None::<(u64, u32)>, None::<(u64, u32)>);
+    let mut local: Option<(u64, u32)> = None;
+    // The area's average sectors per frame.
+    let average = (n, playtime.max(1));
+    // Sectors per frame near the anchor: between the last two anchors when they are at
+    // least 3 frames apart, else the last probe's when it saw 3 frames or more, else the
+    // area's average.
+    let density = |anchor: Option<(u64, u32)>, previous: Option<(u64, u32)>, local: Option<(u64, u32)>| {
+        let secant = anchor.zip(previous).and_then(|((m, t), (pm, pt))| {
+            let (s, f) = (m.abs_diff(pm), t.abs_diff(pt));
+            (f >= 3 && (m > pm) == (t > pt)).then_some((s, f))
+        });
+        secant.or(local.filter(|l| l.1 >= 3)).unwrap_or(average)
+    };
+    let sectors = |(s, f): (u64, u32), frames: u32| {
+        u64::try_from(u128::from(frames) * u128::from(s) / u128::from(f.max(1))).unwrap_or(u64::MAX)
+    };
     while hi - lo > PROBE_SPAN && reads < max {
+        let d = density(anchor, previous, local);
+        if found_lo && sectors(d, first - lo_t) <= CLOSE_SECTORS {
+            break;
+        }
+        let ((a, a_t), (b, b_t)) = bracket((lo, lo_t), (hi, hi_t), knots, first);
         let guess = if halve {
-            lo + (hi - lo) / 2
+            a + (b - a) / 2
+        } else if let Some((m, t)) = anchor {
+            // From the last probe's record at the local density, half a probe early.
+            let dist = sectors(d, first.abs_diff(t));
+            if first >= t { m.saturating_add(dist) } else { m.saturating_sub(dist) }.saturating_sub(per / 2)
         } else {
-            let num = u128::from(first.saturating_sub(lo_t));
-            let den = u128::from(hi_t.saturating_sub(lo_t).max(1));
-            lo + (u128::from(hi - lo) * num / den) as u64
+            let num = u128::from(first.saturating_sub(a_t));
+            let den = u128::from(b_t.saturating_sub(a_t).max(1));
+            // Half a probe before the estimate, so that the probe tends to straddle it.
+            (a + (u128::from(b - a) * num / den) as u64).saturating_sub(per / 2)
         }
         .clamp(lo + 1, hi - 1);
-        let before = hi - lo;
+        // The frames between `first` and the nearest bound, which each step must halve.
+        let gap = |a_t: u32, b_t: u32| first.saturating_sub(a_t).min(b_t.saturating_sub(first));
+        let before = gap(a_t, b_t);
         // One probe: from `guess`, `per` sectors at a time, until a record, starting reads
         // only below `guess + PROBE_SPAN` (the last may end up to `per - 1` past it) and
-        // below `hi`, so a record found lies in `[guess, hi)`.
-        let mut found = None;
+        // below `hi`, so a record found lies in `[guess, hi)`. Every record of the read
+        // counts: the last sector whose first record is below `first`, and the first after
+        // it whose first record is not.
+        let (mut below, mut above, mut any) = (None, None, None);
+        let mut last: Option<(u64, u32)> = None;
         let mut at = guess;
-        while found.is_none() && at < hi.min(guess + PROBE_SPAN) && reads < max {
+        while any.is_none() && at < hi.min(guess + PROBE_SPAN) && reads < max {
             let count = per.min(hi - at);
-            let chunk = &mut buf[..count as usize * SECTOR_SIZE];
+            let read = &mut buf[..count as usize * SECTOR_SIZE];
             image.check_cancel()?;
-            if image.read_into(at, chunk)? == crate::image::ReadOutcome::OutOfRange {
+            if image.read_into(at, read)? == crate::image::ReadOutcome::OutOfRange {
                 return Err(Error::InvalidArgument("audio sectors outside the image"));
             }
             on_read(count);
             reads += 1;
-            found = (0..count)
-                .find_map(|i| first_record(&chunk[i as usize * SECTOR_SIZE..]).map(|t| (at + i, t)));
+            for i in 0..count {
+                let Some(t) = first_record(&read[i as usize * SECTOR_SIZE..]) else { continue };
+                any = any.or(Some((at + i, t)));
+                last = Some((at + i, t));
+                if t < first {
+                    (below, above) = (Some((at + i, t)), None);
+                } else if below.is_some() && above.is_none() {
+                    above = Some((at + i, t));
+                }
+            }
+            if below.is_some() {
+                chunk = Some((at, read.to_vec()));
+            }
             at += count;
         }
-        match found {
-            Some((m, t)) if t <= first => (lo, lo_t) = (m, t),
-            Some((_, t)) => (hi, hi_t) = (guess, t.max(lo_t.saturating_add(1))),
-            None => hi = guess,
+        if let (Some((m1, t1)), Some((m2, t2))) = (any, last) {
+            previous = anchor;
+            anchor = Some(below.unwrap_or((m1, t1)));
+            local = (m2 > m1 && t2 > t1).then(|| (m2 - m1, t2 - t1));
         }
-        // A step that did not at least halve the interval is followed by a bisection.
-        halve = (hi - lo) * 2 > before;
+        match (below, any.map(|(_, t)| t)) {
+            (Some((m, t)), _) => {
+                (lo, lo_t, found_lo) = (m, t, true);
+                if above.is_some() {
+                    // Frame `first` starts within this read: done.
+                    break;
+                }
+            }
+            (None, Some(t)) => (hi, hi_t) = (guess, t.max(lo_t.saturating_add(1))),
+            (None, None) => hi = guess,
+        }
+        // Two steps in a row that did not at least halve the frames between `first` and the
+        // nearest bound are followed by a bisection (of the interval between the tightest
+        // knots): the first such step gives the secant its second point.
+        let ((_, a_t), (_, b_t)) = bracket((lo, lo_t), (hi, hi_t), knots, first);
+        slow = if halve || gap(a_t, b_t).saturating_mul(2) <= before { 0 } else { slow + 1 };
+        halve = slow >= 2;
     }
-    Ok((lo, reads))
-}
-
-/// The provisional start `L` for a frame record found at `target`: the checkpoint boundary
-/// (`start + j x interval`) at least [`REPLAY_SECTORS`] before it.
-pub(crate) fn provisional_start(start: u64, target: u64, interval: u32) -> u64 {
-    let k = u64::from(interval.max(1));
-    let from = target.saturating_sub(REPLAY_SECTORS).max(start);
-    start + (from - start) / k * k
+    let chunk =
+        chunk.filter(|(at, bytes)| found_lo && (*at..*at + (bytes.len() / SECTOR_SIZE) as u64).contains(&lo));
+    // For sizing the read that follows, the larger of the two: reading a few sectors too
+    // many costs less than another call.
+    let density = [density(anchor, previous, local), average]
+        .into_iter()
+        .max_by(|a, b| (u128::from(a.0) * u128::from(b.1)).cmp(&(u128::from(b.0) * u128::from(a.1))))
+        .unwrap_or(average);
+    Ok(Located { lsn: lo, reads, chunk, frame: lo_t, density })
 }
 
 /// The reading state of the scan at a boundary `c = S0 + jK`, before sector `c`
@@ -1505,6 +1641,22 @@ mod tests {
         assert_eq!(ix.options().interval, MAX_INTERVAL);
         assert_eq!((ix.frontier(), ix.is_complete(), ix.checkpoints()), (0, false, 0));
         assert!(ix.memory() >= std::mem::size_of::<AreaIndex>());
+    }
+
+    /// Knots inside the interval steer the guess; knots outside it, or out of order with
+    /// its bounds, are ignored (a hostile TOC costs probes, never the interval).
+    #[test]
+    fn bracket_takes_the_tightest_knots_inside() {
+        let knots = [(150, 10), (200, 20), (300, 30), (900, 5), (50, 1)];
+        assert_eq!(bracket((100, 0), (1000, 100), &knots, 25), ((200, 20), (300, 30)));
+        assert_eq!(bracket((100, 0), (1000, 100), &knots, 35), ((300, 30), (1000, 100)));
+        // (900, 5) is out of order: (50, 1) lies outside; (900, 5) is the nearest frame
+        // number at or below 7, and nothing after it is above 7 but the bound.
+        assert_eq!(bracket((100, 0), (1000, 100), &knots, 7), ((900, 5), (1000, 100)));
+        assert_eq!(bracket((100, 0), (1000, 100), &knots, 4), ((100, 0), (900, 5)));
+        // Only bounds narrower than the knots.
+        assert_eq!(bracket((250, 24), (280, 28), &knots, 25), ((250, 24), (280, 28)));
+        assert_eq!(bracket((100, 0), (1000, 100), &[], 7), ((100, 0), (1000, 100)));
     }
 
     #[test]

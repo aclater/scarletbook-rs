@@ -79,6 +79,10 @@ pub struct DstSource {
     pub five: Vec<Vec<u8>>,
     /// 6-channel frames.
     pub six: Vec<Vec<u8>>,
+    /// Empty: frame `n` is frame `n` of the list, cycled. Otherwise, with the lists sorted
+    /// by size ([`DstSource::uneven`]), frame `n` is the one at the fraction
+    /// `envelope[n % len] / 65 536` of its list: an uneven bit rate.
+    pub envelope: Vec<u16>,
 }
 
 impl DstSource {
@@ -96,8 +100,40 @@ impl DstSource {
             two: area_dst_frames(&two_six, Slot::TwoChannel, 2)?,
             six: area_dst_frames(&two_six, Slot::Multichannel, 6)?,
             five: area_dst_frames(&five, Slot::Multichannel, 5)?,
+            envelope: Vec::new(),
         };
         Ok(src)
+    }
+
+    /// These frames in an uneven order, as on a real disc whose bit rate follows the music:
+    /// the frame sizes follow a slow envelope (two sines over a 10-minute period) plus
+    /// 10 % jitter per frame (seek cost measurements, issue #123).
+    pub fn uneven(mut self) -> Self {
+        for list in [&mut self.two, &mut self.five, &mut self.six] {
+            list.sort_by_key(Vec::len);
+        }
+        let period = 45_000;
+        let mut x: u64 = 12_345;
+        self.envelope = (0..period)
+            .map(|n| {
+                let t = f64::from(n) / f64::from(period) * std::f64::consts::TAU;
+                let e = 0.5 + 0.3 * (t * 3.0).sin() + 0.2 * (t * 7.3 + 1.0).sin();
+                x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+                let jitter = ((x >> 33) % 1000) as f64 / 1000.0 * 0.2 - 0.1;
+                ((e + jitter).clamp(0.0, 0.999) * 65_536.0) as u16
+            })
+            .collect();
+        self
+    }
+
+    /// The frame for frame number `n` from `list`.
+    fn pick<'a>(&self, list: &'a [Vec<u8>], n: u32) -> &'a [u8] {
+        let i = if self.envelope.is_empty() {
+            n as usize % list.len()
+        } else {
+            usize::from(self.envelope[n as usize % self.envelope.len()]) * list.len() / 65_536
+        };
+        &list[i]
     }
 
     fn frames(&self, channels: u8) -> &[Vec<u8>] {
@@ -470,7 +506,7 @@ fn write_area<W: Write + Seek>(
                 noise.fill(&mut pcm);
                 packer.add(out, n, false, &pcm)?
             }
-            Kind::Dst => packer.add(out, n, true, &dst[n as usize % dst.len()])?,
+            Kind::Dst => packer.add(out, n, true, src.pick(dst, n))?,
         };
         if n % cfg.track_frames == 0 {
             starts.push((n, first));

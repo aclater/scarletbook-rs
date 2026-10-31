@@ -1,0 +1,1 @@
+| 2026-10-31 | #123 cheaper provisional seeks | Provisional start at the sector found, track starts as search knots, reads sized to the range. Specification 4, 4.2 item 8 (with its informative notes), 4.3.3, 4.4.3 item 3.3, 4.4.5 item 5 and 7, 7.1 items 2 and 3 at sacd-spec `82eac6c`. No new sources consulted. |

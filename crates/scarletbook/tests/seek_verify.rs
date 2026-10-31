@@ -78,6 +78,18 @@ fn well_formed_readings_are_confirmed() {
         assert!(matches!(c.speculation(), Speculation::Pending { lsn, first: f } if lsn > 0 && f == first));
         cursors.push(c);
     }
+    // Each reading begins at the sector its search found (#123), not on a checkpoint
+    // boundary: verification rebuilds the state there from the checkpoint before it.
+    let s0 = u64::from(disc.toc().area(Slot::TwoChannel).unwrap().audio_start_lsn);
+    let off_boundary = |c: &TrackCursor| match c.resumed_from() {
+        ResumedFrom::Speculative { lsn, .. } => (lsn - s0) % 64 != 0,
+        _ => false,
+    };
+    assert!(
+        cursors.iter().any(off_boundary),
+        "{:?}",
+        cursors.iter().map(TrackCursor::resumed_from).collect::<Vec<_>>()
+    );
     let events = verify_all(&mut disc);
     assert_eq!(events.len(), 3, "{events:?}");
     for c in &cursors {
@@ -109,6 +121,12 @@ fn a_broken_condition_is_refuted() {
     let (want, _) = read(&mut plain, c);
     let c = disc.range_frames_cursor(Slot::TwoChannel, 300, 600).unwrap();
     let (got, c) = read(&mut disc, c);
+    let s0 = u64::from(disc.toc().area(Slot::TwoChannel).unwrap().audio_start_lsn);
+    assert!(
+        matches!(c.resumed_from(), ResumedFrom::Speculative { lsn, .. } if (lsn - s0) % 64 != 0),
+        "off a checkpoint boundary: {:?}",
+        c.resumed_from()
+    );
     let events = verify_all(&mut disc);
     let Speculation::Refuted { first, last_returned, exact_from, .. } = c.speculation() else {
         panic!("{:?}", c.speculation())

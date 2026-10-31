@@ -5,7 +5,7 @@
 //! ```text
 //! scarletbook-synth OUT --minutes M --area 2ch|mc|both --kind dsd|dst
 //!     [--sector-size 2048|2064|2054] [--mc-channels 5|6] [--track-minutes T] [--corpus DIR]
-//!     [--dst-frames corpus|stress]
+//!     [--dst-frames corpus|stress|uneven]
 //! ```
 //!
 //! `M` and `T` may be fractional; each area lasts `M` minutes, with one track per `T`
@@ -13,7 +13,9 @@
 //! repository's `corpus/`) or, with `--dst-frames stress`, from the generated stress set of
 //! the `dst_frames` benchmark (2 and 6 channels only; `scarletbook/tests/common/dst_enc.rs`),
 //! which is used to train and check profile-guided builds on frames that are not in the
-//! corpus. See `scarletbook_conformance::synth` for the layout.
+//! corpus; or, with `--dst-frames uneven`, from the corpus with sizes following a slow
+//! envelope, an uneven bit rate as on real discs, which seeks by timecode find harder
+//! (`scarletbook-seekcost`; `DstSource::uneven`). See `scarletbook_conformance::synth` for the layout.
 
 use std::fs::File;
 use std::io::BufWriter;
@@ -32,7 +34,7 @@ const STRESS_FRAMES: usize = 4;
 
 const USAGE: &str = "usage: scarletbook-synth OUT --minutes M --area 2ch|mc|both --kind dsd|dst \
                      [--sector-size 2048|2064|2054] [--mc-channels 5|6] [--track-minutes T] [--corpus DIR] \
-                     [--dst-frames corpus|stress]";
+                     [--dst-frames corpus|stress|uneven]";
 
 fn frames(minutes: &str) -> Result<u32, String> {
     let m: f64 = minutes.parse().map_err(|_| format!("not a number of minutes: {minutes}"))?;
@@ -47,6 +49,7 @@ fn frames(minutes: &str) -> Result<u32, String> {
 enum Frames {
     Corpus(PathBuf),
     Stress,
+    Uneven(PathBuf),
 }
 
 fn parse(mut args: impl Iterator<Item = String>) -> Result<(PathBuf, Config, Frames), String> {
@@ -62,7 +65,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<(PathBuf, Config, Fra
     };
     let (mut area, mut kind) = (false, false);
     let mut corpus = corpus_dir();
-    let mut stress = false;
+    let (mut stress, mut uneven) = (false, false);
     while let Some(flag) = args.next() {
         let v = args.next().ok_or_else(|| format!("{flag} needs a value\n{USAGE}"))?;
         match flag.as_str() {
@@ -96,10 +99,11 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<(PathBuf, Config, Fra
             "--mc-channels" => cfg.mc_channels = v.parse().map_err(|_| format!("bad --mc-channels {v}"))?,
             "--corpus" => corpus = PathBuf::from(v),
             "--dst-frames" => {
-                stress = match v.as_str() {
-                    "corpus" => false,
-                    "stress" => true,
-                    _ => return Err(format!("--dst-frames must be corpus or stress, not {v}")),
+                (stress, uneven) = match v.as_str() {
+                    "corpus" => (false, false),
+                    "stress" => (true, false),
+                    "uneven" => (false, true),
+                    _ => return Err(format!("--dst-frames must be corpus, stress or uneven, not {v}")),
                 }
             }
             _ => return Err(format!("unknown argument {flag}\n{USAGE}")),
@@ -112,7 +116,12 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<(PathBuf, Config, Fra
     if stress && cfg.multichannel && cfg.mc_channels != 6 {
         return Err("the stress set has no 5-channel frames: use --mc-channels 6".into());
     }
-    Ok((out, cfg, if stress { Frames::Stress } else { Frames::Corpus(corpus) }))
+    let frames = match (stress, uneven) {
+        (true, _) => Frames::Stress,
+        (_, true) => Frames::Uneven(corpus),
+        _ => Frames::Corpus(corpus),
+    };
+    Ok((out, cfg, frames))
 }
 
 fn stress_source() -> DstSource {
@@ -131,6 +140,7 @@ fn run(out: PathBuf, cfg: &Config, frames: Frames) -> Result<(), String> {
         (Kind::Dsd, _) => DstSource::default(),
         (Kind::Dst, Frames::Corpus(corpus)) => DstSource::from_corpus(&corpus)?,
         (Kind::Dst, Frames::Stress) => stress_source(),
+        (Kind::Dst, Frames::Uneven(corpus)) => DstSource::from_corpus(&corpus)?.uneven(),
     };
     let file = File::create(&out).map_err(|e| format!("{}: {e}", out.display()))?;
     let layout = write_image(BufWriter::with_capacity(1 << 22, file), cfg, &src)

@@ -131,7 +131,8 @@ A first seek into an area without a seek index still reads the area up to the ra
 over a network share can take seconds. A caller that accepts provisional positions can opt in
 to **provisional reading** (specification 4, 4.2 item 8): `disc.set_seek_policy(slot,
 SeekPolicy::Speculative(SpeculativeOptions::new()))` makes far ranges start after a short
-search of the frame timecodes, a few small reads wherever the range lies. Their positions are
+search of the frame timecodes, a few small reads wherever the range lies, and read the range
+in reads sized to it (one for a range of up to 1 MiB). Their positions are
 marked provisional (`speculation()`): they equal a straight read on well-formed discs, but no
 reader can know that without reading the sectors before the range, and on hostile images they
 can differ (see `SeekPolicy`). Their malformed counts begin at the provisional start
@@ -296,12 +297,15 @@ sb_cancel_request(token);                  /* e.g. on Ctrl-C */
 
 While cancellation is requested, every call that reads audio sectors through the disc or
 its clones returns `SB_STATUS_CANCELLED`, distinct from `SB_STATUS_IO`: at once for a call
-that starts then, after at most 32 more sectors for one in progress, the scan before a
-range's first frame included, whatever the disc reads through (a file, memory or
+that starts then, after at most 32 more sectors for one in progress (or, during the reads
+sized to the range after a provisional start, after the read in progress, of at most 512
+sectors, 1 MiB),
+the scan before a range's first frame included, whatever the disc reads through (a file, memory or
 callbacks). The request is sticky: it holds for the disc and its clones until
 `sb_cancel_withdraw` (a disc opened afresh has a token of its own). The handles keep their
 state: after `sb_cancel_withdraw` they continue exactly where they stopped; or free them. `sb_progress_get` gives the sectors a handle has read
-(exact, updated at least every 32 sectors, also during the scan before its first frame)
+(exact, updated at least every 32 sectors, or every read of at most 512 sized to a
+provisional range, also during the scan before its first frame)
 and the sectors it expects to read (an estimate, equal to the count read once done), for
 track, range and raw frames handles. Neither handle borrows the disc or the handle it came
 from, so polling it never collides with the reading thread; free each with its `_free`.
@@ -685,9 +689,13 @@ time and size. On a 50-minute 2-channel DST image (`scarletbook-synth --minutes 
 2ch --kind dst`) a 14-frame range at 99 % of the area reads 470 272 sectors (146 ms from the
 page cache) without an index and 64 sectors (2.4 ms) with one; the index (K = 64) takes one
 pass to build (162 ms) and 178 KB saved. Its second table measures cold seeks by provisional reading (no index;
-`SeekPolicy::Speculative`): on the same image, 4 to 7 read calls and 80 to 139 sectors
-wherever the range lies, 3.5 to 5.6 ms in its network model (0.5 ms per read call, 110 MB/s),
-with the same frames as exact reads on that well-formed image.
+`SeekPolicy::Speculative`): on the same image, 2 to 4 read calls and 42 to 52 sectors
+wherever the range lies, 1.8 to 2.9 ms in its network model (0.5 ms per read call, 110 MB/s),
+with the same frames as exact reads on that well-formed image. Its third table opens the
+disc afresh for each of 200 positions (`--positions`), as a consumer that seeks cold sees it:
+on an area of uneven bit rate (`scarletbook-synth ... --dst-frames uneven`), a provisional
+start costs 3.4 read calls and 81 KiB on average up to the range's first frame (at most 8 and
+284 KiB), and 4.1 read calls and 126 KiB for the 14-frame range decoded.
 
 Through the C interface, `python3 .github/scripts/clib-seekcost.py PACKAGE_DIR IMAGE` opens the
 image with `sb_disc_open_callbacks` (counting read calls and bytes in the callbacks, 64 KiB per
