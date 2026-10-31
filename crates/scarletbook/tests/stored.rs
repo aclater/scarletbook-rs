@@ -271,3 +271,29 @@ fn when_it_can_be_asked_for() {
     assert_eq!(f.number, 0);
     assert!(first.number > 0);
 }
+
+/// The one pass equals the separate reads on the other starts: a complete seek index
+/// (resume and replay) and a provisional start far into the area.
+#[test]
+#[cfg_attr(miri, ignore = "reads hundreds of sectors")]
+fn equals_the_separate_reads_from_an_index_and_provisionally() {
+    let img = image(600);
+    for speculative in [false, true] {
+        let mut disc = Disc::open(Cursor::new(img.clone())).unwrap();
+        if speculative {
+            let options = scarletbook::SpeculativeOptions::new().with_min_gap_sectors(16);
+            disc.set_seek_policy(Slot::TwoChannel, scarletbook::SeekPolicy::Speculative(options)).unwrap();
+        } else {
+            disc.enable_seek_index(Slot::TwoChannel, scarletbook::IndexOptions::new()).unwrap();
+            while !disc.extend_seek_index(Slot::TwoChannel, 4096).unwrap() {}
+        }
+        for range in [(450, 520), (301, 302), (0, 600)] {
+            #[cfg(feature = "parallel")]
+            let (d, s, a, b) = three(&mut disc, Slot::TwoChannel, range, None);
+            #[cfg(not(feature = "parallel"))]
+            let (d, s, a, b) = three(&mut disc, Slot::TwoChannel, range);
+            assert_eq!(a, d, "speculative {speculative} {range:?}");
+            assert_eq!(b, s, "speculative {speculative} {range:?}");
+        }
+    }
+}

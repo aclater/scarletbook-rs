@@ -2757,6 +2757,7 @@ impl TrackAudioCursor {
         }
         #[cfg(feature = "parallel")]
         self.spawn_batch(&mut batch, channels, image.log());
+        debug_assert!(self.stored_in_step(), "stored content out of step after fill");
         cancelled
     }
 
@@ -2791,9 +2792,16 @@ impl TrackAudioCursor {
     pub fn next_frame<R: Read + Seek>(&mut self, image: &mut Image<R>) -> Option<Result<AudioFrame, Error>> {
         let frame = self.next_decoded(image);
         if let (Some(Ok(_)), Some(stored)) = (&frame, self.stored.as_mut()) {
-            stored.pop_front();
+            let popped = stored.pop_front();
+            debug_assert!(popped.is_some() && self.stored_in_step(), "stored content out of step");
         }
         frame
+    }
+
+    /// Whether the stored content kept (if any) is one per position held ahead: each
+    /// position `fill` takes pushes one, and each position returned pops one.
+    fn stored_in_step(&self) -> bool {
+        self.stored.as_ref().is_none_or(|s| s.len() == self.ready.len() + self.ahead.len())
     }
 
     /// Keeps, from now on, each position's stored content next to its decoding, for
@@ -2841,12 +2849,18 @@ impl TrackAudioCursor {
         if self.stored.is_none() {
             return Some(Err(Error::InvalidArgument("the cursor does not keep stored content")));
         }
-        let frame = self.next_decoded(image)?;
-        Some(frame.map(|f| {
-            // One content per position returned, in the same order (see `fill`).
-            let stored = self.stored.as_mut().and_then(VecDeque::pop_front).unwrap_or(Stored::Missing);
-            (f, stored)
-        }))
+        let frame = match self.next_decoded(image)? {
+            Ok(f) => f,
+            Err(e) => return Some(Err(e)),
+        };
+        // One content per position returned, in the same order (see `fill`).
+        let popped = self.stored.as_mut().and_then(VecDeque::pop_front);
+        debug_assert!(popped.is_some() && self.stored_in_step(), "stored content out of step");
+        Some(match popped {
+            Some(stored) => Ok((frame, stored)),
+            // Never reached: a bug, reported rather than filled in.
+            None => Err(Error::Io(std::io::Error::other("internal error: stored content out of step"))),
+        })
     }
 
     /// The DST equivalent of a position of this cursor's area (specification 4, 4.6.1
