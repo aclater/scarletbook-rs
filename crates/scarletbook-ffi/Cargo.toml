@@ -17,6 +17,8 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 # Track audio handles without a pool of their own (sb_track_audio_set_pool) decode on
 # rayon's global pool instead of the calling thread.
 parallel = []
+# `fuzz_disc_toc`, the harness of the `toc` fuzz target (fuzz/): never in the C library.
+fuzzing = []
 
 [dependencies]
 # Decoding pools (sb_pool_new) are in every build.
