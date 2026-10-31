@@ -163,6 +163,7 @@ analyse this repository's own code and workflows, and nothing from them enters t
 | cargo-llvm-cov (installed by `taiki-e/install-action`) | 0.9.1 (published 2026-09-06) | line coverage of the workspace tests | its `--help` output and the crates.io version list |
 | Codecov (`codecov/codecov-action`, codecov.io) | v7.1.1 | coverage reports and badge, uploaded with the workflow's OIDC token | the action's `README.md` at the pinned commit |
 | Dependabot | GitHub service | weekly grouped updates of crates and actions, 14-day cooldown | GitHub's Dependabot configuration documentation (from memory) |
+| `Swatinem/rust-cache` | v2.9.2 (2026-08-06; pinned `6323deb`) | caching dependency builds in `ci.yml`, saved only on `main` (#55) | the action's `README.md` at the pinned commit (inputs, `save-if`), read 2026-10-31 |
 
 The action SHAs were resolved with `gh api repos/<owner>/<action>/git/ref/tags/<tag>`
 (annotated tags dereferenced). The badge images come from shields.io, slsa.dev,
@@ -446,3 +447,4 @@ on 2026-10-30: the name `scarletbook` is not taken on crates.io. Nothing was pub
 | 2026-10-30 | #37 raw frames (#49) | stored content without decoding: the area's stored frame list, the stored content of tracks and ranges, DST equivalents. Specification 4, 4.4, 4.5 item 5, 4.6.1 and 4.8, specification 5, 5.2.1, and 7.1 item 3, at sacd-spec `e52a42b`. No new sources consulted. |
 | 2026-10-31 | release hygiene (#50, #52) | release notes from CHANGELOG.md (stopping a release without its section before any build), `persist-credentials: false` in `clib.yml` and `release.yml`, one release run per tag. No new sources or tools. |
 | 2026-10-31 | release 0.3.0 (#54) | version and changelog only: workspace version 0.3.0, the changelog section for the release notes. No new sources consulted. |
+| 2026-10-31 | CI speed-up (#55) | Miri and fuzz gated on code changes, a Miri subset on pull requests (full on `main` and on manual runs), build cache. No new sources beyond the `rust-cache` README. |
