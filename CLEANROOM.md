@@ -454,3 +454,4 @@ on 2026-10-30: the name `scarletbook` is not taken on crates.io. Nothing was pub
 | 2026-10-31 | #36 review follow-up | documentation of the C library's global state and pool-thread callbacks, one more re-entrancy probe, library sizes in the changelog. No new sources consulted. |
 | 2026-10-31 | abandoned decode jobs (#29) | queued jobs of a continued or dropped cursor skip decoding; the transient bound documented. No new sources consulted. |
 | 2026-10-31 | #39 concurrency test | N threads with N discs through the C interface. No new sources consulted. |
+| 2026-10-31 | #39 struct layouts | C struct sizes, alignment and padding documented in the header and tested. No new sources consulted. |

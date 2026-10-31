@@ -26,6 +26,11 @@ is shared by every crate of the workspace; releases carry the `bench` program an
   with a disc of its own opened from memory or from a file, decode every track on the
   calling thread or on a shared pool and match the conformance manifest; each thread's
   error message stays its own, and a track handle is refused with another thread's disc.
+- Documented C struct layouts (#39): each struct of `scarletbook.h` states its size,
+  alignment and padding on 64-bit targets, which a test checks field by field, and the
+  header's conventions state the C types used (fixed-width integers, `size_t` for lengths,
+  `bool`, the int-sized `SbStatus`, no variadic functions). Comments only: the ABI is
+  unchanged.
 
 ### Changed
 

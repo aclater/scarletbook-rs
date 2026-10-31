@@ -48,6 +48,16 @@ header = """/* SPDX-License-Identifier: MIT OR Apache-2.0 */
  *   thread must not use the disc or its track or raw frames handles at all, with any
  *   call, sb_track_audio_set_pool and the _free functions included.)
  *
+ * - Types. Every integer is fixed-width (<stdint.h>) except size_t, used for buffer
+ *   lengths and byte counts; bool is C99 _Bool (1 byte); SbStatus, the only enumeration
+ *   passed by value (as a return value), is int-sized on every supported target. There
+ *   are no variadic functions. Callbacks use the C calling convention of the platform.
+ *
+ * - Layouts. Structs have the platform C compiler's natural alignment, with no packing
+ *   pragmas. Each struct states its size and padding on 64-bit targets (every release
+ *   target), which the library's tests check; on a 32-bit target the size_t and pointer
+ *   fields, and the alignment of 64-bit integers, differ.
+ *
  * - Panics. No panic crosses the boundary: an internal error returns SB_STATUS_PANIC.
  *   The handles involved should then be freed and not used further. If the library is
  *   built with panic=abort, the process aborts instead.
