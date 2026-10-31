@@ -1,0 +1,1 @@
+| 2026-10-31 | remaining TOC fields through the C interface (#104) | specification 2, 2.3, 2.4, 2.5.1, 2.6.5 step 1 and 2.7, specification 3, 3.4 and 3.5, at sacd-spec `82eac6c`. No new sources consulted. |

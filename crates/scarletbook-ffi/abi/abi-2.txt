@@ -21,6 +21,9 @@
 #define SB_SPEAKER_LOW_FREQUENCY_EFFECTS 4
 #define SB_SPEAKER_SURROUND_LEFT 5
 #define SB_SPEAKER_SURROUND_RIGHT 6
+#define SB_GENRE_LIST_ALBUM 0
+#define SB_GENRE_LIST_DISC 1
+#define SB_MANUFACTURER_BYTES 2040
 #define SB_SECTOR_SIZE 2048
 #define SB_MAX_POOL_THREADS 256
 #define SB_SEEK_DEFAULT_INTERVAL 64
@@ -231,6 +234,25 @@ uint32_t audio_start_lsn;
 uint32_t audio_end_lsn;
 uint32_t track_count;
 } SbAreaInfo;
+typedef struct SbGenre {
+uint8_t category;
+uint8_t index;
+} SbGenre;
+typedef struct SbTextChannel {
+uint8_t language [ 2 ];
+uint8_t charset;
+uint8_t reserved;
+} SbTextChannel;
+typedef struct SbAreaDetails {
+uint8_t version_major;
+uint8_t version_minor;
+uint8_t max_available_channels;
+uint8_t mute_flags;
+uint8_t track_attribute;
+uint8_t track_offset;
+uint8_t text_channel_count;
+uint8_t text_charset;
+} SbAreaDetails;
 typedef struct SbTrackInfo {
 uint32_t number;
 uint32_t start_lsn;
@@ -298,6 +320,13 @@ SbStatus sb_disc_area(const struct SbDisc *disc, uint32_t index, struct SbAreaIn
 SbStatus sb_area_loudspeaker_layout(const struct SbDisc *disc, uint32_t slot, uint32_t *layout);
 SbStatus sb_area_channel_speaker(const struct SbDisc *disc, uint32_t slot, uint32_t index, uint32_t *speaker);
 SbStatus sb_area_string(const struct SbDisc *disc, uint32_t slot, uint32_t field, char *buf, size_t cap, size_t *len);
+SbStatus sb_disc_genre(const struct SbDisc *disc, uint32_t list, uint32_t index, struct SbGenre *out);
+SbStatus sb_disc_text_channel_count(const struct SbDisc *disc, uint32_t *count);
+SbStatus sb_disc_text_channel(const struct SbDisc *disc, uint32_t index, struct SbTextChannel *out);
+SbStatus sb_disc_catalog_number_stored(const struct SbDisc *disc, uint32_t field, char *buf, size_t cap, size_t *len);
+SbStatus sb_disc_manufacturer(const struct SbDisc *disc, uint8_t *buf, size_t cap, size_t *len);
+SbStatus sb_area_details(const struct SbDisc *disc, uint32_t slot, struct SbAreaDetails *out);
+SbStatus sb_area_text_channel(const struct SbDisc *disc, uint32_t slot, uint32_t index, struct SbTextChannel *out);
 SbStatus sb_track_info(const struct SbDisc *disc, uint32_t slot, uint32_t number, struct SbTrackInfo *out);
 SbStatus sb_track_string(const struct SbDisc *disc, uint32_t slot, uint32_t number, uint32_t field, char *buf, size_t cap, size_t *len);
 SbStatus sb_disc_warning(const struct SbDisc *disc, uint32_t index, struct SbWarning *out);

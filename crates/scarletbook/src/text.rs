@@ -195,9 +195,15 @@ fn is_w(c: char) -> bool {
 
 /// A fixed text field (specification 2, 2.6.5).
 pub fn fixed_text(field: &[u8]) -> String {
-    let len = field.iter().position(|&b| b == 0).unwrap_or(field.len());
-    let s: String = field.iter().take(len).map(|&b| char::from(b)).collect();
+    let s: String = fixed_bytes(field).iter().map(|&b| char::from(b)).collect();
     s.trim_matches(is_w).to_owned()
+}
+
+/// A fixed text field's bytes up to the first 0x00, all of them if there is none
+/// (specification 2, 2.6.5 step 1).
+pub fn fixed_bytes(field: &[u8]) -> &[u8] {
+    let len = field.iter().position(|&b| b == 0).unwrap_or(field.len());
+    field.get(..len).unwrap_or(field)
 }
 
 /// A locale's language code (specification 2, 2.5.1 item 1).
@@ -232,6 +238,9 @@ mod tests {
     fn fixed_text_and_language() {
         assert_eq!(fixed_text(b" \x85AB C\xa0\0junk"), "AB C");
         assert_eq!(fixed_text(b"\x01X\x01"), "\u{1}X\u{1}");
+        assert_eq!(fixed_bytes(b" \x85AB C\xa0\0junk"), b" \x85AB C\xa0");
+        assert_eq!(fixed_bytes(b"AB  "), b"AB  ");
+        assert_eq!(fixed_bytes(b"\0AB"), b"");
         assert_eq!(language(*b"e\0"), "e");
         assert_eq!(language([0, b'e']), "\u{0}e");
         assert_eq!(language(*b"  "), "");

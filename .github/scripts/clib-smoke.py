@@ -10,9 +10,9 @@ that sb_abi_version() equals the header's SB_ABI_VERSION and sb_version() the
 package version, that the README's ctypes bindings run and match the header, then opens
 corpus image dst-features-2ch-6ch, compares its TOC with the
 conformance manifest and decodes track 1 of each area against the manifest's per-channel
-SHA-256, and reads its master TOC sector (#105). Last, through the README's bindings,
-reads ranges of it provisionally (#94) and checks the readings with a disc-kept seek index
-and with a caller-kept one.
+SHA-256, checks the TOC fields of #104 and reads its master TOC sector (#105). Last,
+through the README's bindings, reads ranges of it provisionally (#94) and checks the
+readings with a disc-kept seek index and with a caller-kept one.
 """
 import ctypes as C
 import hashlib
@@ -182,6 +182,45 @@ for index, want in enumerate(toc["areas"]):
             hashes[c].update(data[c::channels])
     lib.sb_track_audio_free(handle)
     check(f"area {want['slot']} track 1 audio", [h.hexdigest() for h in hashes], audio["sha256"])
+
+# The TOC fields of #104, through the README's bindings, against the manifest.
+B = bindings["lib"]
+for name, key in ((0, "album_genres"), (1, "disc_genres")):  # SB_GENRE_LIST_ALBUM, _DISC
+    got = []
+    for i in range(4):
+        g = bindings["SbGenre"]()
+        check(f"sb_disc_genre {name} {i}", B.sb_disc_genre(disc, name, i, C.byref(g)), OK)
+        got.append({"category": g.category, "genre": g.index})
+    check(key, got, toc[key])
+count = C.c_uint32()
+check("sb_disc_text_channel_count", B.sb_disc_text_channel_count(disc, C.byref(count)), OK)
+channels = []
+for i in range(min(count.value, 8)):
+    ch = bindings["SbTextChannel"]()
+    check(f"sb_disc_text_channel {i}", B.sb_disc_text_channel(disc, i, C.byref(ch)), OK)
+    channels.append({"language": bytes(ch.language).rstrip(b"\0 ").decode("latin-1"), "charset": ch.charset})
+check("locales", channels, toc["locales"])
+stored, length = C.create_string_buffer(17), C.c_size_t()
+check("sb_disc_catalog_number_stored",
+      B.sb_disc_catalog_number_stored(disc, 16, stored, len(stored), C.byref(length)), OK)  # ALBUM_CATALOG_NUMBER
+check("album catalogue number as stored", stored.raw[:length.value].strip(), toc["album_catalog_number"].encode())
+manufacturer = C.create_string_buffer(2040)
+check("sb_disc_manufacturer", B.sb_disc_manufacturer(disc, manufacturer, len(manufacturer), C.byref(length)),
+      OK if toc["manufacturer_sector"] else 2)
+for want in toc["areas"]:
+    details, slot = bindings["SbAreaDetails"](), slots[want["slot"]]
+    check(f"sb_area_details {slot}", B.sb_area_details(disc, slot, C.byref(details)), OK)
+    check(f"area {slot} details", [[details.version_major, details.version_minor], details.max_available_channels,
+                                   details.mute_flags, details.track_attribute, details.track_offset],
+          [want[k] for k in ("version", "max_available_channels", "area_mute_flags", "track_attribute",
+                             "track_offset")])
+    channels = []
+    for i in range(min(details.text_channel_count, 10)):
+        ch = bindings["SbTextChannel"]()
+        check(f"sb_area_text_channel {i}", B.sb_area_text_channel(disc, slot, i, C.byref(ch)), OK)
+        channels.append({"language": bytes(ch.language).rstrip(b"\0 ").decode("latin-1"), "charset": ch.charset})
+    check(f"area {slot} locales", channels, want["locales"])
+print("TOC fields (#104) match the manifest")
 
 # Logical sectors (#105), through the README's bindings: the master TOC sector holds its
 # signature, the image's user data; a range past the last sector fails whole.

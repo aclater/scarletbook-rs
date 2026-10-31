@@ -367,6 +367,62 @@ pub struct SbRawFrameInfo {
     pub size: u32,
 }
 
+/// A genre entry as stored (specification 2, 2.4): `sb_disc_genre`.
+///
+/// Layout: 2 bytes, aligned to 1, without padding.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SbGenre {
+    /// Genre table (category) byte: 1 is the general table, 2 a Japanese one.
+    pub category: u8,
+    /// Genre index byte.
+    pub index: u8,
+}
+
+/// A text channel's locale entry as stored (specification 2, 2.5.1): `sb_disc_text_channel`,
+/// `sb_area_text_channel`.
+///
+/// Layout: 4 bytes, aligned to 1, without padding: `language` at 0, `charset` at 2,
+/// `reserved` at 3.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SbTextChannel {
+    /// The language code's two bytes as stored (an ISO 639-1 code such as "en"), nothing
+    /// removed: 0x00 0x00 is an unset code. The trimmed language of specification 2, 2.5.1
+    /// item 1 is these bytes with every trailing 0x00 and 0x20 removed.
+    pub language: [u8; 2],
+    /// Character set code, the stored byte (the low 3 bits select the character set).
+    pub charset: u8,
+    /// Written as 0.
+    pub reserved: u8,
+}
+
+/// More of an area's TOC fields (specification 3, 3.4 and 3.5): `sb_area_details`.
+///
+/// Layout: 8 bytes, aligned to 1, without padding (8 fields of 1 byte).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SbAreaDetails {
+    /// Area TOC version (offset 8).
+    pub version_major: u8,
+    /// Area TOC version (offset 9).
+    pub version_minor: u8,
+    /// Maximum available channels (offset 34), as stored.
+    pub max_available_channels: u8,
+    /// Area mute flags (offset 35), as stored.
+    pub mute_flags: u8,
+    /// Track attribute: the low 4 bits of offset 48.
+    pub track_attribute: u8,
+    /// Track offset (offset 68), as stored.
+    pub track_offset: u8,
+    /// Text channel count (offset 80), as stored; `sb_area_text_channel` reads the first
+    /// `min(count, 10)` locale entries.
+    pub text_channel_count: u8,
+    /// Character set code of area locale entry 0 (offset 90), with which all area text is
+    /// decoded, also when the text channel count is 0.
+    pub text_charset: u8,
+}
+
 type Reader = Box<dyn ReadSeek + Send>;
 
 /// An opened disc image.
@@ -732,13 +788,28 @@ unsafe fn copy_string(
     cap: usize,
     len: *mut usize,
 ) -> Result<SbStatus, Failure> {
+    // SAFETY: forwarded contract.
+    unsafe { copy_bytes(s.map(str::as_bytes), buf, cap, len) }
+}
+
+/// Copies bytes out as a string is (see the conventions in the header), with a terminating
+/// NUL.
+///
+/// # Safety
+///
+/// As `copy_string`.
+unsafe fn copy_bytes(
+    bytes: Option<&[u8]>,
+    buf: *mut c_char,
+    cap: usize,
+    len: *mut usize,
+) -> Result<SbStatus, Failure> {
     // SAFETY: forwarded contract; `len` is required whatever the string.
-    unsafe { write_out(len, s.map_or(0, str::len)) }?;
-    let Some(s) = s else { return Ok(SbStatus::Absent) };
-    if buf.is_null() || cap <= s.len() {
+    unsafe { write_out(len, bytes.map_or(0, <[u8]>::len)) }?;
+    let Some(bytes) = bytes else { return Ok(SbStatus::Absent) };
+    if buf.is_null() || cap <= bytes.len() {
         return Ok(SbStatus::BufferTooSmall);
     }
-    let bytes = s.as_bytes();
     // SAFETY: buf is valid for cap > bytes.len() bytes; the regions cannot overlap since
     // `bytes` is owned by this library.
     unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf.cast::<u8>(), bytes.len()) };
@@ -1775,6 +1846,212 @@ pub unsafe extern "C" fn sb_area_string(
             AreaTextItem::ALL.get(field as usize).ok_or_else(|| Failure::arg("unknown area string"))?;
         // SAFETY: forwarded contract.
         unsafe { copy_string(area.text.get(*item), buf, cap, len) }
+    })
+}
+
+/// Genre lists of `sb_disc_genre`: the master TOC's album genres (offset 40) and disc
+/// genres (offset 104).
+pub const SB_GENRE_LIST_ALBUM: u32 = 0;
+/// See `SB_GENRE_LIST_ALBUM`.
+pub const SB_GENRE_LIST_DISC: u32 = 1;
+
+/// Genre `index` (0 to 3) of the master TOC's album (`SB_GENRE_LIST_ALBUM`) or disc
+/// (`SB_GENRE_LIST_DISC`) genres, as stored.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle; `out` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_disc_genre(
+    disc: *const SbDisc,
+    list: u32,
+    index: u32,
+    out: *mut SbGenre,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?.get()?;
+        let m = &d.toc().master;
+        let genres = match list {
+            SB_GENRE_LIST_ALBUM => &m.album_genres,
+            SB_GENRE_LIST_DISC => &m.disc_genres,
+            _ => return Err(Failure::arg("unknown genre list")),
+        };
+        let g = genres.get(index as usize).ok_or_else(|| Failure::arg("genre index out of range"))?;
+        // SAFETY: forwarded contract.
+        unsafe { write_out(out, SbGenre { category: g.category, index: g.index }) }?;
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// The master TOC's text channel count (offset 128), as stored (0 to 255);
+/// `sb_disc_text_channel` reads the first `min(count, 8)` locale entries.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle; `count` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_disc_text_channel_count(disc: *const SbDisc, count: *mut u32) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?.get()?;
+        // SAFETY: forwarded contract.
+        unsafe { write_out(count, u32::from(d.toc().master.text_channel_count)) }?;
+        Ok(SbStatus::Ok)
+    })
+}
+
+fn text_channel(locales: &[scarletbook::toc::Locale], index: u32) -> Result<SbTextChannel, Failure> {
+    let l = locales.get(index as usize).ok_or_else(|| Failure::arg("text channel index out of range"))?;
+    Ok(SbTextChannel { language: l.language_code, charset: l.charset, reserved: 0 })
+}
+
+/// The locale entry of master TOC text channel `index`, below `min(count, 8)` of
+/// `sb_disc_text_channel_count` (the reported locale list, specification 2, 2.5.2);
+/// `SB_STATUS_INVALID_ARGUMENT` for another index.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle; `out` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_disc_text_channel(
+    disc: *const SbDisc,
+    index: u32,
+    out: *mut SbTextChannel,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?.get()?;
+        let channel = text_channel(&d.toc().master.locales, index)?;
+        // SAFETY: forwarded contract.
+        unsafe { write_out(out, channel) }?;
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// Copies a catalogue number as stored: `field` is `SB_DISC_STRING_ALBUM_CATALOG_NUMBER`
+/// or `SB_DISC_STRING_DISC_CATALOG_NUMBER`, and the bytes are the field's up to its first
+/// 0x00 (all 16 if there is none), padding kept, unmapped and untrimmed (specification 2,
+/// 2.6.5 step 1); `sb_disc_string` gives the trimmed string. The copy-out convention is
+/// that of strings, with a terminating NUL, but the bytes are as stored: not necessarily
+/// UTF-8 (they contain no 0x00). Empty when the field starts with 0x00; never absent.
+///
+/// # Safety
+///
+/// As `sb_disc_string`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_disc_catalog_number_stored(
+    disc: *const SbDisc,
+    field: u32,
+    buf: *mut c_char,
+    cap: usize,
+    len: *mut usize,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?.get()?;
+        let m = &d.toc().master;
+        let bytes = match field {
+            f if f == SbDiscString::AlbumCatalogNumber as u32 => &m.album_catalog_number_stored,
+            f if f == SbDiscString::DiscCatalogNumber as u32 => &m.disc_catalog_number_stored,
+            _ => return Err(Failure::arg("field must be a catalogue number")),
+        };
+        // SAFETY: forwarded contract.
+        unsafe { copy_bytes(Some(bytes), buf, cap, len) }
+    })
+}
+
+/// Size of the manufacturer data `sb_disc_manufacturer` copies: bytes 8 to 2047 of the
+/// manufacturer sector.
+pub const SB_MANUFACTURER_BYTES: u32 = 2040;
+
+/// Copies the manufacturer data: bytes 8 to 2047 of the master TOC's manufacturer sector
+/// (LSN 519), opaque (specification 2, 2.7), when its `SACD_Man` signature is present
+/// (`SbDiscInfo.manufacturer_sector`). `*len` (required) receives the size,
+/// `SB_MANUFACTURER_BYTES`, or 0 and `SB_STATUS_ABSENT` without the sector. With `buf`
+/// NULL or `cap` below the size, the call returns `SB_STATUS_BUFFER_TOO_SMALL` and
+/// writes nothing else. No NUL is added.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle; `buf` NULL or valid for `cap` bytes of writes;
+/// `len` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_disc_manufacturer(
+    disc: *const SbDisc,
+    buf: *mut u8,
+    cap: usize,
+    len: *mut usize,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?.get()?;
+        let bytes = d.toc().master.manufacturer.as_deref();
+        // SAFETY: forwarded contract.
+        unsafe { write_out(len, bytes.map_or(0, <[u8]>::len)) }?;
+        let Some(bytes) = bytes else { return Ok(SbStatus::Absent) };
+        if buf.is_null() || cap < bytes.len() {
+            return Ok(SbStatus::BufferTooSmall);
+        }
+        // SAFETY: buf is valid for cap >= bytes.len() bytes; `bytes` is owned by the disc,
+        // so the regions do not overlap.
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, bytes.len()) };
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// More TOC fields of the area from `slot` (`SbAreaDetails`).
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle; `out` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_area_details(
+    disc: *const SbDisc,
+    slot: u32,
+    out: *mut SbAreaDetails,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?.get()?;
+        let a = find_area(&d, slot)?;
+        let details = SbAreaDetails {
+            version_major: a.version.major,
+            version_minor: a.version.minor,
+            max_available_channels: a.max_available_channels,
+            mute_flags: a.area_mute_flags,
+            track_attribute: a.track_attribute,
+            track_offset: a.track_offset,
+            text_channel_count: a.text_channel_count,
+            text_charset: a.text_charset,
+        };
+        // SAFETY: forwarded contract.
+        unsafe { write_out(out, details) }?;
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// The locale entry of text channel `index` of the area from `slot`, below
+/// `min(SbAreaDetails.text_channel_count, 10)` (the reported area locale list,
+/// specification 3, 3.5); `SB_STATUS_INVALID_ARGUMENT` for another index.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle; `out` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_area_text_channel(
+    disc: *const SbDisc,
+    slot: u32,
+    index: u32,
+    out: *mut SbTextChannel,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?.get()?;
+        let channel = text_channel(&find_area(&d, slot)?.locales, index)?;
+        // SAFETY: forwarded contract.
+        unsafe { write_out(out, channel) }?;
+        Ok(SbStatus::Ok)
     })
 }
 
