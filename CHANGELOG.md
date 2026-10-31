@@ -11,6 +11,12 @@ is shared by every crate of the workspace; releases carry the `bench` program an
 
 ### Added
 
+- Loudspeaker layouts (#75): `Area::loudspeaker_layout` gives an area's `LoudspeakerLayout`
+  from its channel count and the low 3 bits of its configuration byte, as specification 3,
+  3.4.1 defines them (stereo, 5-channel 3/2 and 5.1), and `Unspecified` with both fields as
+  stored for any other combination. `Area::channel_speakers` gives the `Speaker` of each
+  channel in decoded-frame order for the defined layouts; the order is informative. A
+  corpus test checks every area's layout against the manifest.
 - `DecodeOn` and `TrackAudioCursor::set_decode_on` (`parallel` feature, #36): a cursor
   decodes on a rayon pool of its own, whatever thread reads it, or on the calling thread
   only; continuations keep the choice. The default stays the current pool.

@@ -40,4 +40,4 @@ pub use disc::Disc;
 pub use dst::{DstDecoder, DstError};
 pub use error::{Error, ErrorClass, Slot, Warning, WarningCode};
 pub use image::{Image, MASTER_TOC_LSN, SECTOR_SIZE, SectorFormat};
-pub use toc::{Area, AreaKind, MasterToc, Toc, Track};
+pub use toc::{Area, AreaKind, LoudspeakerLayout, MasterToc, Speaker, Toc, Track};

@@ -403,6 +403,7 @@ pub struct Area {
     /// Channel count (offset 32).
     pub channel_count: u8,
     /// Area configuration byte (offset 33); the low 3 bits are the loudspeaker configuration.
+    /// See [`Area::loudspeaker_layout`].
     pub area_config: u8,
     /// Maximum available channels (offset 34).
     pub max_available_channels: u8,
@@ -440,6 +441,127 @@ impl Area {
     pub fn track(&self, number: u32) -> Option<&Track> {
         number.checked_sub(1).and_then(|i| self.tracks.get(i as usize))
     }
+
+    /// The loudspeaker layout given by the channel count and the low 3 bits of the area
+    /// configuration byte (specification 3, 3.4.1 item 2).
+    pub fn loudspeaker_layout(&self) -> LoudspeakerLayout {
+        LoudspeakerLayout::new(self.channel_count, self.area_config)
+    }
+
+    /// The loudspeaker of each channel, in the order the channels appear in a decoded
+    /// frame, or `None` when the area has no defined loudspeaker layout. See
+    /// [`LoudspeakerLayout::speakers`]; the order is informative.
+    pub fn channel_speakers(&self) -> Option<&'static [Speaker]> {
+        self.loudspeaker_layout().speakers()
+    }
+}
+
+/// The loudspeaker layout of an area (specification 3, 3.4.1 item 2).
+///
+/// The specification defines three combinations of channel count and loudspeaker
+/// configuration (the low 3 bits of the area configuration byte); any other combination
+/// has no defined layout and is [`Unspecified`](LoudspeakerLayout::Unspecified), with both
+/// fields as stored. Neither field changes how audio is decoded, apart from the channel
+/// count (item 3).
+///
+/// | Channel count | Configuration | Layout |
+/// |---|---|---|
+/// | 2 | 0 | [`Stereo`](LoudspeakerLayout::Stereo) |
+/// | 5 | 3 | [`ThreeTwo`](LoudspeakerLayout::ThreeTwo) |
+/// | 6 | 4 | [`FivePointOne`](LoudspeakerLayout::FivePointOne) |
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LoudspeakerLayout {
+    /// Stereo: 2 channels, configuration 0.
+    Stereo,
+    /// 5-channel (3/2): 5 channels, configuration 3.
+    ThreeTwo,
+    /// 5.1-channel: 6 channels, configuration 4.
+    FivePointOne,
+    /// Any other combination: no defined loudspeaker layout.
+    Unspecified {
+        /// The channel count, as stored.
+        channels: u8,
+        /// The whole area configuration byte, as stored, high bits included.
+        config: u8,
+    },
+}
+
+impl LoudspeakerLayout {
+    /// The layout of a channel count and an area configuration byte. Only the low 3 bits
+    /// of `config` select the layout; an [`Unspecified`](LoudspeakerLayout::Unspecified)
+    /// layout keeps the whole byte.
+    pub fn new(channels: u8, config: u8) -> Self {
+        match (channels, config & 0x07) {
+            (2, 0) => LoudspeakerLayout::Stereo,
+            (5, 3) => LoudspeakerLayout::ThreeTwo,
+            (6, 4) => LoudspeakerLayout::FivePointOne,
+            _ => LoudspeakerLayout::Unspecified { channels, config },
+        }
+    }
+
+    /// The loudspeaker of each channel, in the order the channels appear in a decoded
+    /// frame, or `None` for [`Unspecified`](LoudspeakerLayout::Unspecified).
+    ///
+    /// The order is informative (specification 3, 3.4.1 item 2): it is the order existing
+    /// tools use when they label the channels of extracted audio, and nothing else in the
+    /// specifications depends on it.
+    ///
+    /// A consumer writing `WAVE_FORMAT_EXTENSIBLE` files might build the channel mask from
+    /// it; whether surround channels take the back or the side bits is the consumer's
+    /// choice (this uses the back bits):
+    ///
+    /// ```
+    /// use scarletbook::toc::{LoudspeakerLayout, Speaker};
+    ///
+    /// fn wav_mask(speakers: &[Speaker]) -> u32 {
+    ///     speakers
+    ///         .iter()
+    ///         .map(|s| match s {
+    ///             Speaker::FrontLeft => 0x1,
+    ///             Speaker::FrontRight => 0x2,
+    ///             Speaker::Centre => 0x4,
+    ///             Speaker::LowFrequencyEffects => 0x8,
+    ///             Speaker::SurroundLeft => 0x10,
+    ///             Speaker::SurroundRight => 0x20,
+    ///         })
+    ///         .fold(0, |mask, bit| mask | bit)
+    /// }
+    ///
+    /// assert_eq!(LoudspeakerLayout::Stereo.speakers().map(wav_mask), Some(0x3));
+    /// assert_eq!(LoudspeakerLayout::ThreeTwo.speakers().map(wav_mask), Some(0x37));
+    /// assert_eq!(LoudspeakerLayout::FivePointOne.speakers().map(wav_mask), Some(0x3F));
+    /// assert_eq!(LoudspeakerLayout::new(4, 0).speakers(), None);
+    /// ```
+    pub fn speakers(self) -> Option<&'static [Speaker]> {
+        use Speaker::*;
+        match self {
+            LoudspeakerLayout::Stereo => Some(&[FrontLeft, FrontRight]),
+            LoudspeakerLayout::ThreeTwo => {
+                Some(&[FrontLeft, FrontRight, Centre, SurroundLeft, SurroundRight])
+            }
+            LoudspeakerLayout::FivePointOne => {
+                Some(&[FrontLeft, FrontRight, Centre, LowFrequencyEffects, SurroundLeft, SurroundRight])
+            }
+            LoudspeakerLayout::Unspecified { .. } => None,
+        }
+    }
+}
+
+/// A loudspeaker of a defined layout (specification 3, 3.4.1 item 2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Speaker {
+    /// Front left; "left" in stereo.
+    FrontLeft,
+    /// Front right; "right" in stereo.
+    FrontRight,
+    /// Centre.
+    Centre,
+    /// Low-frequency effects.
+    LowFrequencyEffects,
+    /// Surround left.
+    SurroundLeft,
+    /// Surround right.
+    SurroundRight,
 }
 
 /// A track (specification 3, 3.9.1).
@@ -935,6 +1057,44 @@ mod tests {
         for t in [0x00, 0x08, 0x41, 0x80, 0x88, 0xC1, 0xFF] {
             assert_eq!(TrackTextItem::from_type(t), None, "{t:#x}");
         }
+    }
+
+    #[test]
+    fn loudspeaker_layouts() {
+        use Speaker::*;
+        assert_eq!(LoudspeakerLayout::new(2, 0), LoudspeakerLayout::Stereo);
+        assert_eq!(LoudspeakerLayout::new(5, 3), LoudspeakerLayout::ThreeTwo);
+        assert_eq!(LoudspeakerLayout::new(6, 4), LoudspeakerLayout::FivePointOne);
+        assert_eq!(LoudspeakerLayout::Stereo.speakers(), Some(&[FrontLeft, FrontRight][..]));
+        assert_eq!(
+            LoudspeakerLayout::ThreeTwo.speakers(),
+            Some(&[FrontLeft, FrontRight, Centre, SurroundLeft, SurroundRight][..])
+        );
+        assert_eq!(
+            LoudspeakerLayout::FivePointOne.speakers(),
+            Some(&[FrontLeft, FrontRight, Centre, LowFrequencyEffects, SurroundLeft, SurroundRight][..])
+        );
+        // Only the low 3 bits select the layout.
+        for high in [0x08, 0x10, 0x80, 0xF8] {
+            assert_eq!(LoudspeakerLayout::new(2, high), LoudspeakerLayout::Stereo, "{high:#x}");
+            assert_eq!(LoudspeakerLayout::new(5, high | 3), LoudspeakerLayout::ThreeTwo, "{high:#x}");
+            assert_eq!(LoudspeakerLayout::new(6, high | 4), LoudspeakerLayout::FivePointOne, "{high:#x}");
+        }
+        // Every other combination is unspecified and keeps both fields as stored.
+        let mut defined = 0;
+        for channels in 0..=u8::MAX {
+            for config in 0..=u8::MAX {
+                let layout = LoudspeakerLayout::new(channels, config);
+                if matches!((channels, config & 7), (2, 0) | (5, 3) | (6, 4)) {
+                    defined += 1;
+                    assert_eq!(layout.speakers().map(<[Speaker]>::len), Some(usize::from(channels)));
+                } else {
+                    assert_eq!(layout, LoudspeakerLayout::Unspecified { channels, config });
+                    assert_eq!(layout.speakers(), None);
+                }
+            }
+        }
+        assert_eq!(defined, 3 * 32);
     }
 
     #[test]
