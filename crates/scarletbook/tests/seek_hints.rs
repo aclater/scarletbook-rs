@@ -45,11 +45,16 @@ impl<R: std::io::Seek> std::io::Seek for Counting<R> {
 /// A well-formed 2-channel area of 2000 DST frames numbered from `offset`, in `tracks`
 /// tracks; the frame sizes alone set where each frame lies.
 fn image(offset: u32, tracks: u32) -> Vec<u8> {
+    image_with(offset, tracks, 0)
+}
+
+/// As [`image`], with `fill` mixed into the frames' bytes: the same layout and records.
+fn image_with(offset: u32, tracks: u32, fill: u8) -> Vec<u8> {
     let fs: Vec<PFrame> = (0..2000u32)
         .map(|k| PFrame {
             number: k + offset,
             dst: true,
-            data: vec![k as u8; 3000 + (k as usize * 53) % 6000],
+            data: vec![k as u8 ^ fill; 3000 + (k as usize * 53) % 6000],
         })
         .collect();
     let per = 2000 / tracks;
@@ -126,8 +131,7 @@ fn one_read_after_a_remount() {
             "{:?}",
             c.resumed_from()
         );
-        // TODO(sacd-spec#31): readings from a hint stay provisional until saved
-        // confirmations (4.2 item 9) are kept.
+        // The first session did not verify its readings: provisional.
         assert!(matches!(c.speculation(), Speculation::Pending { .. }), "{:?}", c.speculation());
     }
 }
@@ -210,4 +214,58 @@ fn hints_are_saved_and_checked() {
     // And as it grows: the bound is the caller's.
     assert_eq!(small.options().max_hints, 2);
     assert!(index.hints() <= IndexOptions::new().max_hints);
+}
+
+/// A first session that verified its readings (one pass) saves their confirmations: after a
+/// remount, a reading from a confirmed `L` for the same or a later first frame is reported
+/// confirmed at once (4.2 item 9), with one read call; on an image with the same TOC and
+/// records but other bytes at `L`, it stays provisional.
+#[test]
+#[cfg_attr(miri, ignore = "reads thousands of sectors")]
+fn confirmations_after_a_remount() {
+    let img = image(0, 4);
+    let (mut disc, _, _) = open(img.clone());
+    disc.enable_seek_index(Slot::TwoChannel, IndexOptions::new()).unwrap();
+    speculative(&mut disc);
+    for r in RANGES {
+        read(&mut disc, r);
+    }
+    while !disc.verify_speculation(Slot::TwoChannel, 1 << 20).unwrap() {}
+    let index = disc.seek_index(Slot::TwoChannel).unwrap();
+    assert_eq!(index.confirmations(), RANGES.len());
+    // Saved small: hints and confirmations, not the exact checkpoints.
+    let full = index.to_bytes().len();
+    let saved = index.without_checkpoints().to_bytes();
+    assert!(saved.len() < full, "{} of {full} bytes", saved.len());
+    assert_eq!(u32::from_le_bytes(saved[8..12].try_into().unwrap()), 3, "version 3");
+    let mut plain = Disc::open(Cursor::new(img.clone())).unwrap();
+    for (first, end) in RANGES.iter().flat_map(|&(f, e)| [(f, e), (f + 2, e + 2)]) {
+        let (want, _) = read(&mut plain, (first, end));
+        let (mut disc, _, calls) = open(img.clone());
+        let area = disc.toc().areas[0].clone();
+        let index = AreaIndex::from_bytes(&area, disc.toc().sectors, &saved, DEFAULT_INLINE_BUDGET).unwrap();
+        assert_eq!(
+            AreaIndex::from_bytes(&area, disc.toc().sectors, &saved, usize::MAX).unwrap().to_bytes(),
+            saved
+        );
+        disc.set_seek_index(Slot::TwoChannel, index).unwrap();
+        speculative(&mut disc);
+        let c0 = calls.get();
+        let (got, c) = read(&mut disc, (first, end));
+        assert_eq!(got, want, "[{first}, {end})");
+        assert_eq!(calls.get() - c0, 1, "[{first}, {end})");
+        assert!(matches!(c.speculation(), Speculation::Confirmed { .. }), "{:?}", c.speculation());
+    }
+    // Other bytes at `L`, the same TOC and records: provisional, and the frames are that
+    // image's.
+    let other = image_with(0, 4, 0x5A);
+    let mut plain = Disc::open(Cursor::new(other.clone())).unwrap();
+    let (mut disc, _, _) = open(other);
+    let area = disc.toc().areas[0].clone();
+    let index = AreaIndex::from_bytes(&area, disc.toc().sectors, &saved, DEFAULT_INLINE_BUDGET).unwrap();
+    disc.set_seek_index(Slot::TwoChannel, index).unwrap();
+    speculative(&mut disc);
+    let (got, c) = read(&mut disc, RANGES[1]);
+    assert_eq!(got, read(&mut plain, RANGES[1]).0);
+    assert!(matches!(c.speculation(), Speculation::Pending { .. }), "{:?}", c.speculation());
 }

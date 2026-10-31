@@ -590,7 +590,7 @@ impl AreaCursor {
         exact: AreaCursor,
         (first, end): (u32, u32),
         (playtime, knots): (u32, Vec<(u64, u32)>),
-        (interval, hint): (u32, Option<(u64, u32, u64)>),
+        (interval, hint): (u32, Option<(u64, u32, u64, Option<u64>)>),
         options: crate::seek::SpeculativeOptions,
     ) -> Self {
         let from = match exact.resumed {
@@ -620,7 +620,7 @@ impl AreaCursor {
     /// A cancelled search keeps `sp` for the next read.
     fn begin<R: Read + Seek>(&mut self, image: &mut Image<R>, mut sp: Speculate) -> Result<(), Error> {
         let (start, _) = self.key.audio_sector_range();
-        if let Some((l, t, to)) = sp.hint {
+        if let Some((l, t, to, confirmed)) = sp.hint {
             // A seek hint: one read from its sector to the range's end. Its first record
             // must be the hint's, or the hints are of another image (or a stale one).
             self.read_to = to;
@@ -632,10 +632,22 @@ impl AreaCursor {
                 r => r?,
             };
             if first_record(&sector) == Some(t) && t < sp.first {
-                // TODO(sacd-spec#31): a hint that was the `L` of a confirmed reading could
-                // report its positions confirmed at once (sacd-spec#32, 4.2 item 9); until
-                // then they are provisional like any other.
                 self.start_provisional(start, (l, 0), &sp);
+                // Specification 4, 4.2 item 9 (sacd-spec `cb9530b`): (a) and (b) were
+                // established at `l` for a `u_L` at most this range's first frame by a pass
+                // over the image this index is bound to (its TOC fingerprint and key), and
+                // sector `l` is as that pass read it: they hold for this reading too.
+                if confirmed.is_some_and(|d| d == digest(&sector)) {
+                    if let Some(claim) = &self.claim {
+                        claim.confirm_saved();
+                    }
+                    sb_log!(
+                        image.log(),
+                        Debug,
+                        "area {}: provisional reading from LSN {l} confirmed from saved state (4.2 item 9)",
+                        self.slot
+                    );
+                }
                 return Ok(());
             }
             sb_log!(
@@ -1247,6 +1259,19 @@ impl AreaCursor {
             }
         }
     }
+}
+
+/// Sector `lsn` of `image`, read alone.
+pub(crate) fn read_sector<R: Read + Seek>(
+    image: &mut Image<R>,
+    lsn: u64,
+) -> Result<[u8; SECTOR_SIZE], Error> {
+    let mut out = [0u8; SECTOR_SIZE];
+    image.check_cancel()?;
+    if image.read_into(lsn, &mut out)? == ReadOutcome::OutOfRange {
+        return Err(Error::InvalidArgument("audio sectors outside the image"));
+    }
+    Ok(out)
 }
 
 /// The accepted frames of an area, read from an image in increasing LSN order.
@@ -1877,6 +1902,7 @@ impl TrackCursor {
             let most = lsn + u64::from(index.interval()) + 64;
             cursor.area.size_first_read(to.min(most).min(replay_from + crate::seek::MAX_READ_SECTORS));
         }
+        cursor.area.record_hints(index.hint_recorder());
         cursor
     }
 
@@ -1975,7 +2001,7 @@ impl TrackCursor {
         let hint = provisional
             .and_then(|i| i.hint(first, end, playtime))
             .filter(|h| h.0 > from)
-            .map(|(lsn, t, to, _)| (lsn, t, to));
+            .map(|(lsn, t, to, _)| (lsn, t, to, provisional.and_then(|i| i.confirmation(lsn, first))));
         // An earlier provisional reading's checkpoint around `first`: no search needed.
         if let Some(p) = provisional
             .and_then(|i| i.plan_provisional(first))

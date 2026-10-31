@@ -154,6 +154,15 @@ with a warning, and the cursor searches instead; an index saved by a disc carrie
 fingerprint of its TOC, and a disc with another TOC refuses it (`Disc::set_seek_index`). With
 a complete saved index, an exact read starts with one read sized to the range.
 
+When a pass (`disc.verify_speculation`) has confirmed a provisional reading, the index keeps
+that confirmation with the hint (4.2 item 9): after a remount, a reading from that hint for
+the same or a later first frame is reported confirmed at once, still in one read call, if the
+index is bound to the disc (key and TOC fingerprint) and the hint's sector has the bytes the
+pass read. `AreaIndex::without_checkpoints` keeps only the hints, confirmations and
+fingerprint: a few kilobytes per area to save, for a caller that keeps many discs. The sectors
+before a hint are trusted by the disc's identity, not read again: key saved indexes by the
+image file's identity too if a re-rip with the same TOC can replace it.
+
 Features: `parallel` decodes DST frames on rayon's thread pool, ahead of the caller: the
 current pool by default, or the pool chosen for a cursor with
 `TrackAudioCursor::set_decode_on(DecodeOn::Pool(pool))`, whichever thread reads it
