@@ -147,6 +147,26 @@ machine.
 | `docker.io/library/rust:1.99.1-alpine` (index `sha256:7e9e2d068a107a2adafd19930011178d14a78326053cd4c3a9f7ad3fd049557d`, pulled 2026-10-30) | Docker Hub | pulled while choosing a musl build image; not used (#42) |
 | rustup-init 1.29.2 (x86_64-unknown-linux-gnu and -musl, inside the images above, 2026-10-30) | static.rust-lang.org `rustup/archive/1.29.2/`, checked against its pinned SHA-256 | installing Rust 1.99.1 in the build images (#42) |
 | GNU binutils 2.46.1 (`objdump`, `readelf`, `nm`; already installed) and binutils of the PyPA images | Fedora 44 package `binutils-2.46.1-1.fc44`; the images | checking glibc symbol versions, SONAME, dependencies and exports of our libraries (#42). `otool`, `nm` and MinGW `objdump` ran only on the GitHub runners. |
+| zizmor 1.31.1 (published 2026-10-15) | crates.io (`cargo install --locked`), 2026-10-30 | linting the workflows locally before pushing (#46) |
+
+### Repository services and CI tools (#46)
+
+Added on 2026-10-30 for repository hygiene (issue #46). None is SACD- or DST-related; they
+analyse this repository's own code and workflows, and nothing from them enters the library.
+
+| Tool or service | Version (pinned) | Used for | Read to set it up (2026-10-30) |
+|---|---|---|---|
+| OpenSSF Scorecard (`ossf/scorecard-action`) | v2.5.0 | repository security score, SARIF to code scanning, published badge | the action's `README.md` at the pinned commit |
+| CodeQL (`github/codeql-action`) | v4.39.1 | static analysis of the Rust code and the workflows | GitHub's code scanning documentation (from memory of its inputs; `init`/`analyze`/`upload-sarif`) |
+| zizmor (`zizmorcore/zizmor-action`, zizmor 1.31.1 locally) | v0.8.0 | security lint of the workflows, SARIF to code scanning | the action's `README.md` at the pinned commit |
+| Dependency review (`actions/dependency-review-action`) | v5.0.0 | vulnerable dependencies added by a pull request | the action's `README.md` at the pinned commit |
+| cargo-llvm-cov (installed by `taiki-e/install-action`) | 0.9.1 (published 2026-09-06) | line coverage of the workspace tests | its `--help` output and the crates.io version list |
+| Codecov (`codecov/codecov-action`, codecov.io) | v7.1.1 | coverage reports and badge, uploaded with the workflow's OIDC token | the action's `README.md` at the pinned commit |
+| Dependabot | GitHub service | weekly grouped updates of crates and actions, 14-day cooldown | GitHub's Dependabot configuration documentation (from memory) |
+
+The action SHAs were resolved with `gh api repos/<owner>/<action>/git/ref/tags/<tag>`
+(annotated tags dereferenced). The badge images come from shields.io, slsa.dev,
+codecov.io and api.scorecard.dev; each URL was checked to return an SVG.
 
 ## Sources consulted
 
@@ -420,3 +440,4 @@ on 2026-10-30: the name `scarletbook` is not taken on crates.io. Nothing was pub
 | 2026-10-30 | specification `34f78a3`, `fa602f9` and `e52a42b` | answers to sacd-spec#14 and #18 applied (the x86-64-v3 `bench` asset renamed outside the benchmark asset patterns); corpus of `fa602f9` vendored (136 cases, all passing); see "Specification version". No new sources consulted beyond sacd-spec. |
 | 2026-10-30 | #35 frame ranges (#44) | decoded audio of any frame range, tracks with pauses. Specification 4, 4.2 item 6, 4.7, 4.7.1 and 4.8, and 7.1 item 3, at sacd-spec `e52a42b`. No new sources consulted. |
 | 2026-10-30 | C library release (#34, #42) | `clib.yml` builds and tests the C library for Linux (glibc 2.17, musl 1.2), macOS and Windows (MinGW-w64), and the release publishes it with checksums and the attestation; ABI policy and its check (`abi-check.py`, baselines in `crates/scarletbook-ffi/abi/`). No SACD or DST source; general sources and tools as recorded above. |
+| 2026-10-30 | repository hygiene (#46) | Dependabot, Scorecard, CodeQL, zizmor, dependency review and coverage (cargo-llvm-cov, Codecov) workflows; `SECURITY.md`, `CONTRIBUTING.md` (the clean-room rules for contributors, summarising "Rules followed", decision B and "Patent hygiene"), `CHANGELOG.md`; README badges. Repository infrastructure only; tools and the action READMEs read are under "Repository services and CI tools". No SACD or DST source consulted. |

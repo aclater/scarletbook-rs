@@ -1,12 +1,24 @@
 # scarletbook-rs
 
+[![CI](https://github.com/aclater/scarletbook-rs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/aclater/scarletbook-rs/actions/workflows/ci.yml)
+[![Coverage](https://codecov.io/gh/aclater/scarletbook-rs/graph/badge.svg)](https://codecov.io/gh/aclater/scarletbook-rs)
+[![CodeQL](https://github.com/aclater/scarletbook-rs/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/aclater/scarletbook-rs/actions/workflows/codeql.yml)
+[![Fuzzing](https://github.com/aclater/scarletbook-rs/actions/workflows/fuzz-long.yml/badge.svg?branch=main)](https://github.com/aclater/scarletbook-rs/actions/workflows/fuzz-long.yml)
+[![Licence: MIT OR Apache-2.0](https://img.shields.io/badge/licence-MIT%20OR%20Apache--2.0-blue.svg)](#licence)
+[![MSRV 1.85](https://img.shields.io/badge/MSRV-1.85-blue.svg)](Cargo.toml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/aclater/scarletbook-rs/badge)](https://scorecard.dev/viewer/?uri=github.com/aclater/scarletbook-rs)
+[![SLSA Build L2](https://slsa.dev/images/gh-badge-level2.svg)](#benchmarks)
+
 A clean-room, permissively licensed Rust library for reading Super Audio CD
 (Scarletbook) disc images, written only from the specifications and conformance
 corpus of [aclater/sacd-spec](https://github.com/aclater/sacd-spec).
 
 Work in progress, built in stages (one pull request each): TOC and sector detection,
 audio sector multiplexing, DST decoding, C FFI. The clean-room record is in
-[CLEANROOM.md](CLEANROOM.md).
+[CLEANROOM.md](CLEANROOM.md); before contributing, read
+[CONTRIBUTING.md](CONTRIBUTING.md), which explains the clean-room rule. Changes are listed
+in [CHANGELOG.md](CHANGELOG.md), and vulnerabilities are reported as described in
+[SECURITY.md](SECURITY.md).
 
 ## Layout
 
@@ -216,7 +228,7 @@ target/release/bench decode disc.iso --area 2ch --threads 0 --sink hash   # or n
 Pushing a version tag (`v0.1.0`, matching the crate version) runs the release workflow:
 it publishes `bench-<version>-x86_64-linux.tar.gz` (generic x86-64, cargo profile `dist`),
 after the correctness gate has passed on that very build, and two labelled builds,
-`-v3` (`-C target-cpu=x86-64-v3`) and `-znver5` (AMD Zen 5), each with a SHA-256 checksum and, once the repository is public, a signed
+`-v3` (`-C target-cpu=x86-64-v3`) and `-znver5` (AMD Zen 5), each with a SHA-256 checksum and, from 0.2.0, a signed
 build provenance attestation:
 
 ```sh
