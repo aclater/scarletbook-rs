@@ -606,6 +606,11 @@ impl HintRecorder {
     }
 }
 
+/// A seek hint to begin at: (sector, its first record's frame number, the end of the read
+/// to make there, and the digest the sector must have when a saved confirmation covers the
+/// range).
+pub(crate) type Hint = (u64, u32, u64, Option<u64>);
+
 /// A provisional start still to be chosen: on the cursor's first read, from the area's
 /// play time and the exact plan the cursor holds meanwhile.
 #[derive(Debug)]
@@ -625,7 +630,7 @@ pub(crate) struct Speculate {
     /// A seek hint to begin at instead of searching: (sector, its first record's frame
     /// number, the end of the read to make there, and the digest the sector must have when
     /// a saved confirmation covers the range).
-    pub(crate) hint: Option<(u64, u32, u64, Option<u64>)>,
+    pub(crate) hint: Option<Hint>,
 }
 
 /// The first frame record of a sector, as a frame number (specification 4, 4.3.2).

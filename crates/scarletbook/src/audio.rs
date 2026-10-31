@@ -590,7 +590,7 @@ impl AreaCursor {
         exact: AreaCursor,
         (first, end): (u32, u32),
         (playtime, knots): (u32, Vec<(u64, u32)>),
-        (interval, hint): (u32, Option<(u64, u32, u64, Option<u64>)>),
+        (interval, hint): (u32, Option<crate::seek::Hint>),
         options: crate::seek::SpeculativeOptions,
     ) -> Self {
         let from = match exact.resumed {
