@@ -22,6 +22,9 @@ is shared by every crate of the workspace; releases carry the `bench` program an
   them; the library starts no global pool. `SB_MAX_POOL_THREADS` and
   `SB_STATUS_THREADS_UNAVAILABLE` are new. Additive: the ABI version stays 1. The C smoke
   test also decodes every track on a pool and compares.
+- CI runs the `parallel` decoding path under Miri with Tree Borrows (#28): the C
+  interface's pools and the read-error test on pull requests, plus the continuation
+  property test and the window cap on `main`.
 
 ### Changed
 

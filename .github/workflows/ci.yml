@@ -159,6 +159,29 @@ jobs:
           else
             cargo +"$RUST_NIGHTLY" miri test -p scarletbook --locked
           fi
+      # The `parallel` path (#28): pool jobs, in-order result slots, the window cap and the C
+      # interface's pools. Tree Borrows, not Miri's default Stacked Borrows: under Stacked
+      # Borrows Miri reports undefined behaviour inside crossbeam-epoch (rayon's deque), not in
+      # this repository's code, and -Zmiri-permissive-provenance does not change that.
+      # -Zmiri-ignore-leaks: rayon's threads outlive the tests. The tests run here are ignored
+      # under Miri otherwise, hence --include-ignored; property tests run 2 cases under Miri.
+      # Pull requests run the C pools and the read-error test (about a minute); pushes to main
+      # and manual runs add the continuation property test and the window cap (several
+      # minutes).
+      - name: Miri on the parallel decoding path (Tree Borrows)
+        env:
+          MIRIFLAGS: -Zmiri-tree-borrows -Zmiri-ignore-leaks
+        run: |
+          cargo +"$RUST_NIGHTLY" miri test -p scarletbook-ffi --locked --test ffi -- --include-ignored \
+            pool_handles_of_a_small_image
+          tests=(read_error_after_batches_follows_its_frames)
+          if [[ "$GITHUB_EVENT_NAME" != pull_request ]]; then
+            tests+=(continuation_across_batches_equals_fresh_scans)
+            cargo +"$RUST_NIGHTLY" miri test -p scarletbook --features parallel --locked --lib -- --include-ignored \
+              parallel_window_is_capped
+          fi
+          cargo +"$RUST_NIGHTLY" miri test -p scarletbook --features parallel --locked --test demux_props -- \
+            --include-ignored "${tests[@]}"
 
   ffi:
     name: ffi (${{ matrix.os }})

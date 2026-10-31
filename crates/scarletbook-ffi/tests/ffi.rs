@@ -1701,9 +1701,10 @@ fn pool_arguments() {
     free(disc);
 }
 
-/// Pools started and freed in either order around a handle of a small image.
+/// Pools started and freed in either order around a handle of a small image. CI runs it
+/// under Miri with Tree Borrows (the `miri` job), where it passes.
 #[test]
-#[cfg_attr(miri, ignore = "rayon's crossbeam-epoch fails Stacked Borrows (int-to-pointer casts)")]
+#[cfg_attr(miri, ignore = "rayon's crossbeam-epoch fails Stacked Borrows; run with Tree Borrows")]
 fn pool_handles_of_a_small_image() {
     let disc = open(&tiny_image()).unwrap();
     for pool_first in [true, false] {
