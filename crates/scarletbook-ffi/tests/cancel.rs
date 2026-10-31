@@ -10,6 +10,7 @@ use std::ffi::{CStr, c_void};
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Condvar, Mutex};
 
 use scarletbook_ffi::*;
 
@@ -30,11 +31,62 @@ struct Handles<T>(T);
 // thread at a time (joining before the other uses it again).
 unsafe impl<T> Send for Handles<T> {}
 
-/// A slow positional source: sleeps on every read and counts the bytes read.
+/// A slow positional source: sleeps on every read and counts the bytes read. Once armed
+/// with a byte count ([`Slow::arm`]), the read that brings the total past it waits, before
+/// copying, until the test releases it ([`Slow::release`]): the test then requests
+/// cancellation while a read is known to be in progress, however the threads are scheduled.
 struct Slow {
     bytes: Vec<u8>,
     read: AtomicU64,
     delay_us: u64,
+    gate: Gate,
+}
+
+#[derive(Default)]
+struct Gate {
+    /// Armed at this total of bytes read; waiting; released.
+    state: Mutex<(Option<u64>, bool, bool)>,
+    changed: Condvar,
+}
+
+impl Slow {
+    fn new(bytes: Vec<u8>, delay_us: u64) -> Self {
+        Slow { bytes, read: AtomicU64::new(0), delay_us, gate: Gate::default() }
+    }
+
+    /// Holds the read that takes the total past `more` bytes from now.
+    fn arm(&self, more: u64) {
+        let mut s = self.gate.state.lock().unwrap();
+        *s = (Some(self.read.load(Ordering::SeqCst) + more), false, false);
+    }
+
+    /// Waits until a read is held.
+    fn wait_held(&self) {
+        let mut s = self.gate.state.lock().unwrap();
+        while !s.1 {
+            s = self.gate.changed.wait(s).unwrap();
+        }
+    }
+
+    /// Lets the held read (and every later one) go on.
+    fn release(&self) {
+        let mut s = self.gate.state.lock().unwrap();
+        *s = (None, s.1, true);
+        self.gate.changed.notify_all();
+    }
+
+    fn hold_if_armed(&self, len: usize) {
+        let mut s = self.gate.state.lock().unwrap();
+        let Some(at) = s.0 else { return };
+        if self.read.load(Ordering::SeqCst) + len as u64 <= at {
+            return;
+        }
+        s.1 = true;
+        self.gate.changed.notify_all();
+        while !s.2 {
+            s = self.gate.changed.wait(s).unwrap();
+        }
+    }
 }
 
 unsafe extern "C" fn slow_read_at(user: *mut c_void, offset: u64, buf: *mut u8, len: usize) -> i64 {
@@ -42,6 +94,7 @@ unsafe extern "C" fn slow_read_at(user: *mut c_void, offset: u64, buf: *mut u8, 
     // life; only shared references to it are made (its counter is atomic).
     let s = unsafe { &*user.cast::<Slow>() };
     std::thread::sleep(std::time::Duration::from_micros(s.delay_us));
+    s.hold_if_armed(len);
     let start = (offset as usize).min(s.bytes.len());
     let n = len.min(s.bytes.len() - start);
     // SAFETY: the library passes a buffer valid for `len >= n` bytes of writes, which
@@ -186,7 +239,7 @@ fn cancelled_from_another_thread() {
         audio_free(ra);
         assert!(!want.is_empty());
 
-        let slow = Slow { bytes: bytes.clone(), read: AtomicU64::new(0), delay_us: 1000 };
+        let slow = Slow::new(bytes.clone(), 1000);
         let disc = open_slow(&slow);
         let t = token(disc);
         assert!(!requested(t));
@@ -195,6 +248,8 @@ fn cancelled_from_another_thread() {
         let (r0, e0) = progress(pr);
         assert_eq!(r0, 0);
         assert!(e0 > 0);
+        // The read past the first BOUND sectors waits until the request is made (#121).
+        slow.arm(BOUND * S);
         let worker = {
             let h = Handles((a, disc));
             std::thread::spawn(move || {
@@ -210,17 +265,21 @@ fn cancelled_from_another_thread() {
                 Handles((status, got))
             })
         };
-        // The scan before the range's first frame advances in steps of at most 32 sectors.
+        // The scan before the range's first frame advances in steps of at most 32 sectors,
+        // polled until the read past them is held.
         let mut last = 0;
-        while progress(pr).0 <= BOUND {
-            assert!(!worker.is_finished(), "slot {slot}: read to the end before the request");
+        while !slow.gate.state.lock().unwrap().1 {
             let (read, expected) = progress(pr);
             assert!(read >= last && read <= expected);
             last = read;
             std::thread::yield_now();
         }
+        slow.wait_held();
+        assert!(!worker.is_finished(), "slot {slot}: read to the end before the request");
+        assert!(progress(pr).0 > 0, "slot {slot}: no progress at the held read");
         request(t);
         let at = slow.read.load(Ordering::SeqCst);
+        slow.release();
         let (status, mut got) = worker.join().unwrap().0;
         assert_eq!(status, SbStatus::Cancelled);
         let after = slow.read.load(Ordering::SeqCst) - at;
