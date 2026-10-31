@@ -635,8 +635,10 @@ impl AreaCursor {
 
     /// The next accepted frame, `None` at the end of the area.
     ///
-    /// The cursor binds to the first image it reads; with any other image it returns
-    /// [`Error::InvalidArgument`] (and stays usable with its own image).
+    /// The cursor binds to the first image it reads; with an image of another identifier
+    /// ([`Image::id`]) it returns [`Error::InvalidArgument`] (and stays usable with its
+    /// own). The images of a disc's [`crate::Disc::share`] and `clone` have the same
+    /// identifier: they read the same bytes, so the cursor reads through any of them.
     pub fn next_frame<R: Read + Seek>(&mut self, image: &mut Image<R>) -> Option<Result<AreaFrame, Error>> {
         match self.image_id {
             None => {
