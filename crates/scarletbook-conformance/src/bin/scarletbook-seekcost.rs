@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! scarletbook-seekcost IMAGE [--slot 2ch|mc] [--interval K] [--frames N] [--repeat R]
-//!     [--rtt-ms MS] [--mbps MB]
+//!     [--rtt-ms MS] [--mbps MB] [--positions P]
 //! ```
 //!
 //! For ranges of `N` frames (default 14) starting at 0 %, 16 %, 42 %, 72 % and 99 % of the
@@ -19,6 +19,13 @@
 //! reading (specification 4, 4.2 item 8), with its read calls and sectors, a network model
 //! (`calls x MS + bytes / MB per second`, default 0.5 ms and 110 MB/s) and whether its
 //! frames equal the exact ones.
+//!
+//! A third table measures cold seeks as a consumer that opens the disc afresh for each one
+//! sees them (issue #123): for `P` positions spread over the area (`--positions P`, default
+//! 200; 0 skips it), a newly opened disc with `SeekPolicy::Speculative` opens a range there,
+//! and the table gives the read calls and KiB up to its first frame (stored, before
+//! decoding) and for the whole range decoded, as mean and maximum, and how many ranges
+//! equal the exact ones.
 
 use std::cell::Cell;
 use std::fs::File;
@@ -33,7 +40,7 @@ use scarletbook::{
 };
 
 const USAGE: &str = "usage: scarletbook-seekcost IMAGE [--slot 2ch|mc] [--interval K] [--frames N] [--repeat R] \
-                     [--rtt-ms MS] [--mbps MB]";
+                     [--rtt-ms MS] [--mbps MB] [--positions P]";
 
 /// A reader that counts the bytes read through it, and its read calls.
 struct Counting<R> {
@@ -67,13 +74,22 @@ struct Args {
     repeat: u32,
     rtt_ms: f64,
     mbps: f64,
+    positions: u32,
 }
 
 fn parse() -> Result<Args, String> {
     let mut it = std::env::args().skip(1);
     let image = it.next().ok_or(USAGE)?;
-    let mut args =
-        Args { image, slot: Slot::TwoChannel, interval: 64, frames: 14, repeat: 3, rtt_ms: 0.5, mbps: 110.0 };
+    let mut args = Args {
+        image,
+        slot: Slot::TwoChannel,
+        interval: 64,
+        frames: 14,
+        repeat: 3,
+        rtt_ms: 0.5,
+        mbps: 110.0,
+        positions: 200,
+    };
     while let Some(flag) = it.next() {
         let value = it.next().ok_or_else(|| format!("{flag} needs a value\n{USAGE}"))?;
         let number = |v: &str| v.parse::<u32>().map_err(|_| format!("{flag} must be a number, not {v}"));
@@ -88,6 +104,7 @@ fn parse() -> Result<Args, String> {
             "--interval" => args.interval = number(&value)?,
             "--frames" => args.frames = number(&value)?.max(1),
             "--repeat" => args.repeat = number(&value)?.max(1),
+            "--positions" => args.positions = number(&value)?,
             "--rtt-ms" | "--mbps" => {
                 let v: f64 = value.parse().map_err(|_| format!("{flag} must be a number, not {value}"))?;
                 if !(v.is_finite() && v > 0.0) {
@@ -237,6 +254,104 @@ fn run(args: &Args) -> Result<(), String> {
             if equal { "yes" } else { "no" }
         );
     }
+    if args.positions > 0 {
+        fresh(args, &mut disc, &index, p)?;
+    }
+    Ok(())
+}
+
+/// Opens the image afresh, provisional reading allowed, with its counters at 0 once open.
+/// Counts of bytes and of read calls, shared with a [`Counting`] reader.
+type Counter = Rc<Cell<u64>>;
+
+fn open_cold(args: &Args) -> Result<(Image, Counter, Counter), String> {
+    let (read, calls) = (Rc::new(Cell::new(0u64)), Rc::new(Cell::new(0u64)));
+    let file = File::open(&args.image).map_err(|e| format!("{}: {e}", args.image))?;
+    let reader = Counting { inner: BufReader::new(file), read: Rc::clone(&read), calls: Rc::clone(&calls) };
+    let mut disc = Disc::open(reader).map_err(|e| e.to_string())?;
+    disc.set_seek_policy(args.slot, SeekPolicy::Speculative(SpeculativeOptions::new()))
+        .map_err(|e| e.to_string())?;
+    read.set(0);
+    calls.set(0);
+    Ok((disc, read, calls))
+}
+
+/// Mean and maximum of `v`.
+fn stats(v: &[f64]) -> String {
+    let mean = v.iter().sum::<f64>() / v.len().max(1) as f64;
+    let max = v.iter().copied().fold(0.0, f64::max);
+    format!("{mean:.2} / {max:.0}")
+}
+
+/// The third table: cold seeks to `args.positions` positions, each on a newly opened disc.
+fn fresh(args: &Args, exact: &mut Image, index: &AreaIndex, p: u32) -> Result<(), String> {
+    let slot = args.slot;
+    let span = p.saturating_sub(args.frames).max(1);
+    // Read calls and KiB to the first frame and for the whole range, by kind of start.
+    let mut costs: [[Vec<f64>; 4]; 2] = Default::default();
+    let (mut equal, mut provisional, mut probes) = (0, 0, Vec::new());
+    // A fixed spread over the area (Weyl sequence of the golden ratio).
+    let mut x = 0.5f64;
+    for _ in 0..args.positions {
+        x = (x + 0.618_033_988_749_895) % 1.0;
+        let first = (f64::from(span) * x) as u32;
+        let end = (first + args.frames).min(p);
+        // Up to the first stored frame.
+        let (mut disc, read, calls) = open_cold(args)?;
+        let cursor = disc.range_frames_cursor(slot, first, end).map_err(|e| e.to_string())?;
+        let mut frames = disc.read_frames(cursor);
+        frames.next().transpose().map_err(|e| e.to_string())?;
+        let kind = match frames.into_cursor().resumed_from() {
+            ResumedFrom::Speculative { probes: n, .. } => {
+                provisional += 1;
+                probes.push(f64::from(n));
+                0
+            }
+            _ => 1,
+        };
+        let (first_calls, first_kib) = (calls.get() as f64, read.get() as f64 / 1024.0);
+        // The whole range, decoded.
+        let (mut disc, read, calls) = open_cold(args)?;
+        let cursor = disc.range_audio_cursor(slot, first, end).map_err(|e| e.to_string())?;
+        let got = decode(&mut disc, cursor)?;
+        let row = [first_calls, first_kib, calls.get() as f64, read.get() as f64 / 1024.0];
+        for (v, c) in costs[kind].iter_mut().zip(row) {
+            v.push(c);
+        }
+        let cursor = exact.range_audio_cursor_indexed(slot, first, end, index).map_err(|e| e.to_string())?;
+        if got == decode(exact, cursor)? {
+            equal += 1;
+        }
+    }
+    println!();
+    println!(
+        "Cold seeks on a newly opened disc, {} positions, {} frames each \
+         (mean / max over the positions of each kind of start):",
+        args.positions, args.frames
+    );
+    println!();
+    println!(
+        "| Start | Positions | Read calls to the first frame | KiB to the first frame | Read calls, whole range decoded | KiB, whole range decoded |"
+    );
+    println!("|---|---|---|---|---|---|");
+    for (name, c) in ["provisional", "exact (near the exact start)"].into_iter().zip(&costs) {
+        if !c[0].is_empty() {
+            println!(
+                "| {name} | {} | {} | {} | {} | {} |",
+                c[0].len(),
+                stats(&c[0]),
+                stats(&c[1]),
+                stats(&c[2]),
+                stats(&c[3])
+            );
+        }
+    }
+    println!();
+    println!(
+        "Reads to choose a provisional start (mean / max): {} ({provisional} provisional)",
+        stats(&probes)
+    );
+    println!("Equal to exact reads: {equal} of {}", args.positions);
     Ok(())
 }
 

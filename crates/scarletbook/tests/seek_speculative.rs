@@ -124,8 +124,10 @@ fn well_formed_areas_read_provisionally_alike() {
         assert_eq!(c.counts_from(), Some(lsn));
         let sectors = (bytes.get() - b0) / S as u64;
         costs.push((first, probes, calls.get() - c0, sectors));
-        // Probes of at most 32 sectors, then W + K + the range's own sectors and a chunk.
-        assert!(sectors <= u64::from(probes) * 32 + 32 + 64 + 64 + 32, "first {first}: {sectors} sectors");
+        // Probes of at most 32 sectors, then the range's own sectors and a chunk.
+        assert!(sectors <= u64::from(probes) * 32 + 64 + 32, "first {first}: {sectors} sectors");
+        // The search, then one read sized to the range (#123), and rarely one more.
+        assert!(calls.get() - c0 <= u64::from(probes) + 2, "first {first}: {:?}", costs.last());
     }
     println!("first, probes, read calls, sectors: {costs:?}");
 }

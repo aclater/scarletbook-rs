@@ -16,7 +16,9 @@ use crate::error::Error;
 /// While the request stands, every call that reads audio sectors through any disc of the
 /// image returns [`Error::Cancelled`]: a call that starts then at once, a call in progress
 /// after at most 32 more sectors read (a cursor reads 32 at a time, a provisional search
-/// at most 32 per probe), plus the decoding of one group of frames already started for the
+/// at most 32 per probe), or, if the request arrives during one of the reads sized to the
+/// range after a provisional start, after that read of at most
+/// [`crate::seek::MAX_READ_SECTORS`] sectors (1 MiB), plus the decoding of one group of frames already started for the
 /// frame it is returning. Nothing is lost: the cursor stays where it was, the frames it
 /// holds ahead included (decoding jobs already sent to a pool finish), and once the
 /// request is [withdrawn](CancelToken::withdraw) it continues as if never interrupted (a
@@ -87,7 +89,8 @@ impl CancelToken {
 /// reads; it stays valid after the cursor is dropped.
 ///
 /// The counts are updated with every read the cursor makes (at most 32 sectors at a
-/// time): the scan before a range's first frame, a provisional search, a seek index's
+/// time, except the reads sized to the range after a provisional start, of at most
+/// [`crate::seek::MAX_READ_SECTORS`]): the scan before a range's first frame, a provisional search, a seek index's
 /// replay and the range itself. `sectors_read` is exact; `sectors_expected` is an
 /// estimate (the range's sectors are not known until they are read: its end is placed in
 /// proportion to the area's play time), revised as the cursor reads, at least

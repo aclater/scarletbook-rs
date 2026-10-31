@@ -51,6 +51,15 @@ struct Hook {
     progress: OnceCell<(Progress, u64)>,
     /// The largest lag of the published count behind the sectors actually read.
     lag: Cell<u64>,
+    /// Cancel at the start of a read instead of after it: a request that arrives while
+    /// the read is in progress, which then completes.
+    at_start: Cell<bool>,
+    /// The largest read, in bytes.
+    largest: Cell<u64>,
+    /// The most bytes read after a request before the call returned `Cancelled`.
+    max_after: Cell<u64>,
+    /// Each read: bytes read before it, and its length.
+    reads: std::cell::RefCell<Vec<(u64, u64)>>,
 }
 
 struct Hooked {
@@ -67,8 +76,25 @@ impl Read for Hooked {
             assert!(published <= read && published <= expected);
             h.lag.set(h.lag.get().max(read - published));
         }
+        let cancel_now = |h: &Hook| {
+            if let Some(t) = h.token.get() {
+                if h.every.get() > 0 && h.bytes.get() >= h.next.get() {
+                    h.next.set(h.bytes.get() + h.every.get());
+                    h.at_cancel.set(h.bytes.get());
+                    t.cancel();
+                }
+            }
+        };
+        if h.at_start.get() {
+            cancel_now(h);
+        }
         let n = self.inner.read(buf)?;
         h.bytes.set(h.bytes.get() + n as u64);
+        h.largest.set(h.largest.get().max(n as u64));
+        h.reads.borrow_mut().push((h.bytes.get() - n as u64, n as u64));
+        if h.at_start.get() {
+            return Ok(n);
+        }
         if let Some(t) = h.token.get() {
             if h.every.get() > 0 && h.bytes.get() >= h.next.get() {
                 h.next.set(h.bytes.get() + h.every.get());
@@ -95,7 +121,16 @@ fn hooked(img: &[u8]) -> (Disc<Hooked>, Rc<Hook>) {
 
 /// Reads to the end through `next`, withdrawing each cancellation after checking that it
 /// came within [`BOUND`] sectors: the items and the number of cancellations.
-fn through<T>(hook: &Hook, mut next: impl FnMut() -> Option<Result<T, Error>>) -> (Vec<T>, u32) {
+fn through<T>(hook: &Hook, next: impl FnMut() -> Option<Result<T, Error>>) -> (Vec<T>, u32) {
+    through_within(hook, BOUND, next)
+}
+
+/// [`through`] with a bound of `bound` sectors.
+fn through_within<T>(
+    hook: &Hook,
+    bound: u64,
+    mut next: impl FnMut() -> Option<Result<T, Error>>,
+) -> (Vec<T>, u32) {
     let (mut out, mut cancels) = (Vec::new(), 0);
     let token = hook.token.get().unwrap();
     while let Some(r) = next() {
@@ -103,7 +138,8 @@ fn through<T>(hook: &Hook, mut next: impl FnMut() -> Option<Result<T, Error>>) -
             Ok(v) => out.push(v),
             Err(Error::Cancelled) => {
                 let after = hook.bytes.get() - hook.at_cancel.get();
-                assert!(after <= BOUND * S as u64, "{after} bytes read after the request");
+                assert!(after <= bound * S as u64, "{after} bytes read after the request");
+                hook.max_after.set(hook.max_after.get().max(after));
                 cancels += 1;
                 token.withdraw();
             }
@@ -178,6 +214,49 @@ fn cancelled_reads_resume_exactly() {
             }
         }
     }
+}
+
+/// The reads after a provisional start are sized to the range (issue #123), each at most
+/// `MAX_READ_SECTORS`: a request arriving while one is in progress cannot stop it; the call
+/// returns `Cancelled` once it completes, and every other read stays within 32 sectors. Progress stays consistent across it (`Hooked::read` checks it).
+#[test]
+#[cfg_attr(miri, ignore = "reads thousands of sectors")]
+fn a_sized_read_is_the_only_longer_one() {
+    use scarletbook::seek::MAX_READ_SECTORS;
+    let img = image(3000);
+    let mut plain = Disc::open(Cursor::new(img.clone())).unwrap();
+    let (first, end) = (2000, 2200);
+    let want = decoded(&mut plain, first, end);
+    // Where the sized read starts, read without interruption.
+    let (mut disc, hook) = hooked(&img);
+    let options = SpeculativeOptions::new().with_min_gap_sectors(16);
+    disc.set_seek_policy(Slot::TwoChannel, SeekPolicy::Speculative(options)).unwrap();
+    let base = hook.bytes.get();
+    assert_eq!(decoded(&mut disc, first, end), want);
+    let reads = hook.reads.borrow().clone();
+    let &(at, len) = reads.iter().filter(|r| r.0 >= base).find(|r| r.1 > BOUND * S as u64).unwrap();
+    // A request at the start of that read (and of later ones): it completes, then the call
+    // returns `Cancelled`; withdrawn, the reading goes on to the same frames.
+    let (mut disc, hook) = hooked(&img);
+    disc.set_seek_policy(Slot::TwoChannel, SeekPolicy::Speculative(options)).unwrap();
+    hook.at_start.set(true);
+    let c = disc.range_audio_cursor(Slot::TwoChannel, first, end).unwrap();
+    let mut it = disc.read_track_audio(c);
+    let p = it.progress();
+    hook.progress.set((p.clone(), base)).unwrap();
+    hook.every.set(BOUND * S as u64);
+    hook.next.set(at);
+    let (got, cancels) = through_within(&hook, MAX_READ_SECTORS, || it.next());
+    assert_eq!(got, want);
+    assert!(cancels > 0);
+    assert_eq!(hook.max_after.get(), len, "the sized read completes after the request");
+    let (read, expected) = p.get();
+    assert_eq!(read, expected, "complete");
+    // Only the reads sized to the range are longer than a chunk, each at most
+    // MAX_READ_SECTORS, and they come one after the other, from the provisional start on.
+    let long: Vec<_> = reads.iter().filter(|r| r.0 >= base && r.1 > BOUND * S as u64).collect();
+    assert!(long.iter().all(|r| r.1 <= MAX_READ_SECTORS * S as u64), "{long:?}");
+    assert!(long.windows(2).all(|w| w[1].0 == w[0].0 + w[0].1), "{long:?}");
 }
 
 /// With a pool decoding ahead, a cancelled cursor keeps the frames in flight and resumes
