@@ -11,8 +11,8 @@
 #include <stdlib.h>
 #include "scarletbook.h"
 
-static int fail(const char *what, enum SbStatus s) {
-    fprintf(stderr, "%s: %s (%s)\n", what, sb_status_name((int32_t)s), sb_last_error_message());
+static int fail(const char *what, SbStatus s) {
+    fprintf(stderr, "%s: %s (%s)\n", what, sb_status_name(s), sb_last_error_message());
     return 1;
 }
 
@@ -22,13 +22,13 @@ struct Decoded {
 
 /* Decodes track t of the area from slot (on pool, if not NULL) into *out: the counts and an
  * FNV-1a hash of every frame's bytes. Returns SB_STATUS_OK, or the failing call's status. */
-static enum SbStatus decode(struct SbDisc *disc, uint32_t slot, uint32_t t, struct SbPool *pool,
+static SbStatus decode(struct SbDisc *disc, uint32_t slot, uint32_t t, struct SbPool *pool,
                             struct Decoded *out) {
     struct SbTrackAudio *audio = NULL;
     struct SbFrameInfo fi;
     uint8_t *buf;
     size_t cap, i;
-    enum SbStatus s = sb_track_audio_open(disc, slot, t, &audio);
+    SbStatus s = sb_track_audio_open(disc, slot, t, &audio);
     if (s != SB_STATUS_OK) return s;
     if (pool != NULL && (s = sb_track_audio_set_pool(audio, pool)) != SB_STATUS_OK) {
         sb_track_audio_free(audio);
@@ -53,7 +53,7 @@ int main(int argc, char **argv) {
     struct SbDisc *disc = NULL;
     struct SbPool *pool = NULL;
     struct SbDiscInfo info;
-    enum SbStatus s;
+    SbStatus s;
     uint32_t a;
     char title[256];
     size_t len = 0;
@@ -62,18 +62,30 @@ int main(int argc, char **argv) {
         fprintf(stderr, "usage: smoke IMAGE\n");
         return 2;
     }
+    /* The library must implement the ABI this program was compiled against. */
+    if (sb_abi_version() != SB_ABI_VERSION) {
+        fprintf(stderr, "library ABI %u, header ABI %u\n", sb_abi_version(), (unsigned)SB_ABI_VERSION);
+        return 1;
+    }
     printf("scarletbook %s\n", sb_version());
+    {
+        /* ABI 2: a DST frame longer than SB_MAX_FRAME_BYTES is refused before it is read. */
+        uint8_t frame[1] = {0}, out[4704];
+        if ((s = sb_dst_decode(frame, (size_t)SB_MAX_FRAME_BYTES + 1, 1, out, sizeof out, NULL)) !=
+            SB_STATUS_INVALID_ARGUMENT)
+            return fail("sb_dst_decode of an oversized frame", s);
+    }
     if ((s = sb_pool_new(2, &pool)) != SB_STATUS_OK) return fail("sb_pool_new", s);
     s = sb_disc_open_file(argv[1], &disc);
     if (s != SB_STATUS_OK) {
         /* A rejected image is a valid outcome, not a failure of the library. */
-        printf("rejected: %s\n", sb_status_name((int32_t)s));
+        printf("rejected: %s\n", sb_status_name(s));
         sb_pool_free(pool);
         return s < SB_STATUS_NO_AUDIO_AREAS ? 1 : 0;
     }
     if ((s = sb_disc_info(disc, &info)) != SB_STATUS_OK) return fail("sb_disc_info", s);
-    printf("sector size %u, %llu sectors, %u areas, %u warnings\n", info.sector_size,
-           (unsigned long long)info.sectors, info.area_count, info.warning_count);
+    printf("sector size %u, %llu sectors, %u areas, %u warnings, hybrid %u\n", info.sector_size,
+           (unsigned long long)info.sectors, info.area_count, info.warning_count, info.hybrid);
     s = sb_disc_string(disc, SB_DISC_STRING_ALBUM_TITLE, title, sizeof title, &len);
     if (s == SB_STATUS_OK) printf("album title: %s\n", title);
 
@@ -85,7 +97,7 @@ int main(int argc, char **argv) {
         for (t = 1; t <= area.track_count; t++) {
             struct Decoded here, pooled;
             if ((s = sb_track_check(disc, area.slot, t)) != SB_STATUS_OK) {
-                printf("  track %u: no audio (%s)\n", t, sb_status_name((int32_t)s));
+                printf("  track %u: no audio (%s)\n", t, sb_status_name(s));
                 continue;
             }
             if ((s = decode(disc, area.slot, t, NULL, &here)) != SB_STATUS_OK) return fail("decoding", s);

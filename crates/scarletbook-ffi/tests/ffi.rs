@@ -161,7 +161,7 @@ fn hash_track_on(
         let (s, fi) = audio_read(a, disc, &mut buf);
         match s {
             SbStatus::End => break,
-            SbStatus::Ok => assert_eq!(fi.size, buf.len()),
+            SbStatus::Ok => assert_eq!(fi.size as usize, buf.len()),
             s => panic!("{s:?}: {}", last_error()),
         }
         for (c, h) in hashers.iter_mut().enumerate() {
@@ -531,6 +531,30 @@ fn dst_decode_reports_the_rule() {
     assert_eq!(decode(&[0x00, 1], 7, &mut out, &mut rule), SbStatus::InvalidArgument);
 }
 
+/// A DST frame is at most SB_MAX_FRAME_BYTES: a longer input is refused before it is read.
+#[test]
+fn dst_decode_refuses_frames_over_the_maximum() {
+    let mut out = vec![0u8; 2 * 4704];
+    let mut frame = vec![0u8; SB_MAX_FRAME_BYTES + 1];
+    let decode = |frame: *const u8, len: usize, out: &mut [u8], rule: &mut u32| {
+        // SAFETY: `frame` is valid for `len` bytes, or (the last call) the call must refuse
+        // `len` without reading; `out` is valid and does not overlap; `rule` is valid.
+        unsafe { sb_dst_decode(frame, len, 2, out.as_mut_ptr(), out.len(), rule) }
+    };
+    let mut rule = 99u32;
+    let s = decode(frame.as_ptr(), SB_MAX_FRAME_BYTES, &mut out, &mut rule);
+    assert_ne!(s, SbStatus::InvalidArgument, "{}", last_error());
+    rule = 99;
+    assert_eq!(
+        decode(frame.as_ptr(), SB_MAX_FRAME_BYTES + 1, &mut out, &mut rule),
+        SbStatus::InvalidArgument
+    );
+    assert_eq!(rule, 99, "no rule for a refused argument");
+    assert!(last_error().contains("65536"), "{}", last_error());
+    frame.truncate(1);
+    assert_eq!(decode(frame.as_ptr(), usize::MAX, &mut out, &mut rule), SbStatus::InvalidArgument);
+}
+
 /// State shared with the callbacks: the image, and (once set) a disc and track handle to
 /// call back into from inside a read, recording what those calls return.
 struct User {
@@ -832,32 +856,40 @@ fn open_next_refusals_leave_prev_usable() {
 #[test]
 fn abi_version_and_layouts() {
     assert_eq!(sb_abi_version(), SB_ABI_VERSION);
-    assert_eq!(SB_ABI_VERSION, 1);
+    assert_eq!(SB_ABI_VERSION, 2);
+    // SbStatus is an int32_t in C, and the other enumerations name uint32_t values.
     assert_eq!(std::mem::size_of::<SbStatus>(), 4);
+    assert_eq!(SbStatus::OutOfMemory as i32, -17);
+    assert_eq!(std::mem::size_of::<SbFrameKind>(), 4);
     assert_eq!(SB_MAX_FRAME_BYTES, 65_536);
 }
 
-/// Asserts a struct's size, alignment and the offset of each of its fields, in order.
+/// Asserts a struct's size, alignment and the offset of each of its fields, in order, and
+/// that it has no padding: its fields' sizes add up to its size.
 macro_rules! assert_layout {
-    ($t:ty, size $size:expr, align $align:expr, { $($field:ident: $offset:expr),* $(,)? }) => {
+    ($t:ty, size $size:expr, align $align:expr, { $($field:ident: $offset:expr),* $(,)? }) => {{
         assert_eq!(std::mem::size_of::<$t>(), $size, "size of {}", stringify!($t));
         assert_eq!(std::mem::align_of::<$t>(), $align, "alignment of {}", stringify!($t));
         $(assert_eq!(
             std::mem::offset_of!($t, $field), $offset, "{}.{}", stringify!($t), stringify!($field)
         );)*
-    };
+        let v = <$t as Default>::default();
+        let fields = 0 $(+ std::mem::size_of_val(&v.$field))*;
+        assert_eq!(fields, $size, "padding in {}", stringify!($t));
+    }};
 }
 
-/// The struct layouts documented in the header (each struct's "Layout" line), on 64-bit
-/// targets: every release target. Callers allocate the structs, so a change to any of
-/// these numbers is a breaking change (README, "ABI compatibility").
+/// The struct layouts documented in the header (each struct's "Layout" line). Callers
+/// allocate the structs, so a change to any of these numbers is a breaking change
+/// (README, "ABI compatibility"). They hold on every target: only `SbWarning.code`, a
+/// pointer, and the alignment of `uint64_t` and `int64_t` depend on it.
 #[test]
-#[cfg(target_pointer_width = "64")]
-fn struct_layouts_on_64_bit_targets() {
-    assert_layout!(SbDiscInfo, size 40, align 8, {
-        sector_size: 0, sectors: 8, version_major: 16, version_minor: 17, album_set_size: 18,
-        album_sequence_number: 20, hybrid: 22, manufacturer_sector: 23, year: 24, month: 26,
-        day: 27, area_count: 28, warning_count: 32,
+fn struct_layouts() {
+    let align64 = std::mem::align_of::<u64>();
+    assert_layout!(SbDiscInfo, size 32, align align64, {
+        sectors: 0, sector_size: 8, version_major: 12, version_minor: 13, album_set_size: 14,
+        album_sequence_number: 16, hybrid: 18, manufacturer_sector: 19, year: 20, month: 22,
+        day: 23, area_count: 24, warning_count: 28,
     });
     assert_layout!(SbAreaInfo, size 52, align 4, {
         slot: 0, kind_channels: 4, toc_lsn: 8, toc_sectors: 12, channel_count: 16,
@@ -867,13 +899,21 @@ fn struct_layouts_on_64_bit_targets() {
     assert_layout!(SbTrackInfo, size 28, align 4, {
         number: 0, start_lsn: 4, length_sectors: 8, start_frame: 12, duration_frames: 16,
         start_flags: 20, duration_flags: 21, has_genre: 22, genre_category: 23, genre_index: 24,
+        reserved: 25,
     });
-    assert_layout!(SbWarning, size 24, align 8, { code: 0, slot: 8, track: 12, lsn: 16 });
-    assert_layout!(SbFrameInfo, size 24, align 8, { number: 0, status: 4, dst_rule: 8, size: 16 });
-    assert_layout!(SbRawFrameInfo, size 16, align 8, { number: 0, kind: 4, size: 8 });
-    // The C types of the fields that are not fixed-width integers.
-    assert_eq!(std::mem::size_of::<bool>(), 1);
-    assert_eq!(std::mem::size_of::<usize>(), 8);
+    assert_layout!(SbFrameInfo, size 16, align 4, { number: 0, status: 4, dst_rule: 8, size: 12 });
+    assert_layout!(SbRawFrameInfo, size 12, align 4, { number: 0, kind: 4, size: 8 });
+    // SbWarning ends with its pointer: no padding where the pointer is 8 bytes (every
+    // release target).
+    assert_eq!(std::mem::align_of::<SbWarning>(), align64);
+    assert_eq!(std::mem::offset_of!(SbWarning, lsn), 0);
+    assert_eq!(std::mem::offset_of!(SbWarning, slot), 8);
+    assert_eq!(std::mem::offset_of!(SbWarning, track), 12);
+    assert_eq!(std::mem::offset_of!(SbWarning, code), 16);
+    assert_eq!(
+        std::mem::size_of::<SbWarning>(),
+        (16 + std::mem::size_of::<usize>()).next_multiple_of(align64)
+    );
 }
 
 #[test]
@@ -936,7 +976,7 @@ fn read_frames(a: *mut SbTrackAudio, disc: *const SbDisc) -> Vec<(u32, u32, Vec<
         let (s, fi) = audio_read(a, disc, &mut buf);
         match s {
             SbStatus::End => return out,
-            SbStatus::Ok => out.push((fi.number, fi.status, buf[..fi.size].to_vec())),
+            SbStatus::Ok => out.push((fi.number, fi.status, buf[..fi.size as usize].to_vec())),
             s => panic!("{s:?}: {}", last_error()),
         }
     }
@@ -1354,7 +1394,7 @@ fn read_raw(raw: *mut SbRawFrames, disc: *const SbDisc) -> Vec<(u32, u32, Vec<u8
         let (s, fi) = raw_read(raw, disc, &mut buf);
         match s {
             SbStatus::End => return out,
-            SbStatus::Ok => out.push((fi.number, fi.kind, buf[..fi.size].to_vec())),
+            SbStatus::Ok => out.push((fi.number, fi.kind, buf[..fi.size as usize].to_vec())),
             s => panic!("{s:?}: {}", last_error()),
         }
     }
@@ -1467,7 +1507,7 @@ fn read_equivalents(raw: *mut SbRawFrames, disc: *const SbDisc) -> Vec<(u32, u32
         let s = unsafe { sb_raw_frames_read_dst_equivalent(raw, disc, buf.as_mut_ptr(), buf.len(), &mut fi) };
         match s {
             SbStatus::End => return out,
-            SbStatus::Ok => out.push((fi.number, fi.kind, buf[..fi.size].to_vec())),
+            SbStatus::Ok => out.push((fi.number, fi.kind, buf[..fi.size as usize].to_vec())),
             s => panic!("{s:?}: {}", last_error()),
         }
     }
@@ -1489,13 +1529,13 @@ fn raw_frames_buffers_and_continuation() {
     let mut small = [0u8; 4];
     let (s, fi) = raw_read(r, disc, &mut small);
     assert_eq!((s, fi.number, fi.kind), (SbStatus::BufferTooSmall, 0, SbFrameKind::Dst as u32));
-    assert!(fi.size > 4 && fi.size <= SB_MAX_FRAME_BYTES);
+    assert!(fi.size > 4 && fi.size as usize <= SB_MAX_FRAME_BYTES);
     let mut fi2 = SbRawFrameInfo::default();
     // SAFETY: `r` and `disc` are live handles; a NULL buffer is a size query.
     let s = unsafe { sb_raw_frames_read(r, disc, ptr::null_mut(), 0, &mut fi2) };
     assert_eq!(s, SbStatus::BufferTooSmall);
     assert_eq!((fi2.number, fi2.size), (0, fi.size));
-    let mut buf = vec![0u8; fi.size];
+    let mut buf = vec![0u8; fi.size as usize];
     assert_eq!(raw_read(r, disc, &mut buf).0, SbStatus::Ok);
     assert_eq!(raw_read(r, other, &mut buf).0, SbStatus::InvalidArgument);
     assert_eq!(raw_read(ptr::null(), disc, &mut buf).0, SbStatus::InvalidArgument);
@@ -1834,7 +1874,9 @@ fn handles_share_pools() {
                     continue;
                 }
                 match audio_read(h, disc, &mut buf) {
-                    (SbStatus::Ok, fi) => got[i].push((fi.number, fi.status, buf[..fi.size].to_vec())),
+                    (SbStatus::Ok, fi) => {
+                        got[i].push((fi.number, fi.status, buf[..fi.size as usize].to_vec()))
+                    }
                     (SbStatus::End, _) => done[i] = true,
                     (s, _) => panic!("{s:?}: {}", last_error()),
                 }
@@ -1883,7 +1925,7 @@ fn pools_are_freed_in_any_order() {
     let mut first = |h| {
         let (s, fi) = audio_read(h, disc, &mut buf);
         assert_eq!(s, SbStatus::Ok);
-        (fi.number, fi.status, buf[..fi.size].to_vec())
+        (fi.number, fi.status, buf[..fi.size as usize].to_vec())
     };
     // The pool first: the handle keeps it running.
     let pool = pool_new(4).unwrap();
@@ -2433,12 +2475,12 @@ fn kept_index(disc: *const SbDisc) -> Option<(u64, bool)> {
     match unsafe { sb_disc_seek_index_get(disc, 0, &mut index) } {
         SbStatus::Absent => None,
         SbStatus::Ok => {
-            let (mut lsn, mut complete) = (0u64, false);
+            let (mut lsn, mut complete) = (0u64, 0u8);
             // SAFETY: a live index handle and valid out-pointers.
             assert_eq!(unsafe { sb_seek_index_frontier(index, &mut lsn, &mut complete) }, SbStatus::Ok);
             // SAFETY: a live index handle, freed once.
             unsafe { sb_seek_index_free(index) };
-            Some((lsn, complete))
+            Some((lsn, complete != 0))
         }
         s => panic!("{s:?}: {}", last_error()),
     }
@@ -2523,10 +2565,10 @@ fn read_at_clones_keep_the_image_for_caller_kept_indexes() {
         // SAFETY: a live handle and a valid out-pointer.
         let s = unsafe { sb_seek_index_new(disc, 0, 4, SB_SEEK_DEFAULT_INLINE_BUDGET, &mut index) };
         assert_eq!(s, SbStatus::Ok, "{}", last_error());
-        let mut complete = false;
+        let mut complete = 0u8;
         // SAFETY: live handles and a valid out-pointer.
         assert_eq!(unsafe { sb_seek_index_extend(disc, index, 8, &mut complete) }, SbStatus::Ok);
-        assert!(!complete);
+        assert_eq!(complete, 0);
         // SAFETY: as above.
         let extended = unsafe { sb_seek_index_extend(d, index, 8, &mut complete) };
         let mut a = ptr::null_mut();
@@ -2537,12 +2579,12 @@ fn read_at_clones_keep_the_image_for_caller_kept_indexes() {
         // SAFETY: live handles, used on this thread only.
         let absorbed = unsafe { sb_track_audio_absorb(a, index) };
         audio_free(a);
-        let (mut lsn, mut complete) = (0u64, false);
+        let (mut lsn, mut complete) = (0u64, 0u8);
         // SAFETY: a live index handle and valid out-pointers.
         assert_eq!(unsafe { sb_seek_index_frontier(index, &mut lsn, &mut complete) }, SbStatus::Ok);
         // SAFETY: a live index handle, freed once.
         unsafe { sb_seek_index_free(index) };
-        (extended, absorbed, complete)
+        (extended, absorbed, complete != 0)
     };
     for d in [at_clone, cb_clone] {
         assert_eq!(absorb_after_read(d), (SbStatus::Ok, SbStatus::Ok, true), "{}", last_error());

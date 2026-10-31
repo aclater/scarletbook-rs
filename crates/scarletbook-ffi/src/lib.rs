@@ -26,8 +26,10 @@ use scarletbook::{
     WarningCode,
 };
 
-/// Result of every call.
-#[repr(C)]
+/// Result of every call: an `int32_t`, whose values are the `SB_STATUS_*` constants. In C
+/// before C23, `SbStatus` is a typedef of `int32_t`; in C23 and C++, an enumeration whose
+/// underlying type is `int32_t`.
+#[repr(i32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SbStatus {
     /// Success.
@@ -74,7 +76,7 @@ pub enum SbStatus {
 }
 
 /// Area slots, as passed in `slot` arguments.
-#[repr(C)]
+#[repr(u32)]
 #[derive(Clone, Copy, Debug)]
 pub enum SbSlot {
     /// The 2-channel slot.
@@ -84,7 +86,7 @@ pub enum SbSlot {
 }
 
 /// How a decoded frame was produced (`SbFrameInfo.status`).
-#[repr(C)]
+#[repr(u32)]
 #[derive(Clone, Copy, Debug)]
 pub enum SbFrameStatus {
     /// A plain DSD frame, passed through.
@@ -98,7 +100,7 @@ pub enum SbFrameStatus {
 }
 
 /// What a timeline position holds, undecoded (`SbRawFrameInfo.kind`).
-#[repr(C)]
+#[repr(u32)]
 #[derive(Clone, Copy, Debug)]
 pub enum SbFrameKind {
     /// A plain DSD frame: channels x 4704 bytes, interleaved.
@@ -111,7 +113,7 @@ pub enum SbFrameKind {
 
 /// Disc-level strings for `sb_disc_string`: the 16 disc text items of specification 2,
 /// 2.5.4, then the two catalogue numbers.
-#[repr(C)]
+#[repr(u32)]
 #[derive(Clone, Copy, Debug)]
 pub enum SbDiscString {
     /// Album title.
@@ -153,7 +155,7 @@ pub enum SbDiscString {
 }
 
 /// Area strings for `sb_area_string`, in the order of specification 3, 3.3.
-#[repr(C)]
+#[repr(u32)]
 #[derive(Clone, Copy, Debug)]
 pub enum SbAreaString {
     /// Description.
@@ -168,7 +170,7 @@ pub enum SbAreaString {
 
 /// Track strings for `sb_track_string`: the text item types 0x01 to 0x07 and 0x81 to 0x87
 /// of specification 3, 3.8, then the ISRC.
-#[repr(C)]
+#[repr(u32)]
 #[derive(Clone, Copy, Debug)]
 pub enum SbTrackString {
     /// Title (type 0x01).
@@ -205,16 +207,18 @@ pub enum SbTrackString {
 
 /// Disc-level information.
 ///
-/// Layout on 64-bit targets: 40 bytes, aligned to 8, with 4 bytes of padding after
-/// `sector_size` (so `sectors` is at offset 8) and 4 at the end; `hybrid` and
-/// `manufacturer_sector` (1 byte each) are at offsets 22 and 23.
+/// Layout: 32 bytes, without padding: `sectors` at offset 0, `sector_size` at 8,
+/// `version_major` and `version_minor` at 12 and 13, `album_set_size` at 14,
+/// `album_sequence_number` at 16, `hybrid` and `manufacturer_sector` at 18 and 19, `year`
+/// at 20, `month` and `day` at 22 and 23, `area_count` at 24, `warning_count` at 28.
+/// Aligned to 8 (to 4 where `uint64_t` is, as on 32-bit x86).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SbDiscInfo {
-    /// Stored sector size: 2048, 2054 or 2064.
-    pub sector_size: u32,
     /// Number of logical sectors in the image.
     pub sectors: u64,
+    /// Stored sector size: 2048, 2054 or 2064.
+    pub sector_size: u32,
     /// Master TOC version.
     pub version_major: u8,
     /// Master TOC version.
@@ -223,10 +227,10 @@ pub struct SbDiscInfo {
     pub album_set_size: u16,
     /// Album sequence number.
     pub album_sequence_number: u16,
-    /// Hybrid disc flag.
-    pub hybrid: bool,
-    /// Whether the manufacturer sector is present.
-    pub manufacturer_sector: bool,
+    /// Hybrid disc flag: 1 or 0.
+    pub hybrid: u8,
+    /// Whether the manufacturer sector is present: 1 or 0.
+    pub manufacturer_sector: u8,
     /// Date (0 = not set).
     pub year: u16,
     /// Date (0 = not set).
@@ -275,8 +279,8 @@ pub struct SbAreaInfo {
 
 /// Information about one track.
 ///
-/// Layout: 28 bytes, aligned to 4: the five `uint32_t` at offsets 0 to 16, the five
-/// 1-byte fields at 20 to 24, then 3 bytes of padding.
+/// Layout: 28 bytes, aligned to 4, without padding: the five `uint32_t` at offsets 0 to
+/// 16, the five 1-byte fields at 20 to 24, then `reserved` at 25 to 27.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SbTrackInfo {
@@ -294,35 +298,38 @@ pub struct SbTrackInfo {
     pub start_flags: u8,
     /// Duration flags byte.
     pub duration_flags: u8,
-    /// Whether the area has genres (`SACD_IGL`).
-    pub has_genre: bool,
+    /// Whether the area has genres (`SACD_IGL`): 1 or 0.
+    pub has_genre: u8,
     /// Genre table byte.
     pub genre_category: u8,
     /// Genre index byte.
     pub genre_index: u8,
+    /// Reserved: written as 0.
+    pub reserved: [u8; 3],
 }
 
 /// A warning.
 ///
-/// Layout on 64-bit targets: 24 bytes, aligned to 8, without padding: `code` at offset 0,
-/// `slot` at 8, `track` at 12, `lsn` at 16.
+/// Layout: `lsn` at offset 0, `slot` at 8, `track` at 12, `code` at 16. On 64-bit
+/// targets 24 bytes, aligned to 8, without padding. On 32-bit targets the pointer `code`
+/// takes 4 bytes: 20 bytes in all, and 4 bytes of padding at the end where `int64_t` is
+/// aligned to 8 (as on 32-bit Arm).
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct SbWarning {
-    /// The diagnostic code of specification 7 (a static string).
-    pub code: *const c_char,
+    /// The LSN the warning concerns (`audio-sector-malformed`), or -1.
+    pub lsn: i64,
     /// `SbSlot`, or -1 if the warning concerns no area.
     pub slot: i32,
     /// Track number, or 0 if the warning concerns no track.
     pub track: u32,
-    /// The LSN the warning concerns (`audio-sector-malformed`), or -1.
-    pub lsn: i64,
+    /// The diagnostic code of specification 7 (a static string).
+    pub code: *const c_char,
 }
 
 /// Information about one decoded frame.
 ///
-/// Layout on 64-bit targets: 24 bytes, aligned to 8, with 4 bytes of padding after
-/// `dst_rule` (so `size` is at offset 16).
+/// Layout: 16 bytes, aligned to 4, without padding (4 fields of 4 bytes).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SbFrameInfo {
@@ -333,7 +340,7 @@ pub struct SbFrameInfo {
     /// For an invalid DST frame, the rule of specification 5, 5.6; otherwise 0.
     pub dst_rule: u32,
     /// Bytes written: channels x 4704.
-    pub size: usize,
+    pub size: u32,
 }
 
 /// The largest frame `sb_raw_frames_read` returns, in bytes (specification 4, 4.4.3): a
@@ -345,7 +352,7 @@ const _: () = assert!(SB_MAX_FRAME_BYTES == scarletbook::audio::MAX_FRAME_BYTES)
 
 /// Information about one undecoded timeline position.
 ///
-/// Layout on 64-bit targets: 16 bytes, aligned to 8, without padding: `size` at offset 8.
+/// Layout: 12 bytes, aligned to 4, without padding (3 fields of 4 bytes).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SbRawFrameInfo {
@@ -355,7 +362,7 @@ pub struct SbRawFrameInfo {
     pub kind: u32,
     /// The frame's size in bytes (0 for a missing position): the bytes written, or with
     /// `SB_STATUS_BUFFER_TOO_SMALL` the bytes needed. At most `SB_MAX_FRAME_BYTES`.
-    pub size: usize,
+    pub size: u32,
 }
 
 type Reader = Box<dyn ReadSeek + Send>;
@@ -793,9 +800,11 @@ unsafe fn open_reader(
 /// The version of this C ABI. It is incremented on every breaking change: a function,
 /// struct layout, enum value or macro of this header removed or changed, or a documented
 /// behaviour changed incompatibly. Additions (new functions, types, enum values, macros)
-/// keep it. 1 is the first released ABI. The compatibility policy is in the repository's
-/// README ("ABI compatibility").
-pub const SB_ABI_VERSION: u32 = 1;
+/// keep it. 1 is the first released ABI; 2 made statuses, sizes and flags fixed-width
+/// integers and the structs free of padding, and bounds `sb_dst_decode`'s input. The
+/// compatibility policy, and what changed from 1 to 2, are in the repository's README
+/// ("ABI compatibility").
+pub const SB_ABI_VERSION: u32 = 2;
 
 /// The ABI version the library was built with; compare it with `SB_ABI_VERSION` from the
 /// header you compiled against.
@@ -1552,14 +1561,14 @@ pub unsafe extern "C" fn sb_disc_info(disc: *const SbDisc, out: *mut SbDiscInfo)
         let toc = d.toc();
         let m = &toc.master;
         let info = SbDiscInfo {
-            sector_size: toc.sector_format.stored_size() as u32,
             sectors: toc.sectors,
+            sector_size: toc.sector_format.stored_size() as u32,
             version_major: m.version.major,
             version_minor: m.version.minor,
             album_set_size: m.album_set_size,
             album_sequence_number: m.album_sequence_number,
-            hybrid: m.hybrid(),
-            manufacturer_sector: m.manufacturer.is_some(),
+            hybrid: u8::from(m.hybrid()),
+            manufacturer_sector: u8::from(m.manufacturer.is_some()),
             year: m.date.year,
             month: m.date.month,
             day: m.date.day,
@@ -1780,9 +1789,10 @@ pub unsafe extern "C" fn sb_track_info(
             duration_frames: t.duration_frames,
             start_flags: t.start_flags,
             duration_flags: t.duration_flags,
-            has_genre: t.genre.is_some(),
+            has_genre: u8::from(t.genre.is_some()),
             genre_category: t.genre.map_or(0, |g| g.category),
             genre_index: t.genre.map_or(0, |g| g.index),
+            reserved: [0; 3],
         };
         // SAFETY: forwarded contract.
         unsafe { write_out(out, info) }?;
@@ -1848,10 +1858,10 @@ fn warning_code(code: WarningCode) -> &'static CStr {
 
 fn sb_warning(w: &scarletbook::Warning) -> SbWarning {
     SbWarning {
-        code: warning_code(w.code).as_ptr(),
+        lsn: w.lsn.map_or(-1, i64::from),
         slot: w.slot.map_or(-1, |s| slot_index(s) as i32),
         track: w.track.map_or(0, u32::from),
-        lsn: w.lsn.map_or(-1, i64::from),
+        code: warning_code(w.code).as_ptr(),
     }
 }
 
@@ -2198,7 +2208,8 @@ pub unsafe extern "C" fn sb_track_audio_read(
         // SAFETY: buf is valid for cap >= size >= n bytes of writes; frame.data is owned
         // here, so the regions do not overlap.
         unsafe { std::ptr::copy_nonoverlapping(frame.data.as_ptr(), buf, n) };
-        let fi = SbFrameInfo { number: frame.number, status: status as u32, dst_rule: rule, size: n };
+        // n <= size = channels x 4704, so it fits.
+        let fi = SbFrameInfo { number: frame.number, status: status as u32, dst_rule: rule, size: n as u32 };
         if !info.is_null() {
             // SAFETY: non-NULL and valid for a write by this function's contract.
             unsafe { info.write(fi) };
@@ -2760,7 +2771,8 @@ unsafe fn raw_read(
             (FrameContent::Missing, false) => std::borrow::Cow::Borrowed(&[]),
         };
         let size = bytes.len();
-        let fi = SbRawFrameInfo { number: frame.number, kind: kind as u32, size };
+        // At most SB_MAX_FRAME_BYTES (a stored frame or its DST equivalent), so it fits.
+        let fi = SbRawFrameInfo { number: frame.number, kind: kind as u32, size: size as u32 };
         if !info.is_null() {
             // SAFETY: non-NULL and valid for a write by this function's contract.
             unsafe { info.write(fi) };
@@ -2869,7 +2881,9 @@ pub unsafe extern "C" fn sb_raw_frames_free(raw: *mut SbRawFrames) {
 
 /// Decodes one DST frame of `channels` channels (1 to 6) into the first `channels x 4704`
 /// bytes of `out`. On `SB_STATUS_INVALID_DST_FRAME`, `*rule` (if not NULL) receives the
-/// rule of specification 5, 5.6 and the output bytes are unspecified.
+/// rule of specification 5, 5.6 and the output bytes are unspecified. A frame is at most
+/// `SB_MAX_FRAME_BYTES` long (specification 4, 4.4.3 and 7, 7.6): a longer `len` returns
+/// `SB_STATUS_INVALID_ARGUMENT` without reading `frame`.
 ///
 /// # Safety
 ///
@@ -2891,6 +2905,10 @@ pub unsafe extern "C" fn sb_dst_decode(
         let need = usize::from(ch) * scarletbook::dst::FL;
         if out.is_null() || out_len < need {
             return Err(Failure(SbStatus::BufferTooSmall, format!("the output needs {need} bytes")));
+        }
+        if len > SB_MAX_FRAME_BYTES {
+            let msg = format!("a DST frame is at most {SB_MAX_FRAME_BYTES} bytes, not {len}");
+            return Err(Failure(SbStatus::InvalidArgument, msg));
         }
         let input: &[u8] = if len == 0 {
             &[]
@@ -2923,13 +2941,18 @@ pub const SB_SEEK_DEFAULT_INTERVAL: u32 = 64;
 pub const SB_SEEK_MAX_INTERVAL: u32 = 65_536;
 
 /// The default bound on the bytes of frames under assembly a seek index stores (1 MiB).
-pub const SB_SEEK_DEFAULT_INLINE_BUDGET: usize = 1_048_576;
+pub const SB_SEEK_DEFAULT_INLINE_BUDGET: u64 = 1_048_576;
+
+/// An inline budget as the library takes it: one beyond the address space is no bound.
+fn budget(inline_budget: u64) -> usize {
+    usize::try_from(inline_budget).unwrap_or(usize::MAX)
+}
 
 // The constants above are the library's (cbindgen needs literals).
 const _: () = {
     assert!(SB_SEEK_DEFAULT_INTERVAL == scarletbook::seek::DEFAULT_INTERVAL);
     assert!(SB_SEEK_MAX_INTERVAL == scarletbook::seek::MAX_INTERVAL);
-    assert!(SB_SEEK_DEFAULT_INLINE_BUDGET == scarletbook::seek::DEFAULT_INLINE_BUDGET);
+    assert!(SB_SEEK_DEFAULT_INLINE_BUDGET == scarletbook::seek::DEFAULT_INLINE_BUDGET as u64);
 };
 
 /// Makes an empty seek index of the area from `slot` of `disc`, with a checkpoint every
@@ -2956,7 +2979,7 @@ pub unsafe extern "C" fn sb_seek_index_new(
     disc: *const SbDisc,
     slot: u32,
     interval: u32,
-    inline_budget: usize,
+    inline_budget: u64,
     out: *mut *mut SbSeekIndex,
 ) -> SbStatus {
     // SAFETY: forwarded contract.
@@ -2969,7 +2992,7 @@ pub unsafe extern "C" fn sb_seek_index_new(
         }
         let d = handle.get()?;
         let area = find_area(&d, slot)?;
-        let options = IndexOptions::new().with_interval(interval).with_inline_budget(inline_budget);
+        let options = IndexOptions::new().with_interval(interval).with_inline_budget(budget(inline_budget));
         let index = AreaIndex::new(area, d.toc().sectors, options)?;
         let index = Box::new(SbSeekIndex { inner: RefCell::new(index) });
         // SAFETY: non-NULL and valid for a write by this function's contract.
@@ -2979,8 +3002,8 @@ pub unsafe extern "C" fn sb_seek_index_new(
 }
 
 /// Reads the index's area on from its frontier, about `max_sectors` sectors (at least to
-/// the next checkpoint), recording checkpoints; `*complete` (if not NULL) says whether the
-/// index now covers the whole area. Calling it until complete builds the index in one
+/// the next checkpoint), recording checkpoints; `*complete` (if not NULL) receives 1 if
+/// the index now covers the whole area, else 0. Calling it until complete builds the index in one
 /// pass over the area, for example on a second disc handle of the same image on another
 /// thread. The disc's read and log callbacks run during this call. Fails with
 /// `SB_STATUS_INVALID_ARGUMENT` for an index of another area or image size, one built from
@@ -2995,7 +3018,7 @@ pub unsafe extern "C" fn sb_seek_index_extend(
     disc: *const SbDisc,
     index: *mut SbSeekIndex,
     max_sectors: u64,
-    complete: *mut bool,
+    complete: *mut u8,
 ) -> SbStatus {
     guard(|| {
         // SAFETY: forwarded contract.
@@ -3007,14 +3030,14 @@ pub unsafe extern "C" fn sb_seek_index_extend(
         let done = index.extend(disc.image_mut(), max_sectors)?;
         if !complete.is_null() {
             // SAFETY: non-NULL and valid for a write by this function's contract.
-            unsafe { complete.write(done) };
+            unsafe { complete.write(u8::from(done)) };
         }
         Ok(SbStatus::Ok)
     })
 }
 
 /// The LSN up to which the index holds the area's reading state (`*lsn`, required), and
-/// whether it covers the whole area (`*complete`, optional).
+/// whether it covers the whole area (`*complete`, optional: 1 or 0).
 ///
 /// # Safety
 ///
@@ -3023,7 +3046,7 @@ pub unsafe extern "C" fn sb_seek_index_extend(
 pub unsafe extern "C" fn sb_seek_index_frontier(
     index: *const SbSeekIndex,
     lsn: *mut u64,
-    complete: *mut bool,
+    complete: *mut u8,
 ) -> SbStatus {
     guard(|| {
         // SAFETY: forwarded contract.
@@ -3033,7 +3056,7 @@ pub unsafe extern "C" fn sb_seek_index_frontier(
         unsafe { write_out(lsn, index.frontier()) }?;
         if !complete.is_null() {
             // SAFETY: non-NULL and valid for a write by this function's contract.
-            unsafe { complete.write(index.is_complete()) };
+            unsafe { complete.write(u8::from(index.is_complete())) };
         }
         Ok(SbStatus::Ok)
     })
@@ -3045,13 +3068,13 @@ pub unsafe extern "C" fn sb_seek_index_frontier(
 ///
 /// `index` must be NULL or a live handle; `bytes` NULL or valid for a write.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sb_seek_index_memory(index: *const SbSeekIndex, bytes: *mut usize) -> SbStatus {
+pub unsafe extern "C" fn sb_seek_index_memory(index: *const SbSeekIndex, bytes: *mut u64) -> SbStatus {
     guard(|| {
         // SAFETY: forwarded contract.
         let i = unsafe { index_handle(index) }?;
         let index = i.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
         // SAFETY: forwarded contract.
-        unsafe { write_out(bytes, index.memory()) }?;
+        unsafe { write_out(bytes, index.memory() as u64) }?;
         Ok(SbStatus::Ok)
     })
 }
@@ -3140,7 +3163,7 @@ pub unsafe extern "C" fn sb_seek_index_load(
     slot: u32,
     buf: *const u8,
     len: usize,
-    inline_budget: usize,
+    inline_budget: u64,
     out: *mut *mut SbSeekIndex,
 ) -> SbStatus {
     // SAFETY: forwarded contract.
@@ -3158,7 +3181,7 @@ pub unsafe extern "C" fn sb_seek_index_load(
         let bytes = unsafe { std::slice::from_raw_parts(buf, len) };
         let d = handle.get()?;
         let area = find_area(&d, slot)?;
-        let index = AreaIndex::from_bytes(area, d.toc().sectors, bytes, inline_budget)?;
+        let index = AreaIndex::from_bytes(area, d.toc().sectors, bytes, budget(inline_budget))?;
         let index = Box::new(SbSeekIndex { inner: RefCell::new(index) });
         // SAFETY: non-NULL and valid for a write by this function's contract.
         unsafe { out.write(Box::into_raw(index)) };
@@ -3204,12 +3227,12 @@ pub unsafe extern "C" fn sb_disc_seek_index_enable(
     disc: *const SbDisc,
     slot: u32,
     interval: u32,
-    inline_budget: usize,
+    inline_budget: u64,
 ) -> SbStatus {
     guard(|| {
         // SAFETY: forwarded contract.
         let d = unsafe { disc_handle(disc) }?;
-        let options = IndexOptions::new().with_interval(interval).with_inline_budget(inline_budget);
+        let options = IndexOptions::new().with_interval(interval).with_inline_budget(budget(inline_budget));
         d.get_mut()?.enable_seek_index(slot_from(slot)?, options)?;
         Ok(SbStatus::Ok)
     })
@@ -3286,7 +3309,7 @@ pub unsafe extern "C" fn sb_disc_seek_index_disable(disc: *const SbDisc, slot: u
 
 /// Reads the area from `slot` on from the frontier of the seek index `disc` keeps, about
 /// `max_sectors` sectors, building it (see `sb_seek_index_extend`); `*complete` (if not
-/// NULL) says whether it now covers the whole area. Call it on a clone in a thread of its
+/// NULL) receives 1 if it now covers the whole area, else 0. Call it on a clone in a thread of its
 /// own to build the index while other clones read. Fails with
 /// `SB_STATUS_INVALID_ARGUMENT` when no index is kept or it does not match the image,
 /// `SB_STATUS_IO` if a read fails.
@@ -3299,7 +3322,7 @@ pub unsafe extern "C" fn sb_disc_seek_index_extend(
     disc: *const SbDisc,
     slot: u32,
     max_sectors: u64,
-    complete: *mut bool,
+    complete: *mut u8,
 ) -> SbStatus {
     guard(|| {
         // SAFETY: forwarded contract.
@@ -3307,7 +3330,7 @@ pub unsafe extern "C" fn sb_disc_seek_index_extend(
         let done = d.get_mut()?.extend_seek_index(slot_from(slot)?, max_sectors)?;
         if !complete.is_null() {
             // SAFETY: non-NULL and valid for a write by this function's contract.
-            unsafe { complete.write(done) };
+            unsafe { complete.write(u8::from(done)) };
         }
         Ok(SbStatus::Ok)
     })

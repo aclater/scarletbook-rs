@@ -10,7 +10,8 @@ header = """/* SPDX-License-Identifier: MIT OR Apache-2.0 */
  *
  * Conventions, for every function:
  *
- * - Status. Calls return an SbStatus (functions returning other types say so). On
+ * - Status. Calls return an SbStatus, an int32_t holding one of the SB_STATUS_*
+ *   values (functions returning other types say so). On
  *   failure, sb_last_error_message() describes the error. The message belongs to the
  *   calling thread and stays valid until that thread's next call into this library.
  *
@@ -55,15 +56,19 @@ header = """/* SPDX-License-Identifier: MIT OR Apache-2.0 */
  *   thread must not use the disc or its track or raw frames handles at all, with any
  *   call, sb_track_audio_set_pool and the _free functions included.)
  *
- * - Types. Every integer is fixed-width (<stdint.h>) except size_t, used for buffer
- *   lengths and byte counts; bool is C99 _Bool (1 byte); SbStatus, the only enumeration
- *   passed by value (as a return value), is int-sized on every supported target. There
- *   are no variadic functions. Callbacks use the C calling convention of the platform.
+ * - Types. Every integer is fixed-width (<stdint.h>) except size_t, used only for the
+ *   lengths of caller buffers (and of the strings and data copied into them). Flags are
+ *   uint8_t, 1 or 0. No enumeration type is passed by value or stored in a struct:
+ *   SbStatus is int32_t, and the other enumerations (SbSlot, SbFrameStatus, ...) only
+ *   name the values of uint32_t arguments and fields. In C23 and C++ they are
+ *   enumerations with those fixed underlying types. There are no variadic functions.
+ *   Callbacks use the C calling convention of the platform.
  *
  * - Layouts. Structs have the platform C compiler's natural alignment, with no packing
- *   pragmas. Each struct states its size and padding on 64-bit targets (every release
- *   target), which the library's tests check; on a 32-bit target the size_t and pointer
- *   fields, and the alignment of 64-bit integers, differ.
+ *   pragmas, and no padding: fields are ordered so that each sits at its natural
+ *   alignment, and reserved fields (written as 0) fill the rest. Each struct states its
+ *   size and offsets, which the library's tests check; they are the same on every
+ *   target, except that SbWarning ends with a pointer (4 bytes on a 32-bit target).
  *
  * - Panics. No panic crosses the boundary: an internal error returns SB_STATUS_PANIC.
  *   The handles involved should then be freed and not used further. If the library is
@@ -73,7 +78,7 @@ cpp_compat = true
 documentation = true
 documentation_style = "c"
 usize_is_size_t = true
-sys_includes = ["stdbool.h", "stddef.h", "stdint.h"]
+sys_includes = ["stddef.h", "stdint.h"]
 no_includes = true
 
 [enum]

@@ -156,7 +156,10 @@ if (sb_disc_open_file("disc.iso", &disc) != SB_STATUS_OK) puts(sb_last_error_mes
 
 The conventions (status codes, copy-out strings, handle lifetimes, threads) are stated
 at the top of `crates/scarletbook-ffi/include/scarletbook.h`;
-`crates/scarletbook-ffi/examples/smoke.c` is a complete program. Regenerate the header with
+`crates/scarletbook-ffi/examples/smoke.c` is a complete program. Calls return an
+`SbStatus`, an `int32_t`; every struct field is a fixed-width integer (flags are `uint8_t`,
+1 or 0) or, in `SbWarning`, a string pointer; and no struct has padding, so the layouts
+stated in the header hold on every target. Regenerate the header with
 `cbindgen --config cbindgen.toml --crate scarletbook-ffi --output include/scarletbook.h`
 in `crates/scarletbook-ffi` (cbindgen 0.29.4; CI checks the committed header).
 
@@ -169,7 +172,7 @@ be built on one disc handle and used on another of the same image:
 ```c
 SbSeekIndex *index = NULL;
 sb_seek_index_new(disc, slot, SB_SEEK_DEFAULT_INTERVAL, SB_SEEK_DEFAULT_INLINE_BUDGET, &index);
-bool complete = false;
+uint8_t complete = 0;
 while (sb_seek_index_extend(disc, index, 65536, &complete) == SB_STATUS_OK && !complete) {}
 SbTrackAudio *audio = NULL;
 sb_range_audio_open_indexed(disc, slot, first, end, index, &audio); /* same frames, few reads */
@@ -191,8 +194,7 @@ The disc and its clones keep one index, so `sb_disc_seek_index_extend` on a clon
 thread of its own builds it for all of them; `sb_disc_seek_index_get` copies it out to
 save. Loaded bytes are checked
 before use, and an index that does not match the image's sectors is discarded as it is used
-(a warning in the log, then a scan from the area's first sector). The additions keep
-`SB_ABI_VERSION` 1.
+(a warning in the log, then a scan from the area's first sector).
 
 ### Parallel decoding
 
@@ -306,7 +308,7 @@ that.
 
 The library loads with Python's `ctypes`; there are no variadic functions, and every
 type has a fixed ctypes counterpart. Check the ABI version first: the bindings below are
-written for `SB_ABI_VERSION` 1, and a library of another ABI version must not be used
+written for `SB_ABI_VERSION` 2, and a library of another ABI version must not be used
 with them (see "ABI compatibility"). Give every function its `argtypes` and `restype`:
 without them ctypes passes and returns C `int`, which truncates pointers and 64-bit values.
 
@@ -315,17 +317,17 @@ import ctypes as C
 
 lib = C.CDLL("/path/to/libscarletbook_ffi.so")  # .dylib on macOS, scarletbook_ffi.dll on Windows
 
-SB_ABI_VERSION = 1  # the SB_ABI_VERSION of the header these bindings follow
+SB_ABI_VERSION = 2  # the SB_ABI_VERSION of the header these bindings follow
 lib.sb_abi_version.argtypes, lib.sb_abi_version.restype = [], C.c_uint32
 if lib.sb_abi_version() != SB_ABI_VERSION:
     raise ImportError(f"scarletbook C ABI {lib.sb_abi_version()}, these bindings need {SB_ABI_VERSION}")
 
-# The structs, field for field as in scarletbook.h (bool is C99 _Bool, size_t is c_size_t).
+# The structs, field for field as in scarletbook.h (flags are uint8_t, 1 or 0).
 class SbDiscInfo(C.Structure):
-    _fields_ = [("sector_size", C.c_uint32), ("sectors", C.c_uint64), ("version_major", C.c_uint8),
+    _fields_ = [("sectors", C.c_uint64), ("sector_size", C.c_uint32), ("version_major", C.c_uint8),
                 ("version_minor", C.c_uint8), ("album_set_size", C.c_uint16),
-                ("album_sequence_number", C.c_uint16), ("hybrid", C.c_bool),
-                ("manufacturer_sector", C.c_bool), ("year", C.c_uint16), ("month", C.c_uint8),
+                ("album_sequence_number", C.c_uint16), ("hybrid", C.c_uint8),
+                ("manufacturer_sector", C.c_uint8), ("year", C.c_uint16), ("month", C.c_uint8),
                 ("day", C.c_uint8), ("area_count", C.c_uint32), ("warning_count", C.c_uint32)]
 
 class SbAreaInfo(C.Structure):
@@ -337,21 +339,22 @@ class SbAreaInfo(C.Structure):
 class SbTrackInfo(C.Structure):
     _fields_ = [("number", C.c_uint32), ("start_lsn", C.c_uint32), ("length_sectors", C.c_uint32),
                 ("start_frame", C.c_uint32), ("duration_frames", C.c_uint32),
-                ("start_flags", C.c_uint8), ("duration_flags", C.c_uint8), ("has_genre", C.c_bool),
-                ("genre_category", C.c_uint8), ("genre_index", C.c_uint8)]
+                ("start_flags", C.c_uint8), ("duration_flags", C.c_uint8), ("has_genre", C.c_uint8),
+                ("genre_category", C.c_uint8), ("genre_index", C.c_uint8), ("reserved", C.c_uint8 * 3)]
 
 class SbWarning(C.Structure):
-    _fields_ = [("code", C.c_char_p), ("slot", C.c_int32), ("track", C.c_uint32), ("lsn", C.c_int64)]
+    _fields_ = [("lsn", C.c_int64), ("slot", C.c_int32), ("track", C.c_uint32), ("code", C.c_char_p)]
 
 class SbFrameInfo(C.Structure):
     _fields_ = [("number", C.c_uint32), ("status", C.c_uint32), ("dst_rule", C.c_uint32),
-                ("size", C.c_size_t)]
+                ("size", C.c_uint32)]
 
 class SbRawFrameInfo(C.Structure):
-    _fields_ = [("number", C.c_uint32), ("kind", C.c_uint32), ("size", C.c_size_t)]
+    _fields_ = [("number", C.c_uint32), ("kind", C.c_uint32), ("size", C.c_uint32)]
 
-# Handles are opaque pointers; SbStatus is a C int (0 OK, 1 END, 2 ABSENT, negative: failure).
-H, S, P, U32, SIZE = C.c_void_p, C.c_int, C.POINTER, C.c_uint32, C.c_size_t
+# Handles are opaque pointers; SbStatus is an int32_t (0 OK, 1 END, 2 ABSENT, negative:
+# failure); size_t is only the length of a buffer of yours.
+H, S, P, U32, SIZE = C.c_void_p, C.c_int32, C.POINTER, C.c_uint32, C.c_size_t
 
 def bind(name, restype, *argtypes):
     f = getattr(lib, name)
@@ -470,7 +473,8 @@ that loads the library at run time can look the symbol up instead.
 
 | `SB_ABI_VERSION` | First release |
 |---|---|
-| 1 | 0.1.0 (additions only in 0.3.0 and 0.4.0) |
+| 1 | 0.1.0 to 0.3.0 (additions only in 0.3.0) |
+| 2 | 0.4.0 |
 
 CI enforces this. `crates/scarletbook-ffi/abi/abi-N.txt` is the baseline of ABI version N:
 the header's declarations without comments or layout. `.github/scripts/abi-check.py`
@@ -490,6 +494,44 @@ if a baseline of an earlier version is edited, moved or removed.
 `.github/scripts/abi-check-test.py` tests the check. A behaviour change that leaves the
 declarations alone is invisible to it: bump `SB_ABI_VERSION` in `src/lib.rs` by hand,
 regenerate the header (it then differs only in that line) and run `--write`.
+
+#### From ABI 1 to ABI 2
+
+ABI 2 (0.4.0) removes the declarations whose size or layout C leaves to the compiler, so
+that every struct is the same on every target and every binding (ctypes, cffi, other
+languages) can follow the header exactly. No function was added, removed or renamed. A C
+program that uses the header's names needs changes only where it writes `enum SbStatus`
+or passes a `bool *` for `complete`, then recompiles; a binding that spells out the types
+follows every point:
+
+- **Status.** Functions return `SbStatus`, now an `int32_t` (in C23 and C++, an
+  enumeration with `int32_t` as its underlying type) instead of `enum SbStatus`. The
+  `SB_STATUS_*` values are unchanged. Declare variables as `SbStatus`, not
+  `enum SbStatus`; in ctypes, `restype = c_int32`. The other enumerations (`SbSlot`,
+  `SbFrameStatus`, `SbFrameKind`, `SbDiscString`, `SbAreaString`, `SbTrackString`) are
+  likewise `uint32_t`, as their arguments and fields already were.
+- **Flags.** `SbDiscInfo.hybrid`, `SbDiscInfo.manufacturer_sector`, `SbTrackInfo.has_genre`
+  and the `*complete` out-parameter of `sb_seek_index_extend`, `sb_seek_index_frontier`
+  and `sb_disc_seek_index_extend` are `uint8_t` (1 or 0) instead of `bool`; pass a
+  `uint8_t *` for `complete`. The header no longer includes `<stdbool.h>`.
+- **Sizes.** `SbFrameInfo.size` and `SbRawFrameInfo.size` are `uint32_t` (at most
+  `SB_MAX_FRAME_BYTES`) instead of `size_t`. The `inline_budget` arguments of
+  `sb_seek_index_new`, `sb_seek_index_load` and `sb_disc_seek_index_enable`, and
+  `sb_seek_index_memory`'s `*bytes`, are `uint64_t`, and so is
+  `SB_SEEK_DEFAULT_INLINE_BUDGET`. `size_t` remains only for the lengths of caller
+  buffers.
+- **Layouts.** No struct has padding. `SbDiscInfo` starts with `sectors` (32 bytes, was
+  40); `SbTrackInfo` ends with `uint8_t reserved[3]` (still 28 bytes); `SbWarning` is
+  `lsn`, `slot`, `track`, `code` (still 24 bytes on 64-bit targets); `SbFrameInfo` is 16
+  bytes (was 24) and `SbRawFrameInfo` 12 (was 16). Code that names the fields needs no
+  change; a binding that lists them follows the new order.
+- **`sb_dst_decode`** refuses a frame longer than `SB_MAX_FRAME_BYTES` (65 536 bytes,
+  the reassembly limit of specification 4, 4.4.3) with `SB_STATUS_INVALID_ARGUMENT`,
+  before reading it, instead of decoding it with memory proportional to its length.
+  Frames from `sb_raw_frames_read` are never longer.
+
+The check `sb_abi_version() == SB_ABI_VERSION` refuses a library of the other ABI either
+way round.
 
 ## Benchmarks
 
