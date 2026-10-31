@@ -215,8 +215,11 @@ impl AreaIndex {
     /// assembly (specification 7, 7.1 item 2): stored frames beyond it are dropped, and
     /// their checkpoints are replayed instead (exact, only slower). The seek hints (format
     /// version 2: at most [`MAX_HINTS`] and the saved maximum, inside the area, by
-    /// increasing LSN) count against it too, 8 bytes each: past it, those closest to the one
-    /// before them are dropped (specification 7, 7.1 item 2, sacd-spec `cb9530b`). Pass
+    /// increasing LSN) have an allowance of the same size, separate from the stored frames
+    /// (so the two together take at most twice `max_inline_budget`): the loaded index keeps
+    /// at most `max_inline_budget / 8` hints, now and as it grows
+    /// ([`IndexOptions::max_hints`] becomes the smaller of the saved one and that), dropping
+    /// those closest to the one before them (specification 7, 7.1 item 2, sacd-spec `cb9530b`). Pass
     /// [`crate::seek::DEFAULT_INLINE_BUDGET`] or the [`IndexOptions`](super::IndexOptions)
     /// the caller builds with.
     ///
@@ -455,8 +458,10 @@ impl AreaIndex {
         }
         index.stored = stored;
         index.malformed = malformed;
-        // The hints count against the caller's bound too: every other one goes past it.
-        index.thin_hints(max_inline_budget / HINT);
+        // The caller's bound also bounds the hints, now and as the index grows: at most
+        // `max_inline_budget / 8` of them, in addition to the stored frames.
+        index.max_hints = index.max_hints.min(max_inline_budget / HINT);
+        index.thin_hints(index.max_hints);
         Ok(index)
     }
 

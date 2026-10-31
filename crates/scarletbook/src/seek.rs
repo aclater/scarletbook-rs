@@ -110,6 +110,7 @@ pub struct IndexOptions {
     pub hint_spacing: u32,
     /// The most seek hints kept, at most [`MAX_HINTS`]; past it, those closest (in frames)
     /// to the hint before them are dropped. Default [`DEFAULT_MAX_HINTS`] (8 bytes each, saved and in memory).
+    /// An index loaded with [`AreaIndex::from_bytes`] keeps at most its `max_inline_budget / 8`.
     pub max_hints: usize,
 }
 
@@ -644,7 +645,10 @@ const CLOSE_SECTORS: u64 = 16;
 /// Most sectors a cursor reads in one call (1 MiB): after a provisional start, a cursor reads
 /// up to the range's estimated end in calls of up to this many sectors, and after a resume
 /// from a seek index its first read is sized to the range (at most the replay, the interval
-/// and 64 sectors); every other read is at most 32 sectors. A cancellation request ([`crate::CancelToken`]) that arrives during
+/// and 64 sectors); every other read is at most 32 sectors. A sized read trades bytes for
+/// round trips: a range of a frame or two after a resume reads up to `W + K + 64` sectors in
+/// one call where 32-sector reads would have stopped earlier in two or three, and a failing
+/// device fails that one read before frames the smaller reads would have returned. A cancellation request ([`crate::CancelToken`]) that arrives during
 /// such a read takes effect once it completes.
 pub const MAX_READ_SECTORS: u64 = 512;
 

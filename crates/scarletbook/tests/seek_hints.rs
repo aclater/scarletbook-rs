@@ -207,5 +207,7 @@ fn hints_are_saved_and_checked() {
     // Within 16 bytes: two hints at most.
     let small = AreaIndex::from_bytes(&area, n, &saved, 16).unwrap();
     assert!(small.hints() <= 2 && small.hints() > 0, "{}", small.hints());
+    // And as it grows: the bound is the caller's.
+    assert_eq!(small.options().max_hints, 2);
     assert!(index.hints() <= IndexOptions::new().max_hints);
 }
