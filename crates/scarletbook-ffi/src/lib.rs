@@ -916,8 +916,11 @@ pub extern "C" fn sb_version() -> *const c_char {
 /// - `target-features`: the CPU features the code was compiled for, comma-separated, as
 ///   the compiler names them (a generic x86-64 build lists `fxsr,sse,sse2`), or `none`;
 /// - `rustc`: the compiler version;
-/// - `commit`: the commit built, from the environment at build time
-///   (`SCARLETBOOK_COMMIT`, else `GITHUB_SHA`) or else `git rev-parse HEAD`, or `unknown`.
+/// - `commit`: the commit of this repository the library was built from:
+///   `SCARLETBOOK_COMMIT` at build time, else `GITHUB_SHA` in this repository's own GitHub
+///   Actions runs, else git's HEAD when the source is this repository's work tree, else
+///   `unknown` (a build from a vendored copy or a package, or by another repository's CI,
+///   reports no commit of its own).
 ///
 /// More keys may be added; parse by key, not by position. The call allocates nothing and
 /// does no I/O.

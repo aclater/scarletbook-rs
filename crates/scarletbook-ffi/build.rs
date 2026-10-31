@@ -5,12 +5,17 @@
 //! Nothing here fails the build: a value that cannot be found is "unknown".
 
 use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+#[path = "build/commit.rs"]
+mod commit;
 
 fn main() {
     println!("cargo::rerun-if-changed=build.rs");
+    println!("cargo::rerun-if-changed=build/commit.rs");
     println!("cargo::rerun-if-env-changed=GITHUB_SHA");
+    println!("cargo::rerun-if-env-changed=GITHUB_REPOSITORY");
     println!("cargo::rerun-if-env-changed=SCARLETBOOK_COMMIT");
     let var = |name: &str| env::var(name).ok().filter(|v| !v.is_empty());
 
@@ -39,8 +44,24 @@ fn main() {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .and_then(|v| v.split_whitespace().nth(1).map(str::to_owned))
         .unwrap_or_else(|| "unknown".into());
-    let commit = var("SCARLETBOOK_COMMIT").or_else(|| var("GITHUB_SHA")).or_else(git_commit);
-    let commit = commit.filter(|c| is_value(c)).unwrap_or_else(|| "unknown".into());
+    let (explicit, github_sha, github_repository) =
+        (var("SCARLETBOOK_COMMIT"), var("GITHUB_SHA"), var("GITHUB_REPOSITORY"));
+    let workspace_root =
+        var("CARGO_MANIFEST_DIR").and_then(|dir| Path::new(&dir).join("../..").canonicalize().ok());
+    let root_is_ours = workspace_root.as_ref().is_some_and(|r| r.join("crates/scarletbook-ffi").is_dir());
+    // Git only when no source that would be used first is set: a build without git needs
+    // none.
+    let ours_ci = github_sha.is_some() && github_repository.as_deref() == Some(commit::REPOSITORY);
+    let (git_toplevel, git_head) = if explicit.is_none() && !ours_ci { git_state() } else { (None, None) };
+    let commit = commit::commit(&commit::Found {
+        explicit: explicit.as_deref(),
+        github_sha: github_sha.as_deref(),
+        github_repository: github_repository.as_deref(),
+        git_toplevel: git_toplevel.as_deref(),
+        workspace_root: workspace_root.as_deref(),
+        root_is_ours,
+        git_head: git_head.as_deref(),
+    });
 
     let info = format!(
         "version={} target={target} profile={profile} opt-level={opt_level} features={features} \
@@ -70,14 +91,19 @@ fn is_value(v: &str) -> bool {
     !v.is_empty() && v.bytes().all(|b| b.is_ascii_graphic())
 }
 
-/// The commit checked out, from git if it is installed and this is a repository; the
-/// build script then reruns when HEAD moves.
-fn git_commit() -> Option<String> {
+/// Git's work tree, canonicalised, and HEAD, as seen from this crate's directory, if git
+/// is installed and the directory is in a work tree; the build script then reruns when
+/// HEAD moves. `commit::commit` decides whether that work tree is this repository's.
+fn git_state() -> (Option<PathBuf>, Option<String>) {
     let git = |args: &[&str]| {
         let o = Command::new("git").args(args).output().ok()?;
         o.status.success().then(|| String::from_utf8(o.stdout).ok()).flatten().map(|s| s.trim().to_owned())
     };
-    let sha = git(&["rev-parse", "HEAD"])?;
+    let Some(toplevel) =
+        git(&["rev-parse", "--show-toplevel"]).and_then(|t| Path::new(&t).canonicalize().ok())
+    else {
+        return (None, None);
+    };
     for path in [
         git(&["rev-parse", "--git-path", "HEAD"]),
         git(&["rev-parse", "--symbolic-full-name", "HEAD"])
@@ -90,5 +116,5 @@ fn git_commit() -> Option<String> {
             println!("cargo::rerun-if-changed={path}");
         }
     }
-    Some(sha)
+    (Some(toplevel), git(&["rev-parse", "HEAD"]))
 }

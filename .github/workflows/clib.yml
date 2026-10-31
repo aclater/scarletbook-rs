@@ -100,7 +100,7 @@ jobs:
       - name: Build, package and test (in the ${{ contains(matrix.target, 'musl') && 'musllinux' || 'manylinux' }} image)
         if: runner.os == 'Linux'
         run: |
-          docker run --rm -v "$PWD:/io" -w /io -e RUST_STABLE -e GITHUB_SHA "${{ matrix.image }}" \
+          docker run --rm -v "$PWD:/io" -w /io -e RUST_STABLE -e GITHUB_SHA -e GITHUB_REPOSITORY "${{ matrix.image }}" \
             bash .github/scripts/clib-linux.sh "${{ matrix.target }}" "${{ matrix.platform }}"
       - name: Build and package
         if: runner.os != 'Linux'
