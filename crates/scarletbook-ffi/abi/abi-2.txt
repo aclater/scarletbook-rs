@@ -37,6 +37,9 @@
 #define SB_SPECULATION_CONFIRMED 2
 #define SB_SPECULATION_REFUTED 3
 #define SB_SPECULATION_UNVERIFIED 4
+#define SB_TOC_MAJOR 1
+#define SB_TOC_MINOR 0
+#define SB_TOC_ABSENT 4294967295
 enum SbStatus
 #if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
 : int32_t
@@ -301,6 +304,68 @@ uint32_t last_returned;
 uint32_t exact_from;
 uint32_t reserved;
 } SbSpeculation;
+typedef struct SbTocHeader {
+uint8_t magic [ 8 ];
+uint16_t major;
+uint16_t minor;
+uint32_t size;
+uint32_t disc_offset;
+uint16_t disc_record_size;
+uint16_t area_record_size;
+uint16_t track_record_size;
+uint16_t warning_record_size;
+uint32_t areas_offset;
+uint32_t area_count;
+uint32_t warnings_offset;
+uint32_t warning_count;
+uint32_t strings_offset;
+uint32_t strings_size;
+uint32_t reserved;
+} SbTocHeader;
+typedef struct SbTocStr {
+uint32_t offset;
+uint32_t length;
+} SbTocStr;
+typedef struct SbTocDisc {
+struct SbDiscInfo info;
+struct SbGenre album_genres [ 4 ];
+struct SbGenre disc_genres [ 4 ];
+uint8_t text_channel_count;
+uint8_t text_charset;
+uint8_t disc_flags;
+uint8_t reserved;
+struct SbTextChannel text_channels [ 8 ];
+uint32_t reserved2;
+struct SbTocStr strings [ 18 ];
+struct SbTocStr catalog_numbers_stored [ 2 ];
+struct SbTocStr manufacturer;
+} SbTocDisc;
+typedef struct SbTocArea {
+struct SbAreaInfo info;
+struct SbAreaDetails details;
+uint32_t loudspeaker_layout;
+uint8_t channel_speakers [ 6 ];
+struct SbTimecode playtime_stored;
+uint8_t reserved;
+uint16_t reserved2;
+uint32_t tracks_offset;
+struct SbTocStr strings [ 4 ];
+struct SbTextChannel text_channels [ 10 ];
+} SbTocArea;
+typedef struct SbTocTrack {
+struct SbTrackInfo info;
+struct SbTimecode start_stored;
+struct SbTimecode duration_stored;
+uint8_t reserved [ 2 ];
+struct SbTocStr strings [ 16 ];
+uint32_t reserved2;
+} SbTocTrack;
+typedef struct SbTocWarning {
+int64_t lsn;
+int32_t slot;
+uint32_t track;
+struct SbTocStr code;
+} SbTocWarning;
 #ifdef __cplusplus
 extern " C " {
 #endif
@@ -407,6 +472,7 @@ SbStatus sb_track_audio_progress(const struct SbTrackAudio *audio, struct SbProg
 SbStatus sb_raw_frames_progress(const struct SbRawFrames *raw, struct SbProgress **out);
 SbStatus sb_progress_get(const struct SbProgress *progress, uint64_t *sectors_read, uint64_t *sectors_expected);
 void sb_progress_free(struct SbProgress *progress);
+SbStatus sb_disc_toc(const struct SbDisc *disc, uint32_t flags, uint8_t *buf, size_t cap, size_t *len);
 #ifdef __cplusplus
 }
 #endif
