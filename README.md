@@ -174,7 +174,10 @@ codes (`sb_disc_text_channel_count`, `sb_disc_text_channel`), catalogue numbers 
 padding kept (`sb_disc_catalog_number_stored`), and manufacturer data
 (`sb_disc_manufacturer`) have calls of their own, as do an area's version, maximum
 available channels, mute flags, track attribute and offset, and text channels
-(`sb_area_details`, `sb_area_text_channel`).
+(`sb_area_details`, `sb_area_text_channel`). The area play time and each track's start and
+duration are also given as their stored timecode bytes (`SbTimecode`:
+`sb_area_playtime_stored`, `sb_track_timecodes_stored`), before any clamping and whatever
+their range, beside the frame counts of `SbAreaInfo` and `SbTrackInfo`.
 
 `sb_disc_read_sectors(disc, lsn, count, buf, cap)` copies the 2048-byte user data of
 logical sectors `[lsn, lsn + count)`, whatever the image's stored sector size (2048, 2054
@@ -433,6 +436,9 @@ class SbFrameInfo(C.Structure):
     _fields_ = [("number", C.c_uint32), ("status", C.c_uint32), ("dst_rule", C.c_uint32),
                 ("size", C.c_uint32)]
 
+class SbTimecode(C.Structure):
+    _fields_ = [("minutes", C.c_uint8), ("seconds", C.c_uint8), ("frames", C.c_uint8)]
+
 class SbRawFrameInfo(C.Structure):
     _fields_ = [("number", C.c_uint32), ("kind", C.c_uint32), ("size", C.c_uint32)]
 
@@ -482,6 +488,8 @@ bind("sb_disc_manufacturer", S, H, C.c_char_p, SIZE, P(SIZE))
 bind("sb_area_details", S, H, U32, P(SbAreaDetails))
 bind("sb_area_text_channel", S, H, U32, U32, P(SbTextChannel))
 bind("sb_track_info", S, H, U32, U32, P(SbTrackInfo))
+bind("sb_area_playtime_stored", S, H, U32, P(SbTimecode))
+bind("sb_track_timecodes_stored", S, H, U32, U32, P(SbTimecode), P(SbTimecode))
 bind("sb_track_string", S, H, U32, U32, U32, C.c_char_p, SIZE, P(SIZE))
 bind("sb_track_check", S, H, U32, U32)
 bind("sb_track_audio_open", S, H, U32, U32, P(H))

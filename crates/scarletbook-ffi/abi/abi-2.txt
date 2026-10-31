@@ -246,6 +246,11 @@ uint8_t language [ 2 ];
 uint8_t charset;
 uint8_t reserved;
 } SbTextChannel;
+typedef struct SbTimecode {
+uint8_t minutes;
+uint8_t seconds;
+uint8_t frames;
+} SbTimecode;
 typedef struct SbAreaDetails {
 uint8_t version_major;
 uint8_t version_minor;
@@ -329,6 +334,8 @@ SbStatus sb_disc_text_channel_count(const struct SbDisc *disc, uint32_t *count);
 SbStatus sb_disc_text_channel(const struct SbDisc *disc, uint32_t index, struct SbTextChannel *out);
 SbStatus sb_disc_catalog_number_stored(const struct SbDisc *disc, uint32_t field, char *buf, size_t cap, size_t *len);
 SbStatus sb_disc_manufacturer(const struct SbDisc *disc, uint8_t *buf, size_t cap, size_t *len);
+SbStatus sb_area_playtime_stored(const struct SbDisc *disc, uint32_t slot, struct SbTimecode *out);
+SbStatus sb_track_timecodes_stored(const struct SbDisc *disc, uint32_t slot, uint32_t number, struct SbTimecode *start, struct SbTimecode *duration);
 SbStatus sb_area_details(const struct SbDisc *disc, uint32_t slot, struct SbAreaDetails *out);
 SbStatus sb_area_text_channel(const struct SbDisc *disc, uint32_t slot, uint32_t index, struct SbTextChannel *out);
 SbStatus sb_track_info(const struct SbDisc *disc, uint32_t slot, uint32_t number, struct SbTrackInfo *out);

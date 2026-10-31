@@ -642,7 +642,9 @@ impl Warnings {
 }
 
 /// Reads the whole TOC (specifications 2 and 3), returning it with its warnings.
-pub(crate) fn read_toc<R: Read + Seek>(img: &mut Image<R>) -> Result<(Toc, Vec<Warning>, TocDigests), Error> {
+pub(crate) fn read_toc<R: Read + Seek>(
+    img: &mut Image<R>,
+) -> Result<(Toc, Vec<Warning>, TocDigests, TocStored), Error> {
     let log = img.log().clone();
     sb_log!(
         &log,
@@ -656,14 +658,16 @@ pub(crate) fn read_toc<R: Read + Seek>(img: &mut Image<R>) -> Result<(Toc, Vec<W
     let (master, master_digest) = read_master(img, &mut warnings)?;
     let mut areas = Vec::new();
     let mut area_digests = Vec::new();
+    let mut stored = TocStored::default();
     for slot in Slot::ALL {
         let ptr = master.pointer(slot);
         if !ptr.is_used() {
             sb_log!(&warnings.log, Info, "area {slot}: slot unused");
             continue;
         }
-        if let Some((area, digest)) = read_area(img, slot, ptr, &mut warnings)? {
+        if let Some((area, digest, timecodes)) = read_area(img, slot, ptr, &mut warnings)? {
             area_digests.push(digest);
+            stored.track_timecodes.push((slot, timecodes));
             sb_log!(
                 &warnings.log,
                 Info,
@@ -692,7 +696,29 @@ pub(crate) fn read_toc<R: Read + Seek>(img: &mut Image<R>) -> Result<(Toc, Vec<W
         Toc { sector_format: img.format(), sectors: img.sector_count(), master, areas },
         warnings.list,
         digests,
+        stored,
     ))
+}
+
+/// TOC fields as stored that [`Toc`] gives only as interpreted: each track's start and
+/// duration timecodes of `SACDTRL2` (specification 3, 3.7.2), before the clamping of
+/// 3.9.2, per area in [`Toc::areas`] order. Kept beside the TOC rather than in [`Track`],
+/// whose fields are all public (a new field would break code that builds one).
+#[derive(Debug, Default)]
+pub(crate) struct TocStored {
+    track_timecodes: Vec<(Slot, Vec<TrackTimecodes>)>,
+}
+
+/// A track's start and duration timecodes as stored.
+type TrackTimecodes = (Timecode, Timecode);
+
+impl TocStored {
+    /// The stored start and duration timecodes of track `number` (1-based) of the area from
+    /// `slot`.
+    pub(crate) fn track_timecodes(&self, slot: Slot, number: u32) -> Option<(Timecode, Timecode)> {
+        let (_, list) = self.track_timecodes.iter().find(|(s, _)| *s == slot)?;
+        list.get(usize::try_from(number).ok()?.checked_sub(1)?).copied()
+    }
 }
 
 /// Digests of the TOC sectors a parse used: the master TOC sector at LSN 510 and, for each
@@ -896,7 +922,7 @@ fn read_area<R: Read + Seek>(
     slot: Slot,
     ptr: AreaPointer,
     warnings: &mut Warnings,
-) -> Result<Option<(Area, u64)>, Error> {
+) -> Result<Option<(Area, u64, Vec<TrackTimecodes>)>, Error> {
     let skip = |warnings: &mut Warnings, code| {
         warnings.push(Warning::area(code, slot));
         Ok(None)
@@ -989,11 +1015,13 @@ fn read_area<R: Read + Seek>(
     let p_frames = playtime.frame_number();
 
     let mut tracks = Vec::with_capacity(usize::from(track_count));
+    let mut timecodes = Vec::with_capacity(usize::from(track_count));
     for i in 0..usize::from(track_count) {
         // Track numbers are 1 to 255: i is at most 254.
         let number = u8::try_from(i + 1).unwrap_or(u8::MAX);
         let start_tc = Timecode::parse(sub(&z, trl2 + 8 + 4 * i, 3));
         let dur_tc = Timecode::parse(sub(&z, trl2 + 1028 + 4 * i, 3));
+        timecodes.push((start_tc, dur_tc));
         let (mut start_frame, mut duration_frames) = (start_tc.frame_number(), dur_tc.frame_number());
         if start_frame + duration_frames > p_frames {
             start_frame = start_frame.min(p_frames);
@@ -1053,7 +1081,7 @@ fn read_area<R: Read + Seek>(
         text: area_text,
         tracks,
     };
-    Ok(Some((area, fnv1a(&z))))
+    Ok(Some((area, fnv1a(&z), timecodes)))
 }
 
 /// Parses one track's text (specification 3, 3.8.1).

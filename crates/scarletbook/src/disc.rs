@@ -14,7 +14,7 @@ use crate::image::{Image, SectorFormat};
 use crate::log::{Log, sb_log};
 use crate::read_at::{ReadAt, ReadAtReader};
 use crate::seek::{AreaIndex, IndexOptions, SeekIndexes, SeekPolicy, Speculation};
-use crate::toc::{self, Toc, TocDigests};
+use crate::toc::{self, Timecode, Toc, TocDigests, TocStored};
 
 /// An opened disc image with its table of contents.
 ///
@@ -109,6 +109,8 @@ struct DiscShared {
     /// The digests of the TOC sectors the parse used, against which [`Disc::share`]
     /// checks another reader.
     digests: TocDigests,
+    /// TOC fields as stored that the TOC gives only as interpreted.
+    stored: TocStored,
     /// The seek index of each slot, if enabled: one for every disc of the image, so that
     /// they all use and grow the same index.
     seek: SeekIndexes,
@@ -159,10 +161,10 @@ impl<R: Read + Seek> Disc<R> {
     ///
     /// As [`Disc::open`].
     pub fn from_image(mut image: Image<R>) -> Result<Self, Error> {
-        let (toc, warnings, digests) = toc::read_toc(&mut image)?;
+        let (toc, warnings, digests, stored) = toc::read_toc(&mut image)?;
         Ok(Disc {
             image,
-            shared: Arc::new(DiscShared { toc, warnings, digests, seek: SeekIndexes::default() }),
+            shared: Arc::new(DiscShared { toc, warnings, digests, stored, seek: SeekIndexes::default() }),
             policy: [SeekPolicy::Exact; 2],
         })
     }
@@ -223,6 +225,21 @@ impl<R: Read + Seek> Disc<R> {
     /// same: cancelling stops the reads of all of them and their cursors.
     pub fn cancel_token(&self) -> CancelToken {
         self.image.cancel_token()
+    }
+
+    /// The start and duration timecodes of track `number` (1-based) of the area from `slot`
+    /// as stored in the area TOC's `SACDTRL2` (specification 3, 3.7.2), byte for byte:
+    /// before the clamping of 3.9.2 and whatever their range, so that a stored timecode
+    /// such as 255:255:255 is given as stored.
+    /// [`crate::Track::start_frame`] and [`crate::Track::duration_frames`] are their frame
+    /// numbers after clamping. The area's play time as stored is [`crate::Area::playtime`].
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NoSuchArea`] or [`Error::NoSuchTrack`].
+    pub fn track_timecodes_stored(&self, slot: Slot, number: u32) -> Result<(Timecode, Timecode), Error> {
+        self.find_track(slot, number)?;
+        self.shared.stored.track_timecodes(slot, number).ok_or(Error::NoSuchTrack { slot, track: number })
     }
 
     /// The warnings emitted while reading the TOC (specification 7, 7.7.3).
