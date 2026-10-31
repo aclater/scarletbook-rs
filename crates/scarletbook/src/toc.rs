@@ -113,13 +113,17 @@ pub struct Date {
 pub struct Locale {
     /// The language code, trailing NUL and space removed; may contain control characters.
     pub language: String,
+    /// The language code's two bytes as stored, nothing removed: tells an unset code
+    /// (0x00 0x00) from one of spaces, which [`Locale::language`] reports alike.
+    pub language_code: [u8; 2],
     /// The stored character set code byte.
     pub charset: u8,
 }
 
 impl Locale {
     fn parse(b: &[u8]) -> Locale {
-        Locale { language: text::language([byte(b, 0), byte(b, 1)]), charset: byte(b, 2) }
+        let code = [byte(b, 0), byte(b, 1)];
+        Locale { language: text::language(code), language_code: code, charset: byte(b, 2) }
     }
 }
 
@@ -321,6 +325,10 @@ pub struct MasterToc {
     pub album_sequence_number: u16,
     /// Album catalogue number (offset 24), a fixed text field.
     pub album_catalog_number: String,
+    /// The album catalogue number's bytes as stored, up to the first 0x00 (all 16 if there
+    /// is none), padding kept: step 1 of the fixed text field rules (specification 2,
+    /// 2.6.5), before the bytes are mapped and trimmed.
+    pub album_catalog_number_stored: Vec<u8>,
     /// Album genres (offset 40).
     pub album_genres: [Genre; 4],
     /// The 2-channel slot's pointers.
@@ -331,6 +339,9 @@ pub struct MasterToc {
     pub disc_flags: u8,
     /// Disc catalogue number (offset 88), a fixed text field.
     pub disc_catalog_number: String,
+    /// The disc catalogue number's bytes as stored, as for
+    /// [`MasterToc::album_catalog_number_stored`].
+    pub disc_catalog_number_stored: Vec<u8>,
     /// Disc genres (offset 104).
     pub disc_genres: [Genre; 4],
     /// Date (offsets 120 to 123).
@@ -789,11 +800,13 @@ fn read_master<R: Read + Seek>(
         album_set_size: be16(s0, 16),
         album_sequence_number: be16(s0, 18),
         album_catalog_number: text::fixed_text(sub(s0, 24, 16)),
+        album_catalog_number_stored: text::fixed_bytes(sub(s0, 24, 16)).to_vec(),
         album_genres: genres(s0, 40),
         two_channel: pointer(64, 68, 84),
         multichannel: pointer(72, 76, 86),
         disc_flags: byte(s0, 80),
         disc_catalog_number: text::fixed_text(sub(s0, 88, 16)),
+        disc_catalog_number_stored: text::fixed_bytes(sub(s0, 88, 16)).to_vec(),
         disc_genres: genres(s0, 104),
         date: Date { year: be16(s0, 120), month: byte(s0, 122), day: byte(s0, 123) },
         text_channel_count,

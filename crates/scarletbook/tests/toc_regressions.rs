@@ -200,3 +200,25 @@ fn unknown_text_type_warns_only_with_a_string() {
         disc.warnings().iter().any(|w| w.code == WarningCode::TrackTextTypeUnknown && w.track == Some(1))
     );
 }
+
+#[test]
+fn stored_language_codes_and_catalogue_numbers() {
+    let mut img = Spec::simple().build();
+    // Master TOC: two text channels, "e " and 0x00 0x00, both reported as language "e"
+    // and "" but stored apart; catalogue numbers with padding and a NUL.
+    patch_master(&mut img, 128, &[2]);
+    patch_master(&mut img, 136, &[b'e', b' ', 1, 0, 0, 0, 2, 0]);
+    patch_master(&mut img, 24, b" CAT\xa0 \0junk\0\0\0\0\0\0");
+    patch_master(&mut img, 88, b"0123456789ABCDEF");
+    put(&mut img, A + 80, &[1]);
+    put(&mut img, A + 88, &[b' ', b' ', 3, 0]);
+    let disc = open(img);
+    let m = &disc.toc().master;
+    let codes: Vec<_> = m.locales.iter().map(|l| (l.language.as_str(), l.language_code, l.charset)).collect();
+    assert_eq!(codes, [("e", *b"e ", 1), ("", [0, 0], 2)]);
+    assert_eq!(m.album_catalog_number, "CAT");
+    assert_eq!(m.album_catalog_number_stored, b" CAT\xa0 ");
+    assert_eq!(m.disc_catalog_number_stored, b"0123456789ABCDEF");
+    let a = &disc.toc().areas[0].locales;
+    assert_eq!((a[0].language.as_str(), a[0].language_code, a[0].charset), ("", *b"  ", 3));
+}

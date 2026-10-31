@@ -163,6 +163,14 @@ stated in the header hold on every target. Regenerate the header with
 `cbindgen --config cbindgen.toml --crate scarletbook-ffi --output include/scarletbook.h`
 in `crates/scarletbook-ffi` (cbindgen 0.29.4; CI checks the committed header).
 
+Beyond `SbDiscInfo`, `SbAreaInfo` and the strings, the master TOC's genres
+(`sb_disc_genre`), text channels with their language codes as stored and character set
+codes (`sb_disc_text_channel_count`, `sb_disc_text_channel`), catalogue numbers as stored,
+padding kept (`sb_disc_catalog_number_stored`), and manufacturer data
+(`sb_disc_manufacturer`) have calls of their own, as do an area's version, maximum
+available channels, mute flags, track attribute and offset, and text channels
+(`sb_area_details`, `sb_area_text_channel`).
+
 `sb_disc_read_sectors(disc, lsn, count, buf, cap)` copies the 2048-byte user data of
 logical sectors `[lsn, lsn + count)`, whatever the image's stored sector size (2048, 2054
 or 2064 bytes): the bytes a 2048-byte-sector copy of the image holds there, for example to
@@ -368,6 +376,17 @@ class SbFrameInfo(C.Structure):
 class SbRawFrameInfo(C.Structure):
     _fields_ = [("number", C.c_uint32), ("kind", C.c_uint32), ("size", C.c_uint32)]
 
+class SbGenre(C.Structure):
+    _fields_ = [("category", C.c_uint8), ("index", C.c_uint8)]
+
+class SbTextChannel(C.Structure):  # language: the code's two bytes as stored
+    _fields_ = [("language", C.c_uint8 * 2), ("charset", C.c_uint8), ("reserved", C.c_uint8)]
+
+class SbAreaDetails(C.Structure):
+    _fields_ = [(name, C.c_uint8) for name in (
+        "version_major", "version_minor", "max_available_channels", "mute_flags",
+        "track_attribute", "track_offset", "text_channel_count", "text_charset")]
+
 class SbSpeculation(C.Structure):
     _fields_ = [("claim", C.c_uint64), ("lsn", C.c_uint64), ("slot", C.c_uint32), ("state", C.c_uint32),
                 ("first", C.c_uint32), ("last_returned", C.c_uint32), ("exact_from", C.c_uint32),
@@ -394,6 +413,13 @@ bind("sb_area_loudspeaker_layout", S, H, U32, P(U32))
 bind("sb_area_channel_speaker", S, H, U32, U32, P(U32))
 bind("sb_disc_warning", S, H, U32, P(SbWarning))
 bind("sb_disc_read_sectors", S, H, C.c_uint64, U32, C.c_char_p, SIZE)
+bind("sb_disc_genre", S, H, U32, U32, P(SbGenre))
+bind("sb_disc_text_channel_count", S, H, P(U32))
+bind("sb_disc_text_channel", S, H, U32, P(SbTextChannel))
+bind("sb_disc_catalog_number_stored", S, H, U32, C.c_char_p, SIZE, P(SIZE))
+bind("sb_disc_manufacturer", S, H, C.c_char_p, SIZE, P(SIZE))
+bind("sb_area_details", S, H, U32, P(SbAreaDetails))
+bind("sb_area_text_channel", S, H, U32, U32, P(SbTextChannel))
 bind("sb_track_info", S, H, U32, U32, P(SbTrackInfo))
 bind("sb_track_string", S, H, U32, U32, U32, C.c_char_p, SIZE, P(SIZE))
 bind("sb_track_check", S, H, U32, U32)

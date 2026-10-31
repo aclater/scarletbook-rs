@@ -903,6 +903,12 @@ fn struct_layouts() {
     });
     assert_layout!(SbFrameInfo, size 16, align 4, { number: 0, status: 4, dst_rule: 8, size: 12 });
     assert_layout!(SbRawFrameInfo, size 12, align 4, { number: 0, kind: 4, size: 8 });
+    assert_layout!(SbGenre, size 2, align 1, { category: 0, index: 1 });
+    assert_layout!(SbTextChannel, size 4, align 1, { language: 0, charset: 2, reserved: 3 });
+    assert_layout!(SbAreaDetails, size 8, align 1, {
+        version_major: 0, version_minor: 1, max_available_channels: 2, mute_flags: 3,
+        track_attribute: 4, track_offset: 5, text_channel_count: 6, text_charset: 7,
+    });
     assert_layout!(SbSpeculation, size 40, align align64, {
         claim: 0, lsn: 8, slot: 16, state: 20, first: 24, last_returned: 28, exact_from: 32, reserved: 36,
     });

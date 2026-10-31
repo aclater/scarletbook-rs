@@ -189,6 +189,23 @@
 #define SB_SPEAKER_SURROUND_RIGHT 6
 
 /*
+ Genre lists of `sb_disc_genre`: the master TOC's album genres (offset 40) and disc
+ genres (offset 104).
+ */
+#define SB_GENRE_LIST_ALBUM 0
+
+/*
+ See `SB_GENRE_LIST_ALBUM`.
+ */
+#define SB_GENRE_LIST_DISC 1
+
+/*
+ Size of the manufacturer data `sb_disc_manufacturer` copies: bytes 8 to 2047 of the
+ manufacturer sector.
+ */
+#define SB_MANUFACTURER_BYTES 2040
+
+/*
  Size of a logical sector's user data in bytes (specification 0, 0.3), the unit of
  `sb_disc_read_sectors`.
  */
@@ -846,6 +863,88 @@ typedef struct SbAreaInfo {
 } SbAreaInfo;
 
 /*
+ A genre entry as stored (specification 2, 2.4): `sb_disc_genre`.
+
+ Layout: 2 bytes, aligned to 1, without padding.
+ */
+typedef struct SbGenre {
+  /*
+   Genre table (category) byte: 1 is the general table, 2 a Japanese one.
+   */
+  uint8_t category;
+  /*
+   Genre index byte.
+   */
+  uint8_t index;
+} SbGenre;
+
+/*
+ A text channel's locale entry as stored (specification 2, 2.5.1): `sb_disc_text_channel`,
+ `sb_area_text_channel`.
+
+ Layout: 4 bytes, aligned to 1, without padding: `language` at 0, `charset` at 2,
+ `reserved` at 3.
+ */
+typedef struct SbTextChannel {
+  /*
+   The language code's two bytes as stored (an ISO 639-1 code such as "en"), nothing
+   removed: 0x00 0x00 is an unset code. The trimmed language of specification 2, 2.5.1
+   item 1 is these bytes with every trailing 0x00 and 0x20 removed.
+   */
+  uint8_t language[2];
+  /*
+   Character set code, the stored byte (the low 3 bits select the character set).
+   */
+  uint8_t charset;
+  /*
+   Written as 0.
+   */
+  uint8_t reserved;
+} SbTextChannel;
+
+/*
+ More of an area's TOC fields (specification 3, 3.4 and 3.5): `sb_area_details`.
+
+ Layout: 8 bytes, aligned to 1, without padding (8 fields of 1 byte).
+ */
+typedef struct SbAreaDetails {
+  /*
+   Area TOC version (offset 8).
+   */
+  uint8_t version_major;
+  /*
+   Area TOC version (offset 9).
+   */
+  uint8_t version_minor;
+  /*
+   Maximum available channels (offset 34), as stored.
+   */
+  uint8_t max_available_channels;
+  /*
+   Area mute flags (offset 35), as stored.
+   */
+  uint8_t mute_flags;
+  /*
+   Track attribute: the low 4 bits of offset 48.
+   */
+  uint8_t track_attribute;
+  /*
+   Track offset (offset 68), as stored.
+   */
+  uint8_t track_offset;
+  /*
+   Text channel count (offset 80), as stored; `sb_area_text_channel` reads the first
+   `min(count, 10)` locale entries.
+   */
+  uint8_t text_channel_count;
+  /*
+   Character set code of area locale entry 0 (offset 90), with which all area text is
+   decoded, also when the text channel count is 0.
+   */
+  uint8_t text_charset;
+} SbAreaDetails;
+
+/*
  Information about one track.
 
  Layout: 28 bytes, aligned to 4, without padding: the five `uint32_t` at offsets 0 to
@@ -1375,6 +1474,96 @@ SbStatus sb_area_string(const struct SbDisc *disc,
                         char *buf,
                         size_t cap,
                         size_t *len);
+
+/*
+ Genre `index` (0 to 3) of the master TOC's album (`SB_GENRE_LIST_ALBUM`) or disc
+ (`SB_GENRE_LIST_DISC`) genres, as stored.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `out` NULL or valid for a write.
+ */
+SbStatus sb_disc_genre(const struct SbDisc *disc,
+                       uint32_t list,
+                       uint32_t index,
+                       struct SbGenre *out);
+
+/*
+ The master TOC's text channel count (offset 128), as stored (0 to 255);
+ `sb_disc_text_channel` reads the first `min(count, 8)` locale entries.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `count` NULL or valid for a write.
+ */
+SbStatus sb_disc_text_channel_count(const struct SbDisc *disc, uint32_t *count);
+
+/*
+ The locale entry of master TOC text channel `index`, below `min(count, 8)` of
+ `sb_disc_text_channel_count` (the reported locale list, specification 2, 2.5.2);
+ `SB_STATUS_INVALID_ARGUMENT` for another index.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `out` NULL or valid for a write.
+ */
+SbStatus sb_disc_text_channel(const struct SbDisc *disc, uint32_t index, struct SbTextChannel *out);
+
+/*
+ Copies a catalogue number as stored: `field` is `SB_DISC_STRING_ALBUM_CATALOG_NUMBER`
+ or `SB_DISC_STRING_DISC_CATALOG_NUMBER`, and the bytes are the field's up to its first
+ 0x00 (all 16 if there is none), padding kept, unmapped and untrimmed (specification 2,
+ 2.6.5 step 1); `sb_disc_string` gives the trimmed string. The copy-out convention is
+ that of strings, with a terminating NUL, but the bytes are as stored: not necessarily
+ UTF-8 (they contain no 0x00). Empty when the field starts with 0x00; never absent.
+
+ # Safety
+
+ As `sb_disc_string`.
+ */
+SbStatus sb_disc_catalog_number_stored(const struct SbDisc *disc,
+                                       uint32_t field,
+                                       char *buf,
+                                       size_t cap,
+                                       size_t *len);
+
+/*
+ Copies the manufacturer data: bytes 8 to 2047 of the master TOC's manufacturer sector
+ (LSN 519), opaque (specification 2, 2.7), when its `SACD_Man` signature is present
+ (`SbDiscInfo.manufacturer_sector`). `*len` (required) receives the size,
+ `SB_MANUFACTURER_BYTES`, or 0 and `SB_STATUS_ABSENT` without the sector. With `buf`
+ NULL or `cap` below the size, the call returns `SB_STATUS_BUFFER_TOO_SMALL` and
+ writes nothing else. No NUL is added.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `buf` NULL or valid for `cap` bytes of writes;
+ `len` NULL or valid for a write.
+ */
+SbStatus sb_disc_manufacturer(const struct SbDisc *disc, uint8_t *buf, size_t cap, size_t *len);
+
+/*
+ More TOC fields of the area from `slot` (`SbAreaDetails`).
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `out` NULL or valid for a write.
+ */
+SbStatus sb_area_details(const struct SbDisc *disc, uint32_t slot, struct SbAreaDetails *out);
+
+/*
+ The locale entry of text channel `index` of the area from `slot`, below
+ `min(SbAreaDetails.text_channel_count, 10)` (the reported area locale list,
+ specification 3, 3.5); `SB_STATUS_INVALID_ARGUMENT` for another index.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `out` NULL or valid for a write.
+ */
+SbStatus sb_area_text_channel(const struct SbDisc *disc,
+                              uint32_t slot,
+                              uint32_t index,
+                              struct SbTextChannel *out);
 
 /*
  Information about track `number` (1-based) of the area from `slot`.
