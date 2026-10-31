@@ -286,3 +286,52 @@ fn a_foreign_index_does_not_confirm() {
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].speculation, c.speculation());
 }
+
+/// Another pressing of the image: the same frames (numbers, kinds, sizes), other bytes.
+fn other_pressing(n: u32) -> Vec<PFrame> {
+    (0..n)
+        .map(|k| PFrame { number: k, dst: true, data: vec![k as u8 ^ 0x5A; 4000 + (k as usize * 37) % 6000] })
+        .collect()
+}
+
+/// A caller-kept index that took a provisional reading of image A is A's: extending or
+/// verifying it with another image B of the same size is refused, and the reading is never
+/// confirmed against B (#102).
+#[test]
+#[cfg_attr(miri, ignore = "reads thousands of sectors")]
+fn a_caller_kept_index_does_not_check_against_another_image() {
+    let mut a = Disc::open(Cursor::new(image(&frames(1000), 1000))).unwrap();
+    let mut b = Disc::open(Cursor::new(image(&other_pressing(1000), 1000))).unwrap();
+    let area = a.toc().areas[0].clone();
+    let n = a.toc().sectors;
+    assert_eq!((area.clone(), n), (b.toc().areas[0].clone(), b.toc().sectors), "same key");
+    let mut index = AreaIndex::new(&area, n, IndexOptions::new()).unwrap();
+    let c = TrackCursor::for_range_speculative(&area, 700, 710, n, Some(&index), options()).unwrap();
+    let (_, mut c) = read(&mut a, c);
+    assert!(matches!(c.speculation(), Speculation::Pending { .. }));
+    index.absorb(&mut c).unwrap();
+    assert_eq!(index.pending_claims(), 1);
+    assert!(matches!(index.extend(b.image_mut(), 1 << 20), Err(scarletbook::Error::InvalidArgument(_))));
+    assert!(matches!(index.verify(b.image_mut()), Err(scarletbook::Error::InvalidArgument(_))));
+    assert!(matches!(c.speculation(), Speculation::Pending { .. }));
+    // A itself checks it.
+    while !index.extend(a.image_mut(), 1 << 20).unwrap() {}
+    assert!(matches!(c.speculation(), Speculation::Confirmed { .. }));
+}
+
+/// A disc's index holding a provisional reading of its image, set on a disc of another image
+/// (which clears the index's image: it is trusted as that disc's), does not check the
+/// reading against that other image: it is unverified (#102).
+#[test]
+#[cfg_attr(miri, ignore = "reads thousands of sectors")]
+fn a_reading_moves_to_another_disc_unverified() {
+    let mut a = speculative_disc(image(&frames(1000), 1000), 64);
+    let mut b = Disc::open(Cursor::new(image(&other_pressing(1000), 1000))).unwrap();
+    let c = a.range_frames_cursor(Slot::TwoChannel, 800, 810).unwrap();
+    let (_, c) = read(&mut a, c);
+    let kept = a.take_seek_index(Slot::TwoChannel).unwrap();
+    assert_eq!(kept.pending_claims(), 1);
+    b.set_seek_index(Slot::TwoChannel, kept).unwrap();
+    while !b.verify_speculation(Slot::TwoChannel, 1 << 20).unwrap() {}
+    assert!(matches!(c.speculation(), Speculation::Unverified { .. }), "{:?}", c.speculation());
+}

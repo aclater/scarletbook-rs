@@ -882,6 +882,9 @@ impl AreaCursor {
         match self.image_id {
             None => {
                 self.image_id = Some(image.id());
+                if let Some(claim) = &self.claim {
+                    claim.set_image(image.id());
+                }
                 if let Some(sp) = self.speculate.take() {
                     if let Err(e) = self.begin(image, sp) {
                         self.finished = true;
