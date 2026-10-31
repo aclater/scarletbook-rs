@@ -1,1 +1,0 @@
-| 2026-10-31 | #94 cold-seek measurements and C acceptance tests | `scarletbook-seekcost` cold-seek table, `clib-seekcost.py` (C path), C interface tests and smoke test of provisional reading. No new sources consulted. |

@@ -9,6 +9,46 @@ is shared by every crate of the workspace; releases carry the `bench` program an
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-31
+
+### Added
+
+- Provisional reading in the C interface (#94, part 3; specification 4, 4.2 item 8,
+  sacd-spec `82eac6c`): `sb_disc_seek_policy_set` with `SB_SEEK_POLICY_EXACT` (the default)
+  or `SB_SEEK_POLICY_SPECULATIVE` and `SB_SEEK_DEFAULT_MIN_GAP`; the `SbSpeculation` struct
+  (40 bytes, no padding) and `SB_SPECULATION_*` states, filled by
+  `sb_track_audio_speculation` and `sb_raw_frames_speculation`; verdicts through
+  `sb_disc_seek_verify` and `sb_disc_seek_event_next` (a queue shared by a disc's clones),
+  and for caller-kept indexes `sb_seek_index_verify` and `sb_seek_index_event_next`.
+  `TrackCursor::slot` and `TrackAudioCursor::slot` in Rust; `AreaIndex::verify` refuses an
+  image of another sector count. Additive on ABI 2. README ctypes bindings for them.
+- Cold-seek measurements (#94, part 4; fixes #94): `scarletbook-seekcost` also measures
+  provisional reading (no seek index, `SeekPolicy::Speculative`) against the range's position:
+  read calls, sectors, time, a network model (`--rtt-ms`, default 0.5; `--mbps`, default 110)
+  and whether the frames equal the exact ones. On a 50-minute 2-channel DST image: 4 to 7 read
+  calls and 80 to 139 sectors wherever the range lies (3.5 to 5.6 ms modelled), against up
+  to 470 272 sectors without an index. `.github/scripts/clib-seekcost.py` measures the same
+  through the C interface (`sb_disc_open_callbacks` with counting callbacks, from ctypes):
+  4 to 7 read calls against up to 14 696; the C package test runs it.
+- C interface tests of provisional reading: on every well-formed corpus image a provisional
+  range read equals an exact one (frames, statuses, missing and invalid counts) and is
+  confirmed; a refutation reaches the C caller with `exact_from`, and an exact re-read below
+  it completes a straight read; a clone checking readings on another thread settles the
+  original handle's reading and queues the event on the original disc. The C package smoke
+  test reads provisionally through the README's ctypes bindings and checks the readings with
+  a disc-kept and a caller-kept seek index.
+
+### Fixed
+
+- A caller-kept seek index could confirm a provisional reading against another image of the
+  same size and layout (#102, in 0.4.0): it took the reading without binding to the image the
+  reading had read, so a later `AreaIndex::extend` or `AreaIndex::verify` with the other image
+  checked it against that image's state (specification 4, 4.2 item 8). Taking a provisional
+  reading now binds an index that has no image yet to the reading's image, and an index of
+  another image refuses it; a reading also remembers its image and is never checked against
+  another (it becomes `Speculation::Unverified`, for example after `Disc::set_seek_index`
+  moves an index to a disc of another image).
+
 ## [0.4.0] - 2026-10-31
 
 ### Added
@@ -292,7 +332,8 @@ First release: a clean-room reader for SACD images, written from sacd-spec, pass
 - DST decoding about 3.8 times faster on one thread, and parallel decoding that overlaps
   demultiplexing with decoding within a bounded memory (#16, #17, #19).
 
-[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/aclater/scarletbook-rs/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/aclater/scarletbook-rs/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/aclater/scarletbook-rs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/aclater/scarletbook-rs/compare/v0.1.0...v0.2.0
