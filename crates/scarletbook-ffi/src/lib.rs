@@ -197,6 +197,10 @@ pub enum SbTrackString {
 }
 
 /// Disc-level information.
+///
+/// Layout on 64-bit targets: 40 bytes, aligned to 8, with 4 bytes of padding after
+/// `sector_size` (so `sectors` is at offset 8) and 4 at the end; `hybrid` and
+/// `manufacturer_sector` (1 byte each) are at offsets 22 and 23.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SbDiscInfo {
@@ -229,6 +233,8 @@ pub struct SbDiscInfo {
 }
 
 /// Information about one area.
+///
+/// Layout: 52 bytes, aligned to 4, without padding (13 fields of 4 bytes).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SbAreaInfo {
@@ -261,6 +267,9 @@ pub struct SbAreaInfo {
 }
 
 /// Information about one track.
+///
+/// Layout: 28 bytes, aligned to 4: the five `uint32_t` at offsets 0 to 16, the five
+/// 1-byte fields at 20 to 24, then 3 bytes of padding.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SbTrackInfo {
@@ -287,6 +296,9 @@ pub struct SbTrackInfo {
 }
 
 /// A warning.
+///
+/// Layout on 64-bit targets: 24 bytes, aligned to 8, without padding: `code` at offset 0,
+/// `slot` at 8, `track` at 12, `lsn` at 16.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct SbWarning {
@@ -301,6 +313,9 @@ pub struct SbWarning {
 }
 
 /// Information about one decoded frame.
+///
+/// Layout on 64-bit targets: 24 bytes, aligned to 8, with 4 bytes of padding after
+/// `dst_rule` (so `size` is at offset 16).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SbFrameInfo {
@@ -322,6 +337,8 @@ pub const SB_MAX_FRAME_BYTES: usize = 65_536;
 const _: () = assert!(SB_MAX_FRAME_BYTES == scarletbook::audio::MAX_FRAME_BYTES);
 
 /// Information about one undecoded timeline position.
+///
+/// Layout on 64-bit targets: 16 bytes, aligned to 8, without padding: `size` at offset 8.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SbRawFrameInfo {

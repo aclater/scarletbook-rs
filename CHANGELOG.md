@@ -22,6 +22,15 @@ is shared by every crate of the workspace; releases carry the `bench` program an
   them; the library starts no global pool. `SB_MAX_POOL_THREADS` and
   `SB_STATUS_THREADS_UNAVAILABLE` are new. Additive: the ABI version stays 1. The C smoke
   test also decodes every track on a pool and compares.
+- A test of several discs decoded at once through the C interface (#39): 8 threads, each
+  with a disc of its own opened from memory or from a file, decode every track on the
+  calling thread or on a shared pool and match the conformance manifest; each thread's
+  error message stays its own, and a track handle is refused with another thread's disc.
+- Documented C struct layouts (#39): each struct of `scarletbook.h` states its size,
+  alignment and padding on 64-bit targets, which a test checks field by field, and the
+  header's conventions state the C types used (fixed-width integers, `size_t` for lengths,
+  `bool`, the int-sized `SbStatus`, no variadic functions). Comments only: the ABI is
+  unchanged.
 - README "Using from Python (ctypes)" (#39): the ABI version check at load, the six
   structs and the `argtypes`/`restype` of the main functions, a decoding example, and the
   rules for threads, error messages, freeing and callbacks. The ctypes smoke test of every
