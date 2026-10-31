@@ -1089,7 +1089,7 @@ impl DiscLog {
 /// thread, in frame order. Once sb_disc_set_log or sb_disc_free returns, the previous
 /// callback is not called again (they wait for calls on other threads to return).
 ///
-/// A worker's message can also be delivered on a thread that waits for a frame inside
+/// A pool thread's message can also be delivered on a thread that waits for a frame inside
 /// `sb_track_audio_read` when that thread is one of a pool's (the pool runs pending work
 /// there; for example a callback on a pool thread that reads another handle), and the callback
 /// can be entered again on a thread that is already inside it (when the callback itself
@@ -1105,8 +1105,9 @@ impl DiscLog {
 /// The message is valid only during the call. The callback must not unwind. It may call
 /// this library with other handles. With this disc or its track handles, it may do so only
 /// when it runs on the thread of the call that invoked it, where a call that conflicts
-/// with the running one fails with `SB_STATUS_INVALID_ARGUMENT`; from a worker thread that
-/// would use the handle from two threads at once.
+/// with the running one fails with `SB_STATUS_INVALID_ARGUMENT`; from a pool thread that
+/// would use the handle from two threads at once (`sb_track_audio_set_pool` and the
+/// `_free` functions included).
 ///
 /// Returns `SB_STATUS_INVALID_ARGUMENT` for a level outside `SB_LOG_OFF` to
 /// `SB_LOG_TRACE`, or when called from one of this disc's callbacks; the log is then
