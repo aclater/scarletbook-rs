@@ -34,8 +34,10 @@ header = """/* SPDX-License-Identifier: MIT OR Apache-2.0 */
  *   at once; an SbPool, which only holds threads, may. To read one image on several
  *   threads at once, give each thread a clone of its disc (sb_disc_clone): a handle of
  *   its own over the same image. Read and seek callbacks
- *   (sb_disc_open_callbacks) run on the thread that makes the call that needs them, also
- *   when a pool decodes. A log callback (sb_disc_set_log) also runs there and on the
+ *   (sb_disc_open_callbacks) and positional read callbacks (sb_disc_open_callbacks_at)
+ *   run on the thread that makes the call that needs them, also when a pool decodes; a
+ *   positional one therefore runs on several threads at once when clones of its disc
+ *   are used on several threads. A log callback (sb_disc_set_log) also runs there and on the
  *   threads of the pools decoding for the disc's track handles (sb_track_audio_set_pool;
  *   in a library built with the parallel feature, rayon's global pool by default). The
  *   library has no other threads, and no global state besides the per-thread error

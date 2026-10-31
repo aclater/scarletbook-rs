@@ -29,8 +29,10 @@
  *   at once; an SbPool, which only holds threads, may. To read one image on several
  *   threads at once, give each thread a clone of its disc (sb_disc_clone): a handle of
  *   its own over the same image. Read and seek callbacks
- *   (sb_disc_open_callbacks) run on the thread that makes the call that needs them, also
- *   when a pool decodes. A log callback (sb_disc_set_log) also runs there and on the
+ *   (sb_disc_open_callbacks) and positional read callbacks (sb_disc_open_callbacks_at)
+ *   run on the thread that makes the call that needs them, also when a pool decodes; a
+ *   positional one therefore runs on several threads at once when clones of its disc
+ *   are used on several threads. A log callback (sb_disc_set_log) also runs there and on the
  *   threads of the pools decoding for the disc's track handles (sb_track_audio_set_pool;
  *   in a library built with the parallel feature, rayon's global pool by default). The
  *   library has no other threads, and no global state besides the per-thread error
@@ -577,6 +579,13 @@ typedef int64_t (*SbReadFn)(void *user, uint8_t *buf, size_t len);
 typedef int64_t (*SbSeekFn)(void *user, int64_t offset, int32_t whence);
 
 /*
+ Reads up to `len` bytes at byte `offset` of the image into `buf`; returns the count (0
+ at or past the end) or -1 on error. May be called from several threads at once (see
+ `sb_disc_open_callbacks_at`).
+ */
+typedef int64_t (*SbReadAtFn)(void *user, uint64_t offset, uint8_t *buf, size_t len);
+
+/*
  Disc-level information.
 
  Layout on 64-bit targets: 40 bytes, aligned to 8, with 4 bytes of padding after
@@ -930,6 +939,46 @@ enum SbStatus sb_disc_open_callbacks_with_log(SbReadFn read,
                                               struct SbDisc **out);
 
 /*
+ Opens a disc image of `size` bytes read through a positional read callback, which is
+ given the offset of each read and so can serve the disc and its clones (`sb_disc_clone`)
+ on several threads at once. On failure `*out` is set to NULL.
+
+ The callback runs during this call and during `sb_track_audio_read` and
+ `sb_raw_frames_read`, on the calling thread, with the rules of `sb_disc_open_callbacks`
+ for calling back into this library; clones of the disc used on several threads call it
+ on those threads at the same time. `size` is the image's length (what `seek` to the end
+ gives for `sb_disc_open_callbacks`): a short count or -1 fails the read that needed it
+ (`SB_STATUS_IO`).
+
+ # Safety
+
+ `read_at` must be safe to call with `user` from any thread, concurrently, until the
+ disc and all its clones are freed; it must not unwind, and must write at most `len`
+ bytes to `buf`. `out` must be NULL or valid for a write.
+ */
+enum SbStatus sb_disc_open_callbacks_at(SbReadAtFn read_at,
+                                        uint64_t size,
+                                        void *user,
+                                        struct SbDisc **out);
+
+/*
+ `sb_disc_open_callbacks_at`, reporting to a log callback from the format detection on
+ (see `sb_disc_set_log`). `user` goes to the read callback, `log_user` to the log
+ callback.
+
+ # Safety
+
+ As `sb_disc_open_callbacks_at` and `sb_disc_set_log`.
+ */
+enum SbStatus sb_disc_open_callbacks_at_with_log(SbReadAtFn read_at,
+                                                 uint64_t size,
+                                                 void *user,
+                                                 SbLogFn log,
+                                                 void *log_user,
+                                                 int32_t level,
+                                                 struct SbDisc **out);
+
+/*
  Opens a clone of a disc: the same image with a reading position of its own, sharing
  the disc's parsed TOC, warnings and sector format, without the log callback (see
  `sb_disc_clone_with_log`). For reads of one image on several threads at once, give each
@@ -967,6 +1016,44 @@ enum SbStatus sb_disc_clone_with_log(const struct SbDisc *disc,
                                      void *log_user,
                                      int32_t level,
                                      struct SbDisc **out);
+
+/*
+ Opens a clone of any disc read through new read and seek callbacks (see
+ `sb_disc_open_callbacks`), for example over a second handle of the image's file: as
+ `sb_disc_clone`, with the clone reading through `read` and `seek`. The reader is
+ checked: it must have the image's length and the same TOC sectors, else
+ `SB_STATUS_INVALID_ARGUMENT`; that cannot prove every sector the same, which is the
+ caller's responsibility. The clone has a single position: `sb_disc_clone` refuses it,
+ while `sb_disc_clone_callbacks` takes it. On failure `*out` is set to NULL.
+
+ # Safety
+
+ As `sb_disc_clone` for `disc` and `out`, and as `sb_disc_open_callbacks` for `read`,
+ `seek` and `user`, until the clone is freed.
+ */
+enum SbStatus sb_disc_clone_callbacks(const struct SbDisc *disc,
+                                      SbReadFn read,
+                                      SbSeekFn seek,
+                                      void *user,
+                                      struct SbDisc **out);
+
+/*
+ `sb_disc_clone_callbacks`, with the clone reporting to a log callback of its own (see
+ `sb_disc_clone_with_log`). `user` goes to the read and seek callbacks, `log_user` to the
+ log callback.
+
+ # Safety
+
+ As `sb_disc_clone_callbacks` and `sb_disc_set_log`.
+ */
+enum SbStatus sb_disc_clone_callbacks_with_log(const struct SbDisc *disc,
+                                               SbReadFn read,
+                                               SbSeekFn seek,
+                                               void *user,
+                                               SbLogFn log,
+                                               void *log_user,
+                                               int32_t level,
+                                               struct SbDisc **out);
 
 /*
  Sets, replaces or removes (`log` NULL or `level` `SB_LOG_OFF`) a disc's log callback.
@@ -1731,9 +1818,9 @@ void sb_seek_index_free(struct SbSeekIndex *index);
  Keeps a seek index of the area from `slot` in `disc`, empty to begin with (see
  `sb_seek_index_new` for `interval` and `inline_budget`), replacing one kept before:
  from then on every track audio and raw frames handle of that area opened through the
- disc or any of its clones (`sb_disc_clone`) starts from it, and reads through them
- (`sb_track_audio_read`, `sb_raw_frames_read`) and continuations (`_open_next`) build
- it. The disc and its clones keep one index, used and grown from any thread; a
+ disc or any of its clones (`sb_disc_clone`, `sb_disc_clone_callbacks`) starts from it,
+ and reads through them (`sb_track_audio_read`, `sb_raw_frames_read`) and continuations
+ (`_open_next`) build it. The disc and its clones keep one index, used and grown from any thread; a
  handle's frames, statuses, counts and warnings are those without an index. Fails with
  `SB_STATUS_NO_SUCH_AREA` or `SB_STATUS_INVALID_ARGUMENT`.
 

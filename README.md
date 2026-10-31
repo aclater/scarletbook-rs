@@ -206,7 +206,9 @@ To read one image on several threads at once (for example several tracks of one 
 give each thread a clone of the disc: `sb_disc_clone(disc, &copy)` shares the parsed TOC
 and reads the same file or memory at a position of its own, and a track handle opened from
 any clone may be read through any other. A disc opened with read and seek callbacks cannot
-be cloned.
+be cloned that way: open it with a positional read callback instead
+(`sb_disc_open_callbacks_at`, called with an offset, possibly from several threads at once),
+or give each clone read and seek callbacks of its own (`sb_disc_clone_callbacks`).
 
 ### Release assets
 
