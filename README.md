@@ -610,7 +610,7 @@ that loads the library at run time can look the symbol up instead.
 | `SB_ABI_VERSION` | First release |
 |---|---|
 | 1 | 0.1.0 to 0.3.0 (additions only in 0.3.0) |
-| 2 | 0.4.0 (additions in 0.4.1 and 0.5.0) |
+| 2 | 0.4.0 (additions in 0.4.1, 0.5.0 and 0.5.1) |
 
 CI enforces this. `crates/scarletbook-ffi/abi/abi-N.txt` is the baseline of ABI version N:
 the header's declarations without comments or layout. `.github/scripts/abi-check.py`
