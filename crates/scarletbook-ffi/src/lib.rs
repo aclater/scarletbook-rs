@@ -546,7 +546,9 @@ impl From<Error> for Failure {
 
 fn set_error(msg: &str) {
     let c = CString::new(msg.replace('\0', " ")).unwrap_or_default();
-    LAST_ERROR.with(|e| *e.borrow_mut() = c);
+    // Once the thread's message is destroyed (a call from a thread-local destructor while
+    // the thread exits), the message is dropped: `with` would panic outside `guard`.
+    let _ = LAST_ERROR.try_with(|e| *e.borrow_mut() = c);
 }
 
 /// Runs `f`, catching panics and recording the error message.
@@ -743,7 +745,8 @@ pub extern "C" fn sb_version() -> *const c_char {
 /// succeeded). Valid until the thread's next call into this library.
 #[unsafe(no_mangle)]
 pub extern "C" fn sb_last_error_message() -> *const c_char {
-    LAST_ERROR.with(|e| e.borrow().as_ptr())
+    // Empty once the thread's message is destroyed, as for `set_error`.
+    LAST_ERROR.try_with(|e| e.borrow().as_ptr()).unwrap_or(c"".as_ptr())
 }
 
 /// The name of a status code (a static string), or "unknown".
