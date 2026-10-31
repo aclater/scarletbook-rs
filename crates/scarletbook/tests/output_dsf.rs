@@ -9,26 +9,16 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;
+mod output_common;
 
-use std::borrow::Cow;
 use std::io::Cursor;
-use std::path::PathBuf;
 
-use common::{PFrame, Spec, TrackSpec, pack};
+use common::TrackSpec;
+use output_common::{Held, Lcg, check, contents, corpus, corpus_ranges, enough, plain, synthetic, variants};
 use proptest::prelude::*;
 use scarletbook::audio::FRAME_BYTES_PER_CHANNEL;
-use scarletbook::output::{DsfBitsPerSample, Format, Layout, OutputOptions, PositionSource, RegionKind};
+use scarletbook::output::{DsfBitsPerSample, Format, OutputOptions, RegionKind};
 use scarletbook::{Disc, Error, OutputRefusal, Slot};
-
-/// The content of every position of a range, decoded.
-fn contents<R: std::io::Read + std::io::Seek>(
-    disc: &mut Disc<R>,
-    slot: Slot,
-    first: u32,
-    end: u32,
-) -> Vec<Vec<u8>> {
-    disc.range_audio(slot, first, end).unwrap().map(|f| f.unwrap().data).collect()
-}
 
 /// Reverses a byte's bits one at a time (8.2.3).
 fn reverse(b: u8) -> u8 {
@@ -72,91 +62,6 @@ fn sequential(content: &[Vec<u8>], channels: usize, channel_type: u32, bits: u32
     f
 }
 
-/// Positions of a range held in memory.
-struct Held<'a> {
-    first: u32,
-    content: &'a [Vec<u8>],
-    asked: Vec<u32>,
-}
-
-impl PositionSource for Held<'_> {
-    fn content(&mut self, t: u32) -> Result<Cow<'_, [u8]>, Error> {
-        self.asked.push(t);
-        Ok(Cow::Borrowed(&self.content[(t - self.first) as usize]))
-    }
-}
-
-/// A small deterministic generator for read ranges.
-struct Lcg(u64);
-
-impl Lcg {
-    fn below(&mut self, n: u64) -> u64 {
-        self.0 = self.0.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
-        (self.0 >> 33) % n.max(1)
-    }
-}
-
-/// Checks a layout against the sequential write: size, regions, a whole read, reads at
-/// region, row and block boundaries, and random reads through both paths.
-fn check<R: std::io::Read + std::io::Seek>(
-    disc: &mut Disc<R>,
-    layout: &Layout,
-    expected: &[u8],
-    content: &[Vec<u8>],
-    rng: &mut Lcg,
-) {
-    assert_eq!(layout.size(), expected.len() as u64);
-    let regions = layout.regions();
-    assert_eq!(regions[0].kind, RegionKind::Header);
-    assert_eq!((regions[0].offset, regions[0].len), (0, 92));
-    assert_eq!(regions[1].kind, RegionKind::SoundData);
-    assert_eq!(regions[1].offset + regions[1].len, layout.size());
-
-    let mut whole = vec![0xAA; expected.len() + 10];
-    assert_eq!(layout.read_at(disc, 0, &mut whole).unwrap(), expected.len());
-    assert!(whole[..expected.len()] == *expected, "whole read differs");
-    assert_eq!(layout.read_at(disc, layout.size(), &mut [0; 4]).unwrap(), 0);
-
-    let (first, _) = layout.range();
-    let row = 4096 * u64::from(layout.channels());
-    let size = layout.size();
-    let mut reads: Vec<(u64, u64)> =
-        vec![(0, 92), (90, 4), (91, 1), (92, 1), (92 + row - 1, 2), (size - 1, 1)];
-    for _ in 0..if cfg!(miri) { 2 } else { 24 } {
-        let at = rng.below(size);
-        let len = 1 + rng.below((size - at).min(3 * row));
-        reads.push((at, len));
-    }
-    for (at, len) in reads {
-        let len = len.min(size - at);
-        let want = &expected[at as usize..(at + len) as usize];
-        let mut got = vec![0; len as usize];
-        assert_eq!(layout.read_at(disc, at, &mut got).unwrap(), len as usize);
-        assert!(got == want, "read_at {at}+{len} differs");
-
-        let positions = layout.positions_for(at..at + len);
-        let mut held = Held { first, content, asked: Vec::new() };
-        let mut got = vec![0; len as usize];
-        assert_eq!(layout.fill(at, &mut got, &mut held).unwrap(), len as usize);
-        assert!(got == want, "fill {at}+{len} differs");
-        assert!(held.asked.iter().all(|t| positions.contains(t)), "fill read outside positions_for");
-    }
-}
-
-fn corpus() -> Vec<(String, Vec<u8>)> {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../corpus/images");
-    let mut images: Vec<_> = std::fs::read_dir(dir)
-        .unwrap()
-        .map(|e| {
-            let p = e.unwrap().path();
-            (p.file_name().unwrap().to_string_lossy().into_owned(), std::fs::read(&p).unwrap())
-        })
-        .collect();
-    images.sort();
-    assert!(images.len() > 50);
-    images
-}
-
 /// Every corpus area with a defined layout, for each track, each track with pause and the
 /// play range, with both bit orders.
 #[test]
@@ -173,14 +78,7 @@ fn corpus_layouts_equal_sequential_writes() {
                 Some(6) => 7,
                 _ => continue,
             };
-            let mut ranges: Vec<(u32, u32)> = vec![(0, area.playtime_frames())];
-            for t in &area.tracks {
-                ranges.push((t.start_frame, t.end_frame()));
-                ranges.push(disc.track_range_with_pause(area.slot, u32::from(t.number)).unwrap());
-            }
-            ranges.sort_unstable();
-            ranges.dedup();
-            for (first, end) in ranges {
+            for (first, end) in corpus_ranges(&disc, area.slot) {
                 if disc.check_range(area.slot, first, end).is_err() {
                     let e = disc.output_layout(area.slot, first, end, Format::Dsf, &OutputOptions::default());
                     assert_eq!(
@@ -190,40 +88,20 @@ fn corpus_layouts_equal_sequential_writes() {
                     continue;
                 }
                 let content = contents(&mut disc, area.slot, first, end);
-                for bits in [DsfBitsPerSample::One, DsfBitsPerSample::Eight] {
+                for bits in variants(&[DsfBitsPerSample::One, DsfBitsPerSample::Eight], checked) {
                     let options = OutputOptions::default().with_dsf_bits_per_sample(bits);
                     let layout = disc.output_layout(area.slot, first, end, Format::Dsf, &options).unwrap();
                     let bits = if bits == DsfBitsPerSample::One { 1 } else { 8 };
                     let expected = sequential(&content, usize::from(area.channel_count), channel_type, bits);
+                    assert_eq!(layout.regions()[0].len, 92);
+                    assert_eq!(layout.regions()[1].kind, RegionKind::SoundData);
                     check(&mut disc, &layout, &expected, &content, &mut rng);
                     checked += 1;
                 }
             }
         }
     }
-    assert!(checked > 100, "only {checked} layouts checked");
-}
-
-fn synthetic(
-    channels: u8,
-    frames: &[PFrame],
-    tracks: Vec<TrackSpec>,
-    playtime: u32,
-) -> Disc<Cursor<Vec<u8>>> {
-    let spec = Spec { channels, playtime, tracks, audio: pack(frames) };
-    Disc::open(Cursor::new(spec.build())).unwrap()
-}
-
-fn plain(channels: u8, n: u32) -> Vec<PFrame> {
-    (0..n)
-        .map(|number| PFrame {
-            number,
-            dst: false,
-            data: (0..usize::from(channels) * FRAME_BYTES_PER_CHANNEL)
-                .map(|i| (i as u32 * 7 + number * 13) as u8)
-                .collect(),
-        })
-        .collect()
+    assert!(checked > enough(), "only {checked} layouts checked");
 }
 
 #[test]

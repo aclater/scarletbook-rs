@@ -1,0 +1,2 @@
+Added
+- DSDIFF output layouts with plain DSD sound data (specification 8, 8.4.1 to 8.4.5): `output::Format::DsdiffDsd`, its size and every chunk from the TOC alone, channel IDs and loudspeaker configuration from the area's layout. Writer's choices are fields of `output::OutputOptions`: the property chunk order (`PropertyChunk`), channel IDs and `LSCO` for unspecified layouts, `LSCO` for defined layouts, and the absolute start time (#131, #141).

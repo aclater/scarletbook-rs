@@ -1,0 +1,1 @@
+| 2026-10-31 | #131 DSDIFF plain DSD layout (#141) | `output::Format::DsdiffDsd`, `PropertyChunk`, the DSDIFF options. Specification 8, 8.1, 8.4.1 to 8.4.5, 8.4.7 item 1, 8.4.8 (absolute start time) and 8.6 rows 14 to 17 at sacd-spec `1517ab7` (unchanged at `6db1251`). No new sources consulted. |
