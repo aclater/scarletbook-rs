@@ -418,6 +418,7 @@ impl AreaIndex {
             }
         }
         self.claims.retain(|c| c.verdict().is_none());
+        self.cap_claims();
         for (&lsn, &p) in &other.provisional {
             self.provisional.entry(lsn).or_insert(p);
         }

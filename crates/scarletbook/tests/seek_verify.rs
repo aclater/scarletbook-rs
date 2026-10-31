@@ -251,3 +251,38 @@ proptest! {
         let _ = S;
     }
 }
+
+/// An index of another image of the same size and layout (here another pressing: same
+/// frames, other bytes), merged into a disc's index that waits to check a provisional
+/// reading, must not confirm it: the checkpoint's sector digest differs, so the reading is
+/// unverified (4.2 item 8: MUST NOT report it as the specification's).
+#[test]
+#[cfg_attr(miri, ignore = "reads thousands of sectors")]
+fn a_foreign_index_does_not_confirm() {
+    let other: Vec<PFrame> = (0..1000u32)
+        .map(|k| PFrame { number: k, dst: true, data: vec![k as u8 ^ 0x5A; 4000 + (k as usize * 37) % 6000] })
+        .collect();
+    let mut a = Disc::open(Cursor::new(image(&other, 1000))).unwrap();
+    let mut b = speculative_disc(image(&frames(1000), 1000), 64);
+    let area = b.toc().areas[0].clone();
+    let n = b.toc().sectors;
+    assert_eq!((area.clone(), n), (a.toc().areas[0].clone(), a.toc().sectors), "same key");
+    // A provisional reading of B, waiting in B's (empty) index.
+    let c = b.range_frames_cursor(Slot::TwoChannel, 800, 810).unwrap();
+    let (_, c) = read(&mut b, c);
+    assert!(matches!(c.speculation(), Speculation::Pending { .. }));
+    // A's complete index, saved and loaded, merged in, and set back on B.
+    a.enable_seek_index(Slot::TwoChannel, IndexOptions::new()).unwrap();
+    while !a.extend_seek_index(Slot::TwoChannel, 1 << 20).unwrap() {}
+    let bytes = a.seek_index(Slot::TwoChannel).unwrap().to_bytes();
+    let loaded = AreaIndex::from_bytes(&area, n, &bytes, usize::MAX).unwrap();
+    let mut kept = b.take_seek_index(Slot::TwoChannel).unwrap();
+    assert_eq!(kept.pending_claims(), 1);
+    kept.merge(&loaded).unwrap();
+    b.set_seek_index(Slot::TwoChannel, kept).unwrap();
+    while !b.verify_speculation(Slot::TwoChannel, 1 << 20).unwrap() {}
+    assert!(matches!(c.speculation(), Speculation::Unverified { .. }), "{:?}", c.speculation());
+    let events = b.take_seek_events(Slot::TwoChannel);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].speculation, c.speculation());
+}

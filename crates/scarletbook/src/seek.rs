@@ -315,6 +315,19 @@ pub enum Speculation {
 /// dropped as [`Speculation::Unverified`].
 pub const MAX_CLAIMS: usize = 256;
 
+/// Most verdicts kept waiting to be taken, per index ([`AreaIndex::take_events`]) and per
+/// disc and area ([`crate::Disc::take_seek_events`]); past it, the oldest are dropped (the
+/// cursors still hold their verdicts).
+pub const MAX_EVENTS: usize = 4 * MAX_CLAIMS;
+
+/// Appends `events` to `queue`, keeping the last [`MAX_EVENTS`].
+pub(crate) fn queue_events(queue: &mut Vec<SeekEvent>, events: impl IntoIterator<Item = SeekEvent>) {
+    queue.extend(events);
+    if queue.len() > MAX_EVENTS {
+        queue.drain(..queue.len() - MAX_EVENTS);
+    }
+}
+
 /// What became of a provisional reading: an event of [`AreaIndex::take_events`] and
 /// [`crate::Disc::take_seek_events`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1136,7 +1149,7 @@ impl AreaIndex {
             if self.claims.len() >= MAX_CLAIMS {
                 let old = self.claims.remove(0);
                 if old.settle(Verdict::Unverified) {
-                    self.events.push(old.event());
+                    queue_events(&mut self.events, [old.event()]);
                 }
             }
             self.claims.push(claim);
@@ -1146,6 +1159,16 @@ impl AreaIndex {
         for (lsn, p) in cursor.take_provisional_checkpoints() {
             if lsn > frontier && self.provisional.len() < most {
                 self.provisional.insert(lsn, p);
+            }
+        }
+    }
+
+    /// Drops the oldest pending readings past [`MAX_CLAIMS`], as unverified.
+    pub(crate) fn cap_claims(&mut self) {
+        while self.claims.len() > MAX_CLAIMS {
+            let old = self.claims.remove(0);
+            if old.settle(Verdict::Unverified) {
+                queue_events(&mut self.events, [old.event()]);
             }
         }
     }
@@ -1194,6 +1217,8 @@ impl AreaIndex {
         if self.image_id.is_some_and(|id| id != image.id()) {
             return Err(Error::InvalidArgument("seek index of another image"));
         }
+        // Checked against this image: the index is of it from now on.
+        self.image_id = Some(image.id());
         let frontier = self.frontier();
         let mut settled = 0;
         let mut i = 0;
@@ -1240,7 +1265,7 @@ impl AreaIndex {
                         event.speculation
                     ),
                 }
-                self.events.push(event);
+                queue_events(&mut self.events, [event]);
             }
         }
         Ok(settled)
@@ -1313,7 +1338,7 @@ impl SeekIndexes {
         if !events.is_empty() {
             let mut queue =
                 self.events[Self::at(slot)].lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            queue.extend(events);
+            queue_events(&mut queue, events);
         }
     }
 

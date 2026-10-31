@@ -10,6 +10,8 @@ Added
   reach the cursors at once (`speculation()`, `speculation_id()`) and an event queue
   (`Disc::take_seek_events`, shared by a disc's clones and shares; `AreaIndex::take_events`),
   and refutations are logged as warnings. At most `MAX_CLAIMS` (256) readings wait per
-  index; older ones are dropped as `Speculation::Unverified`. A provisional reading records
+  index (in `merge` too); older ones are dropped as `Speculation::Unverified`, as is a reading
+  whose checkpoint's sector digest does not match the image (a stale or foreign index never
+  confirms). At most `MAX_EVENTS` (1 024) verdicts wait per queue. A provisional reading records
   provisional checkpoints, kept apart from the exact ones (not saved, used only by
   provisional starts), from which later provisional starts nearby begin without a search.

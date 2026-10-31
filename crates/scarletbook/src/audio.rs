@@ -583,8 +583,11 @@ impl AreaCursor {
     /// The state at `lsn` (at or before the frontier of `index`) of a reader processing
     /// from the area's first sector: its next acceptable frame number, the number of its
     /// frame under assembly, and its malformed count; rebuilt from the checkpoint at or
-    /// before `lsn`, reading through `image`. `None` if the index does not match the image
-    /// there.
+    /// before `lsn`, reading through `image` (for a checkpoint boundary `lsn`, at most
+    /// [`crate::seek::REPLAY_SECTORS`] sectors to replay and the checkpoint's own sector;
+    /// otherwise up to the interval more). `None` if the index does not match the image
+    /// there: the checkpoint's sector does not have its digest. The digest is always
+    /// compared, also when no sector before `lsn` needs reading.
     pub(crate) fn state_at<R: Read + Seek>(
         index: &AreaIndex,
         lsn: u64,
@@ -598,6 +601,14 @@ impl AreaCursor {
         cursor.scan_to(image, lsn)?;
         if let ResumedFrom::Discarded { .. } = cursor.resumed {
             return Ok(None);
+        }
+        // The scan stops before sector `lsn`: when that is the checkpoint's own sector,
+        // its digest is still to compare (a stale index, or one of another image of the
+        // same size, must not confirm anything).
+        if let Some((at, want)) = cursor.verify {
+            if at < cursor.end_lsn && digest(&cursor.sector(image, at)?) != want {
+                return Ok(None);
+            }
         }
         let d = &cursor.demux;
         Ok(Some((d.next_acceptable, d.assembling.as_ref().map(|a| a.number), d.malformed)))
