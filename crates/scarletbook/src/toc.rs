@@ -6,6 +6,7 @@ use std::io::{Read, Seek};
 
 use crate::error::{Error, Slot, Warning, WarningCode};
 use crate::image::{Image, MASTER_TOC_LSN, ReadOutcome, SECTOR_SIZE, SectorFormat};
+use crate::log::{Log, sb_log};
 use crate::text::{self, Charset};
 
 /// Largest area TOC in sectors (specification 3, 3.2).
@@ -494,39 +495,89 @@ fn genres(b: &[u8], at: usize) -> [Genre; 4] {
     std::array::from_fn(|i| Genre::parse(sub(b, at + 4 * i, 4)))
 }
 
+/// The warnings met while reading the TOC, each also logged as it is met.
+struct Warnings {
+    list: Vec<Warning>,
+    log: Log,
+}
+
+impl Warnings {
+    fn push(&mut self, w: Warning) {
+        sb_log!(&self.log, Warn, "warning: {w}");
+        self.list.push(w);
+    }
+}
+
 /// Reads the whole TOC (specifications 2 and 3), returning it with its warnings.
 pub(crate) fn read_toc<R: Read + Seek>(img: &mut Image<R>) -> Result<(Toc, Vec<Warning>), Error> {
-    let mut warnings = Vec::new();
+    let log = img.log().clone();
+    sb_log!(
+        &log,
+        Info,
+        "reading the TOC: sector format {:?}, {} sectors ({} bytes)",
+        img.format(),
+        img.sector_count(),
+        img.len()
+    );
+    let mut warnings = Warnings { list: Vec::new(), log };
     let master = read_master(img, &mut warnings)?;
     let mut areas = Vec::new();
     for slot in Slot::ALL {
         let ptr = master.pointer(slot);
         if !ptr.is_used() {
+            sb_log!(&warnings.log, Info, "area {slot}: slot unused");
             continue;
         }
         if let Some(area) = read_area(img, slot, ptr, &mut warnings)? {
+            sb_log!(
+                &warnings.log,
+                Info,
+                "area {slot}: {} area, {} channels, sample frequency code {}, audio LSN {}..={}, {} tracks, \
+                 play time {} frames",
+                area.kind.signature(),
+                area.channel_count,
+                area.sample_frequency_code,
+                area.audio_start_lsn,
+                area.audio_end_lsn,
+                area.tracks.len(),
+                area.playtime_frames()
+            );
             areas.push(area);
+        } else {
+            sb_log!(&warnings.log, Info, "area {slot}: skipped");
         }
     }
     if areas.is_empty() {
+        sb_log!(&warnings.log, Info, "rejected: no audio areas");
         return Err(Error::NoAudioAreas);
     }
-    Ok((Toc { sector_format: img.format(), sectors: img.sector_count(), master, areas }, warnings))
+    sb_log!(&warnings.log, Info, "TOC read: {} areas, {} warnings", areas.len(), warnings.list.len());
+    Ok((Toc { sector_format: img.format(), sectors: img.sector_count(), master, areas }, warnings.list))
 }
 
-fn read_master<R: Read + Seek>(img: &mut Image<R>, warnings: &mut Vec<Warning>) -> Result<MasterToc, Error> {
+fn read_master<R: Read + Seek>(img: &mut Image<R>, warnings: &mut Warnings) -> Result<MasterToc, Error> {
     let mut buf = vec![0u8; 10 * SECTOR_SIZE];
     if img.read_into(u64::from(MASTER_TOC_LSN), &mut buf)? == ReadOutcome::OutOfRange {
+        sb_log!(&warnings.log, Info, "rejected: master TOC at LSN {MASTER_TOC_LSN} truncated");
         return Err(Error::MasterTocTruncated);
     }
     let s0 = sub(&buf, 0, SECTOR_SIZE);
     if sub(s0, 0, 8) != b"SACDMTOC" {
+        sb_log!(&warnings.log, Info, "rejected: no master TOC signature at LSN {MASTER_TOC_LSN}");
         return Err(Error::NotScarletbook);
     }
     let version = Version { major: byte(s0, 8), minor: byte(s0, 9) };
     if version.major > 1 {
+        sb_log!(&warnings.log, Info, "rejected: master TOC version {}.{}", version.major, version.minor);
         return Err(Error::MasterTocVersionUnsupported { major: version.major, minor: version.minor });
     }
+    sb_log!(
+        &warnings.log,
+        Info,
+        "master TOC at LSN {MASTER_TOC_LSN} used, version {}.{}",
+        version.major,
+        version.minor
+    );
     // LSN 510 is accepted: compare the copies (specification 1, 1.5.1 item 3).
     if master_copies_differ(img, &buf) {
         warnings.push(Warning::disc(WarningCode::MasterTocCopiesDiffer));
@@ -595,9 +646,19 @@ const MASTER_TOC_COPIES: [u32; 2] = [520, 530];
 /// 519 yield (1.5.1 item 2), so the optional comparison can never reject it.
 fn master_copies_differ<R: Read + Seek>(img: &mut Image<R>, master: &[u8]) -> bool {
     let mut copy = vec![0u8; master.len()];
-    MASTER_TOC_COPIES
-        .iter()
-        .any(|&lsn| matches!(img.read_into(u64::from(lsn), &mut copy), Ok(ReadOutcome::Ok)) && copy != master)
+    MASTER_TOC_COPIES.iter().any(|&lsn| {
+        let differs = match img.read_into(u64::from(lsn), &mut copy) {
+            Ok(ReadOutcome::Ok) => Some(copy != master),
+            _ => None,
+        };
+        let outcome = match differs {
+            Some(true) => "differs from LSN 510",
+            Some(false) => "same as LSN 510",
+            None => "unreadable, not compared",
+        };
+        sb_log!(img.log(), Debug, "master TOC copy at LSN {lsn}: {outcome}");
+        differs == Some(true)
+    })
 }
 
 /// Reads one area TOC copy; `None` if any sector is missing.
@@ -651,9 +712,9 @@ fn read_area<R: Read + Seek>(
     img: &mut Image<R>,
     slot: Slot,
     ptr: AreaPointer,
-    warnings: &mut Vec<Warning>,
+    warnings: &mut Warnings,
 ) -> Result<Option<Area>, Error> {
-    let skip = |warnings: &mut Vec<Warning>, code| {
+    let skip = |warnings: &mut Warnings, code| {
         warnings.push(Warning::area(code, slot));
         Ok(None)
     };
@@ -661,6 +722,13 @@ fn read_area<R: Read + Seek>(
     if t > MAX_AREA_TOC_SECTORS {
         return skip(warnings, WarningCode::AreaTocTooLarge);
     }
+    sb_log!(
+        img.log(),
+        Debug,
+        "area {slot}: TOC-1 at LSN {}, TOC-2 at LSN {}, {t} sectors",
+        ptr.toc1_lsn,
+        ptr.toc2_lsn
+    );
     let toc1 = read_copy(img, ptr.toc1_lsn, t)?;
     if toc1.is_none() {
         warnings.push(Warning::area(WarningCode::AreaToc1Unreadable, slot));
@@ -676,12 +744,22 @@ fn read_area<R: Read + Seek>(
     };
     let (z, toc_lsn) = match (toc1, toc2) {
         (Some(a), b) => {
-            if b.is_some_and(|b| b != a) {
-                warnings.push(Warning::area(WarningCode::AreaTocCopiesDiffer, slot));
-            }
+            let other = match b {
+                Some(b) if b != a => {
+                    warnings.push(Warning::area(WarningCode::AreaTocCopiesDiffer, slot));
+                    "TOC-2 differs"
+                }
+                Some(_) => "TOC-2 identical",
+                None if ptr.toc2_lsn == 0 => "no TOC-2",
+                None => "TOC-2 unreadable",
+            };
+            sb_log!(img.log(), Info, "area {slot}: TOC-1 at LSN {} used ({other})", ptr.toc1_lsn);
             (a, ptr.toc1_lsn)
         }
-        (None, Some(b)) => (b, ptr.toc2_lsn),
+        (None, Some(b)) => {
+            sb_log!(img.log(), Info, "area {slot}: TOC-2 at LSN {} used (TOC-1 unreadable)", ptr.toc2_lsn);
+            (b, ptr.toc2_lsn)
+        }
         (None, None) => return skip(warnings, WarningCode::AreaTocUnreadable),
     };
     let e = z.len();
@@ -802,7 +880,7 @@ fn track_text(
     cs: Charset,
     slot: Slot,
     number: u8,
-    warnings: &mut Vec<Warning>,
+    warnings: &mut Warnings,
 ) -> TrackText {
     let e = z.len();
     let mut out = TrackText::default();

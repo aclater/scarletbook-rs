@@ -32,12 +32,15 @@ header = """/* SPDX-License-Identifier: MIT OR Apache-2.0 */
  *
  * - Threads. A handle may be moved between threads, but must not be used by two threads
  *   at once. Read and seek callbacks (sb_disc_open_callbacks) run on the thread that
- *   makes the call that needs them.
+ *   makes the call that needs them. A log callback (sb_disc_set_log) also runs there and,
+ *   in a library built with the parallel feature, on the library's worker threads.
  *
  * - Callbacks and re-entrancy. While a disc's callback runs, that disc and its track
  *   handles are in use: calling into this library with them from the callback returns
  *   SB_STATUS_INVALID_ARGUMENT, and sb_disc_free / sb_track_audio_free on them do
- *   nothing. Other handles may be used.
+ *   nothing. Other handles may be used. (A log callback invoked by a call that only
+ *   reads the disc, such as sb_track_check, may read it too; one running on a worker
+ *   thread must not use the disc or its track handles at all.)
  *
  * - Panics. No panic crosses the boundary: an internal error returns SB_STATUS_PANIC.
  *   The handles involved should then be freed and not used further. If the library is

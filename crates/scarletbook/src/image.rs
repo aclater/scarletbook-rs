@@ -6,6 +6,7 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error::Error;
+use crate::log::{Log, sb_log};
 
 /// Size of a logical sector in bytes (specification 0, 0.3).
 pub const SECTOR_SIZE: usize = 2048;
@@ -62,6 +63,7 @@ pub struct Image<R> {
     /// Where the reader is positioned, if known, to avoid redundant seeks.
     pos: Option<u64>,
     scratch: Vec<u8>,
+    log: Log,
 }
 
 /// The outcome of a sector read that did not fail with an I/O error.
@@ -79,21 +81,53 @@ impl<R: Read + Seek> Image<R> {
     /// # Errors
     ///
     /// [`Error::NotScarletbook`] if no format matches, [`Error::Io`] if the reader fails.
-    pub fn open(mut reader: R) -> Result<Self, Error> {
-        let len = reader.seek(SeekFrom::End(0))?;
+    pub fn open(reader: R) -> Result<Self, Error> {
+        Self::open_with_log(reader, Log::none())
+    }
+
+    /// Opens an image, detecting its sector format, and reports to `log` (see
+    /// [`crate::log`]) from the detection on.
+    ///
+    /// # Errors
+    ///
+    /// As [`Image::open`].
+    pub fn open_with_log(mut reader: R, log: Log) -> Result<Self, Error> {
+        let len = match reader.seek(SeekFrom::End(0)) {
+            Ok(len) => len,
+            Err(e) => {
+                sb_log!(&log, Error, "image length: seek to the end failed: {e}");
+                return Err(e.into());
+            }
+        };
+        sb_log!(&log, Debug, "image length {len} bytes; probing sector formats");
         let mut sig = [0u8; 8];
         for format in SectorFormat::DETECTION_ORDER {
             // 510 x P + D + 8 is at most about 1 MB: no overflow.
             let at = u64::from(MASTER_TOC_LSN) * format.stored_size() + format.data_offset();
             if at + 8 > len {
+                sb_log!(&log, Debug, "format {format:?}: signature bytes {at}..{} past the end", at + 8);
                 continue;
             }
-            reader.seek(SeekFrom::Start(at))?;
-            reader.read_exact(&mut sig)?;
-            if &sig == b"SACDMTOC" {
-                return Ok(Self::new(reader, format, len));
+            if let Err(e) = reader.seek(SeekFrom::Start(at)).and_then(|_| reader.read_exact(&mut sig)) {
+                sb_log!(&log, Error, "format {format:?}: read of bytes {at}..{} failed: {e}", at + 8);
+                return Err(e.into());
             }
+            if &sig == b"SACDMTOC" {
+                let image = Self::new(reader, format, len, log);
+                sb_log!(
+                    &image.log,
+                    Info,
+                    "sector format {format:?} detected (signature at byte {at}): {} bytes per sector, data at \
+                     offset {}, {} sectors",
+                    format.stored_size(),
+                    format.data_offset(),
+                    image.sectors
+                );
+                return Ok(image);
+            }
+            sb_log!(&log, Debug, "format {format:?}: no signature at byte {at}");
         }
+        sb_log!(&log, Info, "no sector format matches: not a Scarletbook image");
         Err(Error::NotScarletbook)
     }
 
@@ -103,12 +137,38 @@ impl<R: Read + Seek> Image<R> {
     /// # Errors
     ///
     /// [`Error::Io`] if the reader fails.
-    pub fn with_format(mut reader: R, format: SectorFormat) -> Result<Self, Error> {
-        let len = reader.seek(SeekFrom::End(0))?;
-        Ok(Self::new(reader, format, len))
+    pub fn with_format(reader: R, format: SectorFormat) -> Result<Self, Error> {
+        Self::with_format_and_log(reader, format, Log::none())
     }
 
-    fn new(reader: R, format: SectorFormat, len: u64) -> Self {
+    /// Opens an image with a sector format chosen by the caller, and reports to `log`
+    /// from the start (see [`crate::log`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Image::with_format`].
+    pub fn with_format_and_log(mut reader: R, format: SectorFormat, log: Log) -> Result<Self, Error> {
+        let len = match reader.seek(SeekFrom::End(0)) {
+            Ok(len) => len,
+            Err(e) => {
+                sb_log!(&log, Error, "image length: seek to the end failed: {e}");
+                return Err(e.into());
+            }
+        };
+        let image = Self::new(reader, format, len, log);
+        sb_log!(
+            &image.log,
+            Info,
+            "sector format {format:?} chosen by the caller: {} bytes per sector, data at offset {}, {} sectors \
+             ({len} bytes)",
+            format.stored_size(),
+            format.data_offset(),
+            image.sectors
+        );
+        Ok(image)
+    }
+
+    fn new(reader: R, format: SectorFormat, len: u64, log: Log) -> Self {
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
         Image {
             reader,
@@ -118,7 +178,19 @@ impl<R: Read + Seek> Image<R> {
             sectors: len / format.stored_size(),
             pos: None,
             scratch: Vec::new(),
+            log,
         }
+    }
+
+    /// The log this image reports to.
+    pub fn log(&self) -> &Log {
+        &self.log
+    }
+
+    /// Replaces the log this image reports to. Decoding jobs already started keep the log
+    /// they started with.
+    pub fn set_log(&mut self, log: Log) {
+        self.log = log;
     }
 
     /// An identifier of this image, unique within the process. Audio cursors bind to the
@@ -176,12 +248,19 @@ impl<R: Read + Seek> Image<R> {
     pub(crate) fn read_into(&mut self, lsn: u64, buf: &mut [u8]) -> io::Result<ReadOutcome> {
         let count = (buf.len() / SECTOR_SIZE) as u64;
         if !self.contains(lsn, count) {
+            sb_log!(
+                &self.log,
+                Debug,
+                "read of {count} sectors at LSN {lsn}: past the last sector ({})",
+                self.sectors
+            );
             return Ok(ReadOutcome::OutOfRange);
         }
         let p = self.format.stored_size();
         let d = self.format.data_offset();
         // lsn + count <= N <= len / P, so lsn x P <= len: no overflow.
         let start = lsn * p;
+        sb_log!(&self.log, Debug, "read {count} sectors at LSN {lsn}: bytes {start}..{}", start + count * p);
         let result = if self.format == SectorFormat::Plain {
             self.seek_to(start).and_then(|()| self.reader.read_exact(buf)).map(|()| start + buf.len() as u64)
         } else {
@@ -193,6 +272,7 @@ impl<R: Read + Seek> Image<R> {
                 Ok(ReadOutcome::Ok)
             }
             Err(e) => {
+                sb_log!(&self.log, Error, "read of {count} sectors at LSN {lsn} (byte {start}) failed: {e}");
                 self.pos = None;
                 Err(e)
             }

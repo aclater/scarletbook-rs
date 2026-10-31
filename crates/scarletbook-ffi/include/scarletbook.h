@@ -27,12 +27,15 @@
  *
  * - Threads. A handle may be moved between threads, but must not be used by two threads
  *   at once. Read and seek callbacks (sb_disc_open_callbacks) run on the thread that
- *   makes the call that needs them.
+ *   makes the call that needs them. A log callback (sb_disc_set_log) also runs there and,
+ *   in a library built with the parallel feature, on the library's worker threads.
  *
  * - Callbacks and re-entrancy. While a disc's callback runs, that disc and its track
  *   handles are in use: calling into this library with them from the callback returns
  *   SB_STATUS_INVALID_ARGUMENT, and sb_disc_free / sb_track_audio_free on them do
- *   nothing. Other handles may be used.
+ *   nothing. Other handles may be used. (A log callback invoked by a call that only
+ *   reads the disc, such as sb_track_check, may read it too; one running on a worker
+ *   thread must not use the disc or its track handles at all.)
  *
  * - Panics. No panic crosses the boundary: an internal error returns SB_STATUS_PANIC.
  *   The handles involved should then be freed and not used further. If the library is
@@ -56,6 +59,41 @@
  README ("ABI compatibility").
  */
 #define SB_ABI_VERSION 1
+
+/*
+ Log levels, most severe first: the `level` of a message and the most verbose level a
+ log callback receives. `SB_LOG_OFF` as a `level` argument turns the log off.
+ */
+#define SB_LOG_OFF 0
+
+/*
+ The reader failed, or decoding stopped on an internal error.
+ */
+#define SB_LOG_ERROR 1
+
+/*
+ A problem in the image: a warning (also reported by `sb_disc_warning` and
+ `sb_track_audio_warning`), a malformed sector or a missing, invalid or discarded frame,
+ with its LSN or frame number.
+ */
+#define SB_LOG_WARN 2
+
+/*
+ What was found: the sector format, the TOC copies used, the areas, the tracks opened.
+ */
+#define SB_LOG_INFO 3
+
+/*
+ What was done: every read (LSN, sector count, byte range), the format probes, the
+ master TOC copy comparisons, the area scans.
+ */
+#define SB_LOG_DEBUG 4
+
+/*
+ Every frame returned, every frame the reassembler accepts, and each group of DST
+ frames decoded.
+ */
+#define SB_LOG_TRACE 5
 
 /*
  Result of every call.
@@ -356,6 +394,12 @@ typedef struct SbDisc SbDisc;
 typedef struct SbTrackAudio SbTrackAudio;
 
 /*
+ Receives one log message: `level` is one of `SB_LOG_ERROR` to `SB_LOG_TRACE`, `message`
+ a NUL-terminated UTF-8 line without a trailing newline, valid only during the call.
+ */
+typedef void (*SbLogFn)(void *user, int32_t level, const char *message);
+
+/*
  Reads up to `len` bytes into `buf`; returns the count (0 at the end) or -1 on error.
  */
 typedef int64_t (*SbReadFn)(void *user, uint8_t *buf, size_t len);
@@ -609,6 +653,20 @@ const char *sb_status_name(int32_t status);
 enum SbStatus sb_disc_open_file(const char *path, struct SbDisc **out);
 
 /*
+ `sb_disc_open_file`, reporting to a log callback from the format detection on (see
+ `sb_disc_set_log`).
+
+ # Safety
+
+ As `sb_disc_open_file` and `sb_disc_set_log`.
+ */
+enum SbStatus sb_disc_open_file_with_log(const char *path,
+                                         SbLogFn log,
+                                         void *log_user,
+                                         int32_t level,
+                                         struct SbDisc **out);
+
+/*
  Opens a disc image held in memory. The bytes are copied; the caller may free `data`
  when the call returns. On failure `*out` is set to NULL.
 
@@ -618,6 +676,21 @@ enum SbStatus sb_disc_open_file(const char *path, struct SbDisc **out);
  or valid for a write.
  */
 enum SbStatus sb_disc_open_memory(const uint8_t *data, size_t len, struct SbDisc **out);
+
+/*
+ `sb_disc_open_memory`, reporting to a log callback from the format detection on (see
+ `sb_disc_set_log`).
+
+ # Safety
+
+ As `sb_disc_open_memory` and `sb_disc_set_log`.
+ */
+enum SbStatus sb_disc_open_memory_with_log(const uint8_t *data,
+                                           size_t len,
+                                           SbLogFn log,
+                                           void *log_user,
+                                           int32_t level,
+                                           struct SbDisc **out);
 
 /*
  Opens a disc image read through callbacks. On failure `*out` is set to NULL.
@@ -634,6 +707,68 @@ enum SbStatus sb_disc_open_memory(const uint8_t *data, size_t len, struct SbDisc
  bytes to `buf`. `out` must be NULL or valid for a write.
  */
 enum SbStatus sb_disc_open_callbacks(SbReadFn read, SbSeekFn seek, void *user, struct SbDisc **out);
+
+/*
+ `sb_disc_open_callbacks`, reporting to a log callback from the format detection on
+ (see `sb_disc_set_log`). `user` goes to the read and seek callbacks, `log_user` to the
+ log callback.
+
+ # Safety
+
+ As `sb_disc_open_callbacks` and `sb_disc_set_log`.
+ */
+enum SbStatus sb_disc_open_callbacks_with_log(SbReadFn read,
+                                              SbSeekFn seek,
+                                              void *user,
+                                              SbLogFn log,
+                                              void *log_user,
+                                              int32_t level,
+                                              struct SbDisc **out);
+
+/*
+ Sets, replaces or removes (`log` NULL or `level` `SB_LOG_OFF`) a disc's log callback.
+ It receives the messages at `level` and more severe ones (`SB_LOG_ERROR` <
+ `SB_LOG_WARN` < ... < `SB_LOG_TRACE`), from the next call on. To also get the format
+ detection and TOC messages, open the disc with a `_with_log` function. Without a
+ callback, or above its level, no message is formatted.
+
+ Calls with this disc and its track handles invoke the callback on the calling thread
+ while they run, in order. A library built with the `parallel` feature also invokes it
+ from its worker threads, which decode ahead of the caller: at `SB_LOG_TRACE` (groups
+ of frames decoded) and `SB_LOG_ERROR` (an internal error), possibly concurrently with
+ other calls of it and after the call that started the work has returned; such lines
+ can interleave with the calling thread's. Frame problems are reported on the calling
+ thread, in frame order. Once sb_disc_set_log or sb_disc_free returns, the previous
+ callback is not called again (they wait for calls on other threads to return).
+
+ A worker's message can also be delivered on the calling thread while it waits for a
+ frame inside `sb_track_audio_read` (the pool runs pending work there), and the callback
+ can be entered again on a thread that is already inside it (when the callback itself
+ calls this library, with any handle, and that call waits for decoding). A callback
+ that takes a non-recursive lock which it, or the caller around its calls to this
+ library, already holds can therefore deadlock.
+
+ Lines about problems are capped: at most 4096 per kind (malformed sectors and
+ discarded frames per area scan, missing and invalid frames per track), then one line
+ saying the rest are suppressed. The counts (`sb_track_audio_counts`,
+ `sb_track_audio_malformed_sectors`) are kept in full.
+
+ The message is valid only during the call. The callback must not unwind. It may call
+ this library with other handles. With this disc or its track handles, it may do so only
+ when it runs on the thread of the call that invoked it, where a call that conflicts
+ with the running one fails with `SB_STATUS_INVALID_ARGUMENT`; from a worker thread that
+ would use the handle from two threads at once.
+
+ Returns `SB_STATUS_INVALID_ARGUMENT` for a level outside `SB_LOG_OFF` to
+ `SB_LOG_TRACE`, or when called from one of this disc's callbacks; the log is then
+ unchanged.
+
+ # Safety
+
+ `disc` must be NULL or a live handle. `log` must be safe to call with `user` from any
+ thread, concurrently, until it is replaced or the disc is freed.
+ */
+enum SbStatus sb_disc_set_log(const struct SbDisc *disc, SbLogFn log, void *user, int32_t level);
 
 /*
  Frees a disc. NULL is ignored, and so is a disc whose callback is running (the call is

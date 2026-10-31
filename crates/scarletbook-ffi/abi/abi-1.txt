@@ -4,6 +4,12 @@
 #include <stddef.h>
 #include <stdint.h>
 #define SB_ABI_VERSION 1
+#define SB_LOG_OFF 0
+#define SB_LOG_ERROR 1
+#define SB_LOG_WARN 2
+#define SB_LOG_INFO 3
+#define SB_LOG_DEBUG 4
+#define SB_LOG_TRACE 5
 typedef enum SbStatus {
 SB_STATUS_OK = 0,
 SB_STATUS_END = 1,
@@ -79,6 +85,7 @@ SB_TRACK_STRING_ISRC = 14,
 } SbTrackString;
 typedef struct SbDisc SbDisc;
 typedef struct SbTrackAudio SbTrackAudio;
+typedef void(*SbLogFn)(void *user, int32_t level, const char *message);
 typedef int64_t(*SbReadFn)(void *user, uint8_t *buf, size_t len);
 typedef int64_t(*SbSeekFn)(void *user, int64_t offset, int32_t whence);
 typedef struct SbDiscInfo {
@@ -143,8 +150,12 @@ const char *sb_version(void);
 const char *sb_last_error_message(void);
 const char *sb_status_name(int32_t status);
 enum SbStatus sb_disc_open_file(const char *path, struct SbDisc **out);
+enum SbStatus sb_disc_open_file_with_log(const char *path, SbLogFn log, void *log_user, int32_t level, struct SbDisc **out);
 enum SbStatus sb_disc_open_memory(const uint8_t *data, size_t len, struct SbDisc **out);
+enum SbStatus sb_disc_open_memory_with_log(const uint8_t *data, size_t len, SbLogFn log, void *log_user, int32_t level, struct SbDisc **out);
 enum SbStatus sb_disc_open_callbacks(SbReadFn read, SbSeekFn seek, void *user, struct SbDisc **out);
+enum SbStatus sb_disc_open_callbacks_with_log(SbReadFn read, SbSeekFn seek, void *user, SbLogFn log, void *log_user, int32_t level, struct SbDisc **out);
+enum SbStatus sb_disc_set_log(const struct SbDisc *disc, SbLogFn log, void *user, int32_t level);
 void sb_disc_free(struct SbDisc *disc);
 enum SbStatus sb_disc_info(const struct SbDisc *disc, struct SbDiscInfo *out);
 enum SbStatus sb_disc_string(const struct SbDisc *disc, uint32_t field, char *buf, size_t cap, size_t *len);
