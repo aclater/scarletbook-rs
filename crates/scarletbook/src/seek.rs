@@ -364,6 +364,9 @@ pub(crate) struct Claim {
     /// One more than the last position returned, 0 for none.
     returned: std::sync::atomic::AtomicU32,
     verdict: std::sync::Mutex<Option<Verdict>>,
+    /// The image the reading read ([`Image::id`]), 0 until it reads: it is checked
+    /// against that image only.
+    image: std::sync::atomic::AtomicU64,
 }
 
 impl Claim {
@@ -375,7 +378,18 @@ impl Claim {
             lsn: std::sync::atomic::AtomicU64::new(0),
             returned: std::sync::atomic::AtomicU32::new(0),
             verdict: std::sync::Mutex::new(None),
+            image: std::sync::atomic::AtomicU64::new(0),
         })
+    }
+
+    /// Notes the image the reading reads.
+    pub(crate) fn set_image(&self, id: u64) {
+        self.image.store(id, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The image the reading read, if it has read.
+    fn image(&self) -> Option<u64> {
+        Some(self.image.load(std::sync::atomic::Ordering::Relaxed)).filter(|&id| id != 0)
     }
 
     pub(crate) fn set_lsn(&self, lsn: u64) {
@@ -747,7 +761,8 @@ const _: () = {
 /// process, an index is of the image of the first cursor it takes checkpoints from
 /// ([`AreaIndex::absorb`], [`AreaIndex::extend`]; [`crate::Image::id`], which the discs
 /// made by [`crate::Disc::share`] and `clone` share), and refuses cursors and reads of any
-/// other. That identity is not saved: an index loaded with [`AreaIndex::from_bytes`] (or
+/// other. A provisional reading it takes ([`SeekPolicy`]) binds it the same way, and the
+/// reading is checked only against the image it read. That identity is not saved: an index loaded with [`AreaIndex::from_bytes`] (or
 /// given to [`crate::Disc::set_seek_index`]) takes the image of its first absorb or
 /// extend, and is trusted to be of it (loading is safe, not exact; see the [module
 /// documentation](self#trust)).
@@ -1142,8 +1157,13 @@ impl AreaIndex {
     /// Takes from `cursor` its provisional reading, to check, and the provisional
     /// checkpoints it recorded past the frontier: only for a cursor of this index's image.
     pub(crate) fn take_provisional(&mut self, cursor: &mut AreaCursor) {
-        if self.image_id.is_some_and(|id| cursor.image_id().is_some_and(|c| c != id)) {
-            return;
+        // Provisional readings and checkpoints are of the image the cursor read: an index
+        // of another image refuses them, and one of no image yet is of that one from now on
+        // (see One index per image), so that no other image can check them.
+        match (self.image_id, cursor.image_id()) {
+            (Some(id), Some(c)) if c != id => return,
+            (None, Some(c)) if cursor.has_news() => self.image_id = Some(c),
+            _ => {}
         }
         if let Some(claim) = cursor.unregistered_claim() {
             if self.claims.len() >= MAX_CLAIMS {
@@ -1233,7 +1253,9 @@ impl AreaIndex {
                 i += 1;
                 continue;
             }
-            let verdict = match AreaCursor::state_at(self, lsn, image)? {
+            // A reading of another image is never checked against this one.
+            let foreign = claim.image().is_some_and(|id| id != image.id());
+            let verdict = match if foreign { None } else { AreaCursor::state_at(self, lsn, image)? } {
                 None => Verdict::Unverified,
                 Some((a, held, _)) => {
                     let u = claim.first;
