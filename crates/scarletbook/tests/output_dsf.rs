@@ -122,7 +122,7 @@ fn check<R: std::io::Read + std::io::Seek>(
     let size = layout.size();
     let mut reads: Vec<(u64, u64)> =
         vec![(0, 92), (90, 4), (91, 1), (92, 1), (92 + row - 1, 2), (size - 1, 1)];
-    for _ in 0..24 {
+    for _ in 0..if cfg!(miri) { 2 } else { 24 } {
         let at = rng.below(size);
         let len = 1 + rng.below((size - at).min(3 * row));
         reads.push((at, len));
@@ -240,7 +240,7 @@ fn unspecified_layouts_are_refused_unless_a_channel_type_is_given() {
         let e = disc.output_layout(Slot::TwoChannel, 0, 3, Format::Dsf, &options).unwrap_err();
         assert!(matches!(e, Error::InvalidArgument(_)), "{wrong}: {e}");
     }
-    for ok in [4, 5] {
+    for ok in if cfg!(miri) { vec![5] } else { vec![4, 5] } {
         let options = OutputOptions::default().with_dsf_unspecified_channel_type(Some(ok));
         let layout = disc.output_layout(Slot::TwoChannel, 0, 3, Format::Dsf, &options).unwrap();
         let content = contents(&mut disc, Slot::TwoChannel, 0, 3);
@@ -275,7 +275,7 @@ proptest! {
     /// Ranges of plain areas of 1 to 6 channels with missing positions, any range and any
     /// read: the layout's bytes are the sequential write's.
     #[test]
-    fn synthetic_ranges(channels in 1u8..=6, n in 1u32..6, gaps in proptest::collection::vec(any::<bool>(), 6), a in 0u32..6, len in 1u32..6, seed in any::<u64>()) {
+    fn synthetic_ranges(channels in 1u8..=if cfg!(miri) { 2 } else { 6 }, n in 1u32..if cfg!(miri) { 3 } else { 6 }, gaps in proptest::collection::vec(any::<bool>(), 6), a in 0u32..6, len in 1u32..6, seed in any::<u64>()) {
         let frames: Vec<_> = plain(channels, n).into_iter().filter(|f| !gaps[f.number as usize]).collect();
         let playtime = n;
         let first = a % playtime;
