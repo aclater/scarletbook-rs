@@ -93,7 +93,10 @@ sectors are exactly those of the decoded reads; invalid DST frames show only whe
 In C: `sb_raw_frames_open`, `sb_raw_frames_read`, `sb_raw_frames_read_dst_equivalent` and
 `sb_stored_frame_list_open`, with caller buffers of at most `SB_MAX_FRAME_BYTES`.
 
-Features: `parallel` decodes DST frames on rayon's thread pool, ahead of the caller.
+Features: `parallel` decodes DST frames on rayon's thread pool, ahead of the caller: the
+current pool by default, or the pool chosen for a cursor with
+`TrackAudioCursor::set_decode_on(DecodeOn::Pool(pool))`, whichever thread reads it
+(`DecodeOn::CallingThread` keeps a cursor off every pool).
 
 ## C library
 

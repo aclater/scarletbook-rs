@@ -9,6 +9,12 @@ is shared by every crate of the workspace; releases carry the `bench` program an
 
 ## [Unreleased]
 
+### Added
+
+- `DecodeOn` and `TrackAudioCursor::set_decode_on` (`parallel` feature, #36): a cursor
+  decodes on a rayon pool of its own, whatever thread reads it, or on the calling thread
+  only; continuations keep the choice. The default stays the current pool.
+
 ### Fixed
 
 - The `scarletbook` package carries the licence texts and the README; its `include`

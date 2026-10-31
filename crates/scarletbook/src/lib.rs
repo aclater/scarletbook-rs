@@ -30,6 +30,8 @@ pub mod log;
 pub mod text;
 pub mod toc;
 
+#[cfg(feature = "parallel")]
+pub use audio::DecodeOn;
 pub use audio::{
     AreaCursor, AreaFrame, AreaFrames, AudioFrame, Continuation, Demuxer, FrameContent, FrameKind,
     FrameStatus, TrackAudio, TrackAudioCursor, TrackCursor, TrackFrame, TrackFrames,
