@@ -262,7 +262,6 @@ impl<R: std::io::Seek> std::io::Seek for Counting<R> {
 #[cfg_attr(miri, ignore = "reads thousands of sectors")]
 fn first_position_reads_are_bounded() {
     const K: u64 = 64;
-    const CHUNK: u64 = 32;
     // Well-formed DST frames of 2 to 5 sectors, every number present, over 3000 sectors.
     let fs: Vec<PFrame> = (0..1000u32)
         .map(|n| PFrame { number: n, dst: true, data: vec![n as u8; 4000 + (n as usize * 37) % 6000] })
@@ -294,15 +293,15 @@ fn first_position_reads_are_bounded() {
         let f = disc.read_frames(c).next().unwrap().unwrap();
         assert_eq!(f.number, first);
         let cost = (read.get() - before) / S as u64;
-        // The frame's own sectors: at most 5 here.
-        assert!(cost <= REPLAY_SECTORS + K + CHUNK + 5, "first {first}: {cost} sectors");
+        // One read sized to the range (#124): the replay, an interval and 64 sectors.
+        assert!(cost <= REPLAY_SECTORS + K + 64, "first {first}: {cost} sectors");
         costs.push(cost);
         // Without the index: the whole prefix.
         let before = read.get();
         let c = disc.range_frames_cursor(Slot::TwoChannel, first, 1000).unwrap();
         disc.read_frames(c).next().unwrap().unwrap();
         let straight = (read.get() - before) / S as u64;
-        assert!(first < 100 || straight > 4 * cost, "first {first}: {straight} vs {cost}");
+        assert!(first < 100 || straight > 2 * cost, "first {first}: {straight} vs {cost}");
     }
     println!("sectors read for the first position: {costs:?}");
 }

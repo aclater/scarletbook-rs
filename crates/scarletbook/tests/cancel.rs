@@ -222,6 +222,28 @@ fn cancelled_reads_resume_exactly() {
 #[test]
 #[cfg_attr(miri, ignore = "reads thousands of sectors")]
 fn a_sized_read_is_the_only_longer_one() {
+    sized_read_cancelled(|disc| {
+        let options = SpeculativeOptions::new().with_min_gap_sectors(16);
+        disc.set_seek_policy(Slot::TwoChannel, SeekPolicy::Speculative(options)).unwrap();
+    });
+}
+
+/// The same for the read sized to the range after an exact resume from a seek index
+/// (issue #124): one read of the replay, the interval and up to 64 sectors.
+#[test]
+#[cfg_attr(miri, ignore = "reads thousands of sectors")]
+fn a_sized_read_from_an_index() {
+    sized_read_cancelled(|disc| {
+        disc.enable_seek_index(Slot::TwoChannel, IndexOptions::new()).unwrap();
+        while !disc.extend_seek_index(Slot::TwoChannel, 1 << 20).unwrap() {}
+    });
+}
+
+/// A request at the start of the first read longer than [`BOUND`] that `prepare`d discs
+/// make for a far range: that read completes, then the call returns `Cancelled`, and
+/// withdrawn, the reading goes on to the same frames; the long reads are at most
+/// `MAX_READ_SECTORS` and follow each other.
+fn sized_read_cancelled(prepare: impl Fn(&mut Disc<Hooked>)) {
     use scarletbook::seek::MAX_READ_SECTORS;
     let img = image(3000);
     let mut plain = Disc::open(Cursor::new(img.clone())).unwrap();
@@ -229,16 +251,14 @@ fn a_sized_read_is_the_only_longer_one() {
     let want = decoded(&mut plain, first, end);
     // Where the sized read starts, read without interruption.
     let (mut disc, hook) = hooked(&img);
-    let options = SpeculativeOptions::new().with_min_gap_sectors(16);
-    disc.set_seek_policy(Slot::TwoChannel, SeekPolicy::Speculative(options)).unwrap();
+    prepare(&mut disc);
     let base = hook.bytes.get();
     assert_eq!(decoded(&mut disc, first, end), want);
     let reads = hook.reads.borrow().clone();
     let &(at, len) = reads.iter().filter(|r| r.0 >= base).find(|r| r.1 > BOUND * S as u64).unwrap();
-    // A request at the start of that read (and of later ones): it completes, then the call
-    // returns `Cancelled`; withdrawn, the reading goes on to the same frames.
     let (mut disc, hook) = hooked(&img);
-    disc.set_seek_policy(Slot::TwoChannel, SeekPolicy::Speculative(options)).unwrap();
+    prepare(&mut disc);
+    assert_eq!(hook.bytes.get(), base, "the same reads up to the range");
     hook.at_start.set(true);
     let c = disc.range_audio_cursor(Slot::TwoChannel, first, end).unwrap();
     let mut it = disc.read_track_audio(c);
@@ -252,8 +272,6 @@ fn a_sized_read_is_the_only_longer_one() {
     assert_eq!(hook.max_after.get(), len, "the sized read completes after the request");
     let (read, expected) = p.get();
     assert_eq!(read, expected, "complete");
-    // Only the reads sized to the range are longer than a chunk, each at most
-    // MAX_READ_SECTORS, and they come one after the other, from the provisional start on.
     let long: Vec<_> = reads.iter().filter(|r| r.0 >= base && r.1 > BOUND * S as u64).collect();
     assert!(long.iter().all(|r| r.1 <= MAX_READ_SECTORS * S as u64), "{long:?}");
     assert!(long.windows(2).all(|w| w[1].0 == w[0].0 + w[0].1), "{long:?}");

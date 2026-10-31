@@ -112,6 +112,20 @@ unless confirmed), copied unchanged into this repository's `corpus/README.md`; t
 the manifest and the charset tables are unchanged (`git diff --stat da6b900 82eac6c --
 corpus/images corpus/manifest.json spec/charsets/` is empty).
 
+**Update to `cb9530b`** ("Merge pull request #32", answer to sacd-spec#31, for issue #124).
+Specification 4, 4.2 item 8 names **locator samples** (pairs of a sector and the frame number
+of its first frame record, saved from an earlier read) as one way to choose `L`: they only
+steer that choice, never make a position exact, and need no check beyond ignoring a sample
+outside `S0` to `S1'`. A new 4.2 item 9 says that what a pass over `S0` to `L - 1`
+establishes (the state of item 7, (a) and (b) of item 8) stays established after it is saved
+and loaded again, for an image whose sectors `S0` to `L - 1` are the bytes that pass
+processed, checked as the reader chooses (a check of sectors at or after `L` alone is not
+enough), and that (a) and (b) for `L` and `u_L` hold for any later reading from `L` with
+`u >= u_L`. Specification 7, 7.1 item 2 allows saved locator samples: a constant number of
+bytes each, their number chosen by the reader or the caller and checked when loaded. Only
+`PROVENANCE.md` and those two specifications change (`git diff --stat 82eac6c cb9530b`); the
+corpus and the charset tables are unchanged.
+
 ## Environment
 
 Work was done on 2026-10-30 in an isolated VM (hostname `scarletbook-cleanroom`, Fedora 44,
