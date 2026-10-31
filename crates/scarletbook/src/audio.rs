@@ -384,19 +384,112 @@ pub fn audio_sector_range(area: &Area, n: u64) -> (u64, u64) {
 /// [`Error::ChannelCountUnsupported`], [`Error::TrackEmpty`] or
 /// [`Error::TrackExceedsCapacity`], in that order of precedence.
 pub fn check_track(area: &Area, track: &Track, image_sectors: u64) -> Result<(), Error> {
-    if !(1..=MAX_CHANNELS).contains(&area.channel_count) {
-        return Err(Error::ChannelCountUnsupported { channels: area.channel_count });
-    }
+    check_channels(area)?;
     if track.duration_frames == 0 {
         return Err(Error::TrackEmpty);
     }
+    check_capacity(area, track.end_frame(), image_sectors)
+}
+
+/// Checks whether the frame range `[first, end)` of an area produces audio
+/// (specification 4, 4.7.1 items 3 and 4).
+///
+/// A range must lie in the area's play range `[0, P)`, `first <= end <= P` with `P` the
+/// area's play time ([`Area::playtime_frames`]); anything else is a caller error. The
+/// checks of 4.8 then apply as to a track, with `end - first` as the duration and `end`
+/// as the end frame.
+///
+/// # Errors
+///
+/// [`Error::ChannelCountUnsupported`], [`Error::FrameRangeInvalid`] (the caller error),
+/// [`Error::TrackEmpty`] (`first == end`) or [`Error::TrackExceedsCapacity`], in that
+/// order of precedence. The 4.8 outcomes keep their track codes (specification 7, 7.7.4
+/// reports them per track or per frame range).
+pub fn check_range(area: &Area, first: u32, end: u32, image_sectors: u64) -> Result<(), Error> {
+    check_channels(area)?;
+    let playtime = area.playtime_frames();
+    if first > end || end > playtime {
+        return Err(Error::FrameRangeInvalid { first, end, playtime });
+    }
+    if first == end {
+        return Err(Error::TrackEmpty);
+    }
+    check_capacity(area, end, image_sectors)
+}
+
+/// Specification 4, 4.8 item 1.
+fn check_channels(area: &Area) -> Result<(), Error> {
+    if !(1..=MAX_CHANNELS).contains(&area.channel_count) {
+        return Err(Error::ChannelCountUnsupported { channels: area.channel_count });
+    }
+    Ok(())
+}
+
+/// Specification 4, 4.8 item 3, for a track or range ending at `end_frame`.
+fn check_capacity(area: &Area, end_frame: u32, image_sectors: u64) -> Result<(), Error> {
     let (start, end) = audio_sector_range(area, image_sectors);
     let capacity = (end - start).saturating_mul(FRAMES_PER_SECTOR);
-    let end_frame = track.end_frame();
     if u64::from(end_frame) > capacity {
         return Err(Error::TrackExceedsCapacity { end_frame, capacity });
     }
     Ok(())
+}
+
+/// Track `number`'s **track with pause** (specification 4, 4.7.1 item 5): `[a, b)` with
+/// `a = 0` for track 1 and its own start `s_i` for every other track, and
+/// `b = max(s_i + d_i, s_j)` when the track numbered `j = i + 1` exists, `max(s_i + d_i, P)`
+/// for the last track. With tracks out of order or overlapping these ranges may overlap,
+/// and are used as they are. `None` if the area has no such track.
+///
+/// Check the range with [`check_range`] as for any range: it may be empty (a track of
+/// duration 0 whose successor starts where it does), which is `track-empty`.
+pub fn track_range_with_pause(area: &Area, number: u32) -> Option<(u32, u32)> {
+    let track = area.track(number)?;
+    let first = if number == 1 { 0 } else { track.start_frame };
+    let next =
+        number.checked_add(1).and_then(|n| area.track(n)).map_or(area.playtime_frames(), |t| t.start_frame);
+    Some((first, next.max(track.end_frame())))
+}
+
+/// A track or frame range of an area, checked ([`check_track`] or [`check_range`]), that
+/// a cursor can continue into without failing: see [`crate::Disc::track_continuation`]
+/// and [`crate::Disc::range_continuation`].
+#[derive(Clone, Copy, Debug)]
+pub struct Continuation<'a> {
+    area: &'a Area,
+    first: u32,
+    end: u32,
+    image_sectors: u64,
+    image_id: Option<u64>,
+}
+
+impl<'a> Continuation<'a> {
+    pub(crate) fn new(
+        area: &'a Area,
+        first: u32,
+        end: u32,
+        image_sectors: u64,
+        image_id: Option<u64>,
+    ) -> Self {
+        Continuation { area, first, end, image_sectors, image_id }
+    }
+
+    /// The frame range, `[first, end)`.
+    pub fn range(&self) -> (u32, u32) {
+        (self.first, self.end)
+    }
+
+    /// `prev` continued into this range (see [`TrackAudioCursor::continue_to_range`]),
+    /// or a fresh cursor when its state cannot be reused.
+    pub fn audio(self, prev: TrackAudioCursor) -> TrackAudioCursor {
+        prev.continue_in(self.area, self.first, self.end, self.image_sectors, self.image_id)
+    }
+
+    /// `prev` continued into this range (see [`TrackCursor::continue_to_range`]), or a
+    /// fresh cursor when its state cannot be reused.
+    pub fn frames(self, prev: TrackCursor) -> TrackCursor {
+        prev.continue_in(self.area, self.first, self.end, self.image_sectors, self.image_id)
+    }
 }
 
 /// What a timeline position holds (specification 4, 4.6), before DST decoding.
@@ -410,7 +503,7 @@ pub enum FrameContent {
     Missing,
 }
 
-/// One timeline position of a track.
+/// One timeline position of a track or frame range.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrackFrame {
     /// The frame number.
@@ -421,6 +514,10 @@ pub struct TrackFrame {
 
 /// The reading state of one track's timeline positions (specification 4, 4.7),
 /// independent of the image it reads from. [`TrackFrames`] is the borrowing iterator.
+///
+/// A track is one frame range of its area; [`TrackCursor::for_range`] reads any other
+/// (the whole area, or tracks with the pauses between them) with the same frame
+/// numbering, timeline and contents.
 #[derive(Debug)]
 pub struct TrackCursor {
     area: AreaCursor,
@@ -464,16 +561,33 @@ impl TrackCursor {
     /// As [`check_track`].
     pub fn new(area: &Area, track: &Track, image_sectors: u64) -> Result<Self, Error> {
         check_track(area, track, image_sectors)?;
-        Ok(TrackCursor {
+        Ok(Self::start(area, track.start_frame, track.end_frame(), image_sectors))
+    }
+
+    /// A cursor at frame `first` of `area`, ending before frame `end`, after
+    /// [`check_range`]: the positions `first` to `end - 1` in order, exactly as a track
+    /// covering them would give.
+    ///
+    /// # Errors
+    ///
+    /// As [`check_range`].
+    pub fn for_range(area: &Area, first: u32, end: u32, image_sectors: u64) -> Result<Self, Error> {
+        check_range(area, first, end, image_sectors)?;
+        Ok(Self::start(area, first, end, image_sectors))
+    }
+
+    /// A fresh scan of `area` for the range `[first, end)`, already checked.
+    fn start(area: &Area, first: u32, end: u32, image_sectors: u64) -> Self {
+        TrackCursor {
             area: AreaCursor::new(area, image_sectors),
             area_key: AreaKey::new(area, image_sectors),
-            next: track.start_frame,
-            end: track.end_frame(),
+            next: first,
+            end,
             channels: area.channel_count,
             peeked: None,
             exhausted: false,
             failed: false,
-        })
+        }
     }
 
     /// A cursor at the start of `track`, reusing this cursor's reading state when that
@@ -494,28 +608,50 @@ impl TrackCursor {
     ///
     /// As [`check_track`].
     pub fn continue_to(self, area: &Area, track: &Track, image_sectors: u64) -> Result<Self, Error> {
-        self.continue_in(area, track, image_sectors, None)
+        check_track(area, track, image_sectors)?;
+        Ok(self.continue_in(area, track.start_frame, track.end_frame(), image_sectors, None))
     }
 
-    /// As [`TrackCursor::continue_to`], also starting afresh when this cursor has read
-    /// an image other than `image_id`.
+    /// A cursor for the frame range `[first, end)` of `area`, continuing this one's
+    /// reading state where that gives the same result, as [`TrackCursor::continue_to`]
+    /// does for a track: the state is reused when `first` is at or after this cursor's
+    /// position in the same area.
+    ///
+    /// # Errors
+    ///
+    /// As [`check_range`].
+    pub fn continue_to_range(
+        self,
+        area: &Area,
+        first: u32,
+        end: u32,
+        image_sectors: u64,
+    ) -> Result<Self, Error> {
+        check_range(area, first, end, image_sectors)?;
+        Ok(self.continue_in(area, first, end, image_sectors, None))
+    }
+
+    /// As [`TrackCursor::continue_to_range`] for a range already checked, also starting
+    /// afresh when this cursor has read an image other than `image_id`.
     pub(crate) fn continue_in(
         self,
         area: &Area,
-        track: &Track,
+        first: u32,
+        end: u32,
         image_sectors: u64,
         image_id: Option<u64>,
-    ) -> Result<Self, Error> {
-        check_track(area, track, image_sectors)?;
+    ) -> Self {
         let other_image = matches!((self.area.image_id, image_id), (Some(a), Some(b)) if a != b);
         if self.failed
             || other_image
             || self.area_key != AreaKey::new(area, image_sectors)
-            || track.start_frame < self.next
+            || first < self.next
         {
-            return Self::new(area, track, image_sectors);
+            // A range (or track) before this cursor's position, or in another area, scans
+            // the area again: specification 4, 4.2 item 6 allows a pass per track or range.
+            return Self::start(area, first, end, image_sectors);
         }
-        Ok(TrackCursor { next: track.start_frame, end: track.end_frame(), ..self })
+        TrackCursor { next: first, end, ..self }
     }
 
     /// The area's channel count `C` (1 to 6).
@@ -544,7 +680,7 @@ impl TrackCursor {
         self.area.warnings()
     }
 
-    /// The next timeline position, `None` after the track's last frame.
+    /// The next timeline position, `None` after the track's (or range's) last frame.
     pub fn next_frame<R: Read + Seek>(&mut self, image: &mut Image<R>) -> Option<Result<TrackFrame, Error>> {
         if self.next >= self.end {
             return None;
@@ -578,7 +714,7 @@ impl TrackCursor {
     }
 }
 
-/// The timeline positions of one track, in order (specification 4, 4.7).
+/// The timeline positions of one track or frame range, in order (specification 4, 4.7).
 #[derive(Debug)]
 pub struct TrackFrames<'a, R> {
     image: &'a mut Image<R>,
@@ -586,9 +722,8 @@ pub struct TrackFrames<'a, R> {
 }
 
 impl<'a, R: Read + Seek> TrackFrames<'a, R> {
-    pub(crate) fn new(image: &'a mut Image<R>, area: &Area, track: &Track) -> Result<Self, Error> {
-        let cursor = TrackCursor::new(area, track, image.sector_count())?;
-        Ok(TrackFrames { image, cursor })
+    pub(crate) fn with_cursor(image: &'a mut Image<R>, cursor: TrackCursor) -> Self {
+        TrackFrames { image, cursor }
     }
 
     /// The area's channel count `C` (1 to 6).
@@ -736,8 +871,9 @@ fn decode_dst_run(decoder: &mut DstDecoder, frames: Vec<TrackFrame>, channels: u
         .collect()
 }
 
-/// The decoding state of one track's audio (specification 4, 4.6 and 4.7), independent
-/// of the image it reads from. [`TrackAudio`] is the borrowing iterator.
+/// The decoding state of one track's audio (specification 4, 4.6 and 4.7), or of any
+/// frame range of an area ([`TrackAudioCursor::for_range`]), independent of the image it
+/// reads from. [`TrackAudio`] is the borrowing iterator.
 ///
 /// With the `parallel` feature, DST frames are decoded on rayon's thread pool ahead of
 /// the caller, while the calling thread demultiplexes and consumes; memory stays bounded
@@ -780,6 +916,18 @@ impl TrackAudioCursor {
         Ok(Self::from_frames(TrackCursor::new(area, track, image_sectors)?))
     }
 
+    /// A cursor at frame `first` of `area`, ending before frame `end` (see
+    /// [`TrackCursor::for_range`]): the whole area is `[0, P)`, with `P` the play time.
+    /// Frame numbering, fills, statuses and counts are exactly as for a track.
+    ///
+    /// # Errors
+    ///
+    /// As [`check_range`].
+    pub fn for_range(area: &Area, first: u32, end: u32, image_sectors: u64) -> Result<Self, Error> {
+        // Missing and invalid frames are counted per range (4.7.1 item 6).
+        Ok(Self::from_frames(TrackCursor::for_range(area, first, end, image_sectors)?))
+    }
+
     /// A cursor at the start of `track`, continuing this one's reading state where that
     /// gives the same result (see [`TrackCursor::continue_to`]). Frames of this cursor
     /// not yet returned are dropped; the counts start again at 0.
@@ -788,25 +936,48 @@ impl TrackAudioCursor {
     ///
     /// As [`check_track`].
     pub fn continue_to(self, area: &Area, track: &Track, image_sectors: u64) -> Result<Self, Error> {
-        self.continue_in(area, track, image_sectors, None)
+        check_track(area, track, image_sectors)?;
+        Ok(self.continue_in(area, track.start_frame, track.end_frame(), image_sectors, None))
     }
 
+    /// A cursor for the frame range `[first, end)`, continuing this one's reading state
+    /// where that gives the same result (see [`TrackCursor::continue_to_range`]). Tracks
+    /// and ranges may follow each other in any mix. Frames of this cursor not yet
+    /// returned are dropped; the counts start again at 0.
+    ///
+    /// # Errors
+    ///
+    /// As [`check_range`].
+    pub fn continue_to_range(
+        self,
+        area: &Area,
+        first: u32,
+        end: u32,
+        image_sectors: u64,
+    ) -> Result<Self, Error> {
+        check_range(area, first, end, image_sectors)?;
+        Ok(self.continue_in(area, first, end, image_sectors, None))
+    }
+
+    /// As [`TrackAudioCursor::continue_to_range`] for a range already checked (see
+    /// [`TrackCursor::continue_in`]).
     pub(crate) fn continue_in(
         self,
         area: &Area,
-        track: &Track,
+        first: u32,
+        end: u32,
         image_sectors: u64,
         image_id: Option<u64>,
-    ) -> Result<Self, Error> {
+    ) -> Self {
         // Frames decoded or demultiplexed ahead of the caller came from the track cursor
-        // already, so it stands after them and they lie inside this track: dropping them
-        // loses nothing a later track can use (jobs still on the pool finish unread). An
+        // already, so it stands after them and they lie inside this range: dropping them
+        // loses nothing a later range can use (jobs still on the pool finish unread). An
         // error ends the reuse.
         let mut frames = self.frames;
         if self.pending_error.is_some() {
             frames.failed = true;
         }
-        Ok(Self::from_frames(frames.continue_in(area, track, image_sectors, image_id)?))
+        Self::from_frames(frames.continue_in(area, first, end, image_sectors, image_id))
     }
 
     fn from_frames(frames: TrackCursor) -> Self {
@@ -926,7 +1097,7 @@ impl TrackAudioCursor {
         self.ahead.extend((0..n).map(|i| Pending::Pool(std::sync::Arc::clone(&job), i)));
     }
 
-    /// The next decoded frame, `None` after the track's last frame.
+    /// The next decoded frame, `None` after the track's (or range's) last frame.
     ///
     /// With `parallel`, while the next frame is still being decoded on the pool, a
     /// calling thread that belongs to the pool runs pending pool jobs meanwhile; otherwise,
@@ -1082,7 +1253,8 @@ mod pool {
     }
 }
 
-/// The decoded audio of one track, frame by frame (specification 4, 4.6 and 4.7).
+/// The decoded audio of one track or frame range, frame by frame (specification 4, 4.6
+/// and 4.7).
 #[derive(Debug)]
 pub struct TrackAudio<'a, R> {
     image: &'a mut Image<R>,
@@ -1090,17 +1262,12 @@ pub struct TrackAudio<'a, R> {
 }
 
 impl<'a, R: Read + Seek> TrackAudio<'a, R> {
-    pub(crate) fn new(image: &'a mut Image<R>, area: &Area, track: &Track) -> Result<Self, Error> {
-        let cursor = TrackAudioCursor::new(area, track, image.sector_count())?;
-        Ok(TrackAudio { image, cursor })
-    }
-
     pub(crate) fn with_cursor(image: &'a mut Image<R>, cursor: TrackAudioCursor) -> Self {
         TrackAudio { image, cursor }
     }
 
-    /// The decoding state, to continue into a later track with
-    /// [`crate::Disc::continue_track_audio`].
+    /// The decoding state, to continue into a later track or range with
+    /// [`crate::Disc::continue_track_audio`] or [`crate::Disc::continue_range_audio`].
     pub fn into_cursor(self) -> TrackAudioCursor {
         self.cursor
     }

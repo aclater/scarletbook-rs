@@ -66,6 +66,8 @@ pub struct CaseReport {
     pub failures: Vec<String>,
     /// Tracks whose audio was compared.
     pub tracks_compared: usize,
+    /// Frame ranges (play ranges, tracks with pauses) whose audio was compared.
+    pub ranges_compared: usize,
 }
 
 /// The decoded audio of one track: per-channel SHA-256 and the frame counts.
@@ -135,6 +137,105 @@ pub fn area_audio_sequential<R: std::io::Read + std::io::Seek>(
         cursor = Some(back);
     }
     Ok(out)
+}
+
+/// Frame ranges (specification 4, 4.7.1; corpus README step 6), for manifests that carry
+/// them: each area's play range and tracks with pauses.
+fn check_ranges<R: std::io::Read + std::io::Seek>(
+    disc: &mut Disc<R>,
+    expected: &Value,
+    report: &mut CaseReport,
+) {
+    for ea in expected.as_array().map(Vec::as_slice).unwrap_or_default() {
+        let Some(slot) = ea["area"].as_str().and_then(slot_from) else { continue };
+        let Some(area) = disc.toc().area(slot).cloned() else { continue };
+        if ea.get("play_range").is_some() {
+            let playtime = area.playtime_frames();
+            check_range(disc, slot, (0, playtime), &ea["play_range"], &format!("{slot} play range"), report);
+        }
+        if let Some(ranges) = ea.get("tracks_with_pauses").and_then(Value::as_array) {
+            if ranges.len() != area.tracks.len() {
+                report.failures.push(format!(
+                    "{slot}: {} tracks with pauses, expected {}",
+                    area.tracks.len(),
+                    ranges.len()
+                ));
+            }
+            for (er, track) in ranges.iter().zip(&area.tracks) {
+                let n = u32::from(track.number);
+                let what = format!("{slot} track {n} with pause");
+                if er["number"].as_u64() != Some(u64::from(n)) {
+                    report.failures.push(format!("{what}: expected number {}", er["number"]));
+                    continue;
+                }
+                match disc.track_range_with_pause(slot, n) {
+                    Ok(range) => check_range(disc, slot, range, er, &what, report),
+                    Err(e) => report.failures.push(format!("{what}: {e}")),
+                }
+            }
+        }
+    }
+}
+
+/// Compares the frame range `[first, end)` of an area with a range object of the
+/// manifest: its bounds, its outcome (4.7.1 item 4) and, with audio, its hashes and counts.
+fn check_range<R: std::io::Read + std::io::Seek>(
+    disc: &mut Disc<R>,
+    slot: Slot,
+    (first, end): (u32, u32),
+    expected: &Value,
+    what: &str,
+    report: &mut CaseReport,
+) {
+    let fails = &mut report.failures;
+    if (expected["first_frame"].as_u64(), expected["end_frame"].as_u64())
+        != (Some(u64::from(first)), Some(u64::from(end)))
+    {
+        fails.push(format!(
+            "{what}: [{first}, {end}), expected [{}, {})",
+            expected["first_frame"], expected["end_frame"]
+        ));
+        return;
+    }
+    let outcome = expected["outcome"].as_str().unwrap_or_default();
+    match (outcome, disc.check_range(slot, first, end)) {
+        ("ok", Ok(())) => {}
+        ("ok", Err(e)) => return fails.push(format!("{what}: no audio ({e}), expected audio")),
+        (_, Ok(())) => return fails.push(format!("{what}: audio produced, expected {}", expected["error"])),
+        (_, Err(e)) => {
+            if e.code() != expected["error"].as_str() {
+                fails.push(format!("{what}: {:?}, expected {}", e.code(), expected["error"]));
+            }
+            let class = match e.class() {
+                ErrorClass::TrackSkipped => "skip",
+                ErrorClass::TrackRefused => "error",
+                _ => "not a per-track outcome",
+            };
+            if class != outcome {
+                fails.push(format!("{what}: outcome {class}, expected {outcome}"));
+            }
+            return;
+        }
+    }
+    let got = match disc.range_audio_cursor(slot, first, end).and_then(|c| hash_cursor(disc, c)) {
+        Ok((got, _)) => got,
+        Err(e) => return fails.push(format!("{what}: {e}")),
+    };
+    report.ranges_compared += 1;
+    let exp_sha: Vec<String> = expected["sha256"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|h| h.as_str().map(str::to_owned)).collect())
+        .unwrap_or_default();
+    if got.sha256 != exp_sha {
+        fails.push(format!("{what}: audio hashes differ"));
+    }
+    let counts = (expected["missing_frames"].as_u64(), expected["invalid_dst_frames"].as_u64());
+    if counts != (Some(got.missing_frames), Some(got.invalid_dst_frames)) {
+        fails.push(format!(
+            "{what}: missing/invalid frames ({}, {}), expected {counts:?}",
+            got.missing_frames, got.invalid_dst_frames
+        ));
+    }
 }
 
 fn slot_from(name: &str) -> Option<Slot> {
@@ -296,6 +397,7 @@ fn check_case_inner(corpus: &Path, case: &Value, report: &mut CaseReport) -> Vec
                 fails.push(format!("warnings differ: got {got_w:?}, expected {exp_w:?}"));
             }
             check_audio(&mut disc, &expected["audio"], report);
+            check_ranges(&mut disc, &expected["audio"], report);
             fails.append(&mut report.failures);
         }
     }

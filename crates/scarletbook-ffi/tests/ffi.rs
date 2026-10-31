@@ -436,7 +436,7 @@ fn tiny_image() -> Vec<u8> {
     let a = 540 * s;
     img[a..a + 8].copy_from_slice(b"TWOCHTOC");
     img[a + 32] = 2;
-    img[a + 66] = 10; // play time: 10 frames
+    img[a + 66] = 10; // play time: 10 frames, beyond the capacity of 7
     img[a + 69] = 1;
     img[a + 72..a + 76].copy_from_slice(&546u32.to_be_bytes());
     img[a + 76..a + 80].copy_from_slice(&546u32.to_be_bytes());
@@ -604,4 +604,158 @@ fn version_is_the_crate_version() {
     // SAFETY: sb_version returns a static NUL-terminated string.
     let v = unsafe { CStr::from_ptr(sb_version()) };
     assert_eq!(v.to_str().unwrap(), env!("CARGO_PKG_VERSION"));
+}
+
+fn range_open_next(
+    disc: *const SbDisc,
+    prev: *mut SbTrackAudio,
+    slot: u32,
+    first: u32,
+    end: u32,
+) -> Result<*mut SbTrackAudio, SbStatus> {
+    let mut a: *mut SbTrackAudio = ptr::dangling_mut();
+    // SAFETY: `disc` is NULL or a live handle; `prev` is NULL or a live handle that the
+    // caller does not use again if the call succeeds; `&mut a` is a valid out-pointer.
+    match unsafe { sb_range_audio_open_next(disc, prev, slot, first, end, &mut a) } {
+        SbStatus::Ok => Ok(a),
+        s => {
+            assert!(a.is_null(), "*out not cleared on failure");
+            Err(s)
+        }
+    }
+}
+
+fn range_open(disc: *const SbDisc, slot: u32, first: u32, end: u32) -> Result<*mut SbTrackAudio, SbStatus> {
+    let mut a: *mut SbTrackAudio = ptr::dangling_mut();
+    // SAFETY: `disc` is NULL or a live handle; `&mut a` is a valid out-pointer.
+    match unsafe { sb_range_audio_open(disc, slot, first, end, &mut a) } {
+        SbStatus::Ok => Ok(a),
+        s => {
+            assert!(a.is_null(), "*out not cleared on failure");
+            Err(s)
+        }
+    }
+}
+
+fn with_pause(disc: *const SbDisc, slot: u32, number: u32) -> Result<(u32, u32), SbStatus> {
+    let (mut a, mut b) = (u32::MAX, u32::MAX);
+    // SAFETY: `disc` is NULL or a live handle; both out-pointers are valid.
+    match unsafe { sb_track_range_with_pause(disc, slot, number, &mut a, &mut b) } {
+        SbStatus::Ok => Ok((a, b)),
+        s => Err(s),
+    }
+}
+
+fn range_check(disc: *const SbDisc, slot: u32, first: u32, end: u32) -> SbStatus {
+    // SAFETY: `disc` is NULL or a live handle.
+    unsafe { sb_range_check(disc, slot, first, end) }
+}
+
+/// Reads the rest of a handle: each frame's number, status and bytes.
+fn read_frames(a: *mut SbTrackAudio, disc: *const SbDisc) -> Vec<(u32, u32, Vec<u8>)> {
+    let mut buf = vec![0u8; audio_channels(a) as usize * 4704];
+    let mut out = Vec::new();
+    loop {
+        let (s, fi) = audio_read(a, disc, &mut buf);
+        match s {
+            SbStatus::End => return out,
+            SbStatus::Ok => out.push((fi.number, fi.status, buf[..fi.size].to_vec())),
+            s => panic!("{s:?}: {}", last_error()),
+        }
+    }
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "reads whole corpus images")]
+fn whole_area_range_is_tracks_plus_pauses() {
+    // Tracks [0, 3), [4, 6), [8, 9) of a 9-frame area; [0, 2), [3, 4) of a 4-frame one.
+    let disc = open(&image("dsd-stereo-mch-2064")).unwrap();
+    for (slot, playtime, tracks) in
+        [(0u32, 9u32, &[(1u32, 0u32, 3u32), (2, 4, 6), (3, 8, 9)][..]), (1, 4, &[(1, 0, 2), (2, 3, 4)])]
+    {
+        let (s, a) = area(disc, slot);
+        assert_eq!((s, a.playtime_frames), (SbStatus::Ok, playtime));
+        assert_eq!(range_check(disc, slot, 0, playtime), SbStatus::Ok);
+        let h = range_open(disc, slot, 0, playtime).unwrap();
+        let whole = read_frames(h, disc);
+        audio_free(h);
+        assert_eq!(whole.iter().map(|f| f.0).collect::<Vec<_>>(), (0..playtime).collect::<Vec<_>>());
+        // The same pieces, through one continued handle: tracks and the ranges between.
+        let mut pieces = Vec::new();
+        let mut prev: *mut SbTrackAudio = ptr::null_mut();
+        let mut at = 0;
+        for &(n, start, end) in tracks {
+            if start > at {
+                prev = range_open_next(disc, prev, slot, at, start).unwrap();
+                pieces.extend(read_frames(prev, disc));
+            }
+            prev = audio_open_next(disc, prev, slot, n).unwrap();
+            pieces.extend(read_frames(prev, disc));
+            at = end;
+        }
+        if at < playtime {
+            prev = range_open_next(disc, prev, slot, at, playtime).unwrap();
+            pieces.extend(read_frames(prev, disc));
+        }
+        audio_free(prev);
+        assert_eq!(pieces, whole, "slot {slot}");
+        // Tracks with pauses: track 1 from 0, each to the next track's start.
+        for (i, &(n, start, _)) in tracks.iter().enumerate() {
+            let a = if n == 1 { 0 } else { start };
+            let b = tracks.get(i + 1).map_or(playtime, |t| t.1);
+            assert_eq!(with_pause(disc, slot, n), Ok((a, b)), "slot {slot} track {n}");
+            let h = range_open(disc, slot, a, b).unwrap();
+            assert_eq!(read_frames(h, disc), whole[a as usize..b as usize]);
+            audio_free(h);
+        }
+        assert_eq!(with_pause(disc, slot, 99), Err(SbStatus::NoSuchTrack));
+    }
+    free(disc);
+}
+
+#[test]
+fn range_refusals() {
+    // The tiny image: one 2-channel area of 10 frames' play time and 1 audio sector
+    // (capacity 7), no audio frames.
+    let disc = open(&tiny_image()).unwrap();
+    for (first, end) in [(5, 2), (0, 11), (10, 11), (11, 11)] {
+        assert_eq!(range_check(disc, 0, first, end), SbStatus::FrameRangeInvalid, "[{first}, {end})");
+        assert_eq!(range_open(disc, 0, first, end).unwrap_err(), SbStatus::FrameRangeInvalid);
+    }
+    assert!(last_error().contains("frame range"), "{}", last_error());
+    assert_eq!(range_check(disc, 0, 0, 0), SbStatus::TrackEmpty);
+    assert_eq!(range_open(disc, 0, 4, 4).unwrap_err(), SbStatus::TrackEmpty);
+    assert_eq!(status_name(SbStatus::FrameRangeInvalid as i32), "frame-range-invalid");
+    assert_eq!(range_check(disc, 0, 0, 10), SbStatus::TrackExceedsCapacity);
+    assert_eq!(range_check(disc, 1, 0, 1), SbStatus::NoSuchArea);
+    assert_eq!(range_check(disc, 9, 0, 1), SbStatus::InvalidArgument);
+    assert_eq!(range_check(ptr::null(), 0, 0, 1), SbStatus::InvalidArgument);
+    assert_eq!(with_pause(disc, 0, 1), Ok((0, 10)));
+    assert_eq!(with_pause(disc, 1, 1), Err(SbStatus::NoSuchArea));
+    let mut x = 0;
+    // SAFETY: `disc` is a live handle; one out-pointer is valid, the other NULL (rejected).
+    let s = unsafe { sb_track_range_with_pause(disc, 0, 1, &mut x, ptr::null_mut()) };
+    assert_eq!(s, SbStatus::InvalidArgument);
+    // SAFETY: `disc` is a live handle; a NULL out-pointer is rejected.
+    assert_eq!(unsafe { sb_range_audio_open(disc, 0, 0, 1, ptr::null_mut()) }, SbStatus::InvalidArgument);
+
+    let a = range_open(disc, 0, 2, 7).unwrap();
+    let frames = read_frames(a, disc);
+    assert_eq!(frames.iter().map(|f| f.0).collect::<Vec<_>>(), vec![2, 3, 4, 5, 6]);
+    assert!(frames.iter().all(|f| f.1 == SbFrameStatus::Missing as u32 && f.2.iter().all(|&b| b == 0x69)));
+    let (mut missing, mut invalid) = (0u64, 0u64);
+    // SAFETY: `a` is a live handle; both out-pointers are valid.
+    assert_eq!(unsafe { sb_track_audio_counts(a, &mut missing, &mut invalid) }, SbStatus::Ok);
+    assert_eq!((missing, invalid), (5, 0));
+    // A refused range leaves `prev` untouched; a good one consumes it.
+    assert_eq!(range_open_next(disc, a, 0, 0, 8).unwrap_err(), SbStatus::TrackExceedsCapacity);
+    assert_eq!(range_open_next(disc, a, 0, 3, 3).unwrap_err(), SbStatus::TrackEmpty);
+    assert_eq!(range_open_next(disc, a, 0, 3, 2).unwrap_err(), SbStatus::FrameRangeInvalid);
+    let b = range_open_next(disc, a, 0, 0, 7).unwrap();
+    assert_eq!(read_frames(b, disc).len(), 7);
+    // Tracks continue from ranges too.
+    let c = audio_open_next(disc, b, 0, 1).unwrap();
+    assert_eq!(read_frames(c, disc).len(), 2);
+    audio_free(c);
+    free(disc);
 }
