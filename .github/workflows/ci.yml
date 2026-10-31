@@ -117,6 +117,15 @@ jobs:
           else
             python3 -I .github/scripts/fragments.py check
           fi
+      # miri.yml pins its own nightly (a called workflow does not inherit this file's env);
+      # keep the two the same.
+      - name: miri.yml uses the same nightly as this workflow
+        run: |
+          pinned=$(sed -n 's/^  RUST_NIGHTLY: //p' .github/workflows/miri.yml)
+          if [[ "$pinned" != "$RUST_NIGHTLY" ]]; then
+            echo "::error::miri.yml pins $pinned, ci.yml $RUST_NIGHTLY"
+            exit 1
+          fi
       # release.yml takes the release notes from CHANGELOG.md with this script.
       - name: CHANGELOG.md sections for the release notes
         run: |
