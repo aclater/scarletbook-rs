@@ -499,6 +499,13 @@ gh attestation verify bench-<version>-x86_64-linux.tar.gz -R aclater/scarletbook
 
 ## Measuring performance
 
+`scarletbook-seekcost IMAGE` (in `scarletbook-conformance`) measures what opening a frame
+range costs against where it starts, without and with a seek index, and the index's build
+time and size. On a 50-minute 2-channel DST image (`scarletbook-synth --minutes 50 --area
+2ch --kind dst`) a 14-frame range at 99 % of the area reads 470 272 sectors (146 ms from the
+page cache) without an index and 64 sectors (2.4 ms) with one; the index (K = 64) takes one
+pass to build (162 ms) and 178 KB saved.
+
 Two criterion benchmarks track the decoder between releases:
 
 ```sh
