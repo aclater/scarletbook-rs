@@ -34,6 +34,8 @@ assets. Nothing is published on crates.io yet.
 
 ### Changed
 
+- Release notes start with the tag's section of this changelog; a release without one
+  stops (#50).
 - `TrackAudioCursor` decodes groups of consecutive DST frames together, on the thread pool
   and on the calling thread: `bench decode` is 1.13 to 1.43 times faster on one thread,
   depending on build and channel count (#31, #41).
