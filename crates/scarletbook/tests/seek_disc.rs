@@ -519,3 +519,31 @@ fn a_jump_reports_the_earlier_scans_counts_until_it_reads() {
     assert_eq!((a.malformed_sectors(), a.warnings()), (b.malformed_sectors(), b.warnings()));
     assert_eq!(a.malformed_sectors(), 1);
 }
+
+/// Building the seek index of an area without existing audio sectors (its first audio LSN
+/// past the image's end) completes at once, through a disc as through the index itself, so
+/// that a loop until complete ends.
+#[test]
+#[cfg_attr(miri, ignore = "reads a corpus image")]
+fn an_area_without_audio_sectors_completes() {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../corpus/images/area-audio-start-past-end.iso");
+    let mut disc = Disc::open(Cursor::new(std::fs::read(path).unwrap())).unwrap();
+    let mut empty = 0;
+    for slot in Slot::ALL {
+        let Some(area) = disc.toc().area(slot).cloned() else { continue };
+        let n = disc.toc().sectors;
+        let (s0, s1) = scarletbook::audio::audio_sector_range(&area, n);
+        empty += usize::from(s0 == s1);
+        let mut index = scarletbook::AreaIndex::new(&area, n, IndexOptions::new()).unwrap();
+        assert!(index.extend(disc.image_mut(), 1 << 20).unwrap(), "{slot}");
+        disc.enable_seek_index(slot, IndexOptions::new()).unwrap();
+        let mut steps = 0;
+        while !disc.extend_seek_index(slot, 1 << 20).unwrap() {
+            steps += 1;
+            assert!(steps < 100, "{slot}: never complete");
+        }
+        assert!(disc.seek_index(slot).unwrap().is_complete());
+    }
+    assert!(empty > 0, "an area without audio sectors");
+}
