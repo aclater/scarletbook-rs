@@ -12,7 +12,7 @@ use crate::error::{Error, Slot, Warning};
 use crate::image::{Image, SectorFormat};
 use crate::log::{Log, sb_log};
 use crate::read_at::{ReadAt, ReadAtReader};
-use crate::seek::{AreaIndex, IndexOptions, SeekIndexes};
+use crate::seek::{AreaIndex, IndexOptions, SeekIndexes, SeekPolicy, Speculation};
 use crate::toc::{self, Toc, TocDigests};
 
 /// An opened disc image with its table of contents.
@@ -92,6 +92,8 @@ use crate::toc::{self, Toc, TocDigests};
 pub struct Disc<R> {
     image: Image<R>,
     shared: Arc<DiscShared>,
+    /// The seek policy of each slot, this handle's own ([`Disc::set_seek_policy`]).
+    policy: [SeekPolicy; 2],
 }
 
 /// What the discs made from one by [`Disc::share`] and `clone` have in common: parsed
@@ -160,6 +162,7 @@ impl<R: Read + Seek> Disc<R> {
         Ok(Disc {
             image,
             shared: Arc::new(DiscShared { toc, warnings, digests, seek: SeekIndexes::default() }),
+            policy: [SeekPolicy::Exact; 2],
         })
     }
 
@@ -194,7 +197,7 @@ impl<R: Read + Seek> Disc<R> {
             return Err(Error::InvalidArgument("shared reader of another image"));
         }
         sb_log!(image.log(), Debug, "shared reader checked: same length and TOC sectors");
-        Ok(Disc { image, shared: Arc::clone(&self.shared) })
+        Ok(Disc { image, shared: Arc::clone(&self.shared), policy: self.policy })
     }
 
     /// The table of contents.
@@ -261,6 +264,29 @@ impl<R: Read + Seek> Disc<R> {
         );
         self.shared.seek.write(slot, |kept| *kept = Some(index));
         Ok(())
+    }
+
+    /// Sets how this disc handle starts ranges of the area from `slot` that its seek index
+    /// (if any) cannot reach cheaply: [`SeekPolicy::Exact`] (the default) or
+    /// [`SeekPolicy::Speculative`], which allows provisional reading (specification 4, 4.2
+    /// item 8, sacd-spec `82eac6c`; see [`SeekPolicy`] for what it guarantees). The policy is
+    /// this handle's: discs made from it by [`Disc::share`] and `clone` start with a copy,
+    /// and each may change its own. It applies to the cursors this handle makes and
+    /// continues from then on.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NoSuchArea`].
+    pub fn set_seek_policy(&mut self, slot: Slot, policy: SeekPolicy) -> Result<(), Error> {
+        self.shared.toc.area(slot).ok_or(Error::NoSuchArea(slot))?;
+        sb_log!(self.log(), Debug, "area {slot}: seek policy {policy:?}");
+        self.policy[slot_index(slot)] = policy;
+        Ok(())
+    }
+
+    /// The seek policy of the area from `slot` for this handle.
+    pub fn seek_policy(&self, slot: Slot) -> SeekPolicy {
+        self.policy[slot_index(slot)]
     }
 
     /// Stops keeping a seek index of the area from `slot`, and returns it.
@@ -392,13 +418,19 @@ impl<R: Read + Seek> Disc<R> {
         what: &str,
     ) -> TrackCursor {
         let n = self.image.sector_count();
-        let (cursor, how) = self.shared.seek.read(area.slot, |index| match index {
-            Some(index) => {
-                let mut cursor = TrackCursor::start_indexed(area, first, end, n, index);
+        let policy = self.seek_policy(area.slot);
+        let (cursor, how) = self.shared.seek.read(area.slot, |index| {
+            let mut cursor = TrackCursor::start_with(area, (first, end), n, index, policy);
+            if index.is_some() {
                 cursor.area_mut().keep_for_disc();
-                (cursor, "from the seek index")
             }
-            None => (TrackCursor::start(area, first, end, n), "new scan of the area"),
+            let how = match (cursor.speculation(), index) {
+                (Speculation::Exact, Some(_)) => "from the seek index",
+                (Speculation::Exact, None) => "new scan of the area",
+                // Chosen on the first read, logged then.
+                _ => "provisional start allowed (4.2 item 8)",
+            };
+            (cursor, how)
         });
         // Logged after the lock is released.
         audio::log_open(self.log(), area, track, (first, end), what, how);
@@ -603,7 +635,7 @@ impl<R: Read + Seek> Disc<R> {
             .check_key(area, n)
             .inspect_err(|e| sb_log!(self.log(), Info, "area {slot} range: frames {first}..{end}: {e}"))?;
         audio::log_open(self.log(), area, None, (first, end), what, "from the seek index");
-        Ok(TrackCursor::start_indexed(area, first, end, n, index))
+        Ok(TrackCursor::start_with(area, (first, end), n, Some(index), self.seek_policy(slot)))
     }
 
     /// The decoding state of the frame range `[first, end)` of the area from `slot`,
@@ -701,7 +733,7 @@ impl<R: Read + Seek> Disc<R> {
             (n, Some(self.image.id())),
             self.log(),
             Some(number),
-            &self.shared.seek,
+            (&self.shared.seek, self.seek_policy(area.slot)),
         ))
     }
 
@@ -723,7 +755,7 @@ impl<R: Read + Seek> Disc<R> {
             (n, Some(self.image.id())),
             self.log(),
             None,
-            &self.shared.seek,
+            (&self.shared.seek, self.seek_policy(area.slot)),
         ))
     }
 
@@ -761,6 +793,13 @@ impl<R: Read + Seek> Disc<R> {
 /// readers](Disc#several-readers)): no I/O and no check, the source being the same.
 impl<A: ReadAt + Clone> Clone for Disc<ReadAtReader<A>> {
     fn clone(&self) -> Self {
-        Disc { image: self.image.clone(), shared: Arc::clone(&self.shared) }
+        Disc { image: self.image.clone(), shared: Arc::clone(&self.shared), policy: self.policy }
+    }
+}
+
+fn slot_index(slot: Slot) -> usize {
+    match slot {
+        Slot::TwoChannel => 0,
+        Slot::Multichannel => 1,
     }
 }

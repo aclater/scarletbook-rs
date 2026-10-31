@@ -43,5 +43,5 @@ pub use dst::{DstDecoder, DstError};
 pub use error::{Error, ErrorClass, Slot, Warning, WarningCode};
 pub use image::{Image, MASTER_TOC_LSN, SECTOR_SIZE, SectorFormat};
 pub use read_at::{ReadAt, ReadAtReader};
-pub use seek::{AreaIndex, IndexOptions, ResumedFrom};
+pub use seek::{AreaIndex, IndexOptions, ResumedFrom, SeekPolicy, Speculation, SpeculativeOptions};
 pub use toc::{Area, AreaKind, LoudspeakerLayout, MasterToc, Speaker, Toc, Track};

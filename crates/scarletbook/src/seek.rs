@@ -153,6 +153,215 @@ pub enum ResumedFrom {
         /// The checkpoint whose sector differs.
         lsn: u64,
     },
+    /// At sector `lsn`, provisionally (specification 4, 4.2 item 8, sacd-spec `82eac6c`):
+    /// with no frame under assembly and the range's first frame as the next acceptable
+    /// frame number, after `probes` reads that chose `lsn` (see [`SeekPolicy`]). The
+    /// positions are provisional ([`Speculation`]). Both are 0 until the cursor first
+    /// reads, which is when it chooses.
+    Speculative {
+        /// The sector the provisional reading began at, `L`.
+        lsn: u64,
+        /// The reads made to choose it.
+        probes: u32,
+    },
+}
+
+/// How cursors start a range that the seek index (if any) cannot reach cheaply.
+///
+/// [`SeekPolicy::Exact`], the default, starts every range from the area's first sector or
+/// from a checkpoint of the seek index (specification 4, 4.2 items 6 and 7), so that its
+/// positions are always this specification's. [`SeekPolicy::Speculative`] lets a cursor
+/// begin far into an area without reading the sectors before it: **provisional reading**,
+/// specification 4, 4.2 item 8 (sacd-spec `82eac6c`). Opting in is the caller's request
+/// that item requires.
+///
+/// # Provisional reading
+///
+/// A cursor that would have to read more than [`SpeculativeOptions::min_gap_sectors`]
+/// sectors before the range's estimated position chooses a sector `L` instead: it searches
+/// the frame records' timecodes for a sector close before the range's first frame `u`
+/// (interpolation with a bisection safeguard, a few small reads; at most a constant times
+/// `log2(n + 1)` sectors for an area of `n` audio sectors, as 7.1 item 3 allows), and
+/// begins at the seek index's checkpoint boundary at least [`REPLAY_SECTORS`] before it,
+/// with no frame under assembly and `u` as the next acceptable frame number.
+///
+/// Its positions are exactly the specification's when both (4.2 item 8):
+/// - (a) `a_L <= u`: no frame numbered `u` or more was accepted before `L` by a reader
+///   processing from the first sector; and
+/// - (b) the frame under assembly at `L` is none or has a frame number below `u`.
+///
+/// They hold on every image whose frames start in increasing frame number order (any
+/// well-formed disc), but no read of `L` or later sectors can establish them: one earlier
+/// sector can break (a). So the positions are **provisional** ([`Speculation::Pending`])
+/// until a pass from the first sector establishes or refutes them. When (a) or (b) fails,
+/// positions numbered `a*` or more are still exact, where `a*` is the next acceptable frame
+/// number of a reader processing from the first sector just after it delivered or
+/// discarded the frame under assembly at `L`; below `a*`, a provisional position can differ
+/// whether or not the specification's is missing (a frame accepted before `L` is never
+/// seen, and frames the specification discards can be accepted). Every frame a provisional
+/// reading returns is a complete frame of the image, in increasing frame number order.
+///
+/// The malformed sectors and warnings of a provisional reading cover the sectors it
+/// processes from `L` only (4.4.5 item 5); [`crate::TrackCursor::counts_from`] says so.
+/// Its missing and invalid counts are provisional too (4.7.1 item 6).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SeekPolicy {
+    /// Exact reads only: the default.
+    #[default]
+    Exact,
+    /// Provisional reading where an exact start would read far.
+    Speculative(SpeculativeOptions),
+}
+
+/// Options of [`SeekPolicy::Speculative`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SpeculativeOptions {
+    /// Read exactly when the exact start lies at most this many sectors before the range's
+    /// estimated position (in proportion to the play time). Default 2 048 (4 MiB).
+    pub min_gap_sectors: u64,
+    /// Sectors per probe read while searching, 1 to 32. Default 8 (16 KiB).
+    pub probe_sectors: u32,
+    /// Most probes per search. Default 48; at most `2 x ceil(log2(n + 1)) + 4` are made in
+    /// any case, for an area of `n` audio sectors.
+    pub max_probes: u32,
+}
+
+impl Default for SpeculativeOptions {
+    fn default() -> Self {
+        SpeculativeOptions { min_gap_sectors: 2048, probe_sectors: 8, max_probes: 48 }
+    }
+}
+
+impl SpeculativeOptions {
+    /// The defaults.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// These options with `min_gap_sectors`.
+    pub fn with_min_gap_sectors(self, sectors: u64) -> Self {
+        SpeculativeOptions { min_gap_sectors: sectors, ..self }
+    }
+
+    /// These options with `probe_sectors` (clamped to 1 to 32 when used).
+    pub fn with_probe_sectors(self, sectors: u32) -> Self {
+        SpeculativeOptions { probe_sectors: sectors, ..self }
+    }
+
+    /// These options with `max_probes`.
+    pub fn with_max_probes(self, probes: u32) -> Self {
+        SpeculativeOptions { max_probes: probes, ..self }
+    }
+}
+
+/// Whether a cursor's positions are this specification's, or provisional (specification
+/// 4, 4.2 item 8; see [`SeekPolicy`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Speculation {
+    /// Not a provisional reading: the positions are exact.
+    Exact,
+    /// A provisional reading from sector `lsn` for positions `first` or more, not yet
+    /// established or refuted (`lsn` is 0 until the cursor first reads).
+    Pending {
+        /// `L`.
+        lsn: u64,
+        /// `u`, the range's first frame when the reading began.
+        first: u32,
+    },
+}
+
+/// A provisional start still to be chosen: on the cursor's first read, from the area's
+/// play time and the exact plan the cursor holds meanwhile.
+#[derive(Debug)]
+pub(crate) struct Speculate {
+    pub(crate) first: u32,
+    pub(crate) playtime: u32,
+    pub(crate) interval: u32,
+    pub(crate) options: SpeculativeOptions,
+    /// The exact start, used when the search finds nothing better.
+    pub(crate) exact: Box<AreaCursor>,
+    /// Where the exact start begins: the search looks past it.
+    pub(crate) from: u64,
+}
+
+/// The first frame record of a sector, as a frame number (specification 4, 4.3.2).
+fn first_record(sector: &[u8]) -> Option<u32> {
+    let header = *sector.first()?;
+    let (f, k) = ((header >> 2) & 7, usize::from(header >> 5));
+    if f == 0 {
+        return None;
+    }
+    let r = 1 + 2 * k;
+    let tc = sector.get(r..r + 3)?;
+    Some((u32::from(tc[0]) * 60 + u32::from(tc[1])) * 75 + u32::from(tc[2]))
+}
+
+/// Most sectors one probe reads before giving up on finding a frame record (a DST frame
+/// spans at most 31 sectors on well-formed discs, 4.3.3).
+const PROBE_SPAN: u64 = 32;
+
+/// Searches `[lo, hi)` for a sector holding a frame record whose timecode is at most
+/// `first`, as close before the frame numbered `first` as the probes allow: the sector
+/// found (`lo` itself if none) and the number of reads made.
+pub(crate) fn locate<R: Read + Seek>(
+    image: &mut Image<R>,
+    (mut lo, mut hi): (u64, u64),
+    first: u32,
+    playtime: u32,
+    options: &SpeculativeOptions,
+) -> Result<(u64, u32), Error> {
+    let per = u64::from(options.probe_sectors.clamp(1, 32));
+    // Specification 7, 7.1 item 3: at most a constant times log2(n + 1) sectors.
+    let n = hi.saturating_sub(lo);
+    let log = u64::BITS - n.leading_zeros();
+    let max = options.max_probes.min(2 * log + 4);
+    let mut buf = vec![0u8; per as usize * SECTOR_SIZE];
+    let (mut lo_t, mut hi_t) = (0u32, playtime.max(first.saturating_add(1)));
+    let (mut reads, mut halve) = (0u32, false);
+    while hi - lo > PROBE_SPAN && reads < max {
+        let guess = if halve {
+            lo + (hi - lo) / 2
+        } else {
+            let num = u128::from(first.saturating_sub(lo_t));
+            let den = u128::from(hi_t.saturating_sub(lo_t).max(1));
+            lo + (u128::from(hi - lo) * num / den) as u64
+        }
+        .clamp(lo + 1, hi - 1);
+        let before = hi - lo;
+        // One probe: up to PROBE_SPAN sectors from `guess`, `per` at a time, until a record.
+        let mut found = None;
+        let mut at = guess;
+        while found.is_none() && at < hi.min(guess + PROBE_SPAN) && reads < max {
+            let count = per.min(hi - at);
+            let chunk = &mut buf[..count as usize * SECTOR_SIZE];
+            if image.read_into(at, chunk)? == crate::image::ReadOutcome::OutOfRange {
+                return Err(Error::InvalidArgument("audio sectors outside the image"));
+            }
+            reads += 1;
+            found = (0..count)
+                .find_map(|i| first_record(&chunk[i as usize * SECTOR_SIZE..]).map(|t| (at + i, t)));
+            at += count;
+        }
+        match found {
+            Some((m, t)) if t <= first && m < hi => (lo, lo_t) = (m, t),
+            Some((_, t)) => (hi, hi_t) = (guess, t.max(lo_t.saturating_add(1))),
+            None => hi = guess,
+        }
+        // A step that did not at least halve the interval is followed by a bisection.
+        halve = (hi - lo) * 2 > before;
+    }
+    Ok((lo, reads))
+}
+
+/// The provisional start `L` for a frame record found at `target`: the checkpoint boundary
+/// (`start + j x interval`) at least [`REPLAY_SECTORS`] before it.
+pub(crate) fn provisional_start(start: u64, target: u64, interval: u32) -> u64 {
+    let k = u64::from(interval.max(1));
+    let from = target.saturating_sub(REPLAY_SECTORS).max(start);
+    start + (from - start) / k * k
 }
 
 /// The reading state of the scan at a boundary `c = S0 + jK`, before sector `c`

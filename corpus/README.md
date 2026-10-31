@@ -212,6 +212,10 @@ For each case:
    with the entries of `stored_frames` in that range (every other position of the range must
    be missing), for the tracks and ranges whose outcome is `ok`.
 
+Only readings that begin at `S0` or under specification 4, 4.2 item 7 are compared.
+Provisional readings (4.2 item 8) are not compared with the manifest, unless they have been
+confirmed.
+
 ## How the corpus was made
 
 The images were built with the synthetic-image generator and the test DST encoder of pysacd
