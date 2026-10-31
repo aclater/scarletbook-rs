@@ -159,9 +159,11 @@ that confirmation with the hint (4.2 item 9): after a remount, a reading from th
 the same or a later first frame is reported confirmed at once, still in one read call, if the
 index is bound to the disc (key and TOC fingerprint) and the hint's sector has the bytes the
 pass read. `AreaIndex::without_checkpoints` keeps only the hints, confirmations and
-fingerprint: a few kilobytes per area to save, for a caller that keeps many discs. The sectors
-before a hint are trusted by the disc's identity, not read again: key saved indexes by the
-image file's identity too if a re-rip with the same TOC can replace it.
+fingerprint: a few kilobytes per area to save, for a caller that keeps many discs. Saved
+confirmations, like saved exact checkpoints, are trusted for any image whose TOC fingerprint
+and key match, so a re-rip with different audio bytes would get confirmed readings that
+differ: key saved indexes by the image file's identity (path, size and modification time, or
+a content hash) as well.
 
 Features: `parallel` decodes DST frames on rayon's thread pool, ahead of the caller: the
 current pool by default, or the pool chosen for a cursor with

@@ -1058,8 +1058,11 @@ const _: () = {
 /// sameness check is the index's trust model ([module documentation](self#trust)): it covers
 /// the sectors before `L` by the disc's identity, not by reading them; an index saved for one
 /// image and loaded for a re-rip of the same disc with the same TOC and a different sector
-/// before `L` would be trusted. A caller that cannot rule that out keys its saved indexes by
-/// the image file's identity too, or does not keep them.
+/// before `L` would be trusted. **Trust boundary:** saved confirmations, like saved exact
+/// checkpoints, are trusted for any image whose TOC fingerprint and key match, so a re-rip
+/// with different audio bytes would get confirmed readings that differ from its own; key
+/// saved indexes by the image file's identity (path, size and modification time, or a
+/// content hash) as well.
 // Specification 7, 7.1 item 2 (sacd-spec `cb9530b`): saved locator samples, a constant
 // number of bytes each, their number chosen by the caller and checked when loaded.
 // Specification 7, 7.1 item 2 (sacd-spec `da6b900`): a constant number of bytes per

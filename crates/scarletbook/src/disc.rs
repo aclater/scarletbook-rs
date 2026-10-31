@@ -288,7 +288,11 @@ impl<R: Read + Seek> Disc<R> {
     /// its format on) holds a fingerprint of that disc's TOC (the master TOC, the area TOC
     /// and the image's sector count; see [`AreaIndex#seek-hints`]): an index of another disc
     /// of the same layout is refused. One without (made with [`AreaIndex::new`], or saved
-    /// in version 1) takes this disc's.
+    /// in version 1) takes this disc's. Saved confirmations and exact checkpoints are then
+    /// trusted for this image whenever the TOC fingerprint and key match, so a re-rip with
+    /// different audio bytes would get confirmed or exact readings that differ from its own:
+    /// key saved indexes by the image file's identity (path, size and modification time, or a
+    /// content hash) as well.
     ///
     /// # Errors
     ///
