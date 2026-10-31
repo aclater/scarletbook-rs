@@ -474,6 +474,13 @@ fn hostile_arguments() {
     assert_eq!(unsafe { sb_disc_open_file(missing.as_ptr(), &mut out) }, SbStatus::Io);
     assert!(out.is_null());
     assert_eq!(info(ptr::null()).0, SbStatus::InvalidArgument);
+    assert_eq!(last_error(), "NULL disc handle");
+    // A successful call empties the message, and later ones keep it empty (#132: without
+    // allocating).
+    for _ in 0..3 {
+        assert_eq!(info(disc).0, SbStatus::Ok);
+        assert_eq!(last_error(), "");
+    }
     // SAFETY: `disc` is a live handle; a NULL out-pointer is rejected.
     assert_eq!(unsafe { sb_disc_info(disc, ptr::null_mut()) }, SbStatus::InvalidArgument);
     assert_eq!(area(disc, 7).0, SbStatus::InvalidArgument);
