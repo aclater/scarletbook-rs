@@ -428,6 +428,11 @@ on 2026-10-30: the name `scarletbook` is not taken on crates.io. Nothing was pub
 
 ## Log
 
+From 2026-10-31 (#76) each change's row is first written to `cleanroom.d/` in its pull
+request and appended here when a release is prepared (`.github/scripts/fragments.py
+assemble`), so that independent pull requests do not edit the same lines. Every change is
+still recorded; until the next release, the rows of merged changes are in `cleanroom.d/`.
+
 | Date | Stage | Notes |
 |---|---|---|
 | 2026-10-30 | environment | checks above |

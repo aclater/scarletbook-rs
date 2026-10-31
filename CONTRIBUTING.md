@@ -62,7 +62,24 @@ a `TODO` that names the issue, and carry on with the rest.
 - After changing the C ABI, regenerate the header with
   `cbindgen --config cbindgen.toml --crate scarletbook-ffi --output include/scarletbook.h`
   in `crates/scarletbook-ffi`; CI checks it is up to date.
-- Add a line under "Unreleased" in [CHANGELOG.md](CHANGELOG.md) for a user-visible change.
+- Record the change in fragments, not in CHANGELOG.md or the CLEANROOM.md Log directly (see
+  "Change records" below).
+
+## Change records
+
+Each pull request that changes library or program code (`crates/*/src/`, `Cargo.toml`,
+`Cargo.lock`) adds two small files, so that pull requests never edit the same lines. Changes
+to tests, the corpus, fuzz targets, documentation or CI need none, though a user-visible one
+may still add them:
+
+- `changelog.d/<name>.md`: its CHANGELOG entry (first line `Added`, `Changed`, `Deprecated`,
+  `Removed`, `Fixed` or `Security`, then the list item);
+- `cleanroom.d/<name>.md`: its row of the CLEANROOM.md Log, on one line.
+
+See the READMEs in those directories for the format. CI checks both. They are folded into
+CHANGELOG.md and CLEANROOM.md by `.github/scripts/fragments.py assemble VERSION DATE` in the
+pull request that prepares a release. Sources consulted, tools and specification updates
+still go into their sections of CLEANROOM.md directly.
 
 ## Checks
 

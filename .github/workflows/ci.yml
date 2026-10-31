@@ -79,6 +79,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # The change-record check diffs against the base branch and needs the merge base.
+          fetch-depth: 0
       - run: rustup toolchain install "$RUST_STABLE" --profile minimal -c rustfmt,clippy && rustup default "$RUST_STABLE"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
@@ -99,6 +101,19 @@ jobs:
           for f in LICENSE-MIT LICENSE-APACHE README.md; do
             grep -qx "$f" <<< "$files" || { echo "::error::$f is missing from the scarletbook package"; exit 1; }
           done
+      # Change records live in changelog.d/ and cleanroom.d/ until a release folds them in
+      # (#76; CONTRIBUTING.md, "Change records"): their format, and on pull requests that a
+      # change to library or program code adds one of each.
+      - name: Change-record fragments
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          python3 -I .github/scripts/fragments-test.py
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            python3 -I .github/scripts/fragments.py require "origin/$BASE_REF"
+          else
+            python3 -I .github/scripts/fragments.py check
+          fi
       # release.yml takes the release notes from CHANGELOG.md with this script.
       - name: CHANGELOG.md sections for the release notes
         run: |
