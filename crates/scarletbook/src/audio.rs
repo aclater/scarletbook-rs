@@ -108,11 +108,12 @@ impl std::fmt::Display for Malformed {
 ///
 /// Each position held ahead is at most one DST frame's bytes (at most 65 536,
 /// [`MAX_FRAME_BYTES`]) and, once decoded, its audio (at most 6 x 4704 bytes): a cursor
-/// holds at most `256 x (65 536 + 6 x 4704)` bytes, about 24 MB, whatever the host (plus
-/// the frame under assembly); DST frames of 40 % of their decoded size need about 3.4 MB
-/// at 2 channels and 10 MB at 6. The cap is a constant so that the memory held does not
-/// grow with the host's thread count; 256 positions still keep 8 frames per thread in
-/// flight at 32 threads.
+/// holds at most `512 x (65 536 + 6 x 4704)` bytes, about 48 MB, whatever the host (plus
+/// the frame under assembly); DST frames of 40 % of their decoded size need about 6.8 MB
+/// at 2 channels and 20 MB at 6. The cap is a constant so that the memory held does not
+/// grow with the host's thread count. It keeps 16 positions per thread up to 32 threads:
+/// with groups of 2 or 3 frames per job, a cap of 256 left under 3 jobs per thread at 32
+/// threads, and the pool ran short of work while the calling thread was busy (#61).
 ///
 /// A cursor continued ([`TrackAudioCursor::continue_to`] and its range form) or dropped
 /// while DST frames are in flight drops its handles on them: queued jobs then skip
@@ -124,7 +125,7 @@ impl std::fmt::Display for Malformed {
 /// [`DstDecoder::decode_many`], at most 12 filters' byte tables (64 KiB each) and 12
 /// ptables' probability tables (8 KiB each), about 0.85 MB. A cursor's own decoder, and
 /// each pool thread's, holds up to [`crate::dst::lanes`] lanes of them.
-pub const MAX_PARALLEL_BATCH: usize = 256;
+pub const MAX_PARALLEL_BATCH: usize = 512;
 
 /// Positions held ahead per pool thread with the `parallel` feature (see
 /// [`MAX_PARALLEL_BATCH`]).
@@ -1976,9 +1977,9 @@ mod tests {
         let next = cursor.continue_to(&area, &track, 1).unwrap();
         assert!(matches!(next.decode_on(), DecodeOn::CallingThread));
         // The bound documented on MAX_PARALLEL_BATCH: each position held ahead is at most
-        // one frame of DST bytes and one of decoded audio, about 24 MB in all.
+        // one frame of DST bytes and one of decoded audio, about 48 MB in all.
         let bound = MAX_PARALLEL_BATCH * (MAX_FRAME_BYTES + 6 * FRAME_BYTES_PER_CHANNEL);
-        assert!(bound <= 24_100_000, "{bound}");
+        assert!(bound <= 48_100_000, "{bound}");
     }
 
     /// An area of `sectors` malformed audio sectors (a packet that overruns each one) at
