@@ -9,6 +9,7 @@ use crate::dst::{DstDecoder, DstError};
 use crate::error::{Error, Slot, Warning, WarningCode};
 use crate::image::{Image, ReadOutcome, SECTOR_SIZE};
 use crate::log::{Level, Log, sb_log};
+use crate::seek::{AreaIndex, Assembling, Plan, Recorder, ResumedFrom};
 use crate::toc::{Area, Track};
 
 /// DSD bytes per channel in one frame (specification 0, 0.5).
@@ -415,6 +416,24 @@ pub struct AreaCursor {
     finished: bool,
     /// Lines written about malformed sectors.
     malformed_lines: LineCap,
+    /// Records checkpoints for a seek index, when made from one.
+    recorder: Option<Box<Recorder>>,
+    /// Sectors processed before `replay.until` only rebuild the frame under assembly; the
+    /// state is then set to the checkpoint's.
+    replay: Option<Replay>,
+    /// Where the scan started.
+    resumed: ResumedFrom,
+    /// [`AreaCursor::next_frame`] reads no sector at or past this LSN (returns `None`), for
+    /// [`AreaIndex::extend`].
+    stop_lsn: u64,
+}
+
+/// The state a resumed scan takes once its replay reaches the checkpoint.
+#[derive(Clone, Copy, Debug)]
+struct Replay {
+    until: u64,
+    next_acceptable: u32,
+    malformed: u64,
 }
 
 /// Sectors read per call to the reader.
@@ -423,13 +442,18 @@ const READ_CHUNK: u64 = 32;
 impl AreaCursor {
     /// A cursor at the start of `area`'s audio, in an image of `image_sectors` sectors.
     pub fn new(area: &Area, image_sectors: u64) -> Self {
-        let (start, end) = audio_sector_range(area, image_sectors);
-        let mut demux = Demuxer::new(area.channel_count);
-        demux.slot = Some(area.slot);
+        Self::with_key(AreaKey::new(area, image_sectors))
+    }
+
+    /// A cursor at the start of the area `key` names.
+    fn with_key(key: AreaKey) -> Self {
+        let (start, end) = key.audio_sector_range();
+        let mut demux = Demuxer::new(key.channels);
+        demux.slot = Some(key.slot);
         AreaCursor {
             demux,
             image_id: None,
-            slot: area.slot,
+            slot: key.slot,
             warnings: Vec::new(),
             next_lsn: start,
             end_lsn: end,
@@ -438,7 +462,99 @@ impl AreaCursor {
             buf_sectors: 0,
             finished: false,
             malformed_lines: LineCap::default(),
+            recorder: None,
+            replay: None,
+            resumed: ResumedFrom::Start,
+            stop_lsn: u64::MAX,
         }
+    }
+
+    /// A cursor of the area of `index` that starts from it for positions `first` or more
+    /// (specification 4, 4.2 item 7): at the last checkpoint whose next acceptable frame
+    /// number is at most `first`, with its malformed count and warnings those of the scan
+    /// from the first sector, recording checkpoints past the index's frontier.
+    pub(crate) fn resume(index: &AreaIndex, first: u32) -> Self {
+        let mut cursor = Self::with_key(index.key());
+        let slot = cursor.slot;
+        let warn = |lsn: u32| Warning {
+            code: WarningCode::AudioSectorMalformed,
+            slot: Some(slot),
+            track: None,
+            lsn: Some(lsn),
+        };
+        match index.plan(first) {
+            Plan::Start => cursor.recorder = index.recorder(cursor.next_lsn),
+            Plan::End(end) => {
+                // No frame numbered `first` or more is accepted: nothing to read. The counts
+                // are those of a scan to the end, which a scan from the first sector makes.
+                cursor.next_lsn = cursor.end_lsn;
+                cursor.finished = true;
+                cursor.demux.next_acceptable = end.next_acceptable;
+                cursor.demux.malformed = end.malformed;
+                cursor.warnings = index.malformed_below(cursor.end_lsn).map(warn).collect();
+                cursor.resumed = ResumedFrom::End;
+            }
+            Plan::At { lsn, checkpoint, held } => {
+                // Specification 4, 4.4.5 item 4: a late reader MAY report the malformed
+                // sectors an earlier pass found; this one reports them all, as a scan from
+                // the first sector would.
+                cursor.warnings = index.malformed_below(lsn).map(warn).collect();
+                let replay_from = match held {
+                    Some(h) => {
+                        cursor.demux.assembling = Some(Assembly {
+                            number: h.number,
+                            kind: h.kind,
+                            data: h.bytes.to_vec(),
+                            remaining: h.remaining,
+                            start_lsn: lsn - u64::from(checkpoint.back),
+                        });
+                        lsn
+                    }
+                    None => lsn - u64::from(checkpoint.back),
+                };
+                cursor.demux.next_acceptable = checkpoint.next_acceptable;
+                cursor.demux.malformed = checkpoint.malformed_before;
+                if replay_from < lsn {
+                    // Lemma B1 of #68: from the first start packet the replay processes, its
+                    // frame under assembly is the scan's; the frames it delivers are all
+                    // numbered below the checkpoint's `a`, and are dropped.
+                    cursor.replay = Some(Replay {
+                        until: lsn,
+                        next_acceptable: checkpoint.next_acceptable,
+                        malformed: checkpoint.malformed_before,
+                    });
+                }
+                cursor.next_lsn = replay_from;
+                cursor.recorder = index.recorder(lsn);
+                cursor.resumed = ResumedFrom::Checkpoint { lsn, replay_from };
+            }
+        }
+        cursor
+    }
+
+    /// Where this cursor's scan started (see [`ResumedFrom`]).
+    pub fn resumed_from(&self) -> ResumedFrom {
+        self.resumed
+    }
+
+    /// Scans up to (not including) sector `stop`, or to the end, dropping the frames:
+    /// whether the end was reached.
+    pub(crate) fn scan_to<R: Read + Seek>(&mut self, image: &mut Image<R>, stop: u64) -> Result<bool, Error> {
+        self.stop_lsn = stop;
+        let result = loop {
+            match self.next_frame(image) {
+                Some(Ok(_)) => {}
+                Some(Err(e)) => break Err(e),
+                None => break Ok(self.finished),
+            }
+        };
+        self.stop_lsn = u64::MAX;
+        result
+    }
+
+    /// The checkpoints recorded for a seek index.
+    pub(crate) fn recorder(&self) -> Option<&Recorder> {
+        self.recorder.as_deref()
     }
 
     /// Number of malformed sectors processed so far by this cursor's scan of its area. The
@@ -448,7 +564,9 @@ impl AreaCursor {
     /// [`crate::dst::lanes`] frames, or with `parallel` up to [`MAX_PARALLEL_BATCH`]
     /// positions), so this may count sectors of frames not yet returned.
     pub fn malformed_sectors(&self) -> u64 {
-        self.demux.malformed_sectors()
+        // A cursor started from a seek index holds the counts of the sectors before its
+        // checkpoint, which a scan from the first sector reports only once it has read.
+        if self.image_id.is_none() { 0 } else { self.demux.malformed_sectors() }
     }
 
     /// The `audio-sector-malformed` warnings of the sectors processed so far, with slot
@@ -456,7 +574,7 @@ impl AreaCursor {
     /// [`MAX_MALFORMED_WARNINGS`] are kept; [`AreaCursor::malformed_sectors`] counts them
     /// all. Like that count, they may include sectors of frames not yet returned.
     pub fn warnings(&self) -> &[Warning] {
-        &self.warnings
+        if self.image_id.is_none() { &[] } else { &self.warnings }
     }
 
     fn sector<R: Read + Seek>(&mut self, image: &mut Image<R>, lsn: u64) -> Result<[u8; SECTOR_SIZE], Error> {
@@ -493,14 +611,31 @@ impl AreaCursor {
         match self.image_id {
             None => {
                 self.image_id = Some(image.id());
-                sb_log!(
-                    image.log(),
-                    Debug,
-                    "area {}: scanning audio sectors LSN {}..{}",
-                    self.slot,
-                    self.next_lsn,
-                    self.end_lsn
-                );
+                match self.resumed {
+                    ResumedFrom::Start => sb_log!(
+                        image.log(),
+                        Debug,
+                        "area {}: scanning audio sectors LSN {}..{}",
+                        self.slot,
+                        self.next_lsn,
+                        self.end_lsn
+                    ),
+                    ResumedFrom::Checkpoint { lsn, replay_from } => sb_log!(
+                        image.log(),
+                        Debug,
+                        "area {}: resuming at LSN {lsn} from seek index (next acceptable {}, replay from LSN \
+                         {replay_from}), scanning to LSN {}",
+                        self.slot,
+                        self.replay.map_or(self.demux.next_acceptable, |r| r.next_acceptable),
+                        self.end_lsn
+                    ),
+                    ResumedFrom::End => sb_log!(
+                        image.log(),
+                        Debug,
+                        "area {}: seek index: no frame accepted at or after the range, nothing to read",
+                        self.slot
+                    ),
+                }
             }
             Some(id) if id != image.id() => {
                 return Some(Err(Error::InvalidArgument("audio cursor used with another image")));
@@ -514,11 +649,38 @@ impl AreaCursor {
             if self.finished {
                 return None;
             }
+            if self.next_lsn >= self.stop_lsn && self.replay.is_none() && self.next_lsn < self.end_lsn {
+                return None;
+            }
             if self.next_lsn < self.end_lsn {
                 let lsn = self.next_lsn;
                 self.next_lsn += 1;
                 match self.sector(image, lsn) {
                     Ok(s) => {
+                        if let Some(r) = self.replay {
+                            if lsn < r.until {
+                                // Rebuilds the frame under assembly only: no log lines, no
+                                // warnings, nothing delivered (4.4.5 item 2).
+                                self.demux.push_sector_at(&s, self.demux.at(&Log::none(), lsn));
+                                self.demux.ready.clear();
+                                continue;
+                            }
+                            self.demux.ready.clear();
+                            self.demux.next_acceptable = r.next_acceptable;
+                            self.demux.malformed = r.malformed;
+                            self.replay = None;
+                        }
+                        if let Some(rec) = self.recorder.as_deref_mut().filter(|r| r.due(lsn)) {
+                            let d = &self.demux;
+                            let assembling = d.assembling.as_ref().map(|a| Assembling {
+                                start_lsn: a.start_lsn,
+                                number: a.number,
+                                kind: a.kind,
+                                remaining: a.remaining,
+                                data: &a.data,
+                            });
+                            rec.record(lsn, d.next_acceptable, d.malformed, assembling, &s);
+                        }
                         let at = self.demux.at(image.log(), lsn);
                         let malformed = self.demux.push_sector_at(&s, at);
                         if let Some(reason) = self.demux.reason.filter(|_| malformed) {
@@ -552,6 +714,9 @@ impl AreaCursor {
             } else {
                 self.demux.finish_at(self.demux.at(image.log(), self.end_lsn));
                 self.finished = true;
+                if let Some(rec) = self.recorder.as_deref_mut() {
+                    rec.finish(self.demux.next_acceptable, self.demux.malformed);
+                }
                 sb_log!(
                     image.log(),
                     Debug,
@@ -888,16 +1053,23 @@ pub struct TrackCursor {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct AreaKey {
-    slot: Slot,
-    start: u32,
-    end: u32,
-    channels: u8,
-    image_sectors: u64,
+pub(crate) struct AreaKey {
+    pub(crate) slot: Slot,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+    pub(crate) channels: u8,
+    pub(crate) image_sectors: u64,
 }
 
 impl AreaKey {
-    fn new(area: &Area, image_sectors: u64) -> Self {
+    /// The existing audio sectors, as [`audio_sector_range`].
+    pub(crate) fn audio_sector_range(&self) -> (u64, u64) {
+        let start = u64::from(self.start);
+        let end = (u64::from(self.end) + 1).min(self.image_sectors);
+        (start, end.max(start))
+    }
+
+    pub(crate) fn new(area: &Area, image_sectors: u64) -> Self {
         AreaKey {
             slot: area.slot,
             start: area.audio_start_lsn,
@@ -929,6 +1101,53 @@ impl TrackCursor {
     pub fn for_range(area: &Area, first: u32, end: u32, image_sectors: u64) -> Result<Self, Error> {
         check_range(area, first, end, image_sectors)?;
         Ok(Self::start(area, first, end, image_sectors))
+    }
+
+    /// As [`TrackCursor::for_range`], starting from `index` instead of the area's first
+    /// audio sector (see [`crate::seek`]): at its last checkpoint whose next acceptable
+    /// frame number is at most `first`, or reading nothing when the index is complete and
+    /// no frame numbered `first` or more is accepted. The positions, their contents, the
+    /// missing count, [`TrackCursor::malformed_sectors`] and [`TrackCursor::warnings`] are
+    /// exactly those of [`TrackCursor::for_range`]: the malformed sectors counted are
+    /// those a scan from the area's first audio sector has processed, the ones before
+    /// the checkpoint coming from the index. Only the sectors read and the log lines
+    /// differ; sectors replayed to rebuild the frame under assembly are not logged.
+    ///
+    /// The cursor records the checkpoints it crosses past the index's frontier; take them
+    /// with [`AreaIndex::absorb`]. An empty index ([`AreaIndex::new`]) gives a scan from
+    /// the first sector that builds one.
+    ///
+    /// # Errors
+    ///
+    /// As [`check_range`], then [`Error::InvalidArgument`] if `index` is of another area
+    /// or image size.
+    pub fn for_range_indexed(
+        area: &Area,
+        first: u32,
+        end: u32,
+        image_sectors: u64,
+        index: &AreaIndex,
+    ) -> Result<Self, Error> {
+        check_range(area, first, end, image_sectors)?;
+        index.check_key(area, image_sectors)?;
+        Ok(Self::start_indexed(area, first, end, image_sectors, index))
+    }
+
+    /// A scan of `area` for the range `[first, end)`, already checked, from `index` (of
+    /// that area, checked).
+    pub(crate) fn start_indexed(
+        area: &Area,
+        first: u32,
+        end: u32,
+        image_sectors: u64,
+        index: &AreaIndex,
+    ) -> Self {
+        TrackCursor { area: AreaCursor::resume(index, first), ..Self::start(area, first, end, image_sectors) }
+    }
+
+    /// Where this cursor's scan started (see [`ResumedFrom`]); continued cursors keep it.
+    pub fn resumed_from(&self) -> ResumedFrom {
+        self.area.resumed_from()
     }
 
     /// A fresh scan of `area` for the range `[first, end)`, already checked.
@@ -1355,6 +1574,28 @@ impl TrackAudioCursor {
         Ok(Self::from_frames(TrackCursor::for_range(area, first, end, image_sectors)?))
     }
 
+    /// As [`TrackAudioCursor::for_range`], starting from `index` (see
+    /// [`TrackCursor::for_range_indexed`]): the frames, statuses and counts are exactly
+    /// those of [`TrackAudioCursor::for_range`].
+    ///
+    /// # Errors
+    ///
+    /// As [`TrackCursor::for_range_indexed`].
+    pub fn for_range_indexed(
+        area: &Area,
+        first: u32,
+        end: u32,
+        image_sectors: u64,
+        index: &AreaIndex,
+    ) -> Result<Self, Error> {
+        Ok(Self::from_frames(TrackCursor::for_range_indexed(area, first, end, image_sectors, index)?))
+    }
+
+    /// Where this cursor's scan started (see [`ResumedFrom`]).
+    pub fn resumed_from(&self) -> ResumedFrom {
+        self.frames.resumed_from()
+    }
+
     /// A cursor at the start of `track`, continuing this one's reading state where that
     /// gives the same result (see [`TrackCursor::continue_to`]). Frames of this cursor
     /// not yet returned are dropped; the counts start again at 0. With `parallel`, DST
@@ -1658,6 +1899,24 @@ impl TrackAudioCursor {
     }
 }
 
+impl AsRef<AreaCursor> for AreaCursor {
+    fn as_ref(&self) -> &AreaCursor {
+        self
+    }
+}
+
+impl AsRef<AreaCursor> for TrackCursor {
+    fn as_ref(&self) -> &AreaCursor {
+        &self.area
+    }
+}
+
+impl AsRef<AreaCursor> for TrackAudioCursor {
+    fn as_ref(&self) -> &AreaCursor {
+        &self.frames.area
+    }
+}
+
 /// Decoding jobs on rayon's pool, for the `parallel` feature.
 #[cfg(feature = "parallel")]
 mod pool {
@@ -1889,8 +2148,17 @@ pub(crate) fn find_track(areas: &[Area], slot: Slot, number: u32) -> Result<(&Ar
     Ok((area, track))
 }
 
+/// Areas for the unit tests of other modules.
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests_support {
+    /// An area of `sectors` malformed audio sectors at LSN 0, one track over all its frames.
+    pub(crate) fn area(sectors: u32) -> (crate::Image<std::io::Cursor<Vec<u8>>>, crate::Area, crate::Track) {
+        super::tests::malformed_area(sectors, sectors)
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
     use super::*;
 
     fn sector(header: u8, packets: &[(bool, u8, u16)], records: &[[u8; 4]], dst: bool) -> [u8; 2048] {
@@ -1984,7 +2252,10 @@ mod tests {
 
     /// An area of `sectors` malformed audio sectors (a packet that overruns each one) at
     /// LSN 0, with one track of `frames` frames, all missing.
-    fn malformed_area(sectors: u32, frames: u32) -> (Image<std::io::Cursor<Vec<u8>>>, Area, Track) {
+    pub(crate) fn malformed_area(
+        sectors: u32,
+        frames: u32,
+    ) -> (Image<std::io::Cursor<Vec<u8>>>, Area, Track) {
         // One packet (k = 1), audio, 2047 bytes: past the end of the sector.
         area_of(sectors, frames, |_, s| s[..3].copy_from_slice(&[1 << 5, 0x17, 0xFF]))
     }

@@ -79,6 +79,22 @@ a track or range, which the checks of 4.8 govern), bounds the memory and passes 
 (4.5 item 5, 7.1 item 3), and restates 4.2 items 2 and 6. Its corpus differs from `fa602f9`
 only in `corpus/README.md`, copied again unchanged; the images and manifest are the same.
 
+**Update to `da6b900`** ("Merge pull request #28", answers to sacd-spec#25, #26 and #27,
+for issue #68). Specification 4 gains 4.2 item 7 (beginning at a sector `L` after `S0` with
+the frame under assembly that processing `S0` to `L - 1` leaves, for positions `u` of at
+least `a_L`, with a starting next acceptable frame number of at most `u`), 4.4.5 item 4
+(counts and warnings of a reader that begins late; item 2 applies to the sectors it
+processes only to rebuild the frame under assembly), 4.5 item 6 (informative: why such a
+beginning is exact) and the last sentence of 4.7.1 item 6 (missing and invalid counts depend
+only on the positions); specification 7 gains, in 7.1 item 2, the allocation allowance for
+saved state and, in 7.1 item 3, one further pass per area to establish it. The range
+`e52a42b..da6b900` also brings the round 3 benchmark results in `benchmarks/README.md`
+(`0bf93ec`, numbers and conditions only, not needed for this work and not read for it),
+repository hygiene (`204ee8e`: Scorecard, link check, Dependabot, `SECURITY.md`) and the
+matching `PROVENANCE.md` entries. The corpus and the charset tables are unchanged
+(`git diff --stat e52a42b da6b900 -- corpus/ spec/charsets/` is empty), so the vendored
+copies are too.
+
 ## Environment
 
 Work was done on 2026-10-30 in an isolated VM (hostname `scarletbook-cleanroom`, Fedora 44,
