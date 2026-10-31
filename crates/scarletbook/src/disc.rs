@@ -65,10 +65,10 @@ use crate::toc::{self, Toc, TocDigests};
 /// it reads at most a few dozen sectors before the range's own, wherever it lies. A
 /// continuation starts from the index instead of the area's first sector when the earlier
 /// cursor's state cannot be reused, and also when the index starts the range more than two
-/// checkpoints past that cursor's scan; until it returns its first frame, such a cursor
-/// reports the malformed sectors of a scan that has read nothing, where a reused one
-/// reports those of the scan it continues. The stored frame list and
-/// [`Disc::area_frames`] always scan from the area's first sector.
+/// checkpoints past that cursor's scan (until it first reads, a cursor moved ahead so
+/// reports the malformed sectors and warnings of the scan it was moved from, as a reused
+/// one would). The stored frame list and [`Disc::area_frames`] always scan from the area's
+/// first sector.
 ///
 /// ```no_run
 /// # fn main() -> Result<(), scarletbook::Error> {
@@ -297,11 +297,13 @@ impl<R: Read + Seek> Disc<R> {
     /// Takes into the seek index of its area the checkpoints `cursor` recorded, for a
     /// cursor read without this disc's iterators (with [`TrackAudioCursor::next_frame`]
     /// on [`Disc::image_mut`]); the iterators and continuations do this themselves. Only
-    /// cursors this disc made from its index are taken: nothing happens for others (made
-    /// from a caller's index, or without one), or if the cursor's checkpoints do not join
-    /// the index.
+    /// cursors made from the index by a disc of this image (this one, or one made by
+    /// [`Disc::share`] or `clone`) that read this image are taken. Nothing happens for
+    /// others: cursors made from a caller's index or without one, and cursors whose
+    /// checkpoints do not join the index. A cursor of another image (of the same size and
+    /// layout) stops recording instead, so that its checkpoints never reach this index.
     pub fn absorb_seek_checkpoints(&self, cursor: &mut impl crate::audio::SeekCursor) {
-        self.shared.seek.absorb(crate::audio::sealed::Sealed::area_cursor_mut(cursor));
+        self.shared.seek.absorb(crate::audio::sealed::Sealed::area_cursor_mut(cursor), self.image.id());
     }
 
     /// The accepted frames of the area from `slot`, read from its audio sectors

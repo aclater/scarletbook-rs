@@ -113,16 +113,12 @@ fn run(disc: &mut Disc<Cursor<Vec<u8>>>, playtime: u32, ops: &[Op]) -> Vec<Resul
             .map(|f: AudioFrame| (f.number, f.status, hash(&f.data)))
             .collect();
         let c = it.into_cursor();
-        // Before its first frame, a continued cursor reports the counts of the scan it
-        // continues, and one the index moved ahead those of nothing read yet: compare the
-        // counts once a frame was read.
-        let read = take > 0 || !matches!(*op, Op::Range { cont: true, .. } | Op::Track { cont: true, .. });
         out.push(Ok(Got {
             frames,
             missing: c.missing_frames(),
             invalid: c.invalid_dst_frames(),
-            malformed: if read { c.malformed_sectors() } else { 0 },
-            warnings: if read { c.warnings().to_vec() } else { Vec::new() },
+            malformed: c.malformed_sectors(),
+            warnings: c.warnings().to_vec(),
         }));
         prev = Some(c);
     }
@@ -432,4 +428,94 @@ fn clones_reading_at_once_build_one_index() {
     });
     let index = disc.seek_index(Slot::TwoChannel).unwrap();
     assert!(index.checkpoints() > 100, "{}", index.checkpoints());
+}
+
+/// Two images of the same size and layout but different contents (one more malformed
+/// sector in the first): a cursor of one, continued on a disc of the other, gives that
+/// disc's index none of its checkpoints, and every read of each disc is exact.
+#[test]
+#[cfg_attr(miri, ignore = "reads thousands of sectors")]
+fn another_images_checkpoints_stay_out() {
+    let (img, playtime, _) = long_disc();
+    let mut other = img.clone();
+    // A malformed sector early in the first image's audio: one packet past its end.
+    let at = (common::AUDIO_LSN + 3) * S;
+    other[at..at + S].fill(0);
+    other[at] = 1 << 5;
+    other[at + 1..at + 3].copy_from_slice(&((2u16 << 11) | 2047).to_be_bytes());
+    let mut x = Disc::open(Cursor::new(other.clone())).unwrap();
+    let mut y = Disc::open(Cursor::new(img.clone())).unwrap();
+    let mut plain_x = Disc::open(Cursor::new(other)).unwrap();
+    let mut plain_y = Disc::open(Cursor::new(img)).unwrap();
+    for d in [&mut x, &mut y] {
+        d.enable_seek_index(Slot::TwoChannel, IndexOptions::new()).unwrap();
+    }
+    // X reads far into its area through the cursor itself (not the disc's iterators), so
+    // that the checkpoints of X it records are still in it.
+    let mut cx = x.range_audio_cursor(Slot::TwoChannel, 0, 800).unwrap();
+    for _ in 0..700 {
+        cx.next_frame(x.image_mut()).unwrap().unwrap();
+    }
+    assert_eq!(x.seek_index(Slot::TwoChannel).unwrap().checkpoints(), 0);
+    // ... and is continued on Y.
+    let c = y.continue_range_audio(cx, Slot::TwoChannel, 900, 910).unwrap();
+    let got: Vec<_> = y.read_track_audio(c).map(Result::unwrap).collect();
+    let want: Vec<_> = plain_y.range_audio(Slot::TwoChannel, 900, 910).unwrap().map(Result::unwrap).collect();
+    assert!(got == want);
+    // Y's index holds only Y's checkpoints: a read anywhere reports Y's counts.
+    for first in [500, 950, playtime - 1] {
+        let c = y.range_audio_cursor(Slot::TwoChannel, first, playtime).unwrap();
+        let mut a = y.read_track_audio(c);
+        let f = a.next().unwrap().unwrap();
+        let c = plain_y.range_audio_cursor(Slot::TwoChannel, first, playtime).unwrap();
+        let mut b = plain_y.read_track_audio(c);
+        assert_eq!(f, b.next().unwrap().unwrap());
+        assert_eq!(
+            (a.malformed_sectors(), a.warnings()),
+            (b.malformed_sectors(), b.warnings()),
+            "first {first}"
+        );
+        assert_eq!(a.malformed_sectors(), 0);
+    }
+    // And X's reads stay exact too.
+    let c = x.range_audio_cursor(Slot::TwoChannel, 950, 960).unwrap();
+    let mut a = x.read_track_audio(c);
+    let got: Vec<_> = a.by_ref().map(Result::unwrap).collect();
+    let c = plain_x.range_audio_cursor(Slot::TwoChannel, 950, 960).unwrap();
+    let mut b = plain_x.read_track_audio(c);
+    let want: Vec<_> = b.by_ref().map(Result::unwrap).collect();
+    assert!(got == want);
+    assert_eq!((a.malformed_sectors(), a.warnings()), (b.malformed_sectors(), b.warnings()));
+    assert_eq!(a.malformed_sectors(), 1);
+}
+
+/// Before its first frame, a continuation the index moves ahead reports what the scan it
+/// continues reports, as a disc without an index (which continues that scan) does.
+#[test]
+#[cfg_attr(miri, ignore = "reads thousands of sectors")]
+fn a_jump_reports_the_earlier_scans_counts_until_it_reads() {
+    let (img, playtime, _) = long_disc();
+    let mut bytes = img.clone();
+    let at = (common::AUDIO_LSN + 3) * S;
+    bytes[at..at + S].fill(0);
+    bytes[at] = 1 << 5;
+    bytes[at + 1..at + 3].copy_from_slice(&((2u16 << 11) | 2047).to_be_bytes());
+    let mut plain = Disc::open(Cursor::new(bytes.clone())).unwrap();
+    let mut indexed = Disc::open(Cursor::new(bytes)).unwrap();
+    indexed.enable_seek_index(Slot::TwoChannel, IndexOptions::new()).unwrap();
+    while !indexed.extend_seek_index(Slot::TwoChannel, 1 << 20).unwrap() {}
+    let mut prevs = Vec::new();
+    for d in [&mut plain, &mut indexed] {
+        let c = d.range_audio_cursor(Slot::TwoChannel, 0, 10).unwrap();
+        let mut it = d.read_track_audio(c);
+        it.next().unwrap().unwrap();
+        prevs.push(it.into_cursor());
+    }
+    let pi = prevs.pop().unwrap();
+    let pp = prevs.pop().unwrap();
+    let a = indexed.continue_range_audio(pi, Slot::TwoChannel, 900, playtime).unwrap();
+    let b = plain.continue_range_audio(pp, Slot::TwoChannel, 900, playtime).unwrap();
+    assert!(matches!(a.resumed_from(), scarletbook::ResumedFrom::Checkpoint { .. }), "jumped");
+    assert_eq!((a.malformed_sectors(), a.warnings()), (b.malformed_sectors(), b.warnings()));
+    assert_eq!(a.malformed_sectors(), 1);
 }

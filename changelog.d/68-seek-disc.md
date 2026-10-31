@@ -9,4 +9,8 @@ Added
   "from the seek index" at Info, the resume point at Debug. The indexes live in the state
   that discs of one image share (`Disc::share`, `clone`, #74): every disc of the image, on
   any thread, uses and grows the same index (a read lock to make a cursor, a write lock to
-  take checkpoints). README section "Seeking within an area".
+  take checkpoints); only cursors that read that image give it checkpoints.
+  `Continuation::log_audio` and `log_frames` now return the `Opening` they log (the
+  earlier scan continues, a start from the index, or a new scan), which `audio_as` and
+  `frames_as` follow, so that the log and the cursor agree. README section "Seeking within
+  an area".

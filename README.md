@@ -122,8 +122,10 @@ A saved index is checked for safety (bounds, invariants, checksum, the area and 
 it belongs to) and, as it is used, against the image's sectors (a digest per checkpoint):
 a mismatched index is discarded with a warning in the log and the area scanned from its
 start. It is not proof against an index forged to match: keep it with the image it
-describes. `extend_seek_index` takes `&mut Disc`; to build an index on another thread,
-open a second `Disc` on the image there, then `AreaIndex::merge` the two.
+describes. Every disc of one image (`Disc::share`, or `clone` of a disc read through a
+`ReadAtReader`) uses and grows the same index, so to build it in the background, call
+`extend_seek_index` on a clone in another thread while the others read; `AreaIndex::merge`
+joins indexes kept apart, for example one loaded and one built.
 
 Features: `parallel` decodes DST frames on rayon's thread pool, ahead of the caller: the
 current pool by default, or the pool chosen for a cursor with

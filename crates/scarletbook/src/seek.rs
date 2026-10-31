@@ -571,6 +571,11 @@ impl AreaIndex {
             cursor.stop_recording();
             return;
         }
+        Self::drain(cursor);
+    }
+
+    /// Drops what `cursor` recorded, once taken: it records on from there.
+    pub(crate) fn drain(cursor: &mut AreaCursor) {
         if let Some(r) = cursor.recorder_mut() {
             if r.end_state.is_some() {
                 cursor.stop_recording();
@@ -627,11 +632,18 @@ impl SeekIndexes {
         f(&mut index)
     }
 
-    /// Takes what `cursor` recorded into the index of its slot, if one is kept; costs a
-    /// test when it recorded nothing new.
+    /// Takes what `cursor` recorded into the index of its slot, if one is kept and the
+    /// cursor read the image `image_id` (this disc's, shared by its clones and shares);
+    /// costs a test when it recorded nothing new. A cursor that read another image (of the
+    /// same size and layout, so that the key cannot tell) stops recording instead: its
+    /// checkpoints are that image's.
     #[inline]
-    pub(crate) fn absorb(&self, cursor: &mut AreaCursor) {
+    pub(crate) fn absorb(&self, cursor: &mut AreaCursor, image_id: u64) {
         if cursor.recorder().is_some_and(|r| r.kept && r.has_news()) {
+            if cursor.image_id().is_some_and(|id| id != image_id) {
+                cursor.stop_recording();
+                return;
+            }
             self.write(cursor.slot(), |index| match index {
                 Some(index) => index.absorb_drain(cursor),
                 None => cursor.stop_recording(),
