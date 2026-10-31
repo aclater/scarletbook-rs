@@ -112,6 +112,28 @@ at the top of `crates/scarletbook-ffi/include/scarletbook.h`;
 `cbindgen --config cbindgen.toml --crate scarletbook-ffi --output include/scarletbook.h`
 in `crates/scarletbook-ffi` (cbindgen 0.29.4; CI checks the committed header).
 
+### Parallel decoding
+
+Track and range audio handles decode on the calling thread unless given a pool of
+decoding threads:
+
+```c
+struct SbPool *pool;
+sb_pool_new(4, &pool);                 /* 0: one thread per logical CPU */
+sb_range_audio_open(disc, slot, 0, playtime, &audio);
+sb_track_audio_set_pool(audio, pool);  /* continuations keep it */
+sb_pool_free(pool);                    /* reference-counted: the handle keeps it alive */
+while (sb_track_audio_read(audio, disc, buf, cap, &fi) == SB_STATUS_OK) { /* in order */ }
+sb_track_audio_free(audio);
+```
+
+The calling thread still reads the disc (read callbacks run there) and receives the frames
+in order, while the pool decodes DST frames ahead of it; the output is exactly that of the
+calling thread. A handle holds at most `16 x threads` frames ahead, never more than 256
+(about 24 MB at most). A pool may be shared by handles of several discs read on several
+threads. The library creates no global pool; the log callback is also called from the
+pool's threads (see `sb_disc_set_log`).
+
 ### Release assets
 
 Each release carries the C library as `scarletbook-ffi-<version>-<target>.tar.gz`, with a
