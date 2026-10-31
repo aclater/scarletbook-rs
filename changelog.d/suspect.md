@@ -6,4 +6,4 @@ Added
   TOC or audio sectors) or `FrameNumbersDecrease` (the first frame records of the sectors read
   while choosing `L` decrease). The mark is informative and changes no verdict.
   `SpeculativeOptions::exact_when_suspect` (`with_exact_when_suspect`, default off) reads
-  such areas and ranges exactly instead. The default policy is unchanged (sacd-spec#37)
+  such areas and ranges exactly instead. The default policy is unchanged (sacd-spec#37, #151).
