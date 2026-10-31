@@ -1,0 +1,1 @@
+| 2026-10-31 | logical sector reads through the C interface (#105, #113) | specification 1, 1.2 and 1.3 (sector formats, whole-or-nothing reads), already implemented by the core's image reads. No new sources consulted. |

@@ -10,8 +10,9 @@ that sb_abi_version() equals the header's SB_ABI_VERSION and sb_version() the
 package version, that the README's ctypes bindings run and match the header, then opens
 corpus image dst-features-2ch-6ch, compares its TOC with the
 conformance manifest and decodes track 1 of each area against the manifest's per-channel
-SHA-256. Last, through the README's bindings, reads ranges of it provisionally (#94) and
-checks the readings with a disc-kept seek index and with a caller-kept one.
+SHA-256, and reads its master TOC sector (#105). Last, through the README's bindings,
+reads ranges of it provisionally (#94) and checks the readings with a disc-kept seek index
+and with a caller-kept one.
 """
 import ctypes as C
 import hashlib
@@ -181,6 +182,14 @@ for index, want in enumerate(toc["areas"]):
             hashes[c].update(data[c::channels])
     lib.sb_track_audio_free(handle)
     check(f"area {want['slot']} track 1 audio", [h.hexdigest() for h in hashes], audio["sha256"])
+
+# Logical sectors (#105), through the README's bindings: the master TOC sector holds its
+# signature, the image's user data; a range past the last sector fails whole.
+sectors = C.create_string_buffer(2 * 2048)
+check("sb_disc_read_sectors", bindings["lib"].sb_disc_read_sectors(disc, 510, 1, sectors, 2048), OK)
+check("master TOC sector", sectors.raw[:8], b"SACDMTOC")
+check("sectors past the end", bindings["lib"].sb_disc_read_sectors(disc, info.sectors - 1, 2, sectors, len(sectors)),
+      -18)  # SB_STATUS_SECTOR_RANGE_INVALID
 lib.sb_disc_free(disc)
 
 # Provisional reading (#94), through the README's bindings where they bind the call: ranges

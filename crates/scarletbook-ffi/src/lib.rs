@@ -73,6 +73,8 @@ pub enum SbStatus {
     /// Memory for a copy the caller asked for could not be allocated
     /// (`sb_disc_open_memory`).
     OutOfMemory = -17,
+    /// A sector range extends past the image's last sector (`sb_disc_read_sectors`).
+    SectorRangeInvalid = -18,
 }
 
 /// Area slots, as passed in `slot` arguments.
@@ -863,6 +865,7 @@ pub extern "C" fn sb_status_name(status: i32) -> *const c_char {
         -15 => c"frame-range-invalid",
         -16 => c"threads-unavailable",
         -17 => c"out-of-memory",
+        -18 => c"sector-range-invalid",
         _ => c"unknown",
     };
     name.as_ptr()
@@ -1067,8 +1070,8 @@ impl ReadAt for AtCallbacks {
 
 /// Opens a disc image read through callbacks. On failure `*out` is set to NULL.
 ///
-/// The callbacks run during this call and during `sb_track_audio_read` and
-/// `sb_raw_frames_read`, on the calling thread. A callback that calls back into this
+/// The callbacks run during this call and during `sb_track_audio_read`,
+/// `sb_raw_frames_read` and `sb_disc_read_sectors`, on the calling thread. A callback that calls back into this
 /// library with this disc or one of its track audio or raw frames handles gets
 /// `SB_STATUS_INVALID_ARGUMENT` (and their _free functions do nothing); other handles may
 /// be used.
@@ -1891,6 +1894,77 @@ pub unsafe extern "C" fn sb_disc_warning(disc: *const SbDisc, index: u32, out: *
         // SAFETY: forwarded contract.
         unsafe { write_out(out, info) }?;
         Ok(SbStatus::Ok)
+    })
+}
+
+/// Size of a logical sector's user data in bytes (specification 0, 0.3), the unit of
+/// `sb_disc_read_sectors`.
+pub const SB_SECTOR_SIZE: u32 = 2048;
+
+const _: () = assert!(SB_SECTOR_SIZE as usize == scarletbook::SECTOR_SIZE);
+
+/// Copies the user data of the logical sectors `[lsn, lsn + count)` into `buf`, 2048
+/// bytes (`SB_SECTOR_SIZE`) per sector in order, whatever the image's stored sector size
+/// (`SbDiscInfo.sector_size`): the data a 2048-byte-sector image holds at those sectors.
+/// Works on every disc handle, clones and callback discs included; the disc's read
+/// callbacks run during this call, and its log reports the read as it does other reads.
+///
+/// A read is whole or nothing (specification 1, 1.3): if any sector of the range is at or
+/// past `SbDiscInfo.sectors`, the call returns `SB_STATUS_SECTOR_RANGE_INVALID` and
+/// writes nothing; with `buf` NULL or `cap < count x 2048`, `SB_STATUS_BUFFER_TOO_SMALL`,
+/// and writes nothing. `count` 0 reads nothing and returns `SB_STATUS_OK` for any `lsn`
+/// up to `SbDiscInfo.sectors`. Nothing is ever written past `count x 2048` bytes of
+/// `buf`; after `SB_STATUS_IO`, what those bytes hold is unspecified.
+///
+/// The image is read many sectors at a time, not sector by sector: a range of an image of
+/// 2048-byte stored sectors in one read, of other images in reads of 64 stored sectors.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle; `buf` NULL or valid for `cap` bytes of writes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_disc_read_sectors(
+    disc: *const SbDisc,
+    lsn: u64,
+    count: u32,
+    buf: *mut u8,
+    cap: usize,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let mut d = unsafe { disc_handle(disc) }?.get_mut()?;
+        let image = d.image_mut();
+        let need = (count as usize).checked_mul(scarletbook::SECTOR_SIZE);
+        if !image.contains(lsn, u64::from(count)) {
+            // As the image reports a read past its end.
+            let n = image.sector_count();
+            image.log().write(
+                Level::Debug,
+                format_args!("read of {count} sectors at LSN {lsn}: past the last sector ({n})"),
+            );
+            let msg = format!(
+                "sectors {lsn}..{} are not all in the image's {} sectors",
+                lsn.saturating_add(u64::from(count)),
+                image.sector_count()
+            );
+            return Err(Failure(SbStatus::SectorRangeInvalid, msg));
+        }
+        let Some(need) = need.filter(|&n| n == 0 || (!buf.is_null() && n <= cap)) else {
+            let msg = format!("{count} sectors need {} bytes", u64::from(count) * 2048);
+            return Err(Failure(SbStatus::BufferTooSmall, msg));
+        };
+        if need == 0 {
+            return Ok(SbStatus::Ok);
+        }
+        // SAFETY: non-NULL and valid for cap >= need bytes of writes by this function's
+        // contract; the library holds no reference into the caller's memory.
+        let out = unsafe { std::slice::from_raw_parts_mut(buf, need) };
+        // In range (checked above), so a failure is an I/O error.
+        if image.read_sectors(lsn, out)? {
+            Ok(SbStatus::Ok)
+        } else {
+            Err(Failure(SbStatus::SectorRangeInvalid, format!("sectors from {lsn} are not all in the image")))
+        }
     })
 }
 

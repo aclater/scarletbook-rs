@@ -163,6 +163,12 @@ stated in the header hold on every target. Regenerate the header with
 `cbindgen --config cbindgen.toml --crate scarletbook-ffi --output include/scarletbook.h`
 in `crates/scarletbook-ffi` (cbindgen 0.29.4; CI checks the committed header).
 
+`sb_disc_read_sectors(disc, lsn, count, buf, cap)` copies the 2048-byte user data of
+logical sectors `[lsn, lsn + count)`, whatever the image's stored sector size (2048, 2054
+or 2064 bytes): the bytes a 2048-byte-sector copy of the image holds there, for example to
+digest the TOC sectors or write such a copy. A range reaching past the last sector fails
+whole with `SB_STATUS_SECTOR_RANGE_INVALID`, writing nothing.
+
 ### Seeking
 
 A seek index (see [Seeking within an area](#seeking-within-an-area)) is a handle of its
@@ -387,6 +393,7 @@ bind("sb_disc_area", S, H, U32, P(SbAreaInfo))
 bind("sb_area_loudspeaker_layout", S, H, U32, P(U32))
 bind("sb_area_channel_speaker", S, H, U32, U32, P(U32))
 bind("sb_disc_warning", S, H, U32, P(SbWarning))
+bind("sb_disc_read_sectors", S, H, C.c_uint64, U32, C.c_char_p, SIZE)
 bind("sb_track_info", S, H, U32, U32, P(SbTrackInfo))
 bind("sb_track_string", S, H, U32, U32, U32, C.c_char_p, SIZE, P(SIZE))
 bind("sb_track_check", S, H, U32, U32)

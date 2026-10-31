@@ -189,6 +189,12 @@
 #define SB_SPEAKER_SURROUND_RIGHT 6
 
 /*
+ Size of a logical sector's user data in bytes (specification 0, 0.3), the unit of
+ `sb_disc_read_sectors`.
+ */
+#define SB_SECTOR_SIZE 2048
+
+/*
  Most threads of a decoding pool (`sb_pool_new`). A handle keeps at most
  `16 x threads` frames ahead, and never more than 512: fewer than 2 per thread beyond
  this many threads, which would mostly stay idle.
@@ -342,6 +348,10 @@ enum SbStatus
    (`sb_disc_open_memory`).
    */
   SB_STATUS_OUT_OF_MEMORY = -17,
+  /*
+   A sector range extends past the image's last sector (`sb_disc_read_sectors`).
+   */
+  SB_STATUS_SECTOR_RANGE_INVALID = -18,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -1085,8 +1095,8 @@ SbStatus sb_disc_open_memory_with_log(const uint8_t *data,
 /*
  Opens a disc image read through callbacks. On failure `*out` is set to NULL.
 
- The callbacks run during this call and during `sb_track_audio_read` and
- `sb_raw_frames_read`, on the calling thread. A callback that calls back into this
+ The callbacks run during this call and during `sb_track_audio_read`,
+ `sb_raw_frames_read` and `sb_disc_read_sectors`, on the calling thread. A callback that calls back into this
  library with this disc or one of its track audio or raw frames handles gets
  `SB_STATUS_INVALID_ARGUMENT` (and their _free functions do nothing); other handles may
  be used.
@@ -1097,7 +1107,10 @@ SbStatus sb_disc_open_memory_with_log(const uint8_t *data,
  to, until the disc is freed; they must not unwind; `read` must write at most `len`
  bytes to `buf`. `out` must be NULL or valid for a write.
  */
-SbStatus sb_disc_open_callbacks(SbReadFn read, SbSeekFn seek, void *user, struct SbDisc **out);
+SbStatus sb_disc_open_callbacks(SbReadFn read,
+                                SbSeekFn seek,
+                                void *user,
+                                struct SbDisc **out);
 
 /*
  `sb_disc_open_callbacks`, reporting to a log callback from the format detection on
@@ -1398,6 +1411,33 @@ SbStatus sb_track_string(const struct SbDisc *disc,
  `disc` must be NULL or a live handle; `out` NULL or valid for a write.
  */
 SbStatus sb_disc_warning(const struct SbDisc *disc, uint32_t index, struct SbWarning *out);
+
+/*
+ Copies the user data of the logical sectors `[lsn, lsn + count)` into `buf`, 2048
+ bytes (`SB_SECTOR_SIZE`) per sector in order, whatever the image's stored sector size
+ (`SbDiscInfo.sector_size`): the data a 2048-byte-sector image holds at those sectors.
+ Works on every disc handle, clones and callback discs included; the disc's read
+ callbacks run during this call, and its log reports the read as it does other reads.
+
+ A read is whole or nothing (specification 1, 1.3): if any sector of the range is at or
+ past `SbDiscInfo.sectors`, the call returns `SB_STATUS_SECTOR_RANGE_INVALID` and
+ writes nothing; with `buf` NULL or `cap < count x 2048`, `SB_STATUS_BUFFER_TOO_SMALL`,
+ and writes nothing. `count` 0 reads nothing and returns `SB_STATUS_OK` for any `lsn`
+ up to `SbDiscInfo.sectors`. Nothing is ever written past `count x 2048` bytes of
+ `buf`; after `SB_STATUS_IO`, what those bytes hold is unspecified.
+
+ The image is read many sectors at a time, not sector by sector: a range of an image of
+ 2048-byte stored sectors in one read, of other images in reads of 64 stored sectors.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `buf` NULL or valid for `cap` bytes of writes.
+ */
+SbStatus sb_disc_read_sectors(const struct SbDisc *disc,
+                              uint64_t lsn,
+                              uint32_t count,
+                              uint8_t *buf,
+                              size_t cap);
 
 /*
  Whether track `number` of the area from `slot` produces audio: `SB_STATUS_OK`, or the
