@@ -1,5 +1,5 @@
 Changed
-- Cheaper provisional (cold) seeks (#123): a provisional reading (`SeekPolicy::Speculative`,
+- Cheaper provisional (cold) seeks: a provisional reading (`SeekPolicy::Speculative`,
   specification 4, 4.2 item 8) now begins at the sector its search found, the last whose
   first frame record is numbered below the range's first frame, instead of a checkpoint
   boundary 32 to 95 sectors before it; the search interpolates between the area's track
@@ -14,4 +14,4 @@ Changed
   is at most 32 sectors as before, or at most 512 for those reads sized to a provisional
   range (`CancelToken`, `Progress`, `sb_disc_cancel_token`, `sb_progress_get`).
   `scarletbook-seekcost` measures cold seeks on newly opened discs (`--positions`), and
-  `scarletbook-synth --dst-frames uneven` writes an area of uneven bit rate.
+  `scarletbook-synth --dst-frames uneven` writes an area of uneven bit rate (#123, #126).
