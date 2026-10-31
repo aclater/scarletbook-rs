@@ -12,6 +12,7 @@ use crate::error::{Error, Slot, Warning};
 use crate::image::{Image, SectorFormat};
 use crate::log::{Log, sb_log};
 use crate::read_at::{ReadAt, ReadAtReader};
+use crate::seek::{AreaIndex, IndexOptions, SeekIndexes};
 use crate::toc::{self, Toc, TocDigests};
 
 /// An opened disc image with its table of contents.
@@ -50,6 +51,43 @@ use crate::toc::{self, Toc, TocDigests};
 /// # Ok(())
 /// # }
 /// ```
+///
+/// # Seeking
+///
+/// With a seek index enabled for an area ([`Disc::enable_seek_index`] or
+/// [`Disc::set_seek_index`]; off by default), every track and range cursor of that area
+/// this disc, or any disc made from it by [`Disc::share`] or `clone`, makes or continues
+/// starts from the index (one index per area, which they all use and grow, from any
+/// thread) (see [`crate::seek`]), and the
+/// borrowing iterators ([`TrackAudio`], [`TrackFrames`]) and continuations hand the
+/// checkpoints their cursors record back to it as they read. The frames, statuses, counts
+/// and warnings are exactly those without an index; once the index covers a range, opening
+/// it reads at most a few dozen sectors before the range's own, wherever it lies. A
+/// continuation starts from the index instead of the area's first sector when the earlier
+/// cursor's state cannot be reused, and also when the index starts the range more than two
+/// checkpoints past that cursor's scan; until it returns its first frame, such a cursor
+/// reports the malformed sectors of a scan that has read nothing, where a reused one
+/// reports those of the scan it continues. The stored frame list and
+/// [`Disc::area_frames`] always scan from the area's first sector.
+///
+/// ```no_run
+/// # fn main() -> Result<(), scarletbook::Error> {
+/// use scarletbook::{AreaIndex, Disc, IndexOptions, Slot};
+/// let mut disc = Disc::open(std::io::BufReader::new(std::fs::File::open("disc.iso")?))?;
+/// disc.enable_seek_index(Slot::TwoChannel, IndexOptions::new())?;
+/// // Built by reads as they go, or at once in steps: one pass over the area.
+/// while !disc.extend_seek_index(Slot::TwoChannel, 64 * 1024)? {}
+/// for frame in disc.range_audio(Slot::TwoChannel, 200_000, 200_075)? {
+///     let _frame = frame?;
+/// }
+/// // Kept for the next time: checked again when loaded, and as it is used.
+/// let saved = disc.seek_index(Slot::TwoChannel).map(|i| i.to_bytes()).unwrap_or_default();
+/// let area = disc.toc().area(Slot::TwoChannel).ok_or(scarletbook::Error::NoSuchArea(Slot::TwoChannel))?;
+/// let index = AreaIndex::from_bytes(area, disc.toc().sectors, &saved, scarletbook::seek::DEFAULT_INLINE_BUDGET)?;
+/// disc.set_seek_index(Slot::TwoChannel, index)?;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug)]
 pub struct Disc<R> {
     image: Image<R>,
@@ -68,6 +106,9 @@ struct DiscShared {
     /// The digests of the TOC sectors the parse used, against which [`Disc::share`]
     /// checks another reader.
     digests: TocDigests,
+    /// The seek index of each slot, if enabled: one for every disc of the image, so that
+    /// they all use and grow the same index.
+    seek: SeekIndexes,
 }
 
 impl<R: Read + Seek> Disc<R> {
@@ -116,7 +157,10 @@ impl<R: Read + Seek> Disc<R> {
     /// As [`Disc::open`].
     pub fn from_image(mut image: Image<R>) -> Result<Self, Error> {
         let (toc, warnings, digests) = toc::read_toc(&mut image)?;
-        Ok(Disc { image, shared: Arc::new(DiscShared { toc, warnings, digests }) })
+        Ok(Disc {
+            image,
+            shared: Arc::new(DiscShared { toc, warnings, digests, seek: SeekIndexes::default() }),
+        })
     }
 
     /// A disc of the same image read through `reader`, with a position of its own, sharing
@@ -173,6 +217,91 @@ impl<R: Read + Seek> Disc<R> {
     /// The warnings emitted while reading the TOC (specification 7, 7.7.3).
     pub fn warnings(&self) -> &[Warning] {
         &self.shared.warnings
+    }
+
+    /// Keeps a seek index of the area from `slot`, empty to begin with, and makes and
+    /// continues that area's cursors from it (see [Seeking](Self#seeking)); an index
+    /// already kept is replaced. Every disc of the image ([`Disc::share`], `clone`) keeps
+    /// the same index: this, [`Disc::set_seek_index`] and [`Disc::take_seek_index`] change
+    /// it for all of them.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NoSuchArea`], or [`Error::InvalidArgument`] for invalid options.
+    pub fn enable_seek_index(&mut self, slot: Slot, options: IndexOptions) -> Result<(), Error> {
+        let area = self.shared.toc.area(slot).ok_or(Error::NoSuchArea(slot))?;
+        let index = AreaIndex::new(area, self.image.sector_count(), options)?;
+        sb_log!(self.log(), Debug, "area {slot}: seek index enabled, interval {} sectors", options.interval);
+        self.shared.seek.write(slot, |kept| *kept = Some(index));
+        Ok(())
+    }
+
+    /// Keeps `index` (for example one loaded with [`AreaIndex::from_bytes`]) as the seek
+    /// index of the area from `slot`, as [`Disc::enable_seek_index`] does an empty one.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NoSuchArea`], or [`Error::InvalidArgument`] if `index` is of another area
+    /// or image size.
+    pub fn set_seek_index(&mut self, slot: Slot, index: AreaIndex) -> Result<(), Error> {
+        let area = self.shared.toc.area(slot).ok_or(Error::NoSuchArea(slot))?;
+        index.check_key(area, self.image.sector_count())?;
+        sb_log!(
+            self.log(),
+            Debug,
+            "area {slot}: seek index set, frontier LSN {}{}",
+            index.frontier(),
+            if index.is_complete() { ", complete" } else { "" }
+        );
+        self.shared.seek.write(slot, |kept| *kept = Some(index));
+        Ok(())
+    }
+
+    /// Stops keeping a seek index of the area from `slot`, and returns it.
+    pub fn take_seek_index(&mut self, slot: Slot) -> Option<AreaIndex> {
+        self.shared.seek.write(slot, Option::take)
+    }
+
+    /// A copy of the seek index of the area from `slot`, if one is kept: to save it
+    /// ([`AreaIndex::to_bytes`]) or to merge it with another.
+    pub fn seek_index(&self, slot: Slot) -> Option<AreaIndex> {
+        self.shared.seek.read(slot, |kept| kept.cloned())
+    }
+
+    /// Reads the area from `slot` on from its seek index's frontier, about `max_sectors`
+    /// sectors, recording checkpoints (see [`AreaIndex::extend`]): whether the index is
+    /// now complete. Reading a whole area this way builds the index for all its ranges at
+    /// the cost of one pass.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidArgument`] if no seek index is kept for `slot` or it does not match
+    /// the image, [`Error::Io`] if a read fails.
+    pub fn extend_seek_index(&mut self, slot: Slot, max_sectors: u64) -> Result<bool, Error> {
+        // A copy is extended, then merged back: the index stays usable meanwhile (by discs
+        // that share it) and no lock is held while the image is read.
+        let Some(mut index) = self.seek_index(slot) else {
+            return Err(Error::InvalidArgument("no seek index kept for the area"));
+        };
+        let result = index.extend(&mut self.image, max_sectors);
+        let merged = self.shared.seek.write(slot, |kept| match kept {
+            Some(kept) => kept.merge(&index).map(|()| kept.is_complete()),
+            None => Ok(false),
+        });
+        match (result, merged) {
+            (Err(e), _) | (Ok(_), Err(e)) => Err(e),
+            (Ok(_), Ok(complete)) => Ok(complete),
+        }
+    }
+
+    /// Takes into the seek index of its area the checkpoints `cursor` recorded, for a
+    /// cursor read without this disc's iterators (with [`TrackAudioCursor::next_frame`]
+    /// on [`Disc::image_mut`]); the iterators and continuations do this themselves. Only
+    /// cursors this disc made from its index are taken: nothing happens for others (made
+    /// from a caller's index, or without one), or if the cursor's checkpoints do not join
+    /// the index.
+    pub fn absorb_seek_checkpoints(&self, cursor: &mut impl crate::audio::SeekCursor) {
+        self.shared.seek.absorb(crate::audio::sealed::Sealed::area_cursor_mut(cursor));
     }
 
     /// The accepted frames of the area from `slot`, read from its audio sectors
@@ -244,12 +373,28 @@ impl<R: Read + Seek> Disc<R> {
             .inspect_err(|e| sb_log!(self.log(), Info, "area {slot} track {number}: {e}"))
     }
 
-    /// Logs the opening of a track's frames or audio, on a new scan of its area.
-    fn log_track(&self, slot: Slot, number: u32, what: &str) {
-        if let Ok((area, track)) = audio::find_track(&self.shared.toc.areas, slot, number) {
-            let range = (track.start_frame, track.end_frame());
-            audio::log_open(self.log(), area, Some(number), range, what, "new scan of the area");
-        }
+    /// A cursor of the range `[first, end)` of `area`, already checked: from the area's
+    /// seek index if one is kept, else a new scan; logs the opening of `what` (track
+    /// `track`, if one).
+    fn frames_cursor(
+        &self,
+        area: &crate::Area,
+        (first, end): (u32, u32),
+        track: Option<u32>,
+        what: &str,
+    ) -> TrackCursor {
+        let n = self.image.sector_count();
+        let (cursor, how) = self.shared.seek.read(area.slot, |index| match index {
+            Some(index) => {
+                let mut cursor = TrackCursor::start_indexed(area, first, end, n, index);
+                cursor.area_mut().keep_for_disc();
+                (cursor, "from the seek index")
+            }
+            None => (TrackCursor::start(area, first, end, n), "new scan of the area"),
+        });
+        // Logged after the lock is released.
+        audio::log_open(self.log(), area, track, (first, end), what, how);
+        cursor
     }
 
     /// The timeline positions of track `number` (1-based) of the area from `slot`, each
@@ -263,7 +408,7 @@ impl<R: Read + Seek> Disc<R> {
     /// As [`Disc::check_track`].
     pub fn track_frames(&mut self, slot: Slot, number: u32) -> Result<TrackFrames<'_, R>, Error> {
         let cursor = self.track_frames_cursor(slot, number)?;
-        Ok(TrackFrames::with_cursor(&mut self.image, cursor))
+        Ok(TrackFrames::with_cursor(&mut self.image, cursor, Some(&self.shared.seek)))
     }
 
     /// The reading state of [`Disc::track_frames`], for callers that cannot hold the
@@ -274,9 +419,8 @@ impl<R: Read + Seek> Disc<R> {
     /// As [`Disc::check_track`].
     pub fn track_frames_cursor(&self, slot: Slot, number: u32) -> Result<TrackCursor, Error> {
         self.check_track(slot, number)?;
-        self.log_track(slot, number, "frames");
         let (area, track) = audio::find_track(&self.shared.toc.areas, slot, number)?;
-        TrackCursor::new(area, track, self.image.sector_count())
+        Ok(self.frames_cursor(area, (track.start_frame, track.end_frame()), Some(number), "frames"))
     }
 
     /// The timeline positions of the frame range `[first, end)` of the area from `slot`,
@@ -289,7 +433,7 @@ impl<R: Read + Seek> Disc<R> {
     /// As [`Disc::check_range`].
     pub fn range_frames(&mut self, slot: Slot, first: u32, end: u32) -> Result<TrackFrames<'_, R>, Error> {
         let cursor = self.range_frames_cursor(slot, first, end)?;
-        Ok(TrackFrames::with_cursor(&mut self.image, cursor))
+        Ok(TrackFrames::with_cursor(&mut self.image, cursor, Some(&self.shared.seek)))
     }
 
     /// The reading state of [`Disc::range_frames`], for callers that cannot hold the
@@ -301,8 +445,7 @@ impl<R: Read + Seek> Disc<R> {
     pub fn range_frames_cursor(&self, slot: Slot, first: u32, end: u32) -> Result<TrackCursor, Error> {
         self.check_range(slot, first, end)?;
         let area = self.shared.toc.area(slot).ok_or(Error::NoSuchArea(slot))?;
-        audio::log_open(self.log(), area, None, (first, end), "frames", "new scan of the area");
-        TrackCursor::for_range(area, first, end, self.image.sector_count())
+        Ok(self.frames_cursor(area, (first, end), None, "frames"))
     }
 
     /// The reading state of track `number`'s positions, continuing `prev` (the state of an
@@ -339,7 +482,7 @@ impl<R: Read + Seek> Disc<R> {
 
     /// The borrowing iterator over a track (or range) reading state of this disc.
     pub fn read_frames(&mut self, cursor: TrackCursor) -> TrackFrames<'_, R> {
-        TrackFrames::with_cursor(&mut self.image, cursor)
+        TrackFrames::with_cursor(&mut self.image, cursor, Some(&self.shared.seek))
     }
 
     /// The decoded audio of track `number` (1-based) of the area from `slot`: every
@@ -351,7 +494,7 @@ impl<R: Read + Seek> Disc<R> {
     /// As [`Disc::check_track`].
     pub fn track_audio(&mut self, slot: Slot, number: u32) -> Result<TrackAudio<'_, R>, Error> {
         let cursor = self.track_audio_cursor(slot, number)?;
-        Ok(TrackAudio::with_cursor(&mut self.image, cursor))
+        Ok(TrackAudio::with_cursor(&mut self.image, cursor, Some(&self.shared.seek)))
     }
 
     /// Whether the frame range `[first, end)` of the area from `slot` produces audio: it
@@ -388,7 +531,7 @@ impl<R: Read + Seek> Disc<R> {
     /// As [`Disc::check_range`].
     pub fn range_audio(&mut self, slot: Slot, first: u32, end: u32) -> Result<TrackAudio<'_, R>, Error> {
         let cursor = self.range_audio_cursor(slot, first, end)?;
-        Ok(TrackAudio::with_cursor(&mut self.image, cursor))
+        Ok(TrackAudio::with_cursor(&mut self.image, cursor, Some(&self.shared.seek)))
     }
 
     /// The decoding state of a frame range (see [`Disc::range_audio`]), for callers that
@@ -400,8 +543,59 @@ impl<R: Read + Seek> Disc<R> {
     pub fn range_audio_cursor(&self, slot: Slot, first: u32, end: u32) -> Result<TrackAudioCursor, Error> {
         self.check_range(slot, first, end)?;
         let area = self.shared.toc.area(slot).ok_or(Error::NoSuchArea(slot))?;
-        audio::log_open(self.log(), area, None, (first, end), "decoded audio", "new scan of the area");
-        TrackAudioCursor::for_range(area, first, end, self.image.sector_count())
+        Ok(TrackAudioCursor::from_frames(self.frames_cursor(area, (first, end), None, "decoded audio")))
+    }
+
+    /// [`Disc::range_audio_cursor`] from the caller's seek `index` (see
+    /// [`TrackAudioCursor::for_range_indexed`]) rather than the disc's: for callers that
+    /// keep their indexes themselves (the C interface). Take what the cursor records with
+    /// [`AreaIndex::absorb`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Disc::check_range`], then [`Error::InvalidArgument`] if `index` is of another
+    /// area or image size.
+    pub fn range_audio_cursor_indexed(
+        &self,
+        slot: Slot,
+        first: u32,
+        end: u32,
+        index: &AreaIndex,
+    ) -> Result<TrackAudioCursor, Error> {
+        Ok(TrackAudioCursor::from_frames(self.indexed_cursor(slot, (first, end), index, "decoded audio")?))
+    }
+
+    /// [`Disc::range_frames_cursor`] from the caller's seek `index` (see
+    /// [`Disc::range_audio_cursor_indexed`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Disc::range_audio_cursor_indexed`].
+    pub fn range_frames_cursor_indexed(
+        &self,
+        slot: Slot,
+        first: u32,
+        end: u32,
+        index: &AreaIndex,
+    ) -> Result<TrackCursor, Error> {
+        self.indexed_cursor(slot, (first, end), index, "frames")
+    }
+
+    fn indexed_cursor(
+        &self,
+        slot: Slot,
+        (first, end): (u32, u32),
+        index: &AreaIndex,
+        what: &str,
+    ) -> Result<TrackCursor, Error> {
+        self.check_range(slot, first, end)?;
+        let area = self.shared.toc.area(slot).ok_or(Error::NoSuchArea(slot))?;
+        let n = self.image.sector_count();
+        index
+            .check_key(area, n)
+            .inspect_err(|e| sb_log!(self.log(), Info, "area {slot} range: frames {first}..{end}: {e}"))?;
+        audio::log_open(self.log(), area, None, (first, end), what, "from the seek index");
+        Ok(TrackCursor::start_indexed(area, first, end, n, index))
     }
 
     /// The decoding state of the frame range `[first, end)` of the area from `slot`,
@@ -431,9 +625,9 @@ impl<R: Read + Seek> Disc<R> {
     /// As [`Disc::check_track`].
     pub fn track_audio_cursor(&self, slot: Slot, number: u32) -> Result<TrackAudioCursor, Error> {
         self.check_track(slot, number)?;
-        self.log_track(slot, number, "decoded audio");
         let (area, track) = audio::find_track(&self.shared.toc.areas, slot, number)?;
-        TrackAudioCursor::new(area, track, self.image.sector_count())
+        let range = (track.start_frame, track.end_frame());
+        Ok(TrackAudioCursor::from_frames(self.frames_cursor(area, range, Some(number), "decoded audio")))
     }
 
     /// The decoding state of track `number` of the area from `slot`, continuing `prev`
@@ -493,7 +687,14 @@ impl<R: Read + Seek> Disc<R> {
         let n = self.image.sector_count();
         let range = (track.start_frame, track.end_frame());
         // A cursor from another disc is never continued, whatever its layout.
-        Ok(Continuation::new(area, range, n, Some(self.image.id()), self.log(), Some(number)))
+        Ok(Continuation::new(
+            area,
+            range,
+            (n, Some(self.image.id())),
+            self.log(),
+            Some(number),
+            &self.shared.seek,
+        ))
     }
 
     /// The frame range `[first, end)` of the area from `slot`, checked
@@ -508,7 +709,14 @@ impl<R: Read + Seek> Disc<R> {
         let area = self.shared.toc.area(slot).ok_or(Error::NoSuchArea(slot))?;
         let n = self.image.sector_count();
         // A cursor from another disc is never continued, whatever its layout.
-        Ok(Continuation::new(area, (first, end), n, Some(self.image.id()), self.log(), None))
+        Ok(Continuation::new(
+            area,
+            (first, end),
+            (n, Some(self.image.id())),
+            self.log(),
+            None,
+            &self.shared.seek,
+        ))
     }
 
     /// Track `number`'s track with pause (specification 4, 4.7.1 item 5): see
@@ -527,7 +735,7 @@ impl<R: Read + Seek> Disc<R> {
 
     /// The borrowing iterator over a track (or range) decoding state of this disc.
     pub fn read_track_audio(&mut self, cursor: TrackAudioCursor) -> TrackAudio<'_, R> {
-        TrackAudio::with_cursor(&mut self.image, cursor)
+        TrackAudio::with_cursor(&mut self.image, cursor, Some(&self.shared.seek))
     }
 
     /// The underlying image.

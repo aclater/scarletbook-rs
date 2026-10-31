@@ -497,6 +497,7 @@ impl AreaIndex {
             checkpoints: Vec::new(),
             stored: Stored::default(),
             end_state: None,
+            kept: false,
         }))
     }
 
@@ -561,6 +562,84 @@ impl AreaIndex {
     }
 }
 
+impl AreaIndex {
+    /// [`AreaIndex::absorb`], then drops what `cursor` recorded, so that absorbing it
+    /// again costs nothing until it records more; a cursor whose checkpoints cannot join
+    /// this index stops recording.
+    pub(crate) fn absorb_drain(&mut self, cursor: &mut AreaCursor) {
+        if self.absorb(&*cursor).is_err() {
+            cursor.stop_recording();
+            return;
+        }
+        if let Some(r) = cursor.recorder_mut() {
+            if r.end_state.is_some() {
+                cursor.stop_recording();
+            } else {
+                r.first += r.checkpoints.len() as u32;
+                r.checkpoints.clear();
+                r.stored = Stored::default();
+            }
+        }
+    }
+
+    /// The LSN a cursor of positions `first` or more would start at, `None` for one that
+    /// reads nothing.
+    pub(crate) fn plan_lsn(&self, first: u32) -> Option<u64> {
+        match self.plan(first) {
+            Plan::Start => Some(self.start),
+            Plan::At { lsn, .. } => Some(lsn),
+            Plan::End(_) => None,
+        }
+    }
+
+    /// The checkpoint interval.
+    pub(crate) fn interval(&self) -> u32 {
+        self.interval
+    }
+}
+
+/// The seek indexes a [`crate::Disc`] keeps, one per slot, each behind its own lock so that
+/// cursors can be made and continued through `&Disc`: a read lock while a cursor is made
+/// from an index, a write lock while checkpoints are taken into it. No log sink runs under
+/// either. Kept apart from the rest of the disc so that discs sharing an image can share
+/// it.
+#[derive(Debug, Default)]
+pub(crate) struct SeekIndexes([std::sync::RwLock<Option<AreaIndex>>; 2]);
+
+impl SeekIndexes {
+    fn at(slot: crate::Slot) -> usize {
+        match slot {
+            crate::Slot::TwoChannel => 0,
+            crate::Slot::Multichannel => 1,
+        }
+    }
+
+    /// Runs `f` on the index of `slot`, if one is kept, under a read lock.
+    pub(crate) fn read<T>(&self, slot: crate::Slot, f: impl FnOnce(Option<&AreaIndex>) -> T) -> T {
+        // Nothing panics while a lock is held: the indexes stay consistent.
+        let index = self.0[Self::at(slot)].read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        f(index.as_ref())
+    }
+
+    /// Runs `f` on the index of `slot` (or its absence) under a write lock.
+    pub(crate) fn write<T>(&self, slot: crate::Slot, f: impl FnOnce(&mut Option<AreaIndex>) -> T) -> T {
+        let mut index = self.0[Self::at(slot)].write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        f(&mut index)
+    }
+
+    /// Takes what `cursor` recorded into the index of its slot, if one is kept; costs a
+    /// test when it recorded nothing new.
+    #[inline]
+    pub(crate) fn absorb(&self, cursor: &mut AreaCursor) {
+        if cursor.recorder().is_some_and(|r| r.kept && r.has_news()) {
+            self.write(cursor.slot(), |index| match index {
+                Some(index) => index.absorb_drain(cursor),
+                None => cursor.stop_recording(),
+            });
+        }
+    }
+}
+
 /// The checkpoints a cursor records past an index's frontier, for [`AreaIndex::absorb`].
 #[derive(Clone, Debug)]
 pub(crate) struct Recorder {
@@ -577,9 +656,17 @@ pub(crate) struct Recorder {
     checkpoints: Vec<Checkpoint>,
     stored: Stored,
     end_state: Option<EndState>,
+    /// Made from the index a [`crate::Disc`] keeps, which takes the checkpoints; a cursor
+    /// from a caller's index is left to the caller.
+    pub(crate) kept: bool,
 }
 
 impl Recorder {
+    /// Whether anything was recorded since the last [`AreaIndex::absorb_drain`].
+    pub(crate) fn has_news(&self) -> bool {
+        !self.checkpoints.is_empty() || self.end_state.is_some()
+    }
+
     /// Whether the scan's state before sector `lsn` is to be recorded.
     #[inline]
     pub(crate) fn due(&self, lsn: u64) -> bool {

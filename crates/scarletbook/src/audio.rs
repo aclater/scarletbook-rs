@@ -9,7 +9,7 @@ use crate::dst::{DstDecoder, DstError};
 use crate::error::{Error, Slot, Warning, WarningCode};
 use crate::image::{Image, ReadOutcome, SECTOR_SIZE};
 use crate::log::{Level, Log, sb_log};
-use crate::seek::{AreaIndex, Assembling, Plan, Recorder, ResumedFrom, digest};
+use crate::seek::{AreaIndex, Assembling, Plan, Recorder, ResumedFrom, SeekIndexes, digest};
 use crate::toc::{Area, Track};
 
 /// DSD bytes per channel in one frame (specification 0, 0.5).
@@ -587,6 +587,32 @@ impl AreaCursor {
         self.recorder.as_deref()
     }
 
+    pub(crate) fn recorder_mut(&mut self) -> Option<&mut Recorder> {
+        self.recorder.as_deref_mut()
+    }
+
+    /// Marks the checkpoints this cursor records as those of the disc's own index.
+    pub(crate) fn keep_for_disc(&mut self) {
+        if let Some(r) = self.recorder.as_deref_mut() {
+            r.kept = true;
+        }
+    }
+
+    /// Records no more checkpoints.
+    pub(crate) fn stop_recording(&mut self) {
+        self.recorder = None;
+    }
+
+    /// The area's slot.
+    pub(crate) fn slot(&self) -> Slot {
+        self.slot
+    }
+
+    /// The next sector the scan reads.
+    pub(crate) fn scan_lsn(&self) -> u64 {
+        self.next_lsn
+    }
+
     /// Number of malformed sectors processed so far by this cursor's scan of its area. The
     /// scan starts at the area's first audio sector, not at the track, and a continued
     /// cursor keeps counting from where the earlier tracks left off.
@@ -912,26 +938,52 @@ pub struct Continuation<'a> {
     /// The disc's log, and the track number when this is a track, for the log.
     log: &'a Log,
     track: Option<u32>,
+    /// The disc's seek indexes.
+    seek: &'a SeekIndexes,
 }
 
 impl<'a> Continuation<'a> {
     pub(crate) fn new(
         area: &'a Area,
         (first, end): (u32, u32),
-        image_sectors: u64,
-        image_id: Option<u64>,
+        (image_sectors, image_id): (u64, Option<u64>),
         log: &'a Log,
         track: Option<u32>,
+        seek: &'a SeekIndexes,
     ) -> Self {
-        Continuation { area, first, end, image_sectors, image_id, log, track }
+        Continuation { area, first, end, image_sectors, image_id, log, track, seek }
     }
 
-    /// Logs the opening, continuing the scan of a cursor or not.
-    fn log_open(&self, what: &str, continues: impl FnOnce() -> bool) {
+    /// Logs the opening, continuing the scan of a cursor or not, with the disc's index.
+    fn log_open(&self, what: &str, continues: impl FnOnce(Option<&AreaIndex>) -> bool) {
         if self.log.enabled(Level::Info) {
-            let how = if continues() { "continuing the earlier scan" } else { "new scan of the area" };
-            log_open(self.log, self.area, self.track, (self.first, self.end), what, how);
+            let (continued, indexed) = self.seek.read(self.area.slot, |index| {
+                let index = index.filter(|i| i.check_key(self.area, self.image_sectors).is_ok());
+                (continues(index), index.is_some())
+            });
+            self.log_how(what, continued, indexed);
         }
+    }
+
+    /// Logs the opening, continuing the scan of a cursor or not, with `index`.
+    fn log_open_with(
+        &self,
+        what: &str,
+        index: Option<&AreaIndex>,
+        continues: impl FnOnce(Option<&AreaIndex>) -> bool,
+    ) {
+        if self.log.enabled(Level::Info) {
+            self.log_how(what, continues(index), index.is_some());
+        }
+    }
+
+    fn log_how(&self, what: &str, continued: bool, indexed: bool) {
+        let how = match (continued, indexed) {
+            (true, _) => "continuing the earlier scan",
+            (false, true) => "from the seek index",
+            (false, false) => "new scan of the area",
+        };
+        log_open(self.log, self.area, self.track, (self.first, self.end), what, how);
     }
 
     /// The frame range, `[first, end)`.
@@ -950,8 +1002,8 @@ impl<'a> Continuation<'a> {
     /// Logs (at [`Level::Info`]) the opening of this range's audio from `prev`: whether
     /// its scan continues. [`Continuation::audio`] does this itself.
     pub fn log_audio(&self, prev: &TrackAudioCursor) {
-        self.log_open("decoded audio", || {
-            prev.continues(self.area, self.first, self.image_sectors, self.image_id)
+        self.log_open("decoded audio", |index| {
+            prev.continues(self.area, self.first, self.image_sectors, self.image_id, index)
         });
     }
 
@@ -959,8 +1011,18 @@ impl<'a> Continuation<'a> {
     /// caller that must not run one while it hands `prev` over (the C interface, whose
     /// callbacks could otherwise reach a handle being consumed); it calls
     /// [`Continuation::log_audio`] first, while `prev` is still guarded.
-    pub fn audio_unlogged(self, prev: TrackAudioCursor) -> TrackAudioCursor {
-        prev.continue_in(self.area, self.first, self.end, self.image_sectors, self.image_id)
+    pub fn audio_unlogged(self, mut prev: TrackAudioCursor) -> TrackAudioCursor {
+        self.seek.absorb(&mut prev.frames.area);
+        self.seek.read(self.area.slot, |index| {
+            let index = index.filter(|i| i.check_key(self.area, self.image_sectors).is_ok());
+            let fresh = !prev.continues(self.area, self.first, self.image_sectors, self.image_id, index);
+            let mut next =
+                prev.continue_in(self.area, self.first, self.end, (self.image_sectors, self.image_id), index);
+            if fresh && index.is_some() {
+                next.frames.area.keep_for_disc();
+            }
+            next
+        })
     }
 
     /// `prev` continued into this range (see [`TrackCursor::continue_to_range`]), or a
@@ -973,24 +1035,100 @@ impl<'a> Continuation<'a> {
 
     /// Logs (at [`Level::Info`]) the opening of this range's frames from `prev`.
     pub fn log_frames(&self, prev: &TrackCursor) {
-        self.log_open("frames", || prev.reusable(self.area, self.first, self.image_sectors, self.image_id));
+        self.log_open("frames", |index| {
+            prev.reuses(self.area, self.first, self.image_sectors, self.image_id, index)
+        });
     }
 
     /// [`Continuation::frames`] without logging (see [`Continuation::audio_unlogged`]).
-    pub fn frames_unlogged(self, prev: TrackCursor) -> TrackCursor {
-        prev.continue_in(self.area, self.first, self.end, self.image_sectors, self.image_id)
+    pub fn frames_unlogged(self, mut prev: TrackCursor) -> TrackCursor {
+        self.seek.absorb(&mut prev.area);
+        self.seek.read(self.area.slot, |index| {
+            let index = index.filter(|i| i.check_key(self.area, self.image_sectors).is_ok());
+            let fresh = !prev.reuses(self.area, self.first, self.image_sectors, self.image_id, index);
+            let mut next =
+                prev.continue_in(self.area, self.first, self.end, (self.image_sectors, self.image_id), index);
+            if fresh && index.is_some() {
+                next.area.keep_for_disc();
+            }
+            next
+        })
+    }
+
+    /// Whether `index` is of this range's area and image size, as the `_indexed` methods
+    /// need.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidArgument`] if it is not.
+    pub fn check_index(&self, index: &AreaIndex) -> Result<(), Error> {
+        index.check_key(self.area, self.image_sectors)
+    }
+
+    /// Logs (at [`Level::Info`]) the opening of this range's audio from `prev` with
+    /// `index` (see [`Continuation::audio_indexed_unlogged`]).
+    pub fn log_audio_indexed(&self, prev: &TrackAudioCursor, index: &AreaIndex) {
+        let index = Some(index).filter(|i| self.check_index(i).is_ok());
+        self.log_open_with("decoded audio", index, |index| {
+            prev.continues(self.area, self.first, self.image_sectors, self.image_id, index)
+        });
+    }
+
+    /// [`Continuation::audio_unlogged`] with the caller's seek `index` (of this range's
+    /// area, [`Continuation::check_index`]) in place of the disc's: first takes what
+    /// `prev` recorded into it, then continues `prev` or starts from it. An index of
+    /// another area is not used.
+    pub fn audio_indexed_unlogged(
+        self,
+        mut prev: TrackAudioCursor,
+        index: &mut AreaIndex,
+    ) -> TrackAudioCursor {
+        index.absorb_drain(&mut prev.frames.area);
+        let index = Some(&*index).filter(|i| self.check_index(i).is_ok());
+        prev.continue_in(self.area, self.first, self.end, (self.image_sectors, self.image_id), index)
+    }
+
+    /// Logs the opening of this range's frames from `prev` with `index`.
+    pub fn log_frames_indexed(&self, prev: &TrackCursor, index: &AreaIndex) {
+        let index = Some(index).filter(|i| self.check_index(i).is_ok());
+        self.log_open_with("frames", index, |index| {
+            prev.reuses(self.area, self.first, self.image_sectors, self.image_id, index)
+        });
+    }
+
+    /// [`Continuation::frames_unlogged`] with the caller's seek `index` (see
+    /// [`Continuation::audio_indexed_unlogged`]).
+    pub fn frames_indexed_unlogged(self, mut prev: TrackCursor, index: &mut AreaIndex) -> TrackCursor {
+        index.absorb_drain(&mut prev.area);
+        let index = Some(&*index).filter(|i| self.check_index(i).is_ok());
+        prev.continue_in(self.area, self.first, self.end, (self.image_sectors, self.image_id), index)
     }
 
     /// Logs (at [`Level::Info`]) the opening of this range's frames on a new scan, as
     /// [`Continuation::fresh_frames`] does not.
     pub fn log_fresh_frames(&self) {
-        self.log_open("frames", || false);
+        self.log_open("frames", |_| false);
     }
 
     /// A fresh cursor of this range's positions (see [`TrackCursor::for_range`]), without
     /// logging (see [`Continuation::log_fresh_frames`]).
     pub fn fresh_frames(self) -> TrackCursor {
-        TrackCursor::start(self.area, self.first, self.end, self.image_sectors)
+        self.seek.read(self.area.slot, |index| {
+            match index.filter(|i| i.check_key(self.area, self.image_sectors).is_ok()) {
+                Some(index) => {
+                    let mut c = TrackCursor::start_indexed(
+                        self.area,
+                        self.first,
+                        self.end,
+                        self.image_sectors,
+                        index,
+                    );
+                    c.area.keep_for_disc();
+                    c
+                }
+                None => TrackCursor::start(self.area, self.first, self.end, self.image_sectors),
+            }
+        })
     }
 }
 
@@ -1195,8 +1333,12 @@ impl TrackCursor {
         self.area.resumed_from()
     }
 
+    pub(crate) fn area_mut(&mut self) -> &mut AreaCursor {
+        &mut self.area
+    }
+
     /// A fresh scan of `area` for the range `[first, end)`, already checked.
-    fn start(area: &Area, first: u32, end: u32, image_sectors: u64) -> Self {
+    pub(crate) fn start(area: &Area, first: u32, end: u32, image_sectors: u64) -> Self {
         TrackCursor {
             area: AreaCursor::new(area, image_sectors),
             area_key: AreaKey::new(area, image_sectors),
@@ -1233,7 +1375,7 @@ impl TrackCursor {
     /// As [`check_track`].
     pub fn continue_to(self, area: &Area, track: &Track, image_sectors: u64) -> Result<Self, Error> {
         check_track(area, track, image_sectors)?;
-        Ok(self.continue_in(area, track.start_frame, track.end_frame(), image_sectors, None))
+        Ok(self.continue_in(area, track.start_frame, track.end_frame(), (image_sectors, None), None))
     }
 
     /// A cursor for the frame range `[first, end)` of `area`, continuing this one's
@@ -1252,25 +1394,48 @@ impl TrackCursor {
         image_sectors: u64,
     ) -> Result<Self, Error> {
         check_range(area, first, end, image_sectors)?;
-        Ok(self.continue_in(area, first, end, image_sectors, None))
+        Ok(self.continue_in(area, first, end, (image_sectors, None), None))
     }
 
     /// As [`TrackCursor::continue_to_range`] for a range already checked, also starting
-    /// afresh when this cursor has read an image other than `image_id`.
+    /// afresh when this cursor has read an image other than `image_id`, and from `index`
+    /// (of `area`) when that is given and the state is not reused.
     pub(crate) fn continue_in(
         self,
         area: &Area,
         first: u32,
         end: u32,
-        image_sectors: u64,
-        image_id: Option<u64>,
+        (image_sectors, image_id): (u64, Option<u64>),
+        index: Option<&AreaIndex>,
     ) -> Self {
-        if !self.reusable(area, first, image_sectors, image_id) {
+        if !self.reuses(area, first, image_sectors, image_id, index) {
             // A range (or track) before this cursor's position, or in another area, scans
-            // the area again: specification 4, 4.2 item 6 allows a pass per track or range.
-            return Self::start(area, first, end, image_sectors);
+            // the area again: specification 4, 4.2 item 6 allows a pass per track or range,
+            // and item 7 a start from the seek index.
+            return match index {
+                Some(index) => Self::start_indexed(area, first, end, image_sectors, index),
+                None => Self::start(area, first, end, image_sectors),
+            };
         }
         TrackCursor { next: first, end, missing: 0, ..self }
+    }
+
+    /// Whether [`TrackCursor::continue_in`] keeps this cursor's reading state: when it
+    /// can ([`TrackCursor::reusable`]), unless `index` starts the range more than two
+    /// checkpoints past the sector this cursor reads next.
+    fn reuses(
+        &self,
+        area: &Area,
+        first: u32,
+        image_sectors: u64,
+        image_id: Option<u64>,
+        index: Option<&AreaIndex>,
+    ) -> bool {
+        self.reusable(area, first, image_sectors, image_id)
+            && index.is_none_or(|index| {
+                let ahead = 2 * u64::from(index.interval());
+                index.plan_lsn(first).is_some_and(|lsn| lsn <= self.area.scan_lsn().saturating_add(ahead))
+            })
     }
 
     /// Whether [`TrackCursor::continue_in`] keeps this cursor's reading state.
@@ -1373,11 +1538,17 @@ impl TrackCursor {
 pub struct TrackFrames<'a, R> {
     image: &'a mut Image<R>,
     cursor: TrackCursor,
+    /// The disc's seek indexes, which take the checkpoints the cursor records.
+    seek: Option<&'a SeekIndexes>,
 }
 
 impl<'a, R: Read + Seek> TrackFrames<'a, R> {
-    pub(crate) fn with_cursor(image: &'a mut Image<R>, cursor: TrackCursor) -> Self {
-        TrackFrames { image, cursor }
+    pub(crate) fn with_cursor(
+        image: &'a mut Image<R>,
+        cursor: TrackCursor,
+        seek: Option<&'a SeekIndexes>,
+    ) -> Self {
+        TrackFrames { image, cursor, seek }
     }
 
     /// The reading state, to continue into a later track or range with
@@ -1429,7 +1600,11 @@ impl<R: Read + Seek> Iterator for TrackFrames<'_, R> {
     type Item = Result<TrackFrame, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.cursor.next_frame(self.image)
+        let frame = self.cursor.next_frame(self.image);
+        if let Some(seek) = self.seek {
+            seek.absorb(&mut self.cursor.area);
+        }
+        frame
     }
 }
 
@@ -1656,7 +1831,7 @@ impl TrackAudioCursor {
     /// As [`check_track`].
     pub fn continue_to(self, area: &Area, track: &Track, image_sectors: u64) -> Result<Self, Error> {
         check_track(area, track, image_sectors)?;
-        Ok(self.continue_in(area, track.start_frame, track.end_frame(), image_sectors, None))
+        Ok(self.continue_in(area, track.start_frame, track.end_frame(), (image_sectors, None), None))
     }
 
     /// A cursor for the frame range `[first, end)`, continuing this one's reading state
@@ -1675,7 +1850,7 @@ impl TrackAudioCursor {
         image_sectors: u64,
     ) -> Result<Self, Error> {
         check_range(area, first, end, image_sectors)?;
-        Ok(self.continue_in(area, first, end, image_sectors, None))
+        Ok(self.continue_in(area, first, end, (image_sectors, None), None))
     }
 
     /// As [`TrackAudioCursor::continue_to_range`] for a range already checked (see
@@ -1685,8 +1860,8 @@ impl TrackAudioCursor {
         area: &Area,
         first: u32,
         end: u32,
-        image_sectors: u64,
-        image_id: Option<u64>,
+        image: (u64, Option<u64>),
+        index: Option<&AreaIndex>,
     ) -> Self {
         // Frames decoded or demultiplexed ahead of the caller came from the track cursor
         // already, so it stands after them and they lie inside this range: dropping them
@@ -1697,7 +1872,7 @@ impl TrackAudioCursor {
             frames.failed = true;
         }
         #[allow(unused_mut, reason = "set only with the parallel feature")]
-        let mut next = Self::from_frames(frames.continue_in(area, first, end, image_sectors, image_id));
+        let mut next = Self::from_frames(frames.continue_in(area, first, end, image, index));
         #[cfg(feature = "parallel")]
         {
             next.decode_on = self.decode_on;
@@ -1713,11 +1888,12 @@ impl TrackAudioCursor {
         first: u32,
         image_sectors: u64,
         image_id: Option<u64>,
+        index: Option<&AreaIndex>,
     ) -> bool {
-        self.pending_error.is_none() && self.frames.reusable(area, first, image_sectors, image_id)
+        self.pending_error.is_none() && self.frames.reuses(area, first, image_sectors, image_id, index)
     }
 
-    fn from_frames(frames: TrackCursor) -> Self {
+    pub(crate) fn from_frames(frames: TrackCursor) -> Self {
         TrackAudioCursor {
             frames,
             #[cfg(feature = "parallel")]
@@ -1957,6 +2133,8 @@ pub(crate) mod sealed {
     pub trait Sealed {
         /// The area cursor.
         fn area_cursor(&self) -> &super::AreaCursor;
+        /// The area cursor, to take its checkpoints.
+        fn area_cursor_mut(&mut self) -> &mut super::AreaCursor;
     }
 }
 
@@ -1968,17 +2146,29 @@ impl sealed::Sealed for AreaCursor {
     fn area_cursor(&self) -> &AreaCursor {
         self
     }
+
+    fn area_cursor_mut(&mut self) -> &mut AreaCursor {
+        self
+    }
 }
 
 impl sealed::Sealed for TrackCursor {
     fn area_cursor(&self) -> &AreaCursor {
         &self.area
     }
+
+    fn area_cursor_mut(&mut self) -> &mut AreaCursor {
+        &mut self.area
+    }
 }
 
 impl sealed::Sealed for TrackAudioCursor {
     fn area_cursor(&self) -> &AreaCursor {
         &self.frames.area
+    }
+
+    fn area_cursor_mut(&mut self) -> &mut AreaCursor {
+        &mut self.frames.area
     }
 }
 
@@ -2128,11 +2318,17 @@ mod pool {
 pub struct TrackAudio<'a, R> {
     image: &'a mut Image<R>,
     cursor: TrackAudioCursor,
+    /// The disc's seek indexes, which take the checkpoints the cursor records.
+    seek: Option<&'a SeekIndexes>,
 }
 
 impl<'a, R: Read + Seek> TrackAudio<'a, R> {
-    pub(crate) fn with_cursor(image: &'a mut Image<R>, cursor: TrackAudioCursor) -> Self {
-        TrackAudio { image, cursor }
+    pub(crate) fn with_cursor(
+        image: &'a mut Image<R>,
+        cursor: TrackAudioCursor,
+        seek: Option<&'a SeekIndexes>,
+    ) -> Self {
+        TrackAudio { image, cursor, seek }
     }
 
     /// The decoding state, to continue into a later track or range with
@@ -2177,7 +2373,11 @@ impl<R: Read + Seek> Iterator for TrackAudio<'_, R> {
     type Item = Result<AudioFrame, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.cursor.next_frame(self.image)
+        let frame = self.cursor.next_frame(self.image);
+        if let Some(seek) = self.seek {
+            seek.absorb(&mut self.cursor.frames.area);
+        }
+        frame
     }
 }
 

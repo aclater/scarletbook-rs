@@ -93,6 +93,38 @@ sectors are exactly those of the decoded reads; invalid DST frames show only whe
 In C: `sb_raw_frames_open`, `sb_raw_frames_read`, `sb_raw_frames_read_dst_equivalent` and
 `sb_stored_frame_list_open`, with caller buffers of at most `SB_MAX_FRAME_BYTES`.
 
+### Seeking within an area
+
+A range far into an area normally costs a scan of the area up to it: which frames a range
+holds depends on every audio sector before it (specification 4, 4.5), so an exact reader
+cannot skip ahead without having read them once. A **seek index** keeps the reading state
+every 64 sectors, so that once it covers a range, opening that range reads only a few dozen
+sectors before the range's own, wherever it lies (specification 4, 4.2 item 7). It is off
+by default:
+
+```rust
+use scarletbook::{AreaIndex, IndexOptions};
+
+disc.enable_seek_index(Slot::TwoChannel, IndexOptions::new())?;
+// Reads build it as they go; or build it at once, in steps (one pass over the area):
+while !disc.extend_seek_index(Slot::TwoChannel, 64 * 1024)? {}
+// Every track and range cursor of the area now starts from it, with the same frames,
+// counts and warnings as without it.
+let audio = disc.range_audio(Slot::TwoChannel, first, end)?;
+// Keep it for the next time this image is opened (about 24 bytes per 64 sectors).
+let saved: Vec<u8> = disc.seek_index(Slot::TwoChannel).map(|i| i.to_bytes()).unwrap_or_default();
+// ... later: from_bytes checks the bytes, set_seek_index the area.
+let index = AreaIndex::from_bytes(area, disc.toc().sectors, &saved, scarletbook::seek::DEFAULT_INLINE_BUDGET)?;
+disc.set_seek_index(Slot::TwoChannel, index)?;
+```
+
+A saved index is checked for safety (bounds, invariants, checksum, the area and image size
+it belongs to) and, as it is used, against the image's sectors (a digest per checkpoint):
+a mismatched index is discarded with a warning in the log and the area scanned from its
+start. It is not proof against an index forged to match: keep it with the image it
+describes. `extend_seek_index` takes `&mut Disc`; to build an index on another thread,
+open a second `Disc` on the image there, then `AreaIndex::merge` the two.
+
 Features: `parallel` decodes DST frames on rayon's thread pool, ahead of the caller: the
 current pool by default, or the pool chosen for a cursor with
 `TrackAudioCursor::set_decode_on(DecodeOn::Pool(pool))`, whichever thread reads it

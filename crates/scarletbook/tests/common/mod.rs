@@ -4,6 +4,8 @@
 
 #![allow(dead_code, clippy::unwrap_used)]
 
+pub mod hostile;
+
 pub const S: usize = 2048;
 
 fn put(img: &mut [u8], at: usize, bytes: &[u8]) {
