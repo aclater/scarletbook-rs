@@ -11,6 +11,8 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 scarletbook = { path = "../crates/scarletbook" }
+# The `toc` target also reads the TOC through the C interface (`sb_disc_toc`).
+scarletbook-ffi = { path = "../crates/scarletbook-ffi", features = ["fuzzing"] }
 
 [[bin]]
 name = "toc"

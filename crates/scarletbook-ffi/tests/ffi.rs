@@ -960,7 +960,12 @@ fn build_info_names_the_build() {
         get("target").starts_with(arch) || (arch == "x86" && get("target").starts_with("i686")),
         "{info}"
     );
-    assert_eq!(get("features"), if cfg!(feature = "parallel") { "parallel" } else { "none" });
+    let features: Vec<&str> =
+        [("fuzzing", cfg!(feature = "fuzzing")), ("parallel", cfg!(feature = "parallel"))]
+            .into_iter()
+            .filter_map(|(name, on)| on.then_some(name))
+            .collect();
+    assert_eq!(get("features"), if features.is_empty() { "none".to_owned() } else { features.join(",") });
     let commit = get("commit");
     assert!(commit == "unknown" || commit.bytes().all(|b| b.is_ascii_hexdigit()), "{info}");
 }

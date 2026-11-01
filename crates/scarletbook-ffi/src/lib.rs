@@ -5260,6 +5260,76 @@ pub unsafe extern "C" fn sb_disc_toc(
     })
 }
 
+/// The image `prefix` zero bytes followed by `data`, read through a positional callback.
+#[cfg(feature = "fuzzing")]
+struct FuzzImage<'a> {
+    prefix: usize,
+    data: &'a [u8],
+}
+
+/// The read callback of `fuzz_disc_toc`.
+///
+/// # Safety
+///
+/// `user` must point to a live `FuzzImage`; `buf` must be valid for `len` bytes of writes.
+#[cfg(feature = "fuzzing")]
+unsafe extern "C" fn fuzz_read_at(user: *mut c_void, offset: u64, buf: *mut u8, len: usize) -> i64 {
+    // SAFETY: `user` is the `FuzzImage` that `fuzz_disc_toc` passed, alive while its disc is.
+    let image = unsafe { &*user.cast::<FuzzImage<'_>>() };
+    // SAFETY: `buf` is valid for `len` bytes of writes by this function's contract, and no
+    // other reference to it exists during the call.
+    let out = unsafe { std::slice::from_raw_parts_mut(buf, len) };
+    let Ok(at) = usize::try_from(offset) else { return 0 };
+    let zeros = image.prefix.saturating_sub(at).min(len);
+    out[..zeros].fill(0);
+    let from = at.saturating_add(zeros).saturating_sub(image.prefix);
+    let src = image.data.get(from..).unwrap_or(&[]);
+    let n = (len - zeros).min(src.len());
+    out[zeros..zeros + n].copy_from_slice(&src[..n]);
+    (zeros + n) as i64
+}
+
+/// Fuzzing harness of `sb_disc_toc` (#132), for the `toc` fuzz target: not part of the C
+/// interface. Opens the image of `prefix` zero bytes followed by `data` with
+/// `sb_disc_open_callbacks_at` and, if it opens, reads its whole TOC as the README
+/// recommends: into a 64 KiB buffer, then into one of exactly the size given. Panics unless
+/// both succeed (the first may be `SB_STATUS_BUFFER_TOO_SMALL` only past 64 KiB) with the
+/// same size and bytes, and a buffer one byte short is refused with that size.
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+#[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
+pub fn fuzz_disc_toc(prefix: usize, data: &[u8]) {
+    let mut image = FuzzImage { prefix, data };
+    let size = (prefix + data.len()) as u64;
+    let mut disc: *mut SbDisc = ptr::null_mut();
+    // SAFETY: `fuzz_read_at` may be called with a pointer to `image`, which outlives the
+    // disc (freed below), on this thread; `&mut disc` is a valid out-pointer.
+    let s = unsafe {
+        sb_disc_open_callbacks_at(Some(fuzz_read_at), size, ptr::from_mut(&mut image).cast(), &mut disc)
+    };
+    if s != SbStatus::Ok {
+        return;
+    }
+    let toc = |cap: usize| {
+        let mut buf = vec![0u8; cap];
+        let mut len = usize::MAX;
+        // SAFETY: `disc` is a live handle; `buf` is valid for `cap` bytes; `len` for a write.
+        let s = unsafe { sb_disc_toc(disc, 0, buf.as_mut_ptr(), cap, &mut len) };
+        (s, len, buf)
+    };
+    let (s, len, big) = toc(64 * 1024);
+    assert!(s == SbStatus::Ok || (s == SbStatus::BufferTooSmall && len > 64 * 1024), "{s:?} {len}");
+    let (s2, len2, exact) = toc(len);
+    assert_eq!((s2, len2), (SbStatus::Ok, len));
+    if s == SbStatus::Ok {
+        assert_eq!(big[..len], exact[..], "the same bytes in both buffers");
+    }
+    let (s3, len3, _) = toc(len - 1);
+    assert_eq!((s3, len3), (SbStatus::BufferTooSmall, len));
+    // SAFETY: `disc` is a live handle, not used again.
+    unsafe { sb_disc_free(disc) };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
