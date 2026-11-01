@@ -91,6 +91,39 @@ fn synthetic_disc_parses() {
     assert!(disc.warnings().is_empty(), "{:?}", disc.warnings());
 }
 
+/// The output checks of the `toc` target (issue #131) on a synthetic disc of plain frames,
+/// with control bytes ([`harness::output::CONTROL`]) of all zeros (the play range, default options),
+/// all ones and a few others: every range kind, format and writer's choice is reached.
+#[test]
+fn outputs_of_a_synthetic_disc() {
+    let frames: Vec<common::PFrame> = (0..10u32)
+        .map(|number| common::PFrame { number, dst: false, data: vec![number as u8 ^ 0x69; 2 * 4704] })
+        .collect();
+    let tracks =
+        vec![common::TrackSpec { start: 0, duration: 4 }, common::TrackSpec { start: 4, duration: 6 }];
+    let spec = common::Spec { channels: 2, playtime: 10, tracks, audio: common::pack(&frames) };
+    let img = spec.build();
+    let mut state = 0x2545_f491_4f6c_dd1du64;
+    let cases = if cfg!(miri) { 2 } else { 64 };
+    for case in 0..cases {
+        let control: Vec<u8> = match case {
+            0 => vec![0; harness::output::CONTROL],
+            1 => vec![0xFF; harness::output::CONTROL],
+            _ => (0..harness::output::CONTROL)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    state as u8
+                })
+                .collect(),
+        };
+        let mut data = img[510 * 2048..].to_vec();
+        data.extend_from_slice(&control);
+        harness::toc(&data);
+    }
+}
+
 #[test]
 fn rejections_are_typed() {
     assert!(matches!(Disc::open(Cursor::new(vec![0u8; 100])), Err(Error::NotScarletbook)));
