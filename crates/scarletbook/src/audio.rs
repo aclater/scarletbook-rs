@@ -153,6 +153,12 @@ pub enum DecodeOn {
     /// threads decode. A pool of one thread decodes on the calling thread, as
     /// [`DecodeOn::CallingThread`]. The cursor holds the pool, so it stays alive while
     /// the cursor does.
+    ///
+    /// The calling thread works beside the pool's threads rather than among them, unlike
+    /// inside [`rayon::ThreadPool::install`]: when it does substantial work with each frame
+    /// (writing it out, converting it), a pool of one thread fewer than the logical CPUs
+    /// leaves it a CPU, and was 3 to 7 % faster than one per logical CPU decoding and
+    /// writing a 50-minute 2-channel DST area on 16 (#146).
     Pool(std::sync::Arc<rayon::ThreadPool>),
     /// The calling thread only, as without the `parallel` feature: no pool is used, not
     /// even rayon's global one.

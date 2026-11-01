@@ -2263,6 +2263,15 @@ void sb_track_audio_free(struct SbTrackAudio *audio);
  without being waited for, once the pool and every handle given it are freed (or given
  another pool), after finishing the frames already sent to them.
 
+ The calling thread is not one of the pool's: `sb_track_audio_read` reads the disc and
+ returns each frame there, and the caller then does its own work with it. When that work
+ is substantial (writing the frames out, converting them) and the pool has a thread per
+ logical CPU, there is one runnable thread more than CPUs. A pool of one thread fewer
+ than the logical CPUs then leaves a CPU to the caller: decoding a 50-minute 2-channel DST
+ area on 16 logical CPUs and writing it to files, 15 threads were 3 to 7 % faster than
+ 16 (#146). For a caller that does little with each frame, one per logical CPU (0) is as
+ fast or slightly faster.
+
  # Safety
 
  `out` must be NULL or valid for a write.
