@@ -262,7 +262,7 @@ pub(super) fn diin(
             InfoChunk::Title => diin_text(&mut data, b"DITI", title, options),
         }
     }
-    // TODO(sacd-spec#?): 8.4.8 does not say whether `DIIN` may hold none of its chunks
+    // TODO(sacd-spec#41): 8.4.8 does not say whether `DIIN` may hold none of its chunks
     // (no `EMID`, markers, artist or title); this writes it with `D = 0`.
     let mut out = Vec::new();
     chunk(&mut out, b"DIIN", &data);
