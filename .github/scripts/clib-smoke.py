@@ -11,9 +11,10 @@ package version, that sb_build_info() names that version and the package's targe
 the README's ctypes bindings run and match the header, then opens corpus image
 dst-features-2ch-6ch, compares its TOC with the conformance manifest and decodes track 1
 of each area against the manifest's per-channel SHA-256, checks the TOC fields of #104 and
-reads its master TOC sector (#105). Last, through the README's bindings, reads ranges of it
+reads its master TOC sector (#105). Then, through the README's bindings, reads ranges of it
 provisionally (#94) and checks the readings with a disc-kept seek index and with a
-caller-kept one.
+caller-kept one. Last, sizes and reads a DSF and a DSDIFF file of it (#131) and compares
+them with the Rust API's output.
 """
 import ctypes as C
 import hashlib
@@ -76,7 +77,8 @@ bindings = {}
 exec(block.replace('"/path/to/libscarletbook_ffi.so"', repr(str(lib_path))), bindings)
 check("README SB_ABI_VERSION", bindings["SB_ABI_VERSION"], int(re.search(r"^#define SB_ABI_VERSION (\d+)$", header, flags=re.M).group(1)))
 CTYPES = {"uint8_t": C.c_uint8, "uint16_t": C.c_uint16, "uint32_t": C.c_uint32, "uint64_t": C.c_uint64,
-          "int32_t": C.c_int32, "int64_t": C.c_int64, "size_t": C.c_size_t, "const char *": C.c_char_p}
+          "int32_t": C.c_int32, "int64_t": C.c_int64, "size_t": C.c_size_t, "const char *": C.c_char_p,
+          "const uint8_t *": C.POINTER(C.c_uint8)}
 decls = abi_check.normalise(header)
 structs = re.findall(r"^typedef struct (\w+) \{\n(.*?)^\} \1;", decls, flags=re.M | re.S)
 check("structs", sorted(n for n, _ in structs), sorted(n for n, v in bindings.items()
@@ -342,6 +344,51 @@ R.sb_track_audio_free(h)
 R.sb_seek_index_free(index)
 R.sb_disc_free(d)
 print(f"provisional reading: {len(ranges) + 1} ranges read provisionally and confirmed")
+
+# DSF and DSDIFF output (#131), through the README's bindings: each file of
+# crates/scarletbook-ffi/tests/output-smoke.txt (the Rust API's output, which tests/output.rs
+# checks) has the size sb_output_layout_info reports, regions that tile it, and the bytes
+# sb_output_layout_read produces, read in pieces.
+O = bindings["lib"]
+smoke = pathlib.Path("crates/scarletbook-ffi/tests/output-smoke.txt").read_text(encoding="utf-8")
+enums = {n: int(v) for n, v in re.findall(r"^  (SB_\w+) = (-?\d+),$", header, flags=re.M)}
+FORMATS = {"dsf": enums["SB_OUTPUT_FORMAT_DSF"], "dsdiff-dst": enums["SB_OUTPUT_FORMAT_DSDIFF_DST"]}
+d, opts = C.c_void_p(), C.c_void_p()
+rcall("sb_disc_open_file", case["input"].encode(), C.byref(d))
+rcall("sb_output_options_new", C.byref(opts))
+for line in smoke.splitlines():
+    if line.startswith("#"):
+        continue
+    name, first, end, size, digest = line.split()
+    first, end, layout = int(first), int(end), C.c_void_p()
+    if name == "dsdiff-dst":
+        lengths = C.c_void_p()
+        rcall("sb_dst_lengths_scan", d, 0, first, end, 0, C.byref(lengths))
+        rcall("sb_output_layout_new_dst", d, lengths, opts, C.byref(layout))
+        O.sb_dst_lengths_free(lengths)
+    else:
+        rcall("sb_output_layout_new", d, 0, first, end, FORMATS[name], opts, C.byref(layout))
+    info = bindings["SbOutputLayoutInfo"]()
+    rcall("sb_output_layout_info", layout, C.byref(info))
+    check(f"{name} size", info.size, int(size))
+    at = 0
+    for i in range(info.regions):
+        region = bindings["SbOutputRegion"]()
+        rcall("sb_output_layout_region", layout, i, C.byref(region))
+        check(f"{name} region {i} offset", region.offset, at)
+        at += region.len
+    check(f"{name} regions", at, info.size)
+    data, buf, n = bytearray(), C.create_string_buffer(40_000), C.c_size_t()
+    while len(data) < info.size:
+        rcall("sb_output_layout_read", layout, d, len(data), buf, len(buf), C.byref(n))
+        if n.value == 0:
+            break
+        data += buf.raw[:n.value]
+    check(f"{name} file", (len(data), hashlib.sha256(data).hexdigest()), (int(size), digest))
+    O.sb_output_layout_free(layout)
+    print(f"{name}: {info.size} bytes, as the Rust API writes it")
+O.sb_output_options_free(opts)
+R.sb_disc_free(d)
 
 if failures:
     sys.exit("smoke test failed:\n  " + "\n  ".join(failures))

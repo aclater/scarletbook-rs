@@ -492,6 +492,7 @@ name = "scarletbook-ffi"
 version = "0.5.1"
 dependencies = [
  "criterion",
+ "proptest",
  "rayon",
  "scarletbook",
  "scarletbook-conformance",

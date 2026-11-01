@@ -13,11 +13,15 @@ use std::path::PathBuf;
 use std::ptr;
 
 use scarletbook::output::{
-    DsfBitsPerSample, DstIndexOffset, DstLengths, Format, InvalidDst, Layout, OutputOptions, TagItem, TagSet,
-    Tags,
+    Comment, CommentKind, DsfBitsPerSample, DstIndexOffset, DstLengths, Format, InvalidDst, Layout,
+    MarkerText, OutputOptions, TagItem, TagSet, Tags,
 };
 use scarletbook::{Disc, Slot};
 use scarletbook_ffi::*;
+
+/// The core crate's builder of small synthetic images.
+#[path = "../../scarletbook/tests/common/mod.rs"]
+mod common;
 
 /// Calls into the C ABI. Every call in this file passes live handles (or NULL where the
 /// test checks the refusal), pointers valid for the lengths given, and NUL-terminated
@@ -425,4 +429,94 @@ fn refusals() {
         );
         c!(sb_disc_free(d));
     }
+}
+
+/// Lower-case hex of a digest.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The files `output-smoke.txt` lists, which `.github/scripts/clib-smoke.py` checks the
+/// packaged C library against: the Rust API's output for track 1 of the 2-channel area of
+/// corpus image dst-features-2ch-6ch, with the default options, as DSF and as DSDIFF with
+/// the DST frames unchanged.
+#[test]
+#[cfg_attr(miri, ignore = "corpus images are too large for Miri")]
+fn smoke_files_are_the_rust_output() {
+    use sha2::{Digest, Sha256};
+    let bytes = corpus(&["dst-features-2ch-6ch"]).remove(0);
+    let mut disc = Disc::open(Cursor::new(bytes)).unwrap();
+    let t = &disc.toc().area(Slot::TwoChannel).unwrap().tracks[0];
+    let (first, end) = (t.start_frame, t.end_frame());
+    let options = OutputOptions::default();
+    let dsf = disc.output_layout(Slot::TwoChannel, first, end, Format::Dsf, &options).unwrap();
+    let lengths = DstLengths::scan(&mut disc, Slot::TwoChannel, first, end, InvalidDst::Stored).unwrap();
+    let dst = disc.output_layout_dst(&lengths, &options).unwrap();
+    let mut got = String::new();
+    for (name, layout) in [("dsf", &dsf), ("dsdiff-dst", &dst)] {
+        let f = rust_file(&mut disc, layout);
+        got += &format!("{name} {first} {end} {} {}\n", f.len(), hex(&Sha256::digest(&f)));
+    }
+    let listed = include_str!("output-smoke.txt");
+    let want: String = listed.lines().filter(|l| !l.starts_with('#')).map(|l| format!("{l}\n")).collect();
+    assert_eq!(got, want, "update output-smoke.txt only if the output is meant to change");
+}
+
+/// A layout made through the C ABI equals the Rust API's, through `sb_output_layout_read`
+/// and through `sb_output_layout_fill`, on a disc small enough for Miri: DSF, and DSDIFF
+/// with `DIIN`, marker text and a comment.
+#[test]
+#[cfg_attr(miri, ignore = "rayon's crossbeam-epoch fails Stacked Borrows; run with Tree Borrows")]
+fn small_disc_layouts_equal_the_rust_api() {
+    let frames: Vec<common::PFrame> = (0..3u32)
+        .map(|number| common::PFrame {
+            number,
+            dst: false,
+            data: (0..2 * 4704).map(|i| (i as u32 * 7 + number * 13) as u8).collect(),
+        })
+        .collect();
+    let tracks =
+        vec![common::TrackSpec { start: 0, duration: 1 }, common::TrackSpec { start: 1, duration: 2 }];
+    let bytes = common::Spec { channels: 2, playtime: 3, tracks, audio: common::pack(&frames) }.build();
+    let d = open(&bytes);
+    let mut disc = Disc::open(Cursor::new(bytes.clone())).unwrap();
+    let text = CString::new("op\u{e9}").unwrap();
+    let o = options();
+    assert_eq!(set(o, SbOutputOption::DsdiffEditedMasterInfo, 1), SbStatus::Ok);
+    assert_eq!(set(o, SbOutputOption::DsdiffMarkerText, 1), SbStatus::Ok);
+    let comment = SbComment {
+        text: text.as_ptr(),
+        year: 2026,
+        kind: 3,
+        reference: 1,
+        month: 11,
+        day: 1,
+        hour: 9,
+        minutes: 30,
+    };
+    assert_eq!(c!(sb_output_options_add_comment(o, &comment)), SbStatus::Ok);
+    let mut dated = Comment::new(CommentKind::FileHistory(1), "op\u{e9}");
+    (dated.year, dated.month, dated.day, dated.hour, dated.minutes) = (2026, 11, 1, 9, 30);
+    let rust = OutputOptions::default()
+        .with_dsdiff_edited_master_info(true)
+        .with_dsdiff_marker_text(MarkerText::TrackTitle)
+        .with_dsdiff_comments(vec![dated]);
+    for (format, sb) in [(Format::Dsf, SbOutputFormat::Dsf), (Format::DsdiffDsd, SbOutputFormat::DsdiffDsd)] {
+        let layout = disc.output_layout(Slot::TwoChannel, 0, 3, format, &rust).unwrap();
+        let want = rust_file(&mut disc, &layout);
+        if format == Format::DsdiffDsd {
+            // The options take effect: the comment, as text bytes (W26), and a track title.
+            assert!(want.windows(4).any(|w| w == b"op?\0"));
+            assert!(want.windows(4).any(|w| w == b"DIIN"));
+        }
+        let mut l = ptr::null_mut();
+        assert_eq!(c!(sb_output_layout_new(d, 0, 0, 3, sb as u32, o, &mut l)), SbStatus::Ok);
+        assert_eq!(info(l).size, want.len() as u64);
+        assert_eq!(read(l, d, 5_000), want);
+        let at = want.len() as u64 - 6_000;
+        assert_eq!(fill(l, &mut disc, Slot::TwoChannel, at, 5_000), want[at as usize..][..5_000]);
+        c!(sb_output_layout_free(l));
+    }
+    c!(sb_output_options_free(o));
+    c!(sb_disc_free(d));
 }

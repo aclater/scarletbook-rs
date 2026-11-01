@@ -588,6 +588,27 @@ class SbSpeculation(C.Structure):
                 ("first", C.c_uint32), ("last_returned", C.c_uint32), ("exact_from", C.c_uint32),
                 ("reserved", C.c_uint32)]
 
+# DSF and DSDIFF output; see "Output files".
+class SbComment(C.Structure):
+    _fields_ = [("text", C.c_char_p), ("year", C.c_uint32), ("kind", C.c_uint32), ("reference", C.c_uint32),
+                ("month", C.c_uint8), ("day", C.c_uint8), ("hour", C.c_uint8), ("minutes", C.c_uint8)]
+
+class SbMarker(C.Structure):
+    _fields_ = [("text", C.c_char_p), ("frame", C.c_uint32), ("kind", C.c_uint32),
+                ("track_flags", C.c_uint32), ("reserved", C.c_uint32)]
+
+class SbOutputLayoutInfo(C.Structure):
+    _fields_ = [("size", C.c_uint64), ("memory", C.c_uint64)] + [(name, C.c_uint32) for name in (
+        "format", "slot", "first", "end", "channels", "source_track", "input", "regions")]
+
+class SbOutputRegion(C.Structure):
+    _fields_ = [("offset", C.c_uint64), ("len", C.c_uint64), ("kind", C.c_uint32), ("reserved", C.c_uint32)]
+
+class SbPositionData(C.Structure):
+    _fields_ = [("content", C.POINTER(C.c_uint8)), ("content_len", C.c_size_t),
+                ("dst_equivalent", C.POINTER(C.c_uint8)), ("dst_equivalent_len", C.c_size_t),
+                ("number", C.c_uint32), ("reserved", C.c_uint32)]
+
 # Handles are opaque pointers; SbStatus is an int32_t (0 OK, 1 END, 2 ABSENT, negative:
 # failure); size_t is only the length of a buffer of yours.
 H, S, P, U32, SIZE = C.c_void_p, C.c_int32, C.POINTER, C.c_uint32, C.c_size_t
@@ -657,6 +678,40 @@ bind("sb_progress_free", None, H)
 bind("sb_track_audio_keep_stored", S, H)
 bind("sb_track_audio_read_with_stored", S, H, H, C.c_char_p, SIZE, P(SbFrameInfo),
      C.c_char_p, SIZE, P(SbRawFrameInfo), C.c_uint8)
+bind("sb_output_options_new", S, P(H))
+bind("sb_output_options_free", None, H)
+bind("sb_output_options_set", S, H, U32, C.c_int64)
+bind("sb_output_options_set_string", S, H, U32, C.c_char_p)
+bind("sb_output_options_set_order", S, H, U32, P(U32), SIZE)
+bind("sb_output_options_set_id3_frame_order", S, H, C.c_char_p, SIZE)
+bind("sb_output_options_set_channel_numbers", S, H, P(C.c_uint16), SIZE)
+bind("sb_output_options_add_comment", S, H, P(SbComment))
+bind("sb_output_options_clear_comments", S, H)
+bind("sb_output_options_add_marker", S, H, P(SbMarker))
+bind("sb_output_options_clear_markers", S, H)
+bind("sb_output_options_set_tags", S, H, H)
+bind("sb_output_options_set_raw_tag", S, H, C.c_char_p, SIZE)
+bind("sb_tags_new", S, P(H))
+bind("sb_tags_from_toc", S, H, U32, U32, H, P(H))
+bind("sb_tags_set", S, H, U32, C.c_char_p)
+bind("sb_tags_push", S, H, U32, C.c_char_p)
+bind("sb_tags_remove", S, H, U32)
+bind("sb_tags_set_custom", S, H, C.c_char_p, C.c_char_p)
+bind("sb_tags_count", S, H, U32, P(U32))
+bind("sb_tags_get", S, H, U32, U32, C.c_char_p, SIZE, P(SIZE))
+bind("sb_tags_free", None, H)
+bind("sb_dst_lengths_scan", S, H, U32, U32, U32, U32, P(H))
+bind("sb_dst_lengths_load", S, H, U32, U32, U32, U32, P(U32), SIZE, P(H))
+bind("sb_dst_lengths_get", S, H, P(U32), SIZE, P(SIZE))
+bind("sb_dst_lengths_free", None, H)
+bind("sb_output_layout_new", S, H, U32, U32, U32, U32, H, P(H))
+bind("sb_output_layout_new_dst", S, H, H, H, P(H))
+bind("sb_output_layout_info", S, H, P(SbOutputLayoutInfo))
+bind("sb_output_layout_region", S, H, U32, P(SbOutputRegion))
+bind("sb_output_layout_positions", S, H, C.c_uint64, C.c_uint64, P(U32), P(U32))
+bind("sb_output_layout_read", S, H, H, C.c_uint64, C.c_char_p, SIZE, P(SIZE))
+bind("sb_output_layout_fill", S, H, C.c_uint64, C.c_char_p, SIZE, P(SbPositionData), SIZE, P(SIZE))
+bind("sb_output_layout_free", None, H)
 ```
 
 The other functions bind the same way from their declarations in `scarletbook.h`. Then:

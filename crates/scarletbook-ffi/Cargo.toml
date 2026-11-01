@@ -41,6 +41,8 @@ panic = "warn"
 criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
 # The corpus directory and synthetic images of the benchmarks.
 scarletbook-conformance = { path = "../scarletbook-conformance" }
+# Small synthetic images (the core crate's tests/common), for tests Miri can run.
+proptest = { version = "1", default-features = false, features = ["std"] }
 serde_json = "1"
 sha2 = "0.11"
 
