@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Output files of corpus image dst-features-2ch-6ch, track 1 of the 2-channel area, with the
+# default options: name, first and end frame, size and SHA-256. tests/output.rs checks them
+# against the Rust API, and .github/scripts/clib-smoke.py against the packaged C library.
+dsf 0 11 106769 abc6699ef3fd60c58f9b636149c7d129b0690db144ea9ae7d17a3c9bad3bd513
+dsdiff-dst 0 11 51768 fb4dd67e13ba4b3134f5d8181dba7d39362145f862c0ae0de2bf8d2de7ffc020
