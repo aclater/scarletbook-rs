@@ -117,7 +117,8 @@ pub enum SbOutputOption {
     /// W24 (specification 8, 8.6 row 24 and 8.4.8, sacd-spec e069569): 1 (the default)
     /// writes `EMID` in `DIIN`; 0 leaves it out of a file that is not an edited master. An
     /// edited master requires `EMID` (8.4.11 item 1), so 0 makes one
-    /// `SB_STATUS_INVALID_ARGUMENT`.
+    /// `SB_STATUS_INVALID_ARGUMENT`. A `DIIN` left with none of its chunks is written with
+    /// `D = 0` (8.6 row 34 at sacd-spec 048aa1a; the C API has no option to leave it out).
     DsdiffEditedMasterIdWritten = 33,
     /// W24 (specification 8, 8.6 row 24 and 8.4.8, sacd-spec e069569): what fills `DIAR`
     /// and `DITI` when they are written: 0 (the default) the album artist and album items;

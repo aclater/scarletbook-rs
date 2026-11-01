@@ -220,14 +220,14 @@ impl InfoChunk {
 }
 
 /// The `DIIN` chunk (8.4.8): `EMID` (if written), the markers, the artist and the title, in
-/// the order of the options.
+/// the order of the options; `None` when it would hold none of them and W34 leaves it out.
 pub(super) fn diin(
     layout: &Layout,
     markers: &[Marker],
     artist: Option<&str>,
     title: Option<&str>,
     options: &OutputOptions,
-) -> Result<Vec<u8>, Error> {
+) -> Result<Option<Vec<u8>>, Error> {
     let mut sorted = options.dsdiff_info_order;
     sorted.sort_by_key(|c| InfoChunk::TABLE_ORDER.iter().position(|t| t == c));
     if sorted != InfoChunk::TABLE_ORDER {
@@ -262,9 +262,12 @@ pub(super) fn diin(
             InfoChunk::Title => diin_text(&mut data, b"DITI", title, options),
         }
     }
-    // TODO(sacd-spec#41): 8.4.8 does not say whether `DIIN` may hold none of its chunks
-    // (no `EMID`, markers, artist or title); this writes it with `D = 0`.
+    // W34 (8.4.8 at sacd-spec 048aa1a): a `DIIN` that holds none of its chunks, outside an
+    // edited master (which always has `EMID`), is written with `D = 0` or left out.
+    if data.is_empty() && !options.dsdiff_empty_info {
+        return Ok(None);
+    }
     let mut out = Vec::new();
     chunk(&mut out, b"DIIN", &data);
-    Ok(out)
+    Ok(Some(out))
 }

@@ -275,13 +275,38 @@ fn diin_without_emid() {
         disc.output_layout(Slot::TwoChannel, 0, 3, Format::DsdiffDsd, &bad_id).unwrap_err(),
         Error::InvalidArgument(_)
     ));
-    // A track without markers, artist or title: `DIIN` with `D = 0`.
+    // A track without markers, artist or title (W34, 8.4.8 at sacd-spec `048aa1a`): by
+    // default `DIIN` with `D = 0`, 12 bytes, or else no `DIIN`, the file 12 bytes shorter
+    // and otherwise the same.
     let bare = OutputOptions::default()
         .with_dsdiff_edited_master_info(true)
         .with_dsdiff_edited_master_id_written(false);
     let f = file(&mut disc, 1, 3, &bare);
     let at = f.windows(4).position(|w| w == b"DIIN").unwrap();
-    assert_eq!(f[at + 4..at + 12], 0u64.to_be_bytes());
+    assert_eq!(f[at..at + 12], [&b"DIIN"[..], &0u64.to_be_bytes()].concat());
+    assert_eq!(local(&f, b"DIIN"), Some(Vec::new()));
+    let left_out = file(&mut disc, 1, 3, &bare.clone().with_dsdiff_empty_info(false));
+    assert!(local(&left_out, b"DIIN").is_none());
+    assert_eq!(left_out.len(), f.len() - 12);
+    assert_eq!(left_out[12..at], f[12..at]);
+    assert_eq!(left_out[at..], f[at + 12..]);
+    assert_eq!(u64::from_be_bytes(left_out[4..12].try_into().unwrap()), left_out.len() as u64 - 12);
+    // As the default without `DIIN` at all.
+    assert_eq!(left_out, file(&mut disc, 1, 3, &OutputOptions::default()));
+    // An empty title left out (W31) leaves `DIIN` empty too; one written with `k = 0` doesn't.
+    let mut empty = TagSet::new();
+    empty.set(TagItem::Album, "");
+    let text_only = bare.clone().with_dsdiff_artist_title(Some(true)).with_tags(Tags::Set(empty));
+    assert!(
+        local(&file(&mut disc, 1, 3, &text_only.clone().with_dsdiff_empty_info(false)), b"DIIN").is_none()
+    );
+    let kept = text_only.with_dsdiff_empty_info(false).with_dsdiff_empty_text(true);
+    assert_eq!(local(&file(&mut disc, 1, 3, &kept), b"DIIN").unwrap()[..4], *b"DITI");
+    // With content, W34 changes nothing.
+    assert_eq!(
+        file(&mut disc, 0, 3, &without.clone().with_dsdiff_empty_info(false)),
+        file(&mut disc, 0, 3, &without)
+    );
 
     // An edited master requires `EMID`.
     let big = synthetic(

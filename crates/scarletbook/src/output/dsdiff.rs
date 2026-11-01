@@ -294,7 +294,7 @@ pub(super) fn assemble(
         };
         let artist = pick(TagItem::Performer, TagItem::AlbumArtist);
         let title = pick(TagItem::TrackTitle, TagItem::Album);
-        Some(markers::diin(layout, &list, artist, title, options)?)
+        markers::diin(layout, &list, artist, title, options)?
     } else {
         None
     };

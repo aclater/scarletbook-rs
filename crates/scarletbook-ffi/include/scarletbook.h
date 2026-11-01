@@ -946,7 +946,8 @@ enum SbOutputOption
    W24 (specification 8, 8.6 row 24 and 8.4.8, sacd-spec e069569): 1 (the default)
    writes `EMID` in `DIIN`; 0 leaves it out of a file that is not an edited master. An
    edited master requires `EMID` (8.4.11 item 1), so 0 makes one
-   `SB_STATUS_INVALID_ARGUMENT`.
+   `SB_STATUS_INVALID_ARGUMENT`. A `DIIN` left with none of its chunks is written with
+   `D = 0` (8.6 row 34 at sacd-spec 048aa1a; the C API has no option to leave it out).
    */
   SB_OUTPUT_OPTION_DSDIFF_EDITED_MASTER_ID_WRITTEN = 33,
   /*

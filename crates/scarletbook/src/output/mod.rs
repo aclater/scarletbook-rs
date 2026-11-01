@@ -216,12 +216,18 @@ pub struct OutputOptions {
     /// sacd-spec e069569: `DIIN` may hold any of its chunks without the others). Default
     /// `true`. An edited master requires `EMID` (8.4.11 item 1): `false` with
     /// [`OutputOptions::dsdiff_edited_master`] is an [`Error::InvalidArgument`]. Without
-    /// `EMID` (and with no markers, artist or title) `DIIN` may be empty.
+    /// `EMID`, markers, artist or title, `DIIN` is empty: see
+    /// [`OutputOptions::dsdiff_empty_info`].
     pub dsdiff_edited_master_id_written: bool,
     /// W24, which items fill `DIAR` and `DITI` when [`OutputOptions::dsdiff_artist_title`]
     /// writes them (8.4.8 as of sacd-spec e069569). Default [`ArtistTitleSource::Album`],
     /// the album artist and album items.
     pub dsdiff_artist_title_source: ArtistTitleSource,
+    /// W34, whether a `DIIN` that would hold none of its chunks (no `EMID`, markers, `DIAR`
+    /// or `DITI`; possible only outside an edited master) is written with `D = 0`, 12 bytes,
+    /// or left out (8.4.8 at sacd-spec 048aa1a). Both say the file has no edited master
+    /// information. Default `true`: written.
+    pub dsdiff_empty_info: bool,
 }
 
 impl Default for OutputOptions {
@@ -258,6 +264,7 @@ impl Default for OutputOptions {
             dsdiff_empty_text: false,
             dsdiff_edited_master_id_written: true,
             dsdiff_artist_title_source: ArtistTitleSource::Album,
+            dsdiff_empty_info: true,
         }
     }
 }
@@ -421,6 +428,11 @@ impl OutputOptions {
     /// These options with `DIAR` and `DITI` from `source` (W24).
     pub fn with_dsdiff_artist_title_source(self, source: ArtistTitleSource) -> Self {
         OutputOptions { dsdiff_artist_title_source: source, ..self }
+    }
+
+    /// These options with an empty `DIIN` written, or left out (W34).
+    pub fn with_dsdiff_empty_info(self, write: bool) -> Self {
+        OutputOptions { dsdiff_empty_info: write, ..self }
     }
 }
 
