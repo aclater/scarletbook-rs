@@ -1,0 +1,1 @@
+| 2026-11-01 | DSD-to-PCM: runs of separate frames, packed 24-bit output, per-frame clip counts (#172, #175) | API and input/output plumbing of `scarletbook-pcm` only; filters and arithmetic unchanged. Requirements from the issue text; the consumer's code was not read. No new sources consulted. |
