@@ -734,7 +734,9 @@ impl AreaCursor {
         let from = if self.buf_sectors > 0 { (self.buf_lsn + self.buf_sectors).max(l) } else { l };
         // Through the range's first frame and on to its estimated end, as far as the budget
         // left after the search allows; that much and no more (it can be less than a chunk).
-        let left = crate::seek::FIRST_FRAME_BUDGET.saturating_sub(located.used).max(1);
+        // Nothing is left when the search's last read took it all: the reads toward the
+        // range's end follow at once.
+        let left = crate::seek::FIRST_FRAME_BUDGET.saturating_sub(located.used);
         let need = (l + through_first).saturating_sub(from);
         let range = l.saturating_add(span).saturating_sub(from);
         self.read_to = from + need.max(range).min(left);

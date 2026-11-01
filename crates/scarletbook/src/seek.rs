@@ -216,7 +216,9 @@ pub enum ResumedFrom {
 /// the average back to the other track start; then, once probes lie on both sides, regula
 /// falsi with the Illinois weighting; with a bisection safeguard: a few reads of
 /// [`SpeculativeOptions::probe_sectors`], and one larger read when an interval just
-/// past or around frame `u` fits what is left of about 144 KiB; at most a constant times
+/// past or around frame `u` fits what is left of about 144 KiB; a fifth read, if the search
+/// gets that far, reads what is left of 160 KiB around its guess, so that it can hold frame
+/// `u` too, and the search goes on only if it finds no sector before frame `u`; at most a constant times
 /// `log2(n + 1)` sectors for an area of `n` audio sectors, as 7.1 item 3 allows), and
 /// begins at that sector, with no frame under assembly and `u` as the next acceptable frame
 /// number. It reads on from its last probe, through frame `u` and on toward the range's
@@ -710,6 +712,16 @@ const CLOSE_SECTORS: u64 = 16;
 /// than the budget reaches, the reads after it, toward the range's end, get it).
 pub(crate) const FIRST_FRAME_BUDGET: u64 = 72;
 
+/// The read calls a cold seek is meant to take through the range's first frame (issue #123):
+/// the read that would be the last of them reads all of [`LAST_READ_BUDGET`] that is left, so
+/// that it can end the search and hold the first frame at once.
+const SEARCH_CALLS: u32 = 5;
+
+/// The most sectors the search may take when its last read under [`SEARCH_CALLS`] reads all
+/// that is left (160 KiB): a little more than [`FIRST_FRAME_BUDGET`], which the other reads
+/// keep to.
+const LAST_READ_BUDGET: u64 = 80;
+
 /// Most sectors a cursor reads in one call (1 MiB): after a provisional start, a cursor reads
 /// up to the range's estimated end in calls of up to this many sectors, and after a resume
 /// from a seek index its first read is sized to the range (at most the replay, the interval
@@ -782,7 +794,9 @@ pub(crate) fn locate<R: Read + Seek>(
     let n = hi.saturating_sub(lo);
     let log = u64::BITS - n.leading_zeros();
     let max = options.max_probes.min(2 * log + 4);
-    let mut buf = vec![0u8; per.max(FIRST_FRAME_BUDGET) as usize * SECTOR_SIZE];
+    // A read that ends the search may read past `hi`, up to the interval's end.
+    let end = hi;
+    let mut buf = vec![0u8; per.max(LAST_READ_BUDGET) as usize * SECTOR_SIZE];
     let (mut lo_t, mut hi_t) = (0u32, playtime.max(first.saturating_add(1)));
     // Whether `hi` comes from a probe (not from the interval's end), and the Illinois halvings
     // of each bound's weight in regula falsi, with the bound the last step moved.
@@ -885,9 +899,26 @@ pub(crate) fn locate<R: Read + Seek>(
                 (guess, size, final_read) = (lo, hi - lo, true);
             }
         }
+        // The last read under `SEARCH_CALLS` reads what is left of `LAST_READ_BUDGET`, so that
+        // it holds frame `first` too: on from where a final read starts; otherwise around the
+        // guess, more of it before than after (the guesses of regula falsi fall on the same
+        // side where the bit rate changes, and frame `first` takes some sectors after its
+        // start). If it finds no sector below `first`, the search goes on.
+        let rest = LAST_READ_BUDGET.saturating_sub(used);
+        let mut chance = false;
+        if reads + 1 == SEARCH_CALLS && rest > size {
+            if final_read {
+                size = rest.min(hi.saturating_add(PROBE_SPAN) - guess).max(size);
+            } else {
+                guess = (guess + per / 2).saturating_sub(rest * 5 / 8).max(lo + 1);
+                (size, final_read, chance) = (rest, true, true);
+            }
+        }
         let mut at = guess;
         while any.is_none() && at < hi.min(guess + PROBE_SPAN.max(size)) && reads < max {
-            let count = size.min(hi - at);
+            // A final read is not cut at `hi`: the sectors after it hold the rest of frame
+            // `first`, and the search ends with it.
+            let count = size.min(if final_read { end } else { hi } - at);
             let read = &mut buf[..count as usize * SECTOR_SIZE];
             image.check_cancel()?;
             if image.read_into(at, read)? == crate::image::ReadOutcome::OutOfRange {
@@ -917,6 +948,7 @@ pub(crate) fn locate<R: Read + Seek>(
             anchor = Some(below.unwrap_or((m1, t1)));
             local = (m2 > m1 && t2 > t1).then(|| (m2 - m1, t2 - t1));
         }
+        let found_now = below.is_some();
         match (below, any.map(|(_, t)| t)) {
             (Some((m, t)), _) => {
                 (lo, lo_t, found_lo) = (m, t, true);
@@ -934,7 +966,7 @@ pub(crate) fn locate<R: Read + Seek>(
             }
             (None, None) => hi = guess,
         }
-        if final_read {
+        if final_read && (found_now || !chance) {
             break;
         }
         // Two steps in a row that did not at least halve the frames between `first` and the
