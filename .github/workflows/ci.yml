@@ -36,6 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.diff.outputs.code }}
+      miri: ${{ steps.diff.outputs.miri }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -47,6 +48,7 @@ jobs:
         run: |
           if [[ "$GITHUB_EVENT_NAME" != pull_request ]]; then
             echo "code=true" >> "$GITHUB_OUTPUT"
+            echo 'miri=["ffi","parallel"]' >> "$GITHUB_OUTPUT"
             exit 0
           fi
           changed=$(git diff --name-only "$BASE_SHA" HEAD)
@@ -56,6 +58,16 @@ jobs:
           else
             echo "code=false" >> "$GITHUB_OUTPUT"
           fi
+          # Miri checks unsafe code: scarletbook-ffi's own, and the dependencies'. `scarletbook`
+          # and `scarletbook-pcm` forbid unsafe code, so their tests run under Miri only in
+          # miri-full.yml (main and nightly). `ffi` runs when any crate it calls changes;
+          # `parallel` (rayon under Tree Borrows) when the core crate does; both when the
+          # dependencies, the toolchain or these workflows do.
+          shared='^(Cargo\.lock$|rust-toolchain|\.github/workflows/(ci|miri)\.yml$)'
+          slices=()
+          if grep -qE "^crates/|$shared" <<< "$changed"; then slices+=('"ffi"'); fi
+          if grep -qE "^crates/scarletbook/|$shared" <<< "$changed"; then slices+=('"parallel"'); fi
+          echo "miri=[$(IFS=,; echo "${slices[*]}")]" >> "$GITHUB_OUTPUT"
 
   test:
     name: test (${{ matrix.os }})
@@ -163,14 +175,15 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo +"$RUST_MSRV" check -p scarletbook -p scarletbook-pcm -p scarletbook-ffi --all-features --locked
 
-  # Miri: the short slices here (#76); the long ones run in miri-full.yml, which queues
-  # instead of cancelling so that they always complete (#84).
+  # Miri: the slices for unsafe code here, chosen by the changes job (#76); the core crate's
+  # tests and the long slices run in miri-full.yml, which queues instead of cancelling so that
+  # they always complete (#84).
   miri:
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.miri != '[]'
     uses: ./.github/workflows/miri.yml
     with:
-      slices: '["ffi","core","parallel"]'
+      slices: ${{ needs.changes.outputs.miri }}
 
   ffi:
     name: ffi (${{ matrix.os }})
