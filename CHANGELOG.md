@@ -9,6 +9,39 @@ is shared by every crate of the workspace; releases carry the `bench` program an
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-11-01
+
+**DSDIFF departures D1 and D2 write files that do not conform to DSDIFF.** They exist only so
+that a consumer can reproduce another program's files byte for byte, and are made only when the
+caller names them (`DsdiffDeparture::D1`/`D2`, or C options 35/36). With neither named, which is
+the default, every file is written as before. Specification 8, 8.7 (#169, #187).
+
+This release adds the writer's choices that pysacd asked for in #169, for DSF and DSDIFF files
+compatible with an existing extractor's: caller chunks, `DIIN` without `EMID` and with the source
+track's text, an empty `DIIN`, caller-supplied ID3v2.3 tags, gapless DSF files from a chain, and
+the two departures. Every default is unchanged.
+
+### Added
+
+- DSDIFF caller chunks (specification 8, 8.4.2 item 5 and 8.6 row 33, at sacd-spec `e069569`): chunks whose ID and data the caller supplies, written in order after the last local chunk, padded by 8.4.1 item 1 and counted in the `FRM8` size and the layout's last region, with plain DSD or DST and in an edited master. IDs that break 8.4.1 item 3, or are those of the chunks specification 8 defines, are refused. In `scarletbook`: `output::CallerChunk` and `OutputOptions::dsdiff_caller_chunks` (`with_dsdiff_caller_chunks`); in `scarletbook-ffi`: `sb_output_options_add_chunk` and `sb_output_options_clear_chunks` (#169, #183).
+- DSDIFF `DIIN` choices of specification 8, 8.4.8 and 8.6 row 24 as changed at sacd-spec `e069569`: `OutputOptions::dsdiff_edited_master_id_written` leaves `EMID` out of a file that is not an edited master (default `true`; an edited master, which requires `EMID` by 8.4.11 item 1, refuses `false`), and `OutputOptions::dsdiff_artist_title_source` (`ArtistTitleSource::Album`, the default, `Track` or `TrackThenAlbum`) fills `DIAR` and `DITI` from the source track's performer and title. `OutputOptions::dsdiff_empty_info` (8.6 row 34 at sacd-spec `048aa1a`) leaves out a `DIIN` that would hold none of its chunks instead of writing it with `D = 0` (the default; in C, option 39 from #192). In `scarletbook-ffi`, output options 33 (`SB_OUTPUT_OPTION_DSDIFF_EDITED_MASTER_ID_WRITTEN`) and 34 (`SB_OUTPUT_OPTION_DSDIFF_ARTIST_TITLE_SOURCE`), additive to ABI 2 (#169, #184).
+- DSDIFF departures D1 and D2 (specification 8, 8.7, at sacd-spec `e069569`), made only when named: D1 writes plain DSD's `CMPR` with `D = 20`, counting its pad byte; D2 writes `DIAR`, `DITI`, marker and comment text as ISO 8859-1, removing every other code point. A file written with either is not a conforming DSDIFF file. `scarletbook`: `OutputOptions::dsdiff_departures`, `with_dsdiff_departures` and `DsdiffDeparture`. `scarletbook-ffi`: options `SB_OUTPUT_OPTION_DSDIFF_DEPARTURE_D1` (35) and `SB_OUTPUT_OPTION_DSDIFF_DEPARTURE_D2` (36); see Changed for `SbMarker` text (#169, #187).
+- DSF files holding a byte range of a chain (specification 8, 8.2.7 and 8.6 row 32, sacd-spec `e069569`): `output::plan_dsf_chain` and `Disc::plan_dsf_chain` plan the files of consecutive ranges, such as the tracks with pause of consecutive tracks, from the TOC alone, with each skipped or refused range splitting the chain; `OutputOptions::dsf_chain_first` and `dsf_chain_end` (`with_dsf_chain`) make a DSF layout hold its file's byte range, so that every file but the last ends on a whole, unpadded block and the files' streams concatenate to the timeline unchanged; `Layout::byte_range` gives the bytes a DSF file holds. For such a file, `Layout::positions_for` (and so the positions a `PositionSource` is asked for) may include `first - 1`, the position its carried bytes come from, outside `Layout::range`. In the C API: `sb_output_dsf_chain_plan` with `SbDsfChainFile`, and the output options `SB_OUTPUT_OPTION_DSF_CHAIN_FIRST` (37) and `SB_OUTPUT_OPTION_DSF_CHAIN_END` (38) for `sb_output_layout_new` (#169, #186).
+- A caller-supplied ID3v2.3 tag as the DSF metadata (specification 8, 8.2.6 item 4 and 8.6 row 3, sacd-spec `e069569`): `Tags::Raw` and `sb_output_options_set_raw_tag` now also take an ID3v2.3 tag, checked only for its header (version 03 00, the low five flag bits 0, a 28-bit size of `m - 10`) and written unchanged; any other tag is still refused with `InvalidArgument`. The ID3v2.4 path is unchanged (scarletbook, scarletbook-ffi) (#169, #185).
+- `scarletbook-ffi`: output option 39, `SB_OUTPUT_OPTION_DSDIFF_EMPTY_INFO` (specification 8, 8.6 row 34 at sacd-spec `048aa1a`): 0 leaves out a `DIIN` that would hold none of its chunks instead of writing it with `D = 0` (the default), as `OutputOptions::dsdiff_empty_info` does in Rust. Additive to ABI 2 (#169, #192).
+
+### Changed
+
+- `scarletbook-ffi`: the text of an `SbMarker` is now written one byte per code point, so that departure D2 can write U+00A0 to U+00FF as single bytes. A marker with a code point above U+00FF is now refused by `sb_output_options_add_marker` itself (`SB_STATUS_INVALID_ARGUMENT`), not later when the layout is made. Without D2, text outside U+0020 to U+007E is handled as before (8.4.9, row 26), and ASCII text is unchanged (#169, #187).
+
+### Removed
+
+- An unused private accessor of the sealed `SeekCursor` trait; the public API and behaviour are unchanged (#191).
+
+### Fixed
+
+- The docs of the source-track text choice (`OutputOptions::dsdiff_artist_title_source`, `SB_OUTPUT_OPTION_DSDIFF_ARTIST_TITLE_SOURCE`) cite specification 3, 3.8 (track text), not 3.5 (#193).
+
 ## [0.5.3] - 2026-11-01
 
 **scarletbook-pcm: invalidate cached PCM.** Every PCM output changes in this release: the Low
@@ -584,7 +617,8 @@ First release: a clean-room reader for SACD images, written from sacd-spec, pass
 - DST decoding about 3.8 times faster on one thread, and parallel decoding that overlaps
   demultiplexing with decoding within a bounded memory (#16, #17, #19).
 
-[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v0.5.3...HEAD
+[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v0.5.4...HEAD
+[0.5.4]: https://github.com/aclater/scarletbook-rs/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/aclater/scarletbook-rs/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/aclater/scarletbook-rs/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/aclater/scarletbook-rs/compare/v0.5.0...v0.5.1
