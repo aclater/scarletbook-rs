@@ -5,13 +5,19 @@
 //! iteration is the CPU time per second of audio. One benchmark per rate, cutoff and 1, 2
 //! and 6 channels: `cargo bench -p scarletbook-pcm --bench convert -- 176400/Default/2ch`.
 //! `examples/throughput.rs` prints the same as the README's table.
+//!
+//! `run4/...` (issue #172): a stereo run of four frames at 176.4 kHz `Default`, with both
+//! neighbours, to 3-byte little-endian samples: `convert_run` + `pack_s24le` against
+//! `convert` from one buffer and from four separate frames (with per-frame clip counts).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::hint::black_box;
 
 use criterion::Criterion;
-use scarletbook_pcm::{Converter, Cutoff, FRAME_BYTES_PER_CHANNEL, FrameRun, PcmConfig, PcmRate};
+use scarletbook_pcm::{
+    Converter, Cutoff, FRAME_BYTES_PER_CHANNEL, FrameRun, Frames, PcmConfig, PcmOut, PcmRate, Run, pack_s24le,
+};
 
 fn main() {
     let mut c = Criterion::default().sample_size(10).configure_from_args();
@@ -49,5 +55,69 @@ fn main() {
             }
         }
     }
+    run4(&mut c);
     c.final_summary();
+}
+
+/// A run of four frames (frames 1 to 4 of 6), stereo, 176.4 kHz `Default`.
+fn run4(c: &mut Criterion) {
+    let ch = 2;
+    let frame = ch * FRAME_BYTES_PER_CHANNEL;
+    let mut s = 0x2545_F491_4F6C_DD1Du64;
+    // Separate buffers, as a frame cache holds them.
+    let area: Vec<Vec<u8>> = (0..6)
+        .map(|_| {
+            (0..frame)
+                .map(|_| {
+                    s ^= s << 13;
+                    s ^= s >> 7;
+                    s ^= s << 17;
+                    s as u8
+                })
+                .collect()
+        })
+        .collect();
+    let contiguous = area[1..5].concat();
+    let separate: Vec<&[u8]> = area[1..5].iter().map(Vec::as_slice).collect();
+    let (before, after) = (Some(&area[0][..]), Some(&area[5][..]));
+    let mut conv = Converter::new(PcmConfig::new(PcmRate::Hz176400, Cutoff::Default, 2)).unwrap();
+    let samples = 4 * conv.samples_per_frame() * ch;
+    let mut pcm = vec![0i32; samples];
+    let mut wav = vec![0u8; 3 * samples];
+    let mut clipped = [0u64; 4];
+    c.bench_function("run4/176400/Default/2ch/copy+convert_run+pack_s24le", |b| {
+        b.iter(|| {
+            // Today's path for separate frames: copy into one buffer, convert, pack.
+            let mut joined = Vec::with_capacity(4 * frame);
+            for f in &separate {
+                joined.extend_from_slice(f);
+            }
+            let run = FrameRun::new(&joined).with_before(before).with_after(after);
+            conv.convert_run(run, &mut pcm).unwrap();
+            pack_s24le(&pcm, &mut wav);
+            black_box(&wav);
+        })
+    });
+    c.bench_function("run4/176400/Default/2ch/convert_run+pack_s24le", |b| {
+        b.iter(|| {
+            let run = FrameRun::new(&contiguous).with_before(before).with_after(after);
+            conv.convert_run(run, &mut pcm).unwrap();
+            pack_s24le(&pcm, &mut wav);
+            black_box(&wav);
+        })
+    });
+    c.bench_function("run4/176400/Default/2ch/convert-contiguous-s24le", |b| {
+        b.iter(|| {
+            let run = Run::new(&contiguous[..]).with_before(before).with_after(after);
+            conv.convert(run, PcmOut::S24le(&mut wav), None).unwrap();
+            black_box(&wav);
+        })
+    });
+    c.bench_function("run4/176400/Default/2ch/convert-separate-s24le-counts", |b| {
+        b.iter(|| {
+            let run = Run::new(Frames::Separate(&separate)).with_before(before).with_after(after);
+            conv.convert(run, PcmOut::S24le(&mut wav), Some(&mut clipped)).unwrap();
+            black_box((&wav, &clipped));
+        })
+    });
 }
