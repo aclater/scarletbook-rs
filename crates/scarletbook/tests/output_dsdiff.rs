@@ -15,7 +15,7 @@ use std::io::Cursor;
 use common::TrackSpec;
 use output_common::{Lcg, check, contents, corpus, corpus_ranges, enough, plain, synthetic, variants};
 use proptest::prelude::*;
-use scarletbook::output::{Format, OutputOptions, PropertyChunk};
+use scarletbook::output::{DsdiffDeparture, DstLengths, Format, InvalidDst, OutputOptions, PropertyChunk};
 use scarletbook::{Disc, Error, Slot};
 
 fn chunk(out: &mut Vec<u8>, id: &[u8], data: &[u8]) {
@@ -178,6 +178,60 @@ fn property_order_and_absolute_start_are_checked() {
     assert!(matches!(e, Error::InvalidArgument(_)), "{e}");
     let last = OutputOptions::default().with_dsdiff_absolute_start(Some(6_479_997));
     disc.output_layout(Slot::TwoChannel, 0, 2, Format::DsdiffDsd, &last).unwrap();
+}
+
+/// Departure D1 (specification 8, 8.7, at sacd-spec `e069569`): plain DSD's `CMPR` has
+/// `D = 20`, its pad byte counted, and nothing else changes; DST's is unchanged. It is never
+/// made unless named.
+#[test]
+fn departure_d1_counts_the_cmpr_pad() {
+    let mut disc = synthetic(2, &plain(2, 2), vec![TrackSpec { start: 0, duration: 2 }], 2);
+    let read = |disc: &mut Disc<Cursor<Vec<u8>>>, layout: scarletbook::output::Layout| {
+        let mut f = vec![0; layout.size() as usize];
+        layout.read_at(disc, 0, &mut f).unwrap();
+        f
+    };
+    let d1 = OutputOptions::default().with_dsdiff_departures([DsdiffDeparture::D1]);
+    assert!(OutputOptions::default().dsdiff_departures.is_empty());
+    let plain_file = |disc: &mut _, o: &OutputOptions| {
+        let layout = Disc::output_layout(disc, Slot::TwoChannel, 0, 2, Format::DsdiffDsd, o).unwrap();
+        read(disc, layout)
+    };
+    let conforming = plain_file(&mut disc, &OutputOptions::default());
+    let departing = plain_file(&mut disc, &d1);
+    // `FRM8` and `DSD ` (16 bytes), `FVER` (16), `PROP` and `SND ` (16), `FS  ` (16), `CHNL` (22),
+    // then `CMPR` at 86: 12 bytes of head, 19 of data and the pad byte, 32 in all.
+    let mut cmpr = b"DSD ".to_vec();
+    cmpr.push(14);
+    cmpr.extend_from_slice(b"not compressed");
+    let mut want = Vec::new();
+    chunk(&mut want, b"CMPR", &cmpr);
+    assert_eq!(&conforming[86..118], &want[..]);
+    assert_eq!(&want[8..12], &19u32.to_be_bytes());
+    want[11] = 20;
+    assert_eq!(&departing[86..118], &want[..]);
+    // The same bytes everywhere else, so the same size.
+    assert_eq!(conforming.len(), departing.len());
+    let differ: Vec<usize> = (0..conforming.len()).filter(|&i| conforming[i] != departing[i]).collect();
+    assert_eq!(differ, [97]);
+    // With the departures set, then cleared.
+    assert_eq!(plain_file(&mut disc, &d1.clone().with_dsdiff_departures([])), conforming);
+    // D2 alone leaves `CMPR` alone.
+    let d2 = OutputOptions::default().with_dsdiff_departures([DsdiffDeparture::D2]);
+    assert_eq!(plain_file(&mut disc, &d2), conforming);
+
+    // DST: `D` is 16, even, so D1 changes nothing.
+    let lengths = DstLengths::scan(&mut disc, Slot::TwoChannel, 0, 2, InvalidDst::Stored).unwrap();
+    let layout = disc.output_layout_dst(&lengths, &OutputOptions::default()).unwrap();
+    let dst = read(&mut disc, layout);
+    let layout = disc.output_layout_dst(&lengths, &d1).unwrap();
+    assert_eq!(read(&mut disc, layout), dst);
+    let mut cmpr = b"DST ".to_vec();
+    cmpr.push(11);
+    cmpr.extend_from_slice(b"DST Encoded");
+    let at = dst.windows(4).position(|w| w == b"CMPR").unwrap();
+    assert_eq!(&dst[at + 4..at + 12], &16u64.to_be_bytes());
+    assert_eq!(&dst[at + 12..at + 28], &cmpr[..]);
 }
 
 fn config() -> ProptestConfig {

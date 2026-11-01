@@ -29,6 +29,9 @@
 //!
 //! Every point where the formats allow more than one valid output (specification 8, 8.6,
 //! "writer's choices") is a field of [`OutputOptions`], with a documented default.
+//! The departures from the DSDIFF document that some existing programs make (8.7) are made
+//! only when named in [`OutputOptions::dsdiff_departures`]; a file written with one is not a
+//! conforming DSDIFF file.
 
 mod dsdiff;
 mod dsdiff_dst;
@@ -39,7 +42,7 @@ mod markers;
 mod tags;
 
 use std::borrow::Cow;
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::io::{Read, Seek};
 use std::ops::Range;
 
@@ -51,7 +54,7 @@ use crate::dst::DstDecoder;
 use crate::error::{Error, Slot};
 use crate::toc::{Area, Toc, TocDigests, Track};
 
-pub use dsdiff::{LocalChunk, PropertyChunk};
+pub use dsdiff::{DsdiffDeparture, LocalChunk, PropertyChunk};
 pub use dsdiff_dst::{DstIndexOffset, DstLengths, InvalidDst};
 pub use dsdiff_text::{Comment, CommentKind};
 pub use dsf::DsfBitsPerSample;
@@ -205,11 +208,21 @@ pub struct OutputOptions {
     /// W25, the comments of `COMT` (8.4.8), in order. Default none, and so no `COMT`.
     pub dsdiff_comments: Vec<Comment>,
     /// W26, the text byte that replaces a code point outside U+0020 to U+007E in DSDIFF
-    /// text (8.4.9); `None` removes it. Default `Some(b'?')`.
+    /// text (8.4.9); `None` removes it. Default `Some(b'?')`. Departure
+    /// [`DsdiffDeparture::D2`] ignores it: every code point it doesn't write is removed (8.7).
     pub dsdiff_text_replacement: Option<u8>,
     /// W31, whether a `DIAR`, `DITI` or comment whose text is empty, or becomes empty under
-    /// W26, is written with `k = 0` (8.4.8). Default `false`: it is left out.
+    /// W26 (or [`DsdiffDeparture::D2`]), is written with `k = 0` (8.4.8). Default `false`:
+    /// it is left out.
     pub dsdiff_empty_text: bool,
+    /// The departures from the DSDIFF document of specification 8, 8.7, that a DSDIFF file
+    /// makes, each named by its number. Default none.
+    ///
+    /// **A DSDIFF file written with any departure is not a conforming DSDIFF file**: it does
+    /// not conform to the DSDIFF document or to specification 8. The departures exist only to
+    /// reproduce the files some existing programs write; see [`DsdiffDeparture`]. DSF files
+    /// ignore them.
+    pub dsdiff_departures: BTreeSet<DsdiffDeparture>,
 }
 
 impl Default for OutputOptions {
@@ -244,6 +257,7 @@ impl Default for OutputOptions {
             dsdiff_comments: Vec::new(),
             dsdiff_text_replacement: Some(b'?'),
             dsdiff_empty_text: false,
+            dsdiff_departures: BTreeSet::new(),
         }
     }
 }
@@ -397,6 +411,19 @@ impl OutputOptions {
     /// These options with `DSTI` offsets pointing at `offset` (W21).
     pub fn with_dsdiff_dst_index_offset(self, offset: DstIndexOffset) -> Self {
         OutputOptions { dsdiff_dst_index_offset: offset, ..self }
+    }
+
+    /// These options with the DSDIFF departures `departures` (8.7) and no others.
+    ///
+    /// **A DSDIFF file written with any departure is not a conforming DSDIFF file**
+    /// ([`OutputOptions::dsdiff_departures`]).
+    pub fn with_dsdiff_departures(self, departures: impl IntoIterator<Item = DsdiffDeparture>) -> Self {
+        OutputOptions { dsdiff_departures: departures.into_iter().collect(), ..self }
+    }
+
+    /// Whether a DSDIFF file makes departure `d` (8.7).
+    pub(crate) fn departs(&self, d: DsdiffDeparture) -> bool {
+        self.dsdiff_departures.contains(&d)
     }
 }
 

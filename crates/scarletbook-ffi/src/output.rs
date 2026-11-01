@@ -9,10 +9,10 @@ use std::ffi::{CStr, c_char};
 
 use scarletbook::Error;
 use scarletbook::output::{
-    AlbumArtistFrame, ArrangerFrame, Comment, CommentKind, DateFrame, DsfBitsPerSample, DstIndexOffset,
-    DstLengths, Format, GenreSources, Id3Encoding, InfoChunk, Input, InvalidDst, Layout, LocalChunk, Marker,
-    MarkerKind, MarkerText, Markers, OutputOptions, PositionSource, PropertyChunk, RegionKind, SourceTrack,
-    TagItem, TagSet, Tags, TextSource,
+    AlbumArtistFrame, ArrangerFrame, Comment, CommentKind, DateFrame, DsdiffDeparture, DsfBitsPerSample,
+    DstIndexOffset, DstLengths, Format, GenreSources, Id3Encoding, InfoChunk, Input, InvalidDst, Layout,
+    LocalChunk, Marker, MarkerKind, MarkerText, Markers, OutputOptions, PositionSource, PropertyChunk,
+    RegionKind, SourceTrack, TagItem, TagSet, Tags, TextSource,
 };
 
 use super::{
@@ -114,6 +114,17 @@ pub enum SbOutputOption {
     Id3AlbumSetAlone = 31,
     /// W11: 0 (the default) the date in `TDRL`, 1 in `TDRC`.
     Id3Date = 32,
+    /// Departure D1 of specification 8, 8.7 (sacd-spec `e069569`): 1 writes a plain DSD
+    /// file's `CMPR` with `D = 20`, counting its pad byte, instead of 19; 0 (the default)
+    /// does not. The bytes are the same apart from `D`; DST files are unchanged. **A file
+    /// written with 1 is not a conforming DSDIFF file.**
+    DsdiffDepartureD1 = 35,
+    /// Departure D2 of specification 8, 8.7 (sacd-spec `e069569`): 1 writes `DIAR`, `DITI`,
+    /// marker and comment text as ISO 8859-1, U+0020 to U+007E and U+00A0 to U+00FF as one
+    /// byte each and every other code point removed (`SB_OUTPUT_OPTION_DSDIFF_TEXT_REPLACEMENT`
+    /// is then ignored), with `k` counting the bytes written; 0 (the default) does not. `EMID` stays
+    /// bytes 0x20 to 0x7E. **A file written with 1 is not a conforming DSDIFF file.**
+    DsdiffDepartureD2 = 36,
 }
 
 /// The string-valued output options of `sb_output_options_set_string`.
@@ -232,7 +243,10 @@ pub enum SbOutputRegionKind {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct SbMarker {
-    /// NUL-terminated text bytes 0x20 to 0x7E, or NULL for none.
+    /// NUL-terminated UTF-8 text, or NULL for none. Each code point is written as the one
+    /// byte of the same value: U+0020 to U+007E, or with departure D2
+    /// (`SB_OUTPUT_OPTION_DSDIFF_DEPARTURE_D2`) also U+00A0 to U+00FF. A code point above
+    /// U+00FF is refused by `sb_output_options_add_marker`; others when a layout is made.
     pub text: *const c_char,
     /// The frame of the area's timeline, from the range's first to its end.
     pub frame: u32,
@@ -484,6 +498,15 @@ fn choice<T: Copy>(value: i64, values: &[T]) -> Result<T, Failure> {
         .ok_or_else(|| Failure::arg("unknown option value"))
 }
 
+/// Makes departure `d` (specification 8, 8.7) or not.
+fn departure(o: &mut OutputOptions, d: DsdiffDeparture, on: bool) {
+    if on {
+        o.dsdiff_departures.insert(d);
+    } else {
+        o.dsdiff_departures.remove(&d);
+    }
+}
+
 /// Applies one integer option.
 fn set_option(o: &mut OutputOptions, option: u32, value: i64) -> Result<(), Failure> {
     let u32_of = |v: i64| u32::try_from(v).map_err(|_| Failure::arg("the option's value is out of range"));
@@ -579,6 +602,8 @@ fn set_option(o: &mut OutputOptions, option: u32, value: i64) -> Result<(), Fail
         30 => o.id3.copyright = flag(value)?,
         31 => o.id3.album_set_alone = flag(value)?,
         32 => o.id3.date = choice(value, &[DateFrame::Tdrl, DateFrame::Tdrc])?,
+        35 => departure(o, DsdiffDeparture::D1, flag(value)?),
+        36 => departure(o, DsdiffDeparture::D2, flag(value)?),
         _ => return Err(Failure::arg("unknown output option")),
     }
     Ok(())
@@ -851,7 +876,13 @@ pub unsafe extern "C" fn sb_output_options_add_marker(
         marker.track_flags =
             u16::try_from(m.track_flags).map_err(|_| Failure::arg("track flags are 0 to 65 535"))?;
         // SAFETY: forwarded contract.
-        marker.text = unsafe { string(m.text) }?.unwrap_or_default().into_bytes();
+        let text = unsafe { string(m.text) }?.unwrap_or_default();
+        // One byte per code point: the same bytes for text bytes, and ISO 8859-1 for
+        // departure D2 (specification 8, 8.7). Other bytes are refused when a layout is made.
+        marker.text = text
+            .chars()
+            .map(|c| u8::try_from(c).map_err(|_| Failure::arg("marker text is U+0000 to U+00FF")))
+            .collect::<Result<_, _>>()?;
         let mut o = h.inner.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))?;
         match &mut o.dsdiff_markers {
             Markers::Custom(list) => list.push(marker),

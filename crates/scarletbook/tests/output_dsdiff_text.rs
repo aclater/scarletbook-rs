@@ -15,7 +15,8 @@ use std::io::Cursor;
 use common::TrackSpec;
 use output_common::{plain, synthetic};
 use scarletbook::output::{
-    Comment, CommentKind, Format, InfoChunk, LocalChunk, MarkerText, OutputOptions, TagItem, TagSet, Tags,
+    Comment, CommentKind, DsdiffDeparture, Format, InfoChunk, LocalChunk, Marker, MarkerKind, MarkerText,
+    Markers, OutputOptions, TagItem, TagSet, Tags,
 };
 use scarletbook::{Disc, Error, Slot};
 
@@ -241,4 +242,85 @@ fn comments() {
             Error::InvalidArgument(_)
         ));
     }
+}
+
+/// Departure D2 (specification 8, 8.7, at sacd-spec `e069569`): `DIAR`, `DITI`, marker and
+/// comment text as ISO 8859-1, every other code point removed whatever W26 says, `k`
+/// counting the bytes written; `EMID` unchanged. It is never made unless named.
+#[test]
+fn departure_d2_writes_iso_8859_1() {
+    let mut disc = disc();
+    assert!(OutputOptions::default().dsdiff_departures.is_empty());
+    let mut set = TagSet::new();
+    // U+001F, U+007F and U+009F are removed; U+00A0 and U+00FF are the last bytes kept;
+    // U+0100 and U+2013 are removed.
+    set.set(TagItem::AlbumArtist, "Dvořák\u{1F}\u{7F}\u{9F}\u{A0}\u{FF}\u{100}");
+    set.set(TagItem::Album, "Ravel – Boléro");
+    let conforming = OutputOptions::default()
+        .with_dsdiff_edited_master_info(true)
+        .with_dsdiff_artist_title(Some(true))
+        .with_dsdiff_marker_text(MarkerText::TrackTitle)
+        .with_dsdiff_comments(vec![Comment::new(CommentKind::FileHistory(1), "operator: é")])
+        .with_tags(Tags::Set(set));
+    let d2 = conforming.clone().with_dsdiff_departures([DsdiffDeparture::D2]);
+    let diin = |f: &[u8]| chunks(&local(f, b"DIIN").unwrap(), 0);
+    let get =
+        |diin: &[(Vec<u8>, Vec<u8>)], id: &[u8]| diin.iter().find(|(i, _)| i == id).map(|(_, d)| d.clone());
+
+    // Without D2: the replacement, as before.
+    let f = file(&mut disc, 0, 3, &conforming);
+    assert_eq!(get(&diin(&f), b"DITI"), Some(text(b"Ravel ? Bol?ro")));
+    assert_eq!(get(&diin(&f), b"DIAR"), Some(text(b"Dvo??k??????")));
+
+    // With D2: one byte per kept code point; the replacement `?` is not used.
+    let f = file(&mut disc, 0, 3, &d2);
+    let info = diin(&f);
+    assert_eq!(get(&info, b"DITI"), Some(text(b"Ravel  Bol\xE9ro")));
+    // `k` is 7, the bytes written, and the pad byte is uncounted in `D` (W22's default).
+    assert_eq!(get(&info, b"DIAR"), Some(text(b"Dvo\xE1k\xA0\xFF")));
+    let at = f.windows(4).position(|w| w == b"DIAR").unwrap();
+    assert_eq!(&f[at + 4..at + 12], &11u64.to_be_bytes());
+    // Marker text from the TOC is ASCII and so unchanged.
+    let marks: Vec<Vec<u8>> =
+        info.iter().filter(|(i, _)| i == b"MARK").map(|(_, d)| d[22..].to_vec()).collect();
+    assert_eq!(marks, [b"".to_vec(), b"T1".to_vec(), b"T2".to_vec(), b"".to_vec()]);
+    // The comment: `k` 11, then its pad byte (counted in the comment, not in `k`).
+    let comt = local(&f, b"COMT").unwrap();
+    assert_eq!(&comt[12..16], &11u32.to_be_bytes());
+    assert_eq!(&comt[16..], b"operator: \xE9\0");
+
+    // W22 counts the pad byte of odd text in `D` under D2 too: `k` stays the bytes written.
+    let counted = d2.clone().with_dsdiff_text_pad_counted(true);
+    let f = file(&mut disc, 0, 3, &counted);
+    let at = f.windows(4).position(|w| w == b"DIAR").unwrap();
+    assert_eq!(&f[at + 4..at + 12], &12u64.to_be_bytes());
+    assert_eq!(&f[at + 12..at + 24], &[&7u32.to_be_bytes()[..], b"Dvo\xE1k\xA0\xFF\0"].concat()[..]);
+
+    // W31: a text that D2 empties is left out, or written with `k = 0`.
+    let mut gone = TagSet::new();
+    gone.set(TagItem::Album, "€\u{100}");
+    let left_out = d2.clone().with_tags(Tags::Set(gone)).with_dsdiff_comments(Vec::new());
+    assert!(get(&diin(&file(&mut disc, 0, 3, &left_out)), b"DITI").is_none());
+    let written = left_out.with_dsdiff_empty_text(true);
+    assert_eq!(get(&diin(&file(&mut disc, 0, 3, &written)), b"DITI"), Some(text(b"")));
+
+    // A custom marker's own bytes may be 0xA0 to 0xFF with D2 only; 0x80 to 0x9F never.
+    let marker = |t: &[u8]| {
+        let mut m = Marker::new(0, MarkerKind::ProgramStart);
+        m.text = t.to_vec();
+        Markers::Custom(vec![m])
+    };
+    let latin = conforming.clone().with_dsdiff_markers(marker(b"B\xE9"));
+    let e = disc.output_layout(Slot::TwoChannel, 0, 3, Format::DsdiffDsd, &latin).unwrap_err();
+    assert!(matches!(e, Error::InvalidArgument(_)), "{e}");
+    let f = file(&mut disc, 0, 3, &latin.with_dsdiff_departures([DsdiffDeparture::D2]));
+    assert_eq!(get(&diin(&f), b"MARK").unwrap()[18..], [&2u32.to_be_bytes()[..], b"B\xE9"].concat());
+    let c1 = d2.clone().with_dsdiff_markers(marker(b"\x80"));
+    let e = disc.output_layout(Slot::TwoChannel, 0, 3, Format::DsdiffDsd, &c1).unwrap_err();
+    assert!(matches!(e, Error::InvalidArgument(_)), "{e}");
+
+    // `EMID` stays bytes 0x20 to 0x7E.
+    let emid = d2.with_dsdiff_edited_master_id("é".to_owned());
+    let e = disc.output_layout(Slot::TwoChannel, 0, 3, Format::DsdiffDsd, &emid).unwrap_err();
+    assert!(matches!(e, Error::InvalidArgument(_)), "{e}");
 }
