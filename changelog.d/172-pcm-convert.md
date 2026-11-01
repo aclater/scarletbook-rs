@@ -1,2 +1,0 @@
-Added
-- `scarletbook_pcm::Converter::convert`, for a frame cache: a `Run` whose frames are one buffer or one buffer per frame (`Frames::Separate(&[&[u8]])`, read in place), output as `i32` or 3-byte little-endian samples written directly (`PcmOut::S24le`, the bytes of `convert_run` + `pack_s24le`), and optional clipped-sample counts per frame of the run, which sum to `clipped_total` and do not depend on how frames are grouped into runs. New errors `PcmError::OutputBytes` and `FrameCounts`; `convert_run` is unchanged (#172, #175).
