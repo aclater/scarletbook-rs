@@ -999,8 +999,8 @@ wherever the range lies, 1.8 to 2.9 ms in its network model (0.5 ms per read cal
 with the same frames as exact reads on that well-formed image. Its third table opens the
 disc afresh for each of 200 positions (`--positions`), as a consumer that seeks cold sees it:
 on an area of uneven bit rate (`scarletbook-synth ... --dst-frames uneven`), a provisional
-start costs 3.5 read calls and 113 KiB on average up to the range's first frame (at most 6
-and 144 KiB; it also prints the 50th to 99th percentiles), and 3.8 read calls and 131 KiB
+start costs 3.5 read calls and 112 KiB on average up to the range's first frame (at most 5
+and 160 KiB; it also prints the 50th to 99th percentiles), and 3.7 read calls and 131 KiB
 for the 14-frame range decoded.
 
 Through the C interface, `python3 .github/scripts/clib-seekcost.py PACKAGE_DIR IMAGE` opens the

@@ -1,0 +1,1 @@
+| 2026-11-01 | #123 cold seek last read (#164) | Size and placement of the search's fifth read for provisional starts (no change to what is read from `L`, labels, verification or suspect marks). Specification 4, 4.2 item 8, and 7, 7.1 item 3, at sacd-spec `eafaaba`. No new sources consulted. |
