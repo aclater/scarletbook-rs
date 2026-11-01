@@ -69,3 +69,29 @@ fn seek_index_seeds_load() {
     assert!(hinted, "no seed holds seek hints");
     assert!(confirmed, "no seed holds a saved confirmation");
 }
+
+/// The disc seeds of the fuzz target (#124): a disc of the harness takes them (their TOC
+/// fingerprint is its own), one holds seek hints alone, so that its readings are compared
+/// with reads without an index, and one holds saved confirmations.
+#[test]
+#[cfg_attr(miri, ignore = "slow under Miri")]
+fn seek_index_disc_seeds_load() {
+    let d = harness::seek_disc();
+    let (mut hints_only, mut confirmed) = (false, false);
+    for seed in harness::seek_index_disc_seeds() {
+        let index = scarletbook::AreaIndex::from_bytes(
+            &d.area,
+            d.sectors,
+            &harness::with_checksum(&seed),
+            usize::MAX,
+        )
+        .unwrap();
+        hints_only |= index.hints() > 0 && index.checkpoints() == 0 && index.confirmations() == 0;
+        confirmed |= index.confirmations() > 0;
+        let mut disc = scarletbook::Disc::open(std::io::Cursor::new(&d.image[..])).unwrap();
+        disc.set_seek_index(d.area.slot, index).unwrap();
+        harness::seek_index(&seed);
+    }
+    assert!(hints_only, "no disc seed holds seek hints alone");
+    assert!(confirmed, "no disc seed holds a saved confirmation");
+}
