@@ -6,4 +6,4 @@ Changed
   that it ends the search and holds the first frame at once; if it finds no sector before the
   frame, the search goes on as before. Before, 21 of 1 991 positions took 6 or 7 calls (all
   within 144 KiB); now p50 / p90 / p95 / p99 / max are 3 / 4 / 5 / 5 / 5 calls and
-  122 / 144 / 144 / 160 / 160 KiB. The constant-rate image is unchanged (#123, #PR).
+  122 / 144 / 144 / 160 / 160 KiB. The constant-rate image is unchanged (#123, #164).
