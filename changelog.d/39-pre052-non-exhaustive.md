@@ -1,6 +1,6 @@
 Changed
 - Unreleased APIs made extensible before their first release, so later additions stay
-  minor (#39, #163). Non-exhaustive now: `scarletbook_pcm::FrameRun`, with
+  minor (#39, #166). Non-exhaustive now: `scarletbook_pcm::FrameRun`, with
   `FrameRun::new`, `with_before` and `with_after` to build it; the variants
   `scarletbook_pcm::PcmError::{Unsupported, InputLength, OutputLength}`,
   `OutputRefusal::UnspecifiedLayout` and `EditedMasterCheck::TrackTooShort` (match them with
