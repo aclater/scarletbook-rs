@@ -1,1 +1,1 @@
-| 2026-11-01 | #169 DSDIFF departures D1 and D2 (#187) | specification 8, 8.7 (D1, D2), with 8.4.3, 8.4.7, 8.4.8 and 8.4.9, at sacd-spec `e069569`. No new sources consulted. |
+| 2026-11-01 | #169 DSDIFF departures D1 and D2 (#187) | specification 8, 8.7 (D1, D2), with 8.4.3, 8.4.7, 8.4.8 and 8.4.9, at sacd-spec `e069569`. Implemented from the specification text only; no other program's code or output was consulted. No new sources consulted. |
