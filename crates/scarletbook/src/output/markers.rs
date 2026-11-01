@@ -3,7 +3,7 @@
 //! DSDIFF markers and the edited master information chunk (specification 8, 8.4.7, 8.4.8,
 //! 8.4.10 and 8.4.11).
 
-use super::dsdiff::{MAX_TIME_FRAMES, chunk, time};
+use super::dsdiff::{DsdiffDeparture, MAX_TIME_FRAMES, chunk, time};
 use super::dsdiff_text::{diin_text, text_bytes};
 use super::{Layout, OutputOptions};
 use crate::error::{EditedMasterCheck, Error, OutputRefusal};
@@ -46,7 +46,9 @@ pub struct Marker {
     /// Track flags (8.4.7 item 4): meaningful only on a track start, 0 otherwise. The TOC
     /// defines none, so markers made from it have 0 (W23).
     pub track_flags: u16,
-    /// Marker text: text bytes 0x20 to 0x7E only (8.4.1 item 4).
+    /// Marker text: text bytes 0x20 to 0x7E only (8.4.1 item 4), or with departure
+    /// [`super::DsdiffDeparture::D2`] also ISO 8859-1 bytes 0xA0 to 0xFF (8.7); then the file
+    /// is not a conforming DSDIFF file.
     pub text: Vec<u8>,
 }
 
@@ -100,7 +102,7 @@ fn program(start: u32, spans: &[(u32, u32)], tracks: &[&Track], options: &Output
         let mut marker = Marker::new(s, MarkerKind::TrackStart);
         if options.dsdiff_marker_text == MarkerText::TrackTitle {
             let title = tracks.get(i).and_then(|t| t.text.get(crate::toc::TrackTextItem::Title));
-            marker.text = title.map_or_else(Vec::new, |t| text_bytes(t, options.dsdiff_text_replacement));
+            marker.text = title.map_or_else(Vec::new, |t| text_bytes(t, options));
         }
         m.push(marker);
         if spans.get(i + 1).is_none_or(|&(next, _)| e < next) {
@@ -174,6 +176,19 @@ pub(super) fn check_text(s: &[u8]) -> Result<(), Error> {
         Ok(())
     } else {
         Err(Error::InvalidArgument("DSDIFF text is bytes 0x20 to 0x7E"))
+    }
+}
+
+/// Checks a custom marker's text: text bytes (8.4.1 item 4), or with departure D2 (8.7, at
+/// sacd-spec `e069569`) also bytes 0xA0 to 0xFF.
+fn check_marker_text(s: &[u8], options: &OutputOptions) -> Result<(), Error> {
+    if !options.departs(DsdiffDeparture::D2) {
+        return check_text(s);
+    }
+    if s.iter().all(|b| (0x20..=0x7E).contains(b) || *b >= 0xA0) {
+        Ok(())
+    } else {
+        Err(Error::InvalidArgument("DSDIFF text with departure D2 is bytes 0x20 to 0x7E and 0xA0 to 0xFF"))
     }
 }
 
@@ -253,7 +268,7 @@ pub(super) fn diin(
                     if m.frame < layout.first || m.frame > layout.end {
                         return Err(Error::InvalidArgument("a marker lies outside the range"));
                     }
-                    check_text(&m.text)?;
+                    check_marker_text(&m.text, options)?;
                     debug_assert!(start + u64::from(layout.end - a) <= MAX_TIME_FRAMES);
                     mark(&mut data, m, a, start, options.dsdiff_text_pad_counted);
                 }

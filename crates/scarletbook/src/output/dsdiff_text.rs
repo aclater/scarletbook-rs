@@ -4,7 +4,7 @@
 //! comments of `COMT`, and reported strings written as text bytes.
 
 use super::OutputOptions;
-use super::dsdiff::chunk;
+use super::dsdiff::{DsdiffDeparture, chunk};
 use crate::error::Error;
 
 /// The kind of a DSDIFF comment (specification 8, 8.4.8), with its reference.
@@ -38,7 +38,7 @@ pub struct Comment {
     pub minutes: u8,
     /// The kind and reference.
     pub kind: CommentKind,
-    /// The text, written as text bytes (8.4.9).
+    /// The text, written as text bytes (8.4.9), or as ISO 8859-1 with departure D2 (8.7).
     pub text: String,
 }
 
@@ -51,16 +51,27 @@ impl Comment {
 }
 
 /// A reported string as text bytes (8.4.9; W26): U+0020 to U+007E as themselves, any other
-/// code point as `replacement`, or removed.
-pub(super) fn text_bytes(s: &str, replacement: Option<u8>) -> Vec<u8> {
+/// code point as the replacement, or removed. With departure D2 (8.7, at sacd-spec
+/// `e069569`), U+0020 to U+007E and U+00A0 to U+00FF as themselves and any other code point
+/// removed, whatever the replacement.
+pub(super) fn text_bytes(s: &str, options: &OutputOptions) -> Vec<u8> {
+    if options.departs(DsdiffDeparture::D2) {
+        return s.chars().filter(|&c| latin1(c)).map(|c| c as u8).collect();
+    }
+    let replacement = options.dsdiff_text_replacement;
     s.chars().filter_map(|c| if (' '..='~').contains(&c) { Some(c as u8) } else { replacement }).collect()
+}
+
+/// Whether D2 writes `c` (8.7): U+0020 to U+007E or U+00A0 to U+00FF.
+fn latin1(c: char) -> bool {
+    (' '..='~').contains(&c) || ('\u{A0}'..='\u{FF}').contains(&c)
 }
 
 /// Appends an artist or title chunk (`DIAR`, `DITI`; 8.4.8): `k`, the text, a pad byte when
 /// `k` is odd, counted in `D` as W22 says. An empty text is left out unless W31 writes it.
 pub(super) fn diin_text(out: &mut Vec<u8>, id: &[u8; 4], text: Option<&str>, options: &OutputOptions) {
     let Some(text) = text else { return };
-    let t = text_bytes(text, options.dsdiff_text_replacement);
+    let t = text_bytes(text, options);
     if t.is_empty() && !options.dsdiff_empty_text {
         return;
     }
@@ -92,7 +103,7 @@ pub(super) fn comt(channels: u8, options: &OutputOptions) -> Result<Option<Vec<u
             CommentKind::FileHistory(r) if r <= 4 => (3, r),
             _ => return Err(Error::InvalidArgument("a comment's reference is out of range")),
         };
-        let t = text_bytes(&c.text, options.dsdiff_text_replacement);
+        let t = text_bytes(&c.text, options);
         if t.is_empty() && !options.dsdiff_empty_text {
             continue;
         }

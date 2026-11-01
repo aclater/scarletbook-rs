@@ -14,8 +14,8 @@ use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
 use scarletbook::output::{
-    ArtistTitleSource, CallerChunk, Comment, CommentKind, DsfBitsPerSample, DstIndexOffset, DstLengths,
-    Format, InvalidDst, Layout, MarkerText, OutputOptions, TagItem, TagSet, Tags,
+    ArtistTitleSource, CallerChunk, Comment, CommentKind, DsdiffDeparture, DsfBitsPerSample, DstIndexOffset,
+    DstLengths, Format, InvalidDst, Layout, MarkerText, OutputOptions, TagItem, TagSet, Tags,
 };
 use scarletbook::{Disc, Slot};
 use scarletbook_ffi::*;
@@ -634,6 +634,90 @@ fn edited_master_requires_emid() {
     assert_eq!(set(o, SbOutputOption::DsdiffEditedMasterIdWritten, 0), SbStatus::Ok);
     assert_eq!(c!(sb_output_layout_new(d, 0, 0, 160, dsdiff, o, &mut l)), SbStatus::InvalidArgument);
     assert!(l.is_null());
+    c!(sb_output_options_free(o));
+    c!(sb_disc_free(d));
+}
+
+/// The departures of specification 8, 8.7 (sacd-spec `e069569`), options 35 (D1) and 36
+/// (D2): off by default, and equal to the Rust API's `dsdiff_departures` when set.
+#[test]
+#[cfg_attr(miri, ignore = "rayon's crossbeam-epoch fails Stacked Borrows; run with Tree Borrows")]
+fn departures_equal_the_rust_api() {
+    let frames: Vec<common::PFrame> = (0..3u32)
+        .map(|number| common::PFrame {
+            number,
+            dst: false,
+            data: (0..2 * 4704).map(|i| (i as u32 * 5 + number * 11) as u8).collect(),
+        })
+        .collect();
+    let tracks = vec![common::TrackSpec { start: 0, duration: 3 }];
+    let bytes = common::Spec { channels: 2, playtime: 3, tracks, audio: common::pack(&frames) }.build();
+    let d = open(&bytes);
+    let mut disc = Disc::open(Cursor::new(bytes.clone())).unwrap();
+    let comment_text = CString::new("op\u{e9}\u{2013}").unwrap();
+    let marker_text = CString::new("B\u{e9}").unwrap();
+    let wide = CString::new("\u{100}").unwrap();
+    let file = |o: *const SbOutputOptions| {
+        let mut l = ptr::null_mut();
+        let status = c!(sb_output_layout_new(d, 0, 0, 3, SbOutputFormat::DsdiffDsd as u32, o, &mut l));
+        if status != SbStatus::Ok {
+            return Err(status);
+        }
+        let f = read(l, d, 5_000);
+        c!(sb_output_layout_free(l));
+        Ok(f)
+    };
+    let o = options();
+    for option in [SbOutputOption::DsdiffDepartureD1, SbOutputOption::DsdiffDepartureD2] {
+        assert_eq!(set(o, option, 2), SbStatus::InvalidArgument, "{option:?}");
+        assert_eq!(set(o, option, -1), SbStatus::InvalidArgument, "{option:?}");
+    }
+    assert_eq!(set(o, SbOutputOption::DsdiffEditedMasterInfo, 1), SbStatus::Ok);
+    let comment = SbComment {
+        text: comment_text.as_ptr(),
+        year: 0,
+        kind: 0,
+        reference: 0,
+        month: 0,
+        day: 0,
+        hour: 0,
+        minutes: 0,
+    };
+    assert_eq!(c!(sb_output_options_add_comment(o, &comment)), SbStatus::Ok);
+    // A marker's code points above U+00FF can never be written: refused at once.
+    let m = SbMarker { text: wide.as_ptr(), frame: 0, kind: 2, track_flags: 0, reserved: 0 };
+    assert_eq!(c!(sb_output_options_add_marker(o, &m)), SbStatus::InvalidArgument);
+    let m = SbMarker { text: marker_text.as_ptr(), ..m };
+    assert_eq!(c!(sb_output_options_add_marker(o, &m)), SbStatus::Ok);
+    // Without D2, the marker's U+00E9 is not a text byte.
+    assert_eq!(file(o), Err(SbStatus::InvalidArgument));
+    assert_eq!(c!(sb_output_options_clear_markers(o)), SbStatus::Ok);
+    let conforming = file(o).unwrap();
+    assert!(conforming.windows(4).any(|w| w == b"op??"));
+    let cmpr = conforming.windows(4).position(|w| w == b"CMPR").unwrap();
+    assert_eq!(&conforming[cmpr + 4..cmpr + 12], &19u64.to_be_bytes());
+
+    assert_eq!(c!(sb_output_options_add_marker(o, &m)), SbStatus::Ok);
+    assert_eq!(set(o, SbOutputOption::DsdiffDepartureD1, 1), SbStatus::Ok);
+    assert_eq!(set(o, SbOutputOption::DsdiffDepartureD2, 1), SbStatus::Ok);
+    let mut marker = scarletbook::output::Marker::new(0, scarletbook::output::MarkerKind::ProgramStart);
+    marker.text = b"B\xE9".to_vec();
+    let rust = OutputOptions::default()
+        .with_dsdiff_edited_master_info(true)
+        .with_dsdiff_comments(vec![Comment::new(CommentKind::General, "op\u{e9}\u{2013}")])
+        .with_dsdiff_markers(scarletbook::output::Markers::Custom(vec![marker]))
+        .with_dsdiff_departures([DsdiffDeparture::D1, DsdiffDeparture::D2]);
+    let layout = disc.output_layout(Slot::TwoChannel, 0, 3, Format::DsdiffDsd, &rust).unwrap();
+    let want = rust_file(&mut disc, &layout);
+    assert_eq!(file(o).unwrap(), want);
+    assert_eq!(&want[cmpr + 4..cmpr + 12], &20u64.to_be_bytes());
+    assert!(want.windows(4).any(|w| w == b"op\xE9\0"));
+    assert!(want.windows(2).any(|w| w == b"B\xE9"));
+    // Both off again: the conforming file.
+    assert_eq!(c!(sb_output_options_clear_markers(o)), SbStatus::Ok);
+    assert_eq!(set(o, SbOutputOption::DsdiffDepartureD1, 0), SbStatus::Ok);
+    assert_eq!(set(o, SbOutputOption::DsdiffDepartureD2, 0), SbStatus::Ok);
+    assert_eq!(file(o).unwrap(), conforming);
     c!(sb_output_options_free(o));
     c!(sb_disc_free(d));
 }
