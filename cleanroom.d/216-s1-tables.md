@@ -1,0 +1,1 @@
+| 2026-11-01 | faster S1 table sums in scarletbook-pcm, call-pattern benchmark, corpus PCM digest (#216, #217) | no SACD or DSP source: a loop restructuring of the existing integer sums, chosen by profiling this crate's own builds (perf); the digest test uses the corpus at sacd-spec as already cited. No new sources consulted. |
