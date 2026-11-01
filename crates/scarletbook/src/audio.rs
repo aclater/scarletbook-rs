@@ -3223,8 +3223,6 @@ pub trait SeekCursor: sealed::Sealed {}
 pub(crate) mod sealed {
     /// The area cursor inside a [`super::SeekCursor`].
     pub trait Sealed {
-        /// The area cursor.
-        fn area_cursor(&self) -> &super::AreaCursor;
         /// The area cursor, to take its checkpoints.
         fn area_cursor_mut(&mut self) -> &mut super::AreaCursor;
     }
@@ -3235,30 +3233,18 @@ impl SeekCursor for TrackCursor {}
 impl SeekCursor for TrackAudioCursor {}
 
 impl sealed::Sealed for AreaCursor {
-    fn area_cursor(&self) -> &AreaCursor {
-        self
-    }
-
     fn area_cursor_mut(&mut self) -> &mut AreaCursor {
         self
     }
 }
 
 impl sealed::Sealed for TrackCursor {
-    fn area_cursor(&self) -> &AreaCursor {
-        &self.area
-    }
-
     fn area_cursor_mut(&mut self) -> &mut AreaCursor {
         &mut self.area
     }
 }
 
 impl sealed::Sealed for TrackAudioCursor {
-    fn area_cursor(&self) -> &AreaCursor {
-        &self.frames.area
-    }
-
     fn area_cursor_mut(&mut self) -> &mut AreaCursor {
         &mut self.frames.area
     }
