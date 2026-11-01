@@ -57,7 +57,7 @@ use crate::toc::{Area, Toc, TocDigests, Track};
 pub use dsdiff::{CallerChunk, DsdiffDeparture, LocalChunk, PropertyChunk};
 pub use dsdiff_dst::{DstIndexOffset, DstLengths, InvalidDst};
 pub use dsdiff_text::{Comment, CommentKind};
-pub use dsf::DsfBitsPerSample;
+pub use dsf::{DsfBitsPerSample, DsfChainFile, plan_dsf_chain};
 pub use id3::{AlbumArtistFrame, ArrangerFrame, DateFrame, Id3Encoding, Id3Options, MAX_TAG_BYTES};
 pub use markers::{InfoChunk, Marker, MarkerKind, MarkerText, Markers};
 pub use tags::{ArtistTitleSource, GenreSources, TagItem, TagSet, TextSource};
@@ -249,6 +249,20 @@ pub struct OutputOptions {
     /// reproduce the files some existing programs write; see [`DsdiffDeparture`]. DSF files
     /// ignore them.
     pub dsdiff_departures: BTreeSet<DsdiffDeparture>,
+    /// W32, what a DSF file holds (8.2.7, sacd-spec e069569 and fa558a8): with this and
+    /// [`OutputOptions::dsf_chain_end`], the byte range of the range `[a_i, b_i)` in a
+    /// chain whose first range starts at frame `a_1`, this. Default `None`: the range of
+    /// positions itself. [`plan_dsf_chain`] gives both values per file. The byte range is
+    /// always one of 8.2.7 item 3's `[p_i, p_{i+1})`, that of the chain `[a_1, a_i)`,
+    /// `[a_i, b_i)`, `[b_i, b_K)` (each part present when not empty), which 8.1 item 2
+    /// checks: no other byte range can be made (8.2.7 item 2).
+    pub dsf_chain_first: Option<u32>,
+    /// W32, the end `b_K` of the chain's last range (8.2.7 item 3); the file is the last of
+    /// its chain when its range ends there. Both are set or neither, with
+    /// `a_1 <= a_i < b_i <= b_K`, `[b_i, b_K)` passing the checks of 8.1 item 2 (a chain
+    /// is split where they fail), and only for DSF; otherwise the layout is an
+    /// [`Error::InvalidArgument`]. Default `None`.
+    pub dsf_chain_end: Option<u32>,
 }
 
 impl Default for OutputOptions {
@@ -288,6 +302,8 @@ impl Default for OutputOptions {
             dsdiff_artist_title_source: ArtistTitleSource::Album,
             dsdiff_empty_info: true,
             dsdiff_departures: BTreeSet::new(),
+            dsf_chain_first: None,
+            dsf_chain_end: None,
         }
     }
 }
@@ -475,6 +491,12 @@ impl OutputOptions {
     pub(crate) fn departs(&self, d: DsdiffDeparture) -> bool {
         self.dsdiff_departures.contains(&d)
     }
+
+    /// These options for the byte range of a DSF file in the chain `[a_1, b_K)` (W32,
+    /// 8.2.7), such as [`DsfChainFile::chain`], or for a range of positions (`None`).
+    pub fn with_dsf_chain(self, chain: Option<(u32, u32)>) -> Self {
+        OutputOptions { dsf_chain_first: chain.map(|c| c.0), dsf_chain_end: chain.map(|c| c.1), ..self }
+    }
 }
 
 /// What a region of an output file holds.
@@ -574,6 +596,11 @@ pub struct Layout {
     image: Option<TocDigests>,
     /// The source track's number (8.1 item 7).
     source: Option<u8>,
+    /// For a DSF file holding a byte range, its chain `[a_1, b_K)` (8.2.7).
+    chain: Option<(u32, u32)>,
+    /// The first position the file reads: `first`, or `first - 1` for a file of a chain
+    /// that starts with the end of the range before it (8.2.7 item 4).
+    base: u32,
 }
 
 impl Layout {
@@ -599,6 +626,28 @@ impl Layout {
         if options.dsdiff_edited_master && format == Format::Dsf {
             return Err(Error::InvalidArgument("an edited master is a DSDIFF file"));
         }
+        let chain = match (options.dsf_chain_first, options.dsf_chain_end) {
+            (None, None) => None,
+            (Some(a1), Some(last)) => {
+                if format != Format::Dsf {
+                    return Err(Error::InvalidArgument("a byte range of a chain is DSF only"));
+                }
+                // With `first < end` from the checks, a1 <= first - 1 whenever p < 4704 first.
+                if a1 > first || end > last {
+                    return Err(Error::InvalidArgument("the range must be within its chain"));
+                }
+                // The rest of the chain must pass the checks of 8.1 item 2, or 8.2.7 item 3
+                // splits it at `end` and this file is the last. If `[end, last)` passes, so
+                // does every range of the chain after this one.
+                if last > end && audio::check_range(area, end, last, toc.sectors).is_err() {
+                    return Err(Error::InvalidArgument(
+                        "the chain's ranges after this one are skipped or refused: it ends here",
+                    ));
+                }
+                Some((a1, last))
+            }
+            _ => return Err(Error::InvalidArgument("a chain needs both its first frame and its end")),
+        };
         let mut layout = Layout {
             format,
             slot: area.slot,
@@ -616,6 +665,8 @@ impl Layout {
             } else {
                 source_track(area, first, end, options.source_track)?
             },
+            chain,
+            base: first,
         };
         match format {
             Format::Dsf => {
@@ -642,6 +693,9 @@ impl Layout {
         let area = toc.area(lengths.slot()).ok_or(Error::NoSuchArea(lengths.slot()))?;
         let (first, end) = lengths.range();
         audio::check_range(area, first, end, toc.sectors)?;
+        if options.dsf_chain_first.is_some() || options.dsf_chain_end.is_some() {
+            return Err(Error::InvalidArgument("a byte range of a chain is DSF only"));
+        }
         let mut layout = Layout {
             format: Format::DsdiffDst,
             slot: area.slot,
@@ -659,6 +713,8 @@ impl Layout {
             } else {
                 source_track(area, first, end, options.source_track)?
             },
+            chain: None,
+            base: first,
         };
         let data = dsdiff_dst::DstData::new(&layout, lengths, options)?;
         dsdiff::assemble(&mut layout, toc, area, options, dsdiff::Sound::Dst(data))?;
@@ -687,9 +743,22 @@ impl Layout {
         self.slot
     }
 
-    /// The frame range `[first, end)` the file holds.
+    /// The frame range `[first, end)` the file holds. For a DSF file of a chain (8.2.7,
+    /// [`OutputOptions::dsf_chain_first`]), it is the range `[a_i, b_i)` the file's byte
+    /// range is made from, which gives its source track (8.2.7 item 6).
     pub fn range(&self) -> (u32, u32) {
         (self.first, self.end)
+    }
+
+    /// For a DSF file, the bytes `[p, q)` of each channel's byte timeline it holds
+    /// (specification 8, 8.2.7 items 1 and 2): `[4704 first, 4704 end)` for a range of
+    /// positions, and the byte range of 8.2.7 item 3 for a file of a chain. `None` for
+    /// DSDIFF.
+    pub fn byte_range(&self) -> Option<(u64, u64)> {
+        self.parts.iter().find_map(|p| match p {
+            Part::Dsf(d) => Some(d.bytes()),
+            _ => None,
+        })
     }
 
     /// The DSF tag of the options (8.2.6, 8.3), if any.
@@ -743,7 +812,9 @@ impl Layout {
 
     /// The timeline positions that [`Layout::fill`] may read to produce the file's bytes
     /// `range` (clipped to the file), as a frame range within [`Layout::range`]; empty when
-    /// those bytes need no audio.
+    /// those bytes need no audio. A DSF file of a chain whose byte range starts before
+    /// `4704 first` also reads position `first - 1`, the end of the range before it (8.2.7
+    /// item 4).
     pub fn positions_for(&self, range: Range<u64>) -> Range<u32> {
         let mut lo = u32::MAX;
         let mut hi = 0;
@@ -764,7 +835,7 @@ impl Layout {
                 hi = hi.max(p.end);
             }
         }
-        if lo >= hi { self.first..self.first } else { self.first + lo..self.first + hi }
+        if lo >= hi { self.first..self.first } else { self.base + lo..self.base + hi }
     }
 
     /// Fills `out` with the file's bytes from `offset`, reading the content of positions
@@ -797,7 +868,7 @@ impl Layout {
                     let rel = rel as usize; // below `b.len()`
                     dst.copy_from_slice(&b[rel..rel + n]);
                 }
-                Part::Dsf(d) => d.fill(rel, dst, self.first, &mut source)?,
+                Part::Dsf(d) => d.fill(rel, dst, self.base, &mut source)?,
                 Part::Dsd(d) => d.fill(rel, dst, self.first, &mut source)?,
                 Part::Dst(d) => d.fill(rel, dst, self.first, &mut source)?,
             }
@@ -874,6 +945,21 @@ impl<R: Read + Seek> Disc<R> {
         let mut layout = Layout::new(self.toc(), slot, first, end, format, options)?;
         layout.image = Some(self.toc_digests().clone());
         Ok(layout)
+    }
+
+    /// The DSF files of a chain of ranges of the area from `slot` (specification 8, 8.2.7;
+    /// see [`plan_dsf_chain`]), with `bounds` `a_1, ..., a_K, b_K`. Each file's layout is
+    /// [`Disc::output_layout`] of its range with [`OutputOptions::with_dsf_chain`].
+    ///
+    /// # Errors
+    ///
+    /// Those of [`plan_dsf_chain`].
+    pub fn plan_dsf_chain(
+        &self,
+        slot: Slot,
+        bounds: &[u32],
+    ) -> Result<Vec<Result<DsfChainFile, Error>>, Error> {
+        plan_dsf_chain(self.toc(), slot, bounds)
     }
 
     /// The [`Format::DsdiffDst`] [`Layout`] of the range of `lengths` of their area (see

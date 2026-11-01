@@ -269,6 +269,8 @@ SB_OUTPUT_OPTION_DSDIFF_EDITED_MASTER_ID_WRITTEN = 33,
 SB_OUTPUT_OPTION_DSDIFF_ARTIST_TITLE_SOURCE = 34,
 SB_OUTPUT_OPTION_DSDIFF_DEPARTURE_D1 = 35,
 SB_OUTPUT_OPTION_DSDIFF_DEPARTURE_D2 = 36,
+SB_OUTPUT_OPTION_DSF_CHAIN_FIRST = 37,
+SB_OUTPUT_OPTION_DSF_CHAIN_END = 38,
 SB_OUTPUT_OPTION_DSDIFF_EMPTY_INFO = 39,
 };
 #ifndef __cplusplus
@@ -533,6 +535,16 @@ size_t dst_equivalent_len;
 uint32_t number;
 uint32_t reserved;
 } SbPositionData;
+typedef struct SbDsfChainFile {
+uint64_t byte_first;
+uint64_t byte_end;
+uint32_t first;
+uint32_t end;
+uint32_t chain_first;
+uint32_t chain_end;
+int32_t status;
+uint32_t reserved;
+} SbDsfChainFile;
 typedef struct SbTocHeader {
 uint8_t magic [ 8 ];
 uint16_t major;
@@ -744,6 +756,7 @@ SbStatus sb_output_layout_fill(const struct SbOutputLayout *layout, uint64_t off
 void sb_output_layout_free(struct SbOutputLayout *layout);
 SbStatus sb_output_options_add_chunk(const struct SbOutputOptions *options, const uint8_t *id, const uint8_t *data, size_t len);
 SbStatus sb_output_options_clear_chunks(const struct SbOutputOptions *options);
+SbStatus sb_output_dsf_chain_plan(const struct SbDisc *disc, uint32_t slot, const uint32_t *bounds, size_t count, struct SbDsfChainFile *files, size_t cap, size_t *written);
 #ifdef __cplusplus
 }
 #endif

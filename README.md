@@ -310,7 +310,9 @@ sb_output_layout_read(layout, disc, offset, buf, len, &n);   /* any byte range *
 ```
 
 For DST passthrough, `sb_dst_lengths_scan` (or `sb_dst_lengths_load`) and
-`sb_output_layout_new_dst`. Tag items: `sb_tags_from_toc`, `sb_tags_set`, `sb_tags_push`,
+`sb_output_layout_new_dst`. For gapless DSF files of consecutive ranges (specification 8,
+8.2.7), `sb_output_dsf_chain_plan`, then each file with `SB_OUTPUT_OPTION_DSF_CHAIN_FIRST`
+and `SB_OUTPUT_OPTION_DSF_CHAIN_END` set to its entry's `chain_first` and `chain_end`. Tag items: `sb_tags_from_toc`, `sb_tags_set`, `sb_tags_push`,
 `sb_tags_remove`, then `sb_output_options_set_tags`. An area whose loudspeaker layout is
 unspecified is refused for DSF with `SB_STATUS_OUTPUT_LAYOUT_UNSPECIFIED` unless a channel
 type is given, and an edited master that 8.4.11 excludes with `SB_STATUS_NOT_EDITED_MASTER`.
@@ -659,6 +661,11 @@ class SbPositionData(C.Structure):
                 ("dst_equivalent", C.POINTER(C.c_uint8)), ("dst_equivalent_len", C.c_size_t),
                 ("number", C.c_uint32), ("reserved", C.c_uint32)]
 
+class SbDsfChainFile(C.Structure):
+    _fields_ = [("byte_first", C.c_uint64), ("byte_end", C.c_uint64), ("first", C.c_uint32),
+                ("end", C.c_uint32), ("chain_first", C.c_uint32), ("chain_end", C.c_uint32),
+                ("status", C.c_int32), ("reserved", C.c_uint32)]
+
 # Handles are opaque pointers; SbStatus is an int32_t (0 OK, 1 END, 2 ABSENT, negative:
 # failure); size_t is only the length of a buffer of yours.
 H, S, P, U32, SIZE = C.c_void_p, C.c_int32, C.POINTER, C.c_uint32, C.c_size_t
@@ -767,6 +774,7 @@ bind("sb_output_layout_positions", S, H, C.c_uint64, C.c_uint64, P(U32), P(U32))
 bind("sb_output_layout_read", S, H, H, C.c_uint64, C.c_char_p, SIZE, P(SIZE))
 bind("sb_output_layout_fill", S, H, C.c_uint64, C.c_char_p, SIZE, P(SbPositionData), SIZE, P(SIZE))
 bind("sb_output_layout_free", None, H)
+bind("sb_output_dsf_chain_plan", S, H, U32, P(U32), SIZE, P(SbDsfChainFile), SIZE, P(SIZE))
 ```
 
 The other functions bind the same way from their declarations in `scarletbook.h`. Then:

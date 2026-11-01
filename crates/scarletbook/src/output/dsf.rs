@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! DSF (specification 8, 8.2).
+//! DSF (specification 8, 8.2), and byte ranges built from a chain (8.2.7, sacd-spec
+//! e069569).
 
 use std::ops::Range;
 
 use super::{Checked, Layout, OutputOptions, Part, RegionKind};
-use crate::audio::FRAME_BYTES_PER_CHANNEL;
-use crate::error::{Error, OutputRefusal};
-use crate::toc::{Area, LoudspeakerLayout};
+use crate::audio::{self, FRAME_BYTES_PER_CHANNEL};
+use crate::error::{Error, OutputRefusal, Slot};
+use crate::toc::{Area, LoudspeakerLayout, Toc};
 
 /// Block size per channel (8.2.1, 8.2.2 item 1).
 const BLOCK: u64 = 4096;
@@ -35,9 +36,119 @@ pub enum DsfBitsPerSample {
 #[derive(Clone, Debug)]
 pub(super) struct DsfData {
     channels: u8,
+    /// `p`, the first byte of each channel's byte timeline that the file holds (8.2.7 item
+    /// 2): `4704 a` for a range of positions.
+    start: u64,
     /// `S`, DSD bytes per channel.
     stream: u64,
+    /// `p - 4704 t0`, where `t0` is the first position the file reads
+    /// ([`Layout::positions_for`]): 0 for a range of positions, and for a byte range the
+    /// bytes of `t0` before `p` (below 4704).
+    skip: u64,
     reverse: bool,
+}
+
+impl DsfData {
+    /// The byte range `[p, q)` of each channel's byte timeline that the file holds.
+    pub(super) fn bytes(&self) -> (u64, u64) {
+        (self.start, self.start + self.stream)
+    }
+}
+
+/// One file of a chain of ranges of positions (specification 8, 8.2.7 item 3; sacd-spec
+/// e069569), as [`plan_dsf_chain`] gives it: range `[a_i, b_i)`, the chain `[a_1, b_K)`
+/// it belongs to after any split, and the byte range `[p_i, p_{i+1})` the file holds.
+///
+/// Its layout is [`Layout::new`] of [`DsfChainFile::range`] as a [`super::Format::Dsf`]
+/// file, with [`OutputOptions::with_dsf_chain`] of [`DsfChainFile::chain`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct DsfChainFile {
+    /// `[a_i, b_i)`, the range of positions, which gives the file's source track (8.2.7
+    /// item 6).
+    pub range: (u32, u32),
+    /// `[a_1, b_K)`: the first frame of the chain's first range and the end of its last.
+    pub chain: (u32, u32),
+    /// `[p_i, p_{i+1})`, the bytes of each channel's byte timeline the file holds (8.2.7
+    /// items 1 to 3): `S = p_{i+1} - p_i`.
+    pub bytes: (u64, u64),
+}
+
+impl DsfChainFile {
+    /// Whether the file is the last of its chain: the only one whose stream may end with
+    /// the pad of 8.2.2 (8.2.7 item 4).
+    pub fn is_last(&self) -> bool {
+        self.range.1 == self.chain.1
+    }
+}
+
+/// `p_i` of a range starting at frame `a` in a chain starting at frame `a1` (8.2.7 item
+/// 3): `4704 a1 + 4096 floor(4704 (a - a1) / 4096)`, which is `4704 a1` for `a = a1`.
+fn chain_start(a1: u32, a: u32) -> u64 {
+    let per = FRAME_BYTES_PER_CHANNEL as u64;
+    per * u64::from(a1) + BLOCK * (per * u64::from(a - a1) / BLOCK)
+}
+
+/// `[p_i, p_{i+1})` of the range `[a, b)` in the chain `[a1, end)` (8.2.7 item 3), with
+/// `a1 <= a < b <= end`: the next range's `p` when `b < end`, and `4704 end` for the last.
+pub(super) fn chain_bytes(a1: u32, end: u32, a: u32, b: u32) -> (u64, u64) {
+    let q = if b == end { FRAME_BYTES_PER_CHANNEL as u64 * u64::from(end) } else { chain_start(a1, b) };
+    (chain_start(a1, a), q)
+}
+
+/// Plans the DSF byte ranges of a chain (specification 8, 8.2.7 item 3; sacd-spec
+/// e069569, as clarified at fa558a8): `bounds` are `a_1, a_2, ..., a_K, b_K`, so range `i` is
+/// `[bounds[i - 1], bounds[i])` and each ends where the next starts. The tracks with pause
+/// of consecutive tracks (4.7.1 item 5) give such bounds when they meet end to end.
+///
+/// Every range is checked by 8.1 item 2 ([`audio::check_range`]) before any file is
+/// planned, as 8.2.7 item 3 requires, because a file's end depends on whether the range
+/// after it stays in the chain. The result has one entry per range, in order: the range's
+/// file, or the error of the checks that skip or refuse it, the same error
+/// [`Layout::new`] gives for it. Each skipped or refused range splits the chain, an empty
+/// range skipped with [`Error::TrackEmpty`] included even though its neighbours meet: the
+/// ranges before it and after it form separate chains, each with its own
+/// [`DsfChainFile::chain`], and the first file after it starts at `4704 a`.
+///
+/// Which files are written is the caller's choice (8.2.7 item 7): a file not written does
+/// not split the chain, and each file written holds the bytes planned here for the whole
+/// chain. Another chain, one split elsewhere, is another plan, and gives other files.
+///
+/// Everything here follows from the TOC: no audio is read (8.2.7 item 5).
+///
+/// # Errors
+///
+/// [`Error::NoSuchArea`]; [`Error::InvalidArgument`] for fewer than two bounds.
+pub fn plan_dsf_chain(
+    toc: &Toc,
+    slot: Slot,
+    bounds: &[u32],
+) -> Result<Vec<Result<DsfChainFile, Error>>, Error> {
+    let area = toc.area(slot).ok_or(Error::NoSuchArea(slot))?;
+    if bounds.len() < 2 {
+        return Err(Error::InvalidArgument("a chain needs at least one range: two bounds"));
+    }
+    // The error of each range's checks, if any.
+    let mut errors: Vec<Option<Error>> =
+        bounds.windows(2).map(|w| audio::check_range(area, w[0], w[1], toc.sectors).err()).collect();
+    let mut files = Vec::with_capacity(errors.len());
+    let mut i = 0;
+    while i < errors.len() {
+        // The sub-chain of ranges i..j that pass their checks.
+        let j = (i..errors.len()).find(|&j| errors[j].is_some()).unwrap_or(errors.len());
+        let chain = (bounds[i], bounds[j]);
+        for k in i..j {
+            let range = (bounds[k], bounds[k + 1]);
+            let bytes = chain_bytes(chain.0, chain.1, range.0, range.1);
+            files.push(Ok(DsfChainFile { range, chain, bytes }));
+        }
+        // A skipped or refused range keeps its error and ends the sub-chain.
+        if let Some(e) = errors.get_mut(j).and_then(Option::take) {
+            files.push(Err(e));
+        }
+        i = j + 1;
+    }
+    Ok(files)
 }
 
 /// The channel type of a layout (8.2.4), or of an unspecified one from the options.
@@ -79,8 +190,18 @@ pub(super) fn build(
 ) -> Result<(), Error> {
     let channel_type = channel_type(area, options)?;
     let c = u64::from(layout.channels);
-    let positions = u64::from(layout.end - layout.first);
-    let stream = positions * FRAME_BYTES_PER_CHANNEL as u64;
+    let per = FRAME_BYTES_PER_CHANNEL as u64;
+    // A range of positions holds [4704 a, 4704 b); a file of a chain, its byte range
+    // (8.2.7 items 2 and 3), which starts at most 4095 bytes before 4704 a, inside the
+    // position before a, and so it reads from that position (8.2.7 item 4).
+    let (start, end) = match layout.chain {
+        Some((a1, chain_end)) => chain_bytes(a1, chain_end, layout.first, layout.end),
+        None => (per * u64::from(layout.first), per * u64::from(layout.end)),
+    };
+    // At least `first - 1`, which is in the chain because a_1 <= first - 1 when p < 4704 a.
+    layout.base = (start / per) as u32;
+    let skip = start - per * u64::from(layout.base);
+    let stream = end - start;
     let blocks = stream.div_ceil(BLOCK);
     let n = BLOCK * blocks * c;
     // Without a tag, m = 0 and the metadata pointer is 0 (8.2.6 item 2).
@@ -113,7 +234,7 @@ pub(super) fn build(
     debug_assert_eq!(h.len(), HEADER);
 
     layout.push(RegionKind::Header, HEADER as u64, Part::Bytes(h));
-    let data = DsfData { channels: layout.channels, stream, reverse: bits == 1 };
+    let data = DsfData { channels: layout.channels, start, stream, skip, reverse: bits == 1 };
     layout.push(RegionKind::SoundData, n, Part::Dsf(data));
     if let Some(tag) = tag.filter(|t| !t.is_empty()) {
         layout.push(RegionKind::Trailer, tag.len() as u64, Part::Bytes(tag));
@@ -138,8 +259,8 @@ impl DsfData {
         BLOCK * u64::from(self.channels)
     }
 
-    /// The positions, relative to the range's first, that sound data bytes `range` read:
-    /// every stream byte of the rows they touch, below `S`.
+    /// The positions, relative to the first the file reads, that sound data bytes `range`
+    /// read: every stream byte of the rows they touch, below `S`.
     pub(super) fn positions(&self, range: Range<u64>) -> Range<u32> {
         let row = self.row();
         let lo = range.start / row * BLOCK;
@@ -148,14 +269,15 @@ impl DsfData {
             return 0..0;
         }
         let per = FRAME_BYTES_PER_CHANNEL as u64;
-        // Below `N`, a u32.
-        (lo / per) as u32..((hi - 1) / per + 1) as u32
+        // Below `N + 1`, a u32.
+        ((lo + self.skip) / per) as u32..((hi - 1 + self.skip) / per + 1) as u32
     }
 
     /// Fills `out` with sound data bytes from `offset` (8.2.2): data byte `o` is in row
     /// `j = o / 4096C`, channel `c = (o mod 4096C) / 4096`, at stream byte
     /// `k = 4096j + o mod 4096`; it is stream byte `k` of channel `c` as 8.2.3 stores it, or
-    /// the pad 0x00 when `k >= S`.
+    /// the pad 0x00 when `k >= S`. Stream byte `k` is byte `p + k` of the byte timeline
+    /// (8.2.7 item 2): byte `skip + k` from the start of position `first`.
     pub(super) fn fill(
         &self,
         offset: u64,
@@ -181,12 +303,13 @@ impl DsfData {
                     block[at..].fill(0);
                     break;
                 }
-                let within = (k % per) as usize;
+                let timeline = k + self.skip;
+                let within = (timeline % per) as usize;
                 let n = (run - at)
                     .min(FRAME_BYTES_PER_CHANNEL - within)
                     .min(usize::try_from(self.stream - k).unwrap_or(usize::MAX));
-                // Below `N`, so `first + t` is within the range.
-                let t = first + (k / per) as u32;
+                // Below the positions read, so `first + t` is within them.
+                let t = first + (timeline / per) as u32;
                 let content = source.content(t)?;
                 let src = content[within * c + channel..].iter().step_by(c);
                 for (dst, &b) in block[at..at + n].iter_mut().zip(src) {
