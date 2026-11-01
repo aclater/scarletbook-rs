@@ -119,8 +119,8 @@ pub enum SbOutputOption {
     /// `SB_OUTPUT_OPTION_DSF_CHAIN_END`, the file holds the byte range of its range
     /// `[a_i, b_i)` in a chain whose first range starts at this frame `a_1`.
     /// `sb_output_dsf_chain_plan` gives both values per file. Both are set or neither,
-    /// with `a_1 <= a_i < b_i <= b_K`, DSF only; otherwise the layout is
-    /// `SB_STATUS_INVALID_ARGUMENT`.
+    /// with `a_1 <= a_i < b_i <= b_K` and `[b_i, b_K)` passing the checks of 8.1 item 2
+    /// (`sb_range_check`), DSF only; otherwise the layout is `SB_STATUS_INVALID_ARGUMENT`.
     DsfChainFirst = 37,
     /// W32: -1 (the default), or the end `b_K` of the chain's last range (8.2.7 item 3);
     /// the file whose range ends there is the last of the chain. See

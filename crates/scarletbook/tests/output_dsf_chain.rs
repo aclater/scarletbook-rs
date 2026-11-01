@@ -284,6 +284,18 @@ fn chain_options_are_checked() {
         let e = disc.output_layout(Slot::TwoChannel, a, b, format, &options).unwrap_err();
         assert!(matches!(e, Error::InvalidArgument(_)), "{format:?} [{a}, {b}): {e}");
     }
+    // A chain end past the play range: 8.2.7 item 3 would split the chain at 9, making
+    // [5, 9) the last file, so a chain that goes on is refused (sacd-spec e069569).
+    for last in [10, 12, u32::MAX] {
+        let options = untagged().with_dsf_chain(Some((0, last)));
+        for (a, b) in [(5, 9), (0, 9), (8, 9), (3, 5)] {
+            let e = disc.output_layout(Slot::TwoChannel, a, b, Format::Dsf, &options).unwrap_err();
+            assert!(matches!(e, Error::InvalidArgument(_)), "[{a}, {b}) of (0, {last}): {e}");
+        }
+    }
+    let last =
+        disc.output_layout(Slot::TwoChannel, 5, 9, Format::Dsf, &untagged().with_dsf_chain(Some((0, 9))));
+    assert_eq!(last.unwrap().byte_range(), Some((20480, 9 * PER)));
     // The checks of 8.1 item 2 come first.
     let e = disc.output_layout(Slot::TwoChannel, 4, 4, Format::Dsf, &chain).unwrap_err();
     assert!(matches!(e, Error::TrackEmpty), "{e}");

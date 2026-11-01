@@ -755,6 +755,12 @@ fn dsf_chain_plans_and_options() {
     assert_eq!(set(o, SbOutputOption::DsfChainEnd, 9), SbStatus::Ok);
     assert_eq!(c!(sb_output_layout_new(d, 0, 3, 5, 1, o, &mut l)), SbStatus::InvalidArgument);
     assert_eq!(c!(sb_output_layout_new(d, 0, 2, 5, 0, o, &mut l)), SbStatus::InvalidArgument);
+    // A chain end past the play range (9): the chain would split at 9.
+    assert_eq!(set(o, SbOutputOption::DsfChainFirst, 0), SbStatus::Ok);
+    assert_eq!(set(o, SbOutputOption::DsfChainEnd, 12), SbStatus::Ok);
+    assert_eq!(c!(sb_output_layout_new(d, 0, 5, 9, 0, o, &mut l)), SbStatus::InvalidArgument);
+    assert_eq!(set(o, SbOutputOption::DsfChainEnd, u32::MAX.into()), SbStatus::Ok);
+    assert_eq!(c!(sb_output_layout_new(d, 0, 3, 5, 0, o, &mut l)), SbStatus::InvalidArgument);
     assert!(l.is_null());
     assert_eq!(set(o, SbOutputOption::DsfChainFirst, -2), SbStatus::InvalidArgument);
     assert_eq!(set(o, SbOutputOption::DsfChainEnd, 1 << 32), SbStatus::InvalidArgument);

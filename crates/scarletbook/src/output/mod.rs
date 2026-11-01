@@ -217,7 +217,8 @@ pub struct OutputOptions {
     pub dsf_chain_first: Option<u32>,
     /// W32, the end `b_K` of the chain's last range (8.2.7 item 3); the file is the last of
     /// its chain when its range ends there. Both are set or neither, with
-    /// `a_1 <= a_i < b_i <= b_K`, and only for DSF; otherwise the layout is an
+    /// `a_1 <= a_i < b_i <= b_K`, `[b_i, b_K)` passing the checks of 8.1 item 2 (a chain
+    /// is split where they fail), and only for DSF; otherwise the layout is an
     /// [`Error::InvalidArgument`]. Default `None`.
     pub dsf_chain_end: Option<u32>,
 }
@@ -554,6 +555,14 @@ impl Layout {
                 // With `first < end` from the checks, a1 <= first - 1 whenever p < 4704 first.
                 if a1 > first || end > last {
                     return Err(Error::InvalidArgument("the range must be within its chain"));
+                }
+                // The rest of the chain must pass the checks of 8.1 item 2, or 8.2.7 item 3
+                // splits it at `end` and this file is the last. If `[end, last)` passes, so
+                // does every range of the chain after this one.
+                if last > end && audio::check_range(area, end, last, toc.sectors).is_err() {
+                    return Err(Error::InvalidArgument(
+                        "the chain's ranges after this one are skipped or refused: it ends here",
+                    ));
                 }
                 Some((a1, last))
             }
