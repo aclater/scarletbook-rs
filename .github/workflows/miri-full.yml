@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 name: Miri (full)
 
-# The long Miri slices: the core crate's integration tests (about 35 minutes; moved off pull
+# The long Miri slices: the core crate's integration tests (core, core-tags and core-chain,
+# 20 to 30 minutes each; 50 to 75 minutes as one slice before #205; moved off pull
 # requests because the core crate's only unsafe code is its run-time dispatch module (#146),
 # which ci.yml's `core-dispatch` slice checks on the pull requests that change it), the core
 # unit tests (the fast-loop check, split by frame count) and the
@@ -29,4 +30,4 @@ jobs:
   miri:
     uses: ./.github/workflows/miri.yml
     with:
-      slices: '["core","core-lib","lanes-1-2","lanes-3","lanes-4","parallel-window","parallel-continuation"]'
+      slices: '["core","core-tags","core-chain","core-lib","lanes-1-2","lanes-3","lanes-4","parallel-window","parallel-continuation"]'

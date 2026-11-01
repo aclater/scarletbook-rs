@@ -35,6 +35,9 @@ jobs:
       matrix:
         slice: ${{ fromJSON(inputs.slices) }}
     runs-on: ubuntu-latest
+    # About twice each slice's measured time, so that a stuck run fails within the hour instead
+    # of GitHub's 6-hour default (#205). Slices not listed get 20 minutes.
+    timeout-minutes: ${{ fromJSON('{"core-tags":60,"core-chain":55,"core":45,"core-dispatch":25,"lanes-1-2":20,"lanes-3":20,"lanes-4":20}')[matrix.slice] || 20 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -56,6 +59,10 @@ jobs:
           SLICE: ${{ matrix.slice }}
           # scarletbook-ffi's slowest test binaries under Miri, the `ffi-slow` slice.
           FFI_SLOW: sectors pcm
+          # The core crate's slowest integration-test binaries under Miri, by slice (#205):
+          # `core-tags` and `core-chain` run these, `core` every other file in tests/.
+          CORE_TAGS: output_tags
+          CORE_CHAIN: output_dsf_chain output_dsdiff_text
         run: |
           # Every named test must exist and run: a renamed test fails the slice instead of
           # leaving it to pass with nothing run. `named N` checks the libtest summaries of the
@@ -92,7 +99,33 @@ jobs:
               args=()
               for t in $FFI_SLOW; do args+=(--test "$t"); done
               miri -p scarletbook-ffi "${args[@]}" ;;
-            core) miri -p scarletbook --test '*' ;;
+            # The core crate's integration tests, in three slices balanced by their time under
+            # Miri (#205); together they run every file in tests/, as `--test '*'` did. Each
+            # named file must exist and be named once, so that no file is run twice or dropped.
+            core | core-tags | core-chain)
+              named_files="$CORE_TAGS $CORE_CHAIN"
+              for t in $named_files; do
+                if [[ ! -f "crates/scarletbook/tests/$t.rs" ]]; then
+                  echo "::error::Miri core slices name tests/$t.rs, which does not exist"
+                  exit 1
+                fi
+              done
+              dup=$(tr ' ' '\n' <<< "$named_files" | sed '/^$/d' | sort | uniq -d)
+              if [[ -n "$dup" ]]; then
+                echo "::error::Miri core slices name these test files more than once: $dup"
+                exit 1
+              fi
+              args=()
+              case "$SLICE" in
+                core-tags) for t in $CORE_TAGS; do args+=(--test "$t"); done ;;
+                core-chain) for t in $CORE_CHAIN; do args+=(--test "$t"); done ;;
+                core)
+                  for f in crates/scarletbook/tests/*.rs; do
+                    t=$(basename "$f" .rs)
+                    [[ " $named_files " == *" $t "* ]] || args+=(--test "$t")
+                  done ;;
+              esac
+              miri -p scarletbook "${args[@]}" ;;
             core-lib) miri -p scarletbook --lib -- --skip fast_loop_matches_general ;;
             # The run-time dispatch of the DST decoder, the core crate's unsafe code (#146): on
             # pull requests that change it (ci.yml), about 7 minutes.
