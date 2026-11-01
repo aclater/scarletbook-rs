@@ -445,3 +445,51 @@ fn corpus_frame_digest() {
     let digest: String = Sha256::digest(&got).iter().map(|b| format!("{b:02x}")).collect();
     assert_eq!(digest, CORPUS_PCM_SHA256);
 }
+
+/// The `demux` fuzz target's harness of `sb_pcm_convert_run` (`fuzz_pcm_convert_run`):
+/// valid arguments over 9 one-channel frames (more than one chunk of the C conversion),
+/// with and without neighbours, and invalid ones.
+#[cfg(feature = "fuzzing")]
+#[test]
+fn the_fuzzing_harness() {
+    let frame = |c: usize, seed: u8| -> Vec<u8> {
+        (0..c * FRAME_BYTES_PER_CHANNEL).map(|i| (i as u8).wrapping_mul(29) ^ seed).collect()
+    };
+    let n = if cfg!(miri) { 1 } else { 9 };
+    let frames: Vec<u8> = (0..n).flat_map(|k| frame(1, k as u8)).collect();
+    let (before, after) = (frame(1, 0xF0), frame(1, 0x0F));
+    scarletbook_ffi::fuzz_pcm_convert_run(176_400, SB_PCM_CUTOFF_DEFAULT, 1, 0.0, None, &frames, None);
+    if cfg!(miri) {
+        return;
+    }
+    scarletbook_ffi::fuzz_pcm_convert_run(
+        88_200,
+        SB_PCM_CUTOFF_LOW,
+        1,
+        23.5,
+        Some(&before),
+        &frames,
+        Some(&after),
+    );
+    let two = frame(2, 1);
+    scarletbook_ffi::fuzz_pcm_convert_run(
+        352_800,
+        SB_PCM_CUTOFF_WIDE,
+        2,
+        -60.0,
+        None,
+        &two,
+        Some(&frame(2, 2)),
+    );
+    for (rate, cutoff, channels, gain) in [
+        (88_200, SB_PCM_CUTOFF_WIDE, 1, 0.0),
+        (44_100, SB_PCM_CUTOFF_DEFAULT, 1, 0.0),
+        (176_400, 3, 1, 0.0),
+        (176_400, SB_PCM_CUTOFF_DEFAULT, 0, 0.0),
+        (176_400, SB_PCM_CUTOFF_DEFAULT, 7, 0.0),
+        (176_400, SB_PCM_CUTOFF_DEFAULT, 1, f64::NAN),
+        (176_400, SB_PCM_CUTOFF_DEFAULT, 1, 24.5),
+    ] {
+        scarletbook_ffi::fuzz_pcm_convert_run(rate, cutoff, channels, gain, None, &frames, None);
+    }
+}

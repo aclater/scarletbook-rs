@@ -662,3 +662,40 @@ fn calling_thread_groups_mix_dst_dsd_and_missing() {
     #[cfg(not(feature = "parallel"))]
     run();
 }
+
+/// The DSD-to-PCM checks of the fuzz harness (`harness::pcm`) on inputs it selects: every
+/// rate (and an invalid one), cutoff (and an invalid one), neighbour case, run length and
+/// split, gains in and out of range, and channel bytes from 0 to 7; and on its seeds.
+#[test]
+#[cfg_attr(miri, ignore = "converts dozens of frames")]
+fn pcm_cases_of_the_harness() {
+    let mut x = 0x9e37_79b9_7f4a_7c15u64;
+    let mut bytes = vec![0u8; 11 * FRAME_BYTES_PER_CHANNEL];
+    for b in &mut bytes {
+        x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        *b = (x >> 56) as u8;
+    }
+    for (i, a) in (0..=255u8).step_by(5).enumerate() {
+        let channels = [0, 1, 2, 5, 6, 7][i % 6];
+        let gain = [0, 119, 239, 240, 241, 242, 244, 246, 247, 255][i % 10];
+        let shape = (i * 7) as u8;
+        let mut input = vec![channels];
+        input.extend_from_slice(&bytes);
+        input.extend_from_slice(&[shape, gain, a]);
+        harness::pcm_select(&mut input);
+        let case = harness::demux_case(&input).expect("selected");
+        assert_eq!(case.frames.len() % (usize::from(case.channels) * FRAME_BYTES_PER_CHANNEL), 0);
+        assert!(harness::pcm_case(&input).is_none(), "taken once");
+    }
+    for seed in harness::pcm_seeds() {
+        assert!(harness::demux_case(&seed).is_some());
+    }
+    let mut input = vec![0u8; 4 + FRAME_BYTES_PER_CHANNEL];
+    let selected = (0..=u16::MAX)
+        .filter(|i| {
+            input[1..3].copy_from_slice(&i.to_le_bytes());
+            harness::pcm_case(&input).is_some()
+        })
+        .count();
+    assert!((4..=40).contains(&selected), "{selected} of 65 536 selected");
+}

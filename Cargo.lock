@@ -464,6 +464,7 @@ dependencies = [
  "criterion",
  "proptest",
  "rayon",
+ "scarletbook-pcm",
  "thiserror",
 ]
 
@@ -483,6 +484,7 @@ version = "0.5.2"
 dependencies = [
  "criterion",
  "scarletbook",
+ "scarletbook-pcm",
  "serde_json",
  "sha2",
 ]

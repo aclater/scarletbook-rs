@@ -5699,6 +5699,114 @@ pub fn fuzz_disc_toc(prefix: usize, data: &[u8]) {
     unsafe { sb_disc_free(disc) };
 }
 
+/// Fuzzing harness of `sb_pcm_converter_new` and `sb_pcm_convert_run` (#130), for the
+/// `demux` fuzz target: not part of the C interface. Makes a converter of the arguments,
+/// which must be refused with `SB_STATUS_INVALID_ARGUMENT` and a NULL handle exactly when
+/// the Rust converter refuses them; otherwise converts the run in both formats into a
+/// buffer one byte short (refused, nothing written), NULL (refused) and one larger and
+/// unaligned (the bytes past the output untouched), and panics unless the output and the
+/// clip counts are those of `Converter::convert_run` on the same input. A run that is not
+/// whole frames and an unknown format are refused. `before` and `after` must be one frame
+/// of `channels` channels, and `frames` whole frames, when the arguments are valid.
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+#[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used, clippy::too_many_arguments)]
+pub fn fuzz_pcm_convert_run(
+    rate_hz: u32,
+    cutoff: u32,
+    channels: u32,
+    gain_db: f64,
+    before: Option<&[u8]>,
+    frames: &[u8],
+    after: Option<&[u8]>,
+) {
+    let config = (|| {
+        let rate = PcmRate::from_hz(rate_hz)?;
+        let cutoff =
+            [Cutoff::Default, Cutoff::Low, Cutoff::Wide].get(usize::try_from(cutoff).ok()?).copied()?;
+        let channels = u8::try_from(channels).ok()?;
+        let gain = Gain::from_db(gain_db).ok()?;
+        Some(PcmConfig::new(rate, cutoff, channels).with_gain(gain))
+    })();
+    let reference = config.and_then(|c| Converter::new(c).ok());
+    let mut conv: *mut SbPcmConverter = ptr::NonNull::dangling().as_ptr();
+    // SAFETY: `&mut conv` is a valid out-pointer.
+    let s = unsafe { sb_pcm_converter_new(rate_hz, cutoff, channels, gain_db, &mut conv) };
+    let Some(mut reference) = reference else {
+        assert_eq!(s, SbStatus::InvalidArgument);
+        assert!(conv.is_null(), "a refused converter leaves NULL");
+        return;
+    };
+    assert_eq!(s, SbStatus::Ok);
+    assert!(!conv.is_null());
+    let mut per_channel = 0u32;
+    // SAFETY: `conv` is a live handle; `per_channel` is valid for a write.
+    assert_eq!(unsafe { sb_pcm_samples_per_frame(conv, &mut per_channel) }, SbStatus::Ok);
+    assert_eq!(per_channel as usize, reference.samples_per_frame());
+    let mut want = vec![0i32; frames.len() / FRAME_BYTES_PER_CHANNEL * reference.samples_per_frame()];
+    let stats = reference
+        .convert_run(FrameRun::new(frames).with_before(before).with_after(after), &mut want)
+        .unwrap();
+    let ptr_of = |n: Option<&[u8]>| n.map_or(ptr::null(), <[u8]>::as_ptr);
+    let run = |fmt: u32, frames_len: usize, out: *mut u8, out_len: usize, clipped: &mut [u64; 6]| {
+        // SAFETY: `conv` is a live handle; `before` and `after` are one frame each and
+        // `frames` is valid for `frames_len <= frames.len()` bytes (the caller's contract);
+        // `out` is NULL or valid for `out_len` bytes of writes and overlaps no input;
+        // `clipped` holds 6 counts.
+        unsafe {
+            sb_pcm_convert_run(
+                conv,
+                ptr_of(before),
+                frames.as_ptr(),
+                frames_len,
+                ptr_of(after),
+                fmt,
+                out.cast(),
+                out_len,
+                clipped.as_mut_ptr(),
+            )
+        }
+    };
+    for (fmt, width) in [(SB_PCM_S32, 4), (SB_PCM_S24LE, 3)] {
+        let mut expected = vec![0u8; want.len() * width];
+        if width == 4 {
+            for (d, s) in expected.chunks_exact_mut(4).zip(&want) {
+                d.copy_from_slice(&s.to_ne_bytes());
+            }
+        } else {
+            scarletbook_pcm::pack_s24le(&want, &mut expected);
+        }
+        let need = expected.len();
+        let mut clipped = [u64::MAX; 6];
+        if need > 0 {
+            let mut short = vec![0xA5u8; need - 1];
+            assert_eq!(
+                run(fmt, frames.len(), short.as_mut_ptr(), need - 1, &mut clipped),
+                SbStatus::BufferTooSmall
+            );
+            assert!(short.iter().all(|&b| b == 0xA5), "a refused conversion wrote");
+            assert_eq!(run(fmt, frames.len(), ptr::null_mut(), need, &mut clipped), SbStatus::BufferTooSmall);
+            assert_eq!(clipped, [u64::MAX; 6], "a refused conversion wrote the counts");
+        }
+        // One byte in, so that `out` is unaligned, and 7 bytes past the output.
+        let mut big = vec![0xA5u8; need + 8];
+        let out = big[1..].as_mut_ptr();
+        assert_eq!(run(fmt, frames.len(), out, need + 7, &mut clipped), SbStatus::Ok);
+        assert!(big[1..=need] == expected[..], "the C output differs from the Rust converter's");
+        assert!(big[0] == 0xA5 && big[need + 1..].iter().all(|&b| b == 0xA5), "wrote outside the output");
+        assert_eq!(clipped, stats.clipped);
+    }
+    let mut clipped = [0; 6];
+    let mut out = vec![0u8; 4 * want.len()];
+    if !frames.is_empty() {
+        let s = run(SB_PCM_S32, frames.len() - 1, out.as_mut_ptr(), out.len(), &mut clipped);
+        assert_eq!(s, SbStatus::InvalidArgument);
+    }
+    assert_eq!(run(2, frames.len(), out.as_mut_ptr(), out.len(), &mut clipped), SbStatus::InvalidArgument);
+    // SAFETY: `conv` is a live handle, not used again.
+    unsafe { sb_pcm_converter_free(conv) };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

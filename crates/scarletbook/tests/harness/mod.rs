@@ -10,6 +10,7 @@ use std::io::{self, Read, Seek, SeekFrom};
 use scarletbook::audio::{FRAME_BYTES_PER_CHANNEL, MAX_FRAME_BYTES};
 use scarletbook::dst::FL;
 use scarletbook::{AreaIndex, Demuxer, Disc, DstDecoder, FrameKind};
+use scarletbook_pcm::{ConvertStats, Converter, Cutoff, FrameRun, Gain, PcmConfig, PcmError, PcmRate};
 
 pub mod output;
 
@@ -104,8 +105,24 @@ where
 }
 
 /// Frame demultiplexing: byte 0 is the area's channel count (any value), the rest is a
-/// run of 2048-byte audio sectors (a trailing partial sector is ignored).
+/// run of 2048-byte audio sectors (a trailing partial sector is ignored). For the inputs
+/// that [`pcm_case`] selects (one in 4096), the same bytes are also converted to PCM
+/// ([`pcm`]).
 pub fn demux(data: &[u8]) {
+    demux_case(data);
+}
+
+/// [`demux`], returning the PCM case it converted, if any (for the fuzz target's C checks).
+pub fn demux_case(data: &[u8]) -> Option<PcmCase<'_>> {
+    let case = pcm_case(data);
+    if let Some(c) = &case {
+        pcm(c);
+    }
+    demux_frames(data);
+    case
+}
+
+fn demux_frames(data: &[u8]) {
     let Some((&channels, sectors)) = data.split_first() else { return };
     let mut d = Demuxer::new(channels);
     let mut last: Option<u32> = None;
@@ -127,6 +144,262 @@ pub fn demux(data: &[u8]) {
     }
     d.finish();
     check(&mut d);
+}
+
+/// One `demux` input in this many is converted to PCM ([`pcm_case`]). Under the fuzzer's
+/// instrumentation (compare tracing in the filter loops) a conversion costs milliseconds per
+/// frame and channel, thousands of times a demultiplexing. The inputs are chosen by a hash
+/// of all their bytes, so that a mutation of a converted input is converted no more often
+/// than any other: selected by a byte, they took the fuzzer's time (233 runs/s instead of
+/// 28 000).
+pub const PCM_ONE_IN: u64 = 4096;
+
+/// Frame-channels (frames x channels) of a PCM case: [`PCM_SHORT`] at most, or for one
+/// channel and one case in two, [`PCM_LONG`] frames, to cross the C interface's chunks of
+/// 8 frames.
+const PCM_SHORT: usize = 3;
+const PCM_LONG: usize = 11;
+
+/// A DSD-to-PCM conversion taken from a `demux` input: the arguments of
+/// `sb_pcm_converter_new` (some invalid) and a run of frames with its neighbours.
+#[derive(Debug)]
+pub struct PcmCase<'a> {
+    /// Byte 0 of the input as it is: 1 to 6 is a valid channel count.
+    pub channels_raw: u8,
+    /// The channel count of the frames, `byte 0 % 6 + 1`.
+    pub channels: u8,
+    /// 88 200, 176 400, 352 800, or 44 100 (invalid).
+    pub rate_hz: u32,
+    /// `SB_PCM_CUTOFF_*` 0 to 2, or 3 (invalid).
+    pub cutoff: u32,
+    /// The gain in dB, sometimes outside -120 to +24 or not finite.
+    pub gain_db: f64,
+    pub before: Option<&'a [u8]>,
+    pub frames: &'a [u8],
+    pub after: Option<&'a [u8]>,
+    /// Where [`pcm`] splits the run in two, in frames (0 for no split).
+    pub split: usize,
+}
+
+/// The PCM case of one `demux` input in [`PCM_ONE_IN`] (by a hash of the input, and once
+/// per input): the sector bytes from byte 1 on taken as whole frames of `byte 0 % 6 + 1`
+/// channels, and its last three bytes a shape byte (run length, split), a gain byte and a
+/// configuration byte (rate, cutoff, neighbours). `None` for other inputs, and when the
+/// input holds no whole frame.
+pub fn pcm_case(data: &[u8]) -> Option<PcmCase<'_>> {
+    let channels_raw = *data.first()?;
+    let channels = channels_raw % 6 + 1;
+    let frame = usize::from(channels) * scarletbook_pcm::FRAME_BYTES_PER_CHANNEL;
+    if data.len() < 1 + frame || !pcm_selected(data) {
+        return None;
+    }
+    let [shape, b, a] = data[data.len() - 3..] else { return None };
+    let bytes = &data[1..];
+    let most =
+        if channels == 1 && shape & 1 != 0 { PCM_LONG } else { (PCM_SHORT / usize::from(channels)).max(1) };
+    let count = (bytes.len() / frame).min(most);
+    if count == 0 {
+        return None;
+    }
+    let all: Vec<&[u8]> = bytes.chunks_exact(frame).take(count).collect();
+    // Neighbours come from the frames themselves, when there are frames to spare.
+    let (mut lo, mut hi) = (0, count);
+    let before = (a & 0x10 != 0 && hi - lo > 1).then(|| {
+        lo += 1;
+        all[0]
+    });
+    let after = (a & 0x20 != 0 && hi - lo > 1).then(|| {
+        hi -= 1;
+        all[hi]
+    });
+    let gain_db = match b {
+        0..=239 => -120.0 + f64::from(b) * 144.0 / 239.0,
+        240 => 0.0,
+        241 => f64::NAN,
+        242 => f64::INFINITY,
+        243 => f64::NEG_INFINITY,
+        244 => 24.000_000_001,
+        245 => -120.000_000_001,
+        246 => 24.0,
+        247 => -120.0,
+        _ => f64::from(b) - 200.0,
+    };
+    Some(PcmCase {
+        channels_raw,
+        channels,
+        rate_hz: [88_200, 176_400, 352_800, 44_100][usize::from(a & 3)],
+        cutoff: u32::from(a >> 2 & 3),
+        gain_db,
+        before,
+        frames: &bytes[lo * frame..hi * frame],
+        after,
+        split: usize::from(shape >> 1) % (hi - lo),
+    })
+}
+
+/// Seeds of `demux` inputs that [`pcm_case`] selects, for 1, 2 and 6 channels, each with
+/// another rate, cutoff, gain, neighbour case and run length.
+pub fn pcm_seeds() -> Vec<Vec<u8>> {
+    let mut x = 0x2545_f491_4f6c_dd1du64;
+    // (channels byte, frames, shape, gain, configuration): 176.4 kHz Default, 11 frames
+    // with both neighbours, split; 88.2 kHz Low, 3 frames, before only, split; 352.8 kHz
+    // Wide, one frame and no neighbours.
+    [(0u8, PCM_LONG, 0x0Bu8, 120u8, 0x31u8), (1, 3, 0x02, 200, 0x14), (5, 1, 0x00, 60, 0x0A)]
+        .into_iter()
+        .map(|(channels, frames, shape, gain, config)| {
+            let mut seed = vec![channels];
+            let len = frames * usize::from(channels % 6 + 1) * scarletbook_pcm::FRAME_BYTES_PER_CHANNEL;
+            seed.extend((0..len).map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                // Mostly the alternating pattern of DSD silence, with some noise.
+                if x % 4 == 0 { x as u8 } else { 0x69 }
+            }));
+            seed.extend_from_slice(&[shape, gain, config]);
+            pcm_select(&mut seed);
+            seed
+        })
+        .collect()
+}
+
+/// Whether [`pcm_case`] may take `input`: a hash of all its bytes is below
+/// `2^64 / PCM_ONE_IN`. It reads 64 bytes per step into 8 lanes: under the fuzzer's
+/// instrumentation, a byte per step took more time than demultiplexing the input.
+fn pcm_hash(input: &[u8]) -> Option<u64> {
+    const K: u64 = 0x9e37_79b9_7f4a_7c15;
+    let blocks = input.chunks_exact(64);
+    let mut lanes = [input.len() as u64 ^ fnv(blocks.remainder()); 8];
+    for block in blocks {
+        let block: &[u8; 64] = block.try_into().unwrap();
+        for (i, lane) in lanes.iter_mut().enumerate() {
+            let w = u64::from_le_bytes(block[8 * i..8 * i + 8].try_into().unwrap());
+            *lane = (*lane ^ w).wrapping_mul(K).rotate_left(31);
+        }
+    }
+    let h = lanes.iter().fold(0, |h: u64, &l| (h ^ l).wrapping_mul(K).rotate_left(27));
+    ((h ^ h >> 29).wrapping_mul(K) < u64::MAX / PCM_ONE_IN).then_some(h)
+}
+
+/// Whether [`pcm_case`] takes `input`: [`pcm_hash`], and not taken before (the memory is
+/// cleared after 2^16 inputs). Many of the fuzzer's mutations of an input full of repeated
+/// bytes change nothing, and a converted input was converted again for each of them.
+fn pcm_selected(input: &[u8]) -> bool {
+    let Some(h) = pcm_hash(input) else { return false };
+    static TAKEN: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+    let mut taken = TAKEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if taken.contains(&h) {
+        return false;
+    }
+    if taken.len() == 1 << 16 {
+        taken.clear();
+    }
+    taken.push(h);
+    true
+}
+
+/// Changes bytes 1 and 2 of `input` (its first DSD bytes) so that [`pcm_case`] selects it.
+pub fn pcm_select(input: &mut [u8]) {
+    for t in 0..=u16::MAX {
+        input[1..3].copy_from_slice(&t.to_le_bytes());
+        if pcm_hash(input).is_some() {
+            return;
+        }
+    }
+    panic!("no selected input");
+}
+
+/// DSD-to-PCM conversion of a [`PcmCase`]: invalid configurations are refused with their
+/// error; a valid one converts the run without panicking, and the whole run gives the same
+/// samples and clip counts as each frame converted with its neighbours and as the run split
+/// in two (scarletbook-pcm's determinism). Inputs and outputs of the wrong length are
+/// refused, with nothing written.
+pub fn pcm(case: &PcmCase<'_>) {
+    let cutoff = match case.cutoff {
+        0 => Cutoff::Default,
+        1 => Cutoff::Low,
+        2 => Cutoff::Wide,
+        _ => return,
+    };
+    let Some(rate) = PcmRate::from_hz(case.rate_hz) else { return };
+    let gain = match Gain::from_db(case.gain_db) {
+        Ok(g) => g,
+        Err(e) => {
+            assert!(!(Gain::MIN_DB..=Gain::MAX_DB).contains(&case.gain_db), "{} dB refused", case.gain_db);
+            assert!(matches!(e, PcmError::Gain(_)));
+            Gain::UNITY
+        }
+    };
+    let raw = Converter::new(PcmConfig::new(rate, cutoff, case.channels_raw).with_gain(gain));
+    let config = PcmConfig::new(rate, cutoff, case.channels).with_gain(gain);
+    let mut conv = match Converter::new(config) {
+        Ok(c) => c,
+        Err(e) => {
+            assert!(
+                matches!(e, PcmError::Unsupported { rate: r, cutoff: c, .. } if r == rate && c == cutoff),
+                "{e:?}"
+            );
+            assert!(!cutoff.supports(rate));
+            assert!(raw.is_err());
+            return;
+        }
+    };
+    if !(1..=6).contains(&case.channels_raw) {
+        assert_eq!(raw.unwrap_err(), PcmError::Channels(case.channels_raw));
+    }
+    let channels = usize::from(case.channels);
+    let frame = channels * scarletbook_pcm::FRAME_BYTES_PER_CHANNEL;
+    let per_frame = conv.samples_per_frame() * channels;
+    let count = case.frames.len() / frame;
+    let run = |before, frames, after| FrameRun::new(frames).with_before(before).with_after(after);
+
+    let mut whole = vec![0i32; count * per_frame];
+    let stats = conv.convert_run(run(case.before, case.frames, case.after), &mut whole).unwrap();
+    let limit = 1 << 23;
+    assert!(whole.iter().all(|s| (-limit..limit).contains(s)), "a sample outside 24 bits");
+    assert!(stats.clipped[channels..].iter().all(|&c| c == 0));
+
+    // Frame by frame, each with its neighbours (one frame is the whole run).
+    let frame_at = |k: usize| &case.frames[k * frame..(k + 1) * frame];
+    let mut sum = ConvertStats::default();
+    let mut one = vec![0i32; per_frame];
+    for k in (0..count).filter(|_| count > 1) {
+        let prev = if k == 0 { case.before } else { Some(frame_at(k - 1)) };
+        let next = if k + 1 == count { case.after } else { Some(frame_at(k + 1)) };
+        let s = conv.convert_frame(prev, frame_at(k), next, &mut one).unwrap();
+        assert!(one == whole[k * per_frame..(k + 1) * per_frame], "frame {k} of {count} differs");
+        for (t, c) in sum.clipped.iter_mut().zip(s.clipped) {
+            *t += c;
+        }
+    }
+    assert!(count == 1 || sum == stats, "clip counts frame by frame");
+
+    // Split in two at `split` frames.
+    if case.split > 0 {
+        let m = case.split;
+        let mut parts = vec![0i32; count * per_frame];
+        let (p, q) = parts.split_at_mut(m * per_frame);
+        let s1 = conv.convert_run(run(case.before, &case.frames[..m * frame], Some(frame_at(m))), p).unwrap();
+        let s2 =
+            conv.convert_run(run(Some(frame_at(m - 1)), &case.frames[m * frame..], case.after), q).unwrap();
+        assert!(parts == whole, "the run split at frame {m} differs");
+        assert_eq!(s1.clipped_total() + s2.clipped_total(), stats.clipped_total());
+    }
+
+    // Wrong lengths: refused, nothing written.
+    let mut out = vec![7i32; whole.len() + 1];
+    let e = conv.convert_run(run(case.before, case.frames, case.after), &mut out).unwrap_err();
+    assert!(matches!(e, PcmError::OutputLength { .. }), "{e:?}");
+    let e = conv.convert_run(run(case.before, &case.frames[1..], case.after), &mut out[1..]).unwrap_err();
+    assert!(matches!(e, PcmError::InputLength { .. }), "{e:?}");
+    let short = &frame_at(0)[1..];
+    let e = conv.convert_run(run(Some(short), case.frames, case.after), &mut out[1..]).unwrap_err();
+    assert!(matches!(e, PcmError::InputLength { .. }), "{e:?}");
+    if count > 1 {
+        let e = conv.convert_frame(None, case.frames, None, &mut out[..per_frame]).unwrap_err();
+        assert!(matches!(e, PcmError::InputLength { .. }), "{e:?}");
+    }
+    assert!(out.iter().all(|&s| s == 7), "a refused conversion wrote");
 }
 
 /// Single-frame DST decoding: byte 0 picks the channel count (`byte % 6 + 1`), the rest

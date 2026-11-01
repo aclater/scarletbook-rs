@@ -26,6 +26,8 @@ thiserror = "2"
 # Benchmarks (benches/); no plotting.
 criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
 proptest = { version = "1", default-features = false, features = ["std"] }
+# The DSD-to-PCM checks of the fuzz harness (tests/harness).
+scarletbook-pcm = { path = "../scarletbook-pcm" }
 # Small thread pools in the tests of the `parallel` feature.
 rayon = "1.10"
 
