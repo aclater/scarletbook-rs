@@ -9,6 +9,29 @@ is shared by every crate of the workspace; releases carry the `bench` program an
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-11-01
+
+**Faster DST decoding in the generic build.** On x86-64 CPUs with AVX2, BMI1, BMI2, LZCNT and
+MOVBE, the DST decoder now runs a build of the same safe code compiled for those features,
+chosen at run time; everywhere else it runs as before. The output is identical to the bit.
+The generic C library and Rust builds gain it with no change on the consumer's side: a
+50-minute DST stereo disc, all threads, decodes in 6.21 s instead of 7.45 s (97.7 CPU-s instead
+of 115.6). Multichannel areas gain less: a 6-channel DST synthetic decodes 5 % faster with all
+threads and 7 % faster on one thread (#146, #200).
+
+**New x86-64-v3 archives: match release asset names exactly.** The x86_64 Linux archives now
+come in two builds, the unchanged baseline one and a `-v3` one compiled entirely for
+x86-64-v3 (#198). A prefix or glob such as `scarletbook-ffi-<version>-x86_64-unknown-linux-gnu*`
+also matches `...-gnu-v3.tar.gz`, which stops with SIGILL on CPUs older than x86-64-v3.
+
+### Added
+
+- x86-64-v3 C library archives for x86_64 Linux: `scarletbook-ffi-<version>-x86_64-unknown-linux-gnu-v3.tar.gz` and `...-x86_64-unknown-linux-musl-v3.tar.gz`, built with `-C target-cpu=x86-64-v3` next to the unchanged baseline archives. Same ABI, different instruction set: they need an x86-64-v3 CPU (AVX2, BMI2, FMA and the rest of the level); `sb_build_info()` lists their target features. They are compiled entirely for x86-64-v3, for benchmarks and consumers who build per CPU (#146, #198).
+
+### Changed
+
+- The DST decoder runs a build of itself with AVX2, BMI1, BMI2, LZCNT and MOVBE, chosen at run time, on x86-64 CPUs that have them, with output unchanged to the bit: a generic build now decodes DST as fast as an `x86-64-v3` build (a 50-minute 2-channel synthetic, all threads, median of 5: 6.21 s against 7.45 s before; one thread: 60.7 s against 70.0 s). The generic C library gains it automatically; other targets and older CPUs keep the portable decoder. The core crate now denies `unsafe_code` instead of forbidding it, and allows it in one module, which only calls that `#[target_feature]` build of the safe decoder (#146, #200).
+
 ## [0.5.4] - 2026-11-01
 
 **DSDIFF departures D1 and D2 write files that do not conform to DSDIFF.** They exist only so
@@ -617,7 +640,8 @@ First release: a clean-room reader for SACD images, written from sacd-spec, pass
 - DST decoding about 3.8 times faster on one thread, and parallel decoding that overlaps
   demultiplexing with decoding within a bounded memory (#16, #17, #19).
 
-[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v0.5.4...HEAD
+[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v0.5.5...HEAD
+[0.5.5]: https://github.com/aclater/scarletbook-rs/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/aclater/scarletbook-rs/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/aclater/scarletbook-rs/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/aclater/scarletbook-rs/compare/v0.5.1...v0.5.2
