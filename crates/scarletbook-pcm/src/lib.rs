@@ -59,7 +59,7 @@
 //! content stays far below 100 % modulation, so clipped samples mean that the [`Gain`] is
 //! too high. Output samples are rounded half to even and are not dithered.
 
-#![forbid(unsafe_code)]
+// #![forbid(unsafe_code)] (scratch: #173 dispatch prototype)
 #![warn(missing_docs)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 

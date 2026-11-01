@@ -31,7 +31,7 @@ use crate::{ConvertStats, Cutoff, FRAME_BYTES_PER_CHANNEL, FrameRun, PcmRate, ta
 
 /// Output samples computed together by the kernels (a block of independent sums the
 /// compiler can put in vector lanes).
-const LANES: usize = 8;
+const LANES: usize = 32;
 
 /// Output frames converted per pass. Each pass recomputes its stages' margins, so larger
 /// passes waste less; the scratch buffers grow with it (about 0.5 MiB at 4 frames).
@@ -193,18 +193,24 @@ impl Input<'_> {
         let fb = FRAME_BYTES_PER_CHANNEL as i64;
         let end = self.frames as i64 * fb;
         let ch = self.channels;
-        for (i, d) in dst.iter_mut().enumerate() {
-            let p = from + i as i64;
-            let (src, at) = if p < 0 {
-                (self.run.before, p + fb)
-            } else if p < end {
-                (Some(self.run.frames), p)
-            } else {
-                (self.run.after, p - end)
-            };
-            // Callers pass only positions within `valid()`, where the source exists.
+        // The three sources, as (run-relative start, run-relative end, slice, offset).
+        let segs: [(i64, i64, Option<&[u8]>, i64); 3] = [
+            (-fb, 0, self.run.before, fb),
+            (0, end, Some(self.run.frames), 0),
+            (end, end + fb, self.run.after, -end),
+        ];
+        let to = from + dst.len() as i64;
+        for (lo, hi, src, off) in segs {
+            let (a, b) = (lo.max(from), hi.min(to));
+            if a >= b {
+                continue;
+            }
             if let Some(src) = src {
-                *d = src[at as usize * ch + c];
+                let d = &mut dst[(a - from) as usize..(b - from) as usize];
+                let s = &src[(a + off) as usize * ch..(b + off) as usize * ch];
+                for (d, f) in d.iter_mut().zip(s.chunks_exact(ch)) {
+                    *d = f[c];
+                }
             }
         }
     }
@@ -311,9 +317,12 @@ impl Plan {
                 let ok = (lo - p0).max(0) as usize..(hi - p0).max(0) as usize;
                 // S1 into `a`.
                 let n1 = levels[0].1.div_ceil(LANES) * LANES;
-                sc.a.clear();
-                sc.a.resize(n1, 0.0);
-                s1(self.lut, &sc.bytes, ok, &mut sc.a);
+                let fused = matches!(self.ops[0], Op::Dec2(_));
+                if !fused {
+                    sc.a.clear();
+                    sc.a.resize(n1, 0.0);
+                    s1(self.lut, &sc.bytes, ok.clone(), 0, 1, &mut sc.a);
+                }
                 // The other stages, `a` to `b` and swap.
                 for (k, op) in self.ops.iter().enumerate() {
                     let (start_out, n_out) = levels[k + 1];
@@ -332,10 +341,16 @@ impl Plan {
                             debug_assert_eq!(start_in, 2 * start_out - m as i64);
                             // xe[i] = x[2(a - e + i)], xo[i] = x[2(a - o + i) + 1].
                             let (de, dodd) = (m - 2 * e, m + 1 - 2 * o);
-                            sc.even.clear();
-                            sc.even.extend(sc.a.iter().skip(de).step_by(2).take(np + 2 * e));
-                            sc.odd.clear();
-                            sc.odd.extend(sc.a.iter().skip(dodd).step_by(2).take(np + 2 * o));
+                            if k == 0 && fused {
+                                sc.even.clear();
+                                sc.even.resize(np + 2 * e, 0.0);
+                                sc.odd.clear();
+                                sc.odd.resize(np + 2 * o, 0.0);
+                                s1(self.lut, &sc.bytes, ok.clone(), de, 2, &mut sc.even);
+                                s1(self.lut, &sc.bytes, ok.clone(), dodd, 2, &mut sc.odd);
+                            } else {
+                                split(&sc.a, de, dodd, np + 2 * e, np + 2 * o, &mut sc.even, &mut sc.odd);
+                            }
                             sc.b.clear();
                             sc.b.resize(np, 0.0);
                             dec2(s, &sc.even, &sc.odd, &mut sc.b);
@@ -357,9 +372,44 @@ impl Plan {
                     std::mem::swap(&mut sc.a, &mut sc.b);
                 }
                 // To 24 bits: `a` holds the outputs on the 2^26 grid.
+                let clipped = outstage(&sc.a[..n], gain, &mut out[o0 as usize * ch..], c, ch);
+                stats.clipped[c] += clipped;
+            }
+            f0 += nf;
+        }
+    }
+}
+#[inline(never)]
+fn split(a: &[f64], de: usize, dodd: usize, ne: usize, no: usize, even: &mut Vec<f64>, odd: &mut Vec<f64>) {
+    even.clear();
+    even.extend(a.iter().skip(de).step_by(2).take(ne));
+    odd.clear();
+    odd.extend(a.iter().skip(dodd).step_by(2).take(no));
+}
+#[inline(never)]
+fn outstage(src: &[f64], gain: f64, out: &mut [i32], c: usize, ch: usize) -> u64 {
+    let n = src.len();
+    let sc_a = src;
+    {
+        {
                 let mut clipped = 0u64;
-                let dst = out[o0 as usize * ch..].iter_mut().skip(c).step_by(ch);
-                for (d, &v) in dst.zip(&sc.a[..n]) {
+                let dst = out.iter_mut().skip(c).step_by(ch);
+                if OUTBF {
+                    let mut tmp = [0i32; 64];
+                    let mut d_it = dst;
+                    for chunk in sc_a[..n].chunks(64) {
+                        for (t, &v) in tmp.iter_mut().zip(chunk) {
+                            let y = round_even((v * gain) * 0.125);
+                            clipped += u64::from(y > 8_388_607.0) + u64::from(y < -8_388_608.0);
+                            *t = y.clamp(-8_388_608.0, 8_388_607.0) as i32;
+                        }
+                        for (&t, d) in tmp[..chunk.len()].iter().zip(&mut d_it) {
+                            *d = t;
+                        }
+                    }
+                    return clipped;
+                }
+                for (d, &v) in dst.zip(&sc_a[..n]) {
                     let y = round_even((v * gain) * 0.125);
                     let y = if y > 8_388_607.0 {
                         clipped += 1;
@@ -372,41 +422,102 @@ impl Plan {
                     };
                     *d = y;
                 }
-                stats.clipped[c] += clipped;
-            }
-            f0 += nf;
+                return clipped;
         }
     }
 }
 
-/// S1: `out[i]` = the sum of `lut[j][bytes[i + j]]`; bytes outside `ok` are beyond the area
-/// and contribute nothing.
-fn s1(lut: &[[i32; 256]], bytes: &[u8], ok: Range<usize>, out: &mut [f64]) {
+/// S1: `out[k]` = the sum of `lut[j][bytes[start + stride k + j]]`; bytes outside `ok` are
+/// beyond the area and contribute nothing.
+#[inline(never)]
+fn s1(lut: &[[i32; 256]], bytes: &[u8], ok: Range<usize>, start: usize, stride: usize, out: &mut [f64]) {
+    if S1V3 && v3() {
+        unsafe { s1_v3(lut, bytes, ok, start, stride, out) }
+    } else {
+        s1_impl(lut, bytes, ok, start, stride, out)
+    }
+}
+#[target_feature(enable = "avx2,fma")]
+unsafe fn s1_v3(lut: &[[i32; 256]], bytes: &[u8], ok: Range<usize>, start: usize, stride: usize, out: &mut [f64]) {
+    s1_impl(lut, bytes, ok, start, stride, out)
+}
+const S1V3: bool = false;
+const OUTBF: bool = false;
+#[inline(always)]
+fn s1_impl(lut: &[[i32; 256]], bytes: &[u8], ok: Range<usize>, start: usize, stride: usize, out: &mut [f64]) {
     let b = lut.len();
-    for (i, o) in out.iter_mut().enumerate() {
+    if S1U64 && b == 8 {
+        if let Ok(t) = <&[[i32; 256]; 8]>::try_from(lut) {
+            let k0 = ok.start.saturating_sub(start).div_ceil(stride);
+            let k1 = if ok.end >= b + start { ((ok.end - b - start) / stride + 1).min(out.len()) } else { 0 };
+            if k0 < k1 {
+                let (head, rest) = out.split_at_mut(k0);
+                let (mid, tail) = rest.split_at_mut(k1 - k0);
+                s1_slow(lut, bytes, ok.clone(), start, stride, head, 0);
+                let base = start + stride * k0;
+                let src = &bytes[base..base + stride * (mid.len() - 1) + 8];
+                for (o, w) in mid.iter_mut().zip(src.windows(8).step_by(stride)) {
+                    let v = u64::from_be_bytes(w.try_into().unwrap_or([0; 8]));
+                    let mut acc = 0i32;
+                    for j in 0..8 {
+                        acc = acc.wrapping_add(t[j][((v >> (56 - 8 * j)) & 0xff) as usize]);
+                    }
+                    *o = f64::from(acc);
+                }
+                s1_slow(lut, bytes, ok, start, stride, tail, k1);
+                return;
+            }
+        }
+    }
+    s1_slow(lut, bytes, ok, start, stride, out, 0)
+}
+const S1U64: bool = false;
+#[inline(always)]
+fn s1_slow(lut: &[[i32; 256]], bytes: &[u8], ok: Range<usize>, start: usize, stride: usize, out: &mut [f64], koff: usize) {
+    let b = lut.len();
+    let start = start + stride * koff;
+    for (k, o) in out.iter_mut().enumerate() {
+        let i = start + stride * k;
         let w = &bytes[i..i + b];
         let sum: i32 = if i >= ok.start && i + b <= ok.end {
-            lut.iter().zip(w).map(|(t, &x)| t[usize::from(x)]).sum()
+            lut.iter().zip(w).fold(0i32, |acc, (t, &x)| acc.wrapping_add(t[usize::from(x)]))
         } else {
             lut.iter()
                 .zip(w)
                 .enumerate()
                 .filter(|&(j, _)| ok.contains(&(i + j)))
-                .map(|(_, (t, &x))| t[usize::from(x)])
-                .sum()
+                .fold(0i32, |acc, (_, (t, &x))| acc.wrapping_add(t[usize::from(x)]))
         };
         *o = f64::from(sum);
     }
 }
 
+const DISPATCH: bool = true;
+const USE_FMA: bool = true;
+
+#[inline(always)]
+fn v3() -> bool {
+    DISPATCH && std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
+}
+
 /// Adds `h[j] (x[hi + j + l] + x[lo - j + l])` over `j`, for the `LANES` outputs `l`.
 #[inline(always)]
-fn add_pairs(acc: &mut [f64; LANES], h: &[f64], x: &[f64], hi: usize, lo: usize) {
-    for (j, &hj) in h.iter().enumerate() {
-        let a = &x[hi + j..hi + j + LANES];
-        let b = &x[lo - j..lo - j + LANES];
+fn add_pairs<const F: bool>(acc: &mut [f64; LANES], h: &[f64], x: &[f64], hi: usize, lo: usize) {
+    let n = h.len();
+    if n == 0 {
+        return;
+    }
+    let a_all = &x[hi..hi + n + LANES - 1];
+    let b_all = &x[lo + 1 - n..lo + LANES];
+    for ((a, b), &hj) in a_all.windows(LANES).zip(b_all.windows(LANES).rev()).zip(h) {
+        let a: &[f64; LANES] = a.try_into().unwrap_or(&[0.0; LANES]);
+        let b: &[f64; LANES] = b.try_into().unwrap_or(&[0.0; LANES]);
         for l in 0..LANES {
-            acc[l] += hj * (a[l] + b[l]);
+            if F {
+                acc[l] = hj.mul_add(a[l] + b[l], acc[l]);
+            } else {
+                acc[l] += hj * (a[l] + b[l]);
+            }
         }
     }
 }
@@ -423,21 +534,35 @@ fn blocks(out: &mut [f64], scale: f64, f: impl Fn(usize, &mut [f64; LANES])) {
     }
 }
 
-/// Fir1: `out[i]` centred on `x[i + m]`.
-fn fir1(s: &Sym, x: &[f64], out: &mut [f64]) {
+#[inline(always)]
+fn fir1_impl<const F: bool>(s: &Sym, x: &[f64], out: &mut [f64]) {
     let m = s.half_len();
     let (h0, h) = (s.full[0], &s.full[1..]);
     blocks(out, s.scale, |i, acc| {
         for (l, a) in acc.iter_mut().enumerate() {
             *a = h0 * x[i + m + l];
         }
-        add_pairs(acc, h, x, i + m + 1, i + m - 1);
+        add_pairs::<F>(acc, h, x, i + m + 1, i + m - 1);
     });
 }
 
-/// Dec2: `out[i]` centred on `xe[i + e]` (`e` = the even taps after the centre), with the
-/// odd taps on `xo[i + o + j]` and `xo[i + o - 1 - j]`.
-fn dec2(s: &Sym, xe: &[f64], xo: &[f64], out: &mut [f64]) {
+#[target_feature(enable = "avx2,fma")]
+unsafe fn fir1_v3(s: &Sym, x: &[f64], out: &mut [f64]) {
+    fir1_impl::<USE_FMA>(s, x, out)
+}
+
+/// Fir1: `out[i]` centred on `x[i + m]`.
+#[inline(never)]
+fn fir1(s: &Sym, x: &[f64], out: &mut [f64]) {
+    if v3() {
+        unsafe { fir1_v3(s, x, out) }
+    } else {
+        fir1_impl::<false>(s, x, out)
+    }
+}
+
+#[inline(always)]
+fn dec2_impl<const F: bool>(s: &Sym, xe: &[f64], xo: &[f64], out: &mut [f64]) {
     let (e, o) = (s.even.len() - 1, s.odd.len());
     let (h0, he) = (s.even[0], &s.even[1..]);
     blocks(out, s.scale, |i, acc| {
@@ -445,17 +570,33 @@ fn dec2(s: &Sym, xe: &[f64], xo: &[f64], out: &mut [f64]) {
             *a = h0 * xe[i + e + l];
         }
         if e > 0 {
-            add_pairs(acc, he, xe, i + e + 1, i + e - 1);
+            add_pairs::<F>(acc, he, xe, i + e + 1, i + e - 1);
         }
-        add_pairs(acc, &s.odd, xo, i + o, i + o - 1);
+        add_pairs::<F>(acc, &s.odd, xo, i + o, i + o - 1);
     });
+}
+
+#[target_feature(enable = "avx2,fma")]
+unsafe fn dec2_v3(s: &Sym, xe: &[f64], xo: &[f64], out: &mut [f64]) {
+    dec2_impl::<USE_FMA>(s, xe, xo, out)
+}
+
+/// Dec2.
+#[inline(never)]
+fn dec2(s: &Sym, xe: &[f64], xo: &[f64], out: &mut [f64]) {
+    if v3() {
+        unsafe { dec2_v3(s, xe, xo, out) }
+    } else {
+        dec2_impl::<false>(s, xe, xo, out)
+    }
 }
 
 /// The odd outputs of Interp2: `out[i]` between `w[i + o]` and `w[i + o + 1]`. The
 /// interpolation gain of 2 is in the scale (2^-(q - 1)).
+#[inline(never)]
 fn interp2_odd(s: &Sym, w: &[f64], out: &mut [f64]) {
     let o = s.odd.len();
-    blocks(out, s.scale * 2.0, |i, acc| add_pairs(acc, &s.odd, w, i + o + 1, i + o));
+    blocks(out, s.scale * 2.0, |i, acc| add_pairs::<false>(acc, &s.odd, w, i + o + 1, i + o));
 }
 
 #[cfg(test)]
