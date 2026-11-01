@@ -17,8 +17,13 @@ use common::TrackSpec;
 use output_common::{Held, Lcg, check, contents, corpus, corpus_ranges, enough, plain, synthetic, variants};
 use proptest::prelude::*;
 use scarletbook::audio::FRAME_BYTES_PER_CHANNEL;
-use scarletbook::output::{DsfBitsPerSample, Format, Layout, OutputOptions, RegionKind};
+use scarletbook::output::{DsfBitsPerSample, Format, Layout, OutputOptions, RegionKind, Tags};
 use scarletbook::{Disc, Error, OutputRefusal, Slot};
+
+/// Options for DSF files without a tag, which `tests/output_tags.rs` checks.
+fn untagged() -> OutputOptions {
+    OutputOptions::default().with_tags(Tags::None)
+}
 
 /// Reverses a byte's bits one at a time (8.2.3).
 fn reverse(b: u8) -> u8 {
@@ -80,7 +85,7 @@ fn corpus_layouts_equal_sequential_writes() {
             };
             for (first, end) in corpus_ranges(&disc, area.slot) {
                 if disc.check_range(area.slot, first, end).is_err() {
-                    let e = disc.output_layout(area.slot, first, end, Format::Dsf, &OutputOptions::default());
+                    let e = disc.output_layout(area.slot, first, end, Format::Dsf, &untagged());
                     assert_eq!(
                         e.unwrap_err().to_string(),
                         disc.check_range(area.slot, first, end).unwrap_err().to_string()
@@ -89,7 +94,7 @@ fn corpus_layouts_equal_sequential_writes() {
                 }
                 let content = contents(&mut disc, area.slot, first, end);
                 for bits in variants(&[DsfBitsPerSample::One, DsfBitsPerSample::Eight], checked) {
-                    let options = OutputOptions::default().with_dsf_bits_per_sample(bits);
+                    let options = untagged().with_dsf_bits_per_sample(bits);
                     let layout = disc.output_layout(area.slot, first, end, Format::Dsf, &options).unwrap();
                     let bits = if bits == DsfBitsPerSample::One { 1 } else { 8 };
                     let expected = sequential(&content, usize::from(area.channel_count), channel_type, bits);
@@ -107,19 +112,19 @@ fn corpus_layouts_equal_sequential_writes() {
 #[test]
 fn unspecified_layouts_are_refused_unless_a_channel_type_is_given() {
     let mut disc = synthetic(4, &plain(4, 3), vec![TrackSpec { start: 0, duration: 3 }], 3);
-    let e = disc.output_layout(Slot::TwoChannel, 0, 3, Format::Dsf, &OutputOptions::default()).unwrap_err();
+    let e = disc.output_layout(Slot::TwoChannel, 0, 3, Format::Dsf, &untagged()).unwrap_err();
     assert!(
         matches!(e, Error::OutputRefused(OutputRefusal::UnspecifiedLayout { channels: 4, config: 0 })),
         "{e}"
     );
     assert_eq!(e.class(), scarletbook::ErrorClass::Usage);
     for wrong in [0, 1, 2, 3, 6, 7, 8] {
-        let options = OutputOptions::default().with_dsf_unspecified_channel_type(Some(wrong));
+        let options = untagged().with_dsf_unspecified_channel_type(Some(wrong));
         let e = disc.output_layout(Slot::TwoChannel, 0, 3, Format::Dsf, &options).unwrap_err();
         assert!(matches!(e, Error::InvalidArgument(_)), "{wrong}: {e}");
     }
     for ok in if cfg!(miri) { vec![5] } else { vec![4, 5] } {
-        let options = OutputOptions::default().with_dsf_unspecified_channel_type(Some(ok));
+        let options = untagged().with_dsf_unspecified_channel_type(Some(ok));
         let layout = disc.output_layout(Slot::TwoChannel, 0, 3, Format::Dsf, &options).unwrap();
         let content = contents(&mut disc, Slot::TwoChannel, 0, 3);
         check(&mut disc, &layout, &sequential(&content, 4, ok, 1), &content, &mut Lcg(ok.into()));
@@ -129,7 +134,7 @@ fn unspecified_layouts_are_refused_unless_a_channel_type_is_given() {
 #[test]
 fn content_of_the_wrong_size_is_an_error() {
     let disc = synthetic(2, &plain(2, 2), vec![TrackSpec { start: 0, duration: 2 }], 2);
-    let layout = disc.output_layout(Slot::TwoChannel, 0, 2, Format::Dsf, &OutputOptions::default()).unwrap();
+    let layout = disc.output_layout(Slot::TwoChannel, 0, 2, Format::Dsf, &untagged()).unwrap();
     let short = vec![vec![0u8; 100]; 2];
     let mut held = Held { first: 0, content: &short, asked: Vec::new() };
     let e = layout.fill(0, &mut [0; 200], &mut held).unwrap_err();
@@ -160,7 +165,7 @@ proptest! {
         let end = (first + len).min(playtime);
         let mut disc = synthetic(channels, &frames, vec![TrackSpec { start: 0, duration: playtime }], playtime);
         let channel_type = [1, 2, 3, 4, 6, 7][usize::from(channels) - 1];
-        let options = OutputOptions::default().with_dsf_unspecified_channel_type(Some(channel_type));
+        let options = untagged().with_dsf_unspecified_channel_type(Some(channel_type));
         let layout = disc.output_layout(Slot::TwoChannel, first, end, Format::Dsf, &options).unwrap();
         let content = contents(&mut disc, Slot::TwoChannel, first, end);
         let expected = sequential(&content, usize::from(channels), channel_type, 1);
@@ -171,7 +176,7 @@ proptest! {
 #[test]
 fn read_at_refuses_a_disc_of_another_image() {
     let disc = synthetic(2, &plain(2, 2), vec![TrackSpec { start: 0, duration: 2 }], 2);
-    let layout = disc.output_layout(Slot::TwoChannel, 0, 2, Format::Dsf, &OutputOptions::default()).unwrap();
+    let layout = disc.output_layout(Slot::TwoChannel, 0, 2, Format::Dsf, &untagged()).unwrap();
     // Another image with the same area: same channel count, other TOC sectors.
     let mut other = synthetic(2, &plain(2, 3), vec![TrackSpec { start: 0, duration: 3 }], 3);
     let e = layout.read_at(&mut other, 0, &mut [0; 200]).unwrap_err();
@@ -180,7 +185,7 @@ fn read_at_refuses_a_disc_of_another_image() {
     let mut again = synthetic(2, &plain(2, 2), vec![TrackSpec { start: 0, duration: 2 }], 2);
     assert_eq!(layout.read_at(&mut again, 0, &mut [0; 200]).unwrap(), 200);
     // A layout made without a disc is checked only for its area.
-    let area = again.toc().area(Slot::TwoChannel).unwrap().clone();
-    let free = Layout::new(&area, 1 << 20, 0, 2, Format::Dsf, &OutputOptions::default()).unwrap();
+    let toc = again.toc().clone();
+    let free = Layout::new(&toc, Slot::TwoChannel, 0, 2, Format::Dsf, &untagged()).unwrap();
     assert_eq!(free.read_at(&mut other, 0, &mut [0; 200]).unwrap(), 200);
 }
