@@ -9,6 +9,33 @@ is shared by every crate of the workspace; releases carry the `bench` program an
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-11-01
+
+**scarletbook-pcm: invalidate cached PCM.** Every PCM output changes in this release: the Low
+and Wide filters have new stopband edges (#170), the first stage cancels DSD silence exactly
+(#171), and every other filter's output can change in its last bit. A missing neighbour at an
+area's edge now converts as the DSD idle pattern 0x69 instead of as the value 0. PCM converted
+with 0.5.2 or earlier, and kept in a cache, should be converted again. The Rust API only gains
+items.
+
+### Added
+
+- The `demux` fuzz target also converts one input in 4096 to PCM: the whole run must equal
+  each frame converted with its neighbours and the run split in two, wrong lengths must be
+  refused, and the C interface's `sb_pcm_converter_new` and `sb_pcm_convert_run` (through
+  `scarletbook-ffi`'s hidden `fuzz_pcm_convert_run` behind the non-default `fuzzing`
+  feature) must refuse the same arguments and give the same bytes and clip counts in both
+  formats, writing nothing outside the output (#130, #168).
+- `scarletbook_pcm::Converter::convert`, for a frame cache: a `Run` whose frames are one buffer or one buffer per frame (`Frames::Separate(&[&[u8]])`, read in place), output as `i32` or 3-byte little-endian samples written directly (`PcmOut::S24le`, the bytes of `convert_run` + `pack_s24le`), and optional clipped-sample counts per frame of the run, which sum to `clipped_total` and do not depend on how frames are grouped into runs. New errors `PcmError::OutputBytes` and `FrameCounts`; `convert_run` is unchanged (#172, #175).
+
+### Changed
+
+- **Breaking behaviour** in `scarletbook-pcm` (and so in the `sb_pcm_*` C functions): a neighbour of `None` (the edge of an area) is now the idle pattern 0x69, not the value 0, so it gives exactly the output of a neighbour frame of 0x69 bytes. The idle pattern 0x69 now converts to samples of exactly 0 at every rate, cutoff and gain, and so do the edges of an area, with no transient there; 0x55 gives exact zeros within a run of 0x55 (a change between 0x55 and 0x69, or 0x55 at an area's edge, is not silent). Samples near an area's edges, and all samples of silent passages, therefore differ from 0.5.2 (#171, #176).
+- **Breaking behaviour** in `scarletbook-pcm`: `Low` now attenuates at least 105 dB from 36 kHz (was 38 kHz; -3 dB at 32.0 kHz, was 32.7 kHz). `Wide` at 176.4 kHz has its own filter, at least 105 dB from 88.2 kHz (was 96 kHz; -3 dB at 82.7 kHz, was 85.3 kHz). Every output of these filters differs from 0.5.2. `Cutoff::stopband_hz` of `Low` is 36 000, and the new `Cutoff::stopband_hz_at(rate)` gives the edge at a rate (#170, #176).
+- **Breaking behaviour** in `scarletbook-pcm` (and the `sb_pcm_*` C functions): the first stage is redesigned for exact silence, so every output of every filter, `Default` and `Wide` at 352.8 kHz included, can differ from 0.5.2, mostly in the last LSB (#171, #176).
+- `scarletbook-pcm` runs its filters with AVX2 and FMA, chosen at run time, on x86-64 CPUs that have them, with output unchanged to the bit: 176.4 kHz `Default` stereo, one thread, on a generic build is about 298× real time (222× without). Other targets and older CPUs use the portable kernels. The crate now denies `unsafe_code` instead of forbidding it, and allows it in one module, which only calls the `#[target_feature]` builds of the safe kernels (#173, #180).
+- `scarletbook-pcm` converts 3 to 15 % faster on a generic x86-64 build, one thread (176.4 kHz `Default` stereo: 193× to 222× real time), with output unchanged to the bit: S1 writes the halfband's even and odd inputs directly, its sums need no overflow checks, the filter loops have no bounds checks and run 16 outputs at a time, and the input bytes are de-interleaved a frame at a time (#173, #179).
+
 ## [0.5.2] - 2026-11-01
 
 ### Added
@@ -557,7 +584,8 @@ First release: a clean-room reader for SACD images, written from sacd-spec, pass
 - DST decoding about 3.8 times faster on one thread, and parallel decoding that overlaps
   demultiplexing with decoding within a bounded memory (#16, #17, #19).
 
-[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/aclater/scarletbook-rs/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/aclater/scarletbook-rs/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/aclater/scarletbook-rs/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/aclater/scarletbook-rs/compare/v0.4.1...v0.5.0

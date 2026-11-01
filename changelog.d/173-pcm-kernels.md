@@ -1,2 +1,0 @@
-Changed
-- `scarletbook-pcm` converts 3 to 15 % faster on a generic x86-64 build, one thread (176.4 kHz `Default` stereo: 193× to 222× real time), with output unchanged to the bit: S1 writes the halfband's even and odd inputs directly, its sums need no overflow checks, the filter loops have no bounds checks and run 16 outputs at a time, and the input bytes are de-interleaved a frame at a time (#173, #179).
