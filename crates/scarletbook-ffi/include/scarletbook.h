@@ -4327,6 +4327,38 @@ SbStatus sb_output_layout_fill(const struct SbOutputLayout *layout,
  */
 void sb_output_layout_free(struct SbOutputLayout *layout);
 
+/*
+ Adds a DSDIFF caller chunk (specification 8, 8.4.2 item 5, at sacd-spec `e069569`; 8.6 row
+ 33): the 4 bytes of `id`, and a copy of the `len` bytes of `data` as its data. Caller
+ chunks are written in the order added, after the last local chunk, with a pad byte 0x00
+ when `len` is odd (not counted in the chunk's size); they count in the `FRM8` size and
+ in the layout's last region (`SB_OUTPUT_REGION_KIND_TRAILER`). The same ID may be added more
+ than once, and an edited master may have them. A DSF file ignores them. Their data is the
+ caller's: neither the DSDIFF document nor specification 8 defines it.
+
+ `SB_STATUS_INVALID_ARGUMENT` if `id` is not 4 bytes 0x20 to 0x7E with no space before a
+ non-space (8.4.1 item 3), or is one of `FRM8`, `FVER`, `PROP`, `DSD `, `DST `, `DSTI`,
+ `COMT`, `DIIN` and `MANF`; the options are then unchanged.
+
+ # Safety
+
+ `options` must be NULL or a live handle; `id` NULL or valid for 4 reads; `data` NULL or
+ valid for `len` reads.
+ */
+SbStatus sb_output_options_add_chunk(const struct SbOutputOptions *options,
+                                     const uint8_t *id,
+                                     const uint8_t *data,
+                                     size_t len);
+
+/*
+ Removes every DSDIFF caller chunk.
+
+ # Safety
+
+ `options` must be NULL or a live handle.
+ */
+SbStatus sb_output_options_clear_chunks(const struct SbOutputOptions *options);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus

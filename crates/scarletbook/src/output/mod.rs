@@ -51,7 +51,7 @@ use crate::dst::DstDecoder;
 use crate::error::{Error, Slot};
 use crate::toc::{Area, Toc, TocDigests, Track};
 
-pub use dsdiff::{LocalChunk, PropertyChunk};
+pub use dsdiff::{CallerChunk, LocalChunk, PropertyChunk};
 pub use dsdiff_dst::{DstIndexOffset, DstLengths, InvalidDst};
 pub use dsdiff_text::{Comment, CommentKind};
 pub use dsf::DsfBitsPerSample;
@@ -210,6 +210,11 @@ pub struct OutputOptions {
     /// W31, whether a `DIAR`, `DITI` or comment whose text is empty, or becomes empty under
     /// W26, is written with `k = 0` (8.4.8). Default `false`: it is left out.
     pub dsdiff_empty_text: bool,
+    /// W33, the caller chunks of a DSDIFF file (8.4.2 item 5, at sacd-spec `e069569`), in
+    /// order, after the last local chunk; the same ID may appear more than once, and an
+    /// edited master may have them. Their space counts in the `FRM8` size and they are part
+    /// of the last [`RegionKind::Trailer`] region. A DSF file ignores them. Default none.
+    pub dsdiff_caller_chunks: Vec<CallerChunk>,
 }
 
 impl Default for OutputOptions {
@@ -244,6 +249,7 @@ impl Default for OutputOptions {
             dsdiff_comments: Vec::new(),
             dsdiff_text_replacement: Some(b'?'),
             dsdiff_empty_text: false,
+            dsdiff_caller_chunks: Vec::new(),
         }
     }
 }
@@ -398,6 +404,11 @@ impl OutputOptions {
     pub fn with_dsdiff_dst_index_offset(self, offset: DstIndexOffset) -> Self {
         OutputOptions { dsdiff_dst_index_offset: offset, ..self }
     }
+
+    /// These options with DSDIFF caller chunks `chunks` (W33).
+    pub fn with_dsdiff_caller_chunks(self, chunks: Vec<CallerChunk>) -> Self {
+        OutputOptions { dsdiff_caller_chunks: chunks, ..self }
+    }
 }
 
 /// What a region of an output file holds.
@@ -409,7 +420,7 @@ pub enum RegionKind {
     /// The sound data: audio of the range's positions, and the framing and padding the
     /// format puts among it.
     SoundData,
-    /// Chunks after the sound data, such as a DST sound index.
+    /// Chunks after the sound data, such as a DST sound index or caller chunks.
     Trailer,
 }
 
