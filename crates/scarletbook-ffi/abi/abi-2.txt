@@ -26,6 +26,11 @@
 #define SB_MANUFACTURER_BYTES 2040
 #define SB_SECTOR_SIZE 2048
 #define SB_MAX_POOL_THREADS 256
+#define SB_PCM_CUTOFF_DEFAULT 0
+#define SB_PCM_CUTOFF_LOW 1
+#define SB_PCM_CUTOFF_WIDE 2
+#define SB_PCM_S32 0
+#define SB_PCM_S24LE 1
 #define SB_SEEK_DEFAULT_INTERVAL 64
 #define SB_SEEK_MAX_INTERVAL 65536
 #define SB_SEEK_DEFAULT_INLINE_BUDGET 1048576
@@ -206,6 +211,7 @@ typedef uint32_t SbTrackString;
 #endif
 typedef struct SbCancel SbCancel;
 typedef struct SbDisc SbDisc;
+typedef struct SbPcmConverter SbPcmConverter;
 typedef struct SbPool SbPool;
 typedef struct SbProgress SbProgress;
 typedef struct SbRawFrames SbRawFrames;
@@ -442,6 +448,10 @@ SbStatus sb_raw_frames_malformed_sectors(const struct SbRawFrames *raw, uint64_t
 SbStatus sb_raw_frames_warning(const struct SbRawFrames *raw, uint32_t index, struct SbWarning *out);
 void sb_raw_frames_free(struct SbRawFrames *raw);
 SbStatus sb_dst_decode(const uint8_t *frame, size_t len, uint32_t channels, uint8_t *out, size_t out_len, uint32_t *rule);
+SbStatus sb_pcm_converter_new(uint32_t rate_hz, uint32_t cutoff, uint32_t channels, double gain_db, struct SbPcmConverter **out);
+void sb_pcm_converter_free(struct SbPcmConverter *conv);
+SbStatus sb_pcm_samples_per_frame(const struct SbPcmConverter *conv, uint32_t *out);
+SbStatus sb_pcm_convert_run(struct SbPcmConverter *conv, const uint8_t *before, const uint8_t *frames, size_t frames_len, const uint8_t *after, uint32_t fmt, void *out, size_t out_len, uint64_t *clipped);
 SbStatus sb_seek_index_new(const struct SbDisc *disc, uint32_t slot, uint32_t interval, uint64_t inline_budget, struct SbSeekIndex **out);
 SbStatus sb_seek_index_extend(const struct SbDisc *disc, struct SbSeekIndex *index, uint64_t max_sectors, uint8_t *complete);
 SbStatus sb_seek_index_frontier(const struct SbSeekIndex *index, uint64_t *lsn, uint8_t *complete);

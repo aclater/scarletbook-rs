@@ -13,7 +13,8 @@ dst-features-2ch-6ch, compares its TOC with the conformance manifest and decodes
 of each area against the manifest's per-channel SHA-256, checks the TOC fields of #104 and
 reads its master TOC sector (#105). Last, through the README's bindings, reads ranges of it
 provisionally (#94) and checks the readings with a disc-kept seek index and with a
-caller-kept one.
+caller-kept one, and converts a plain-DSD corpus frame to PCM against the digest of the
+Rust converter (#130).
 """
 import ctypes as C
 import hashlib
@@ -342,6 +343,35 @@ R.sb_track_audio_free(h)
 R.sb_seek_index_free(index)
 R.sb_disc_free(d)
 print(f"provisional reading: {len(ranges) + 1} ranges read provisionally and confirmed")
+
+# DSD to PCM (#130), through the README's bindings: frame 1 of track 1 of a plain-DSD
+# stereo area, converted with frames 0 and 2 as neighbours at 176.4 kHz (default cutoff,
+# 0 dB, S24LE), has the digest the Rust converter gives it: CORPUS_PCM_SHA256 of
+# crates/scarletbook-ffi/tests/pcm.rs, which checks it with scarletbook_pcm.
+want_pcm = re.search(r'^const CORPUS_PCM_SHA256: &str = "([0-9a-f]{64})";$',
+                     pathlib.Path("crates/scarletbook-ffi/tests/pcm.rs").read_text(encoding="utf-8"),
+                     flags=re.M).group(1)
+d, h = C.c_void_p(), C.c_void_p()
+rcall("sb_disc_open_file", b"corpus/images/dsd-stereo-mch-2048.iso", C.byref(d))
+rcall("sb_track_audio_open", d, 0, 1, C.byref(h))
+dsd = [frame for _, _, frame in read_range(d, h)[:3]]
+R.sb_track_audio_free(h)
+R.sb_disc_free(d)
+check("plain DSD frames", [len(f) for f in dsd], [2 * 4704] * 3)
+conv, spf = C.c_void_p(), C.c_uint32()
+rcall("sb_pcm_converter_new", 176400, const["SB_PCM_CUTOFF_DEFAULT"], 2, 0.0, C.byref(conv))
+rcall("sb_pcm_samples_per_frame", conv, C.byref(spf))
+check("sb_pcm_samples_per_frame", spf.value, 2352)
+pcm, clipped = C.create_string_buffer(spf.value * 2 * 3), (C.c_uint64 * 6)(*[7] * 6)
+check("sb_pcm_convert_run, short output",
+      R.sb_pcm_convert_run(conv, dsd[0], dsd[1], len(dsd[1]), dsd[2], const["SB_PCM_S24LE"], pcm, len(pcm) - 1,
+                           clipped), -11)  # SB_STATUS_BUFFER_TOO_SMALL
+rcall("sb_pcm_convert_run", conv, dsd[0], dsd[1], len(dsd[1]), dsd[2], const["SB_PCM_S24LE"], pcm, len(pcm),
+      clipped)
+R.sb_pcm_converter_free(conv)
+check("PCM of the corpus frame", hashlib.sha256(pcm.raw).hexdigest(), want_pcm)
+check("clipped samples", list(clipped), [0] * 6)
+print(f"DSD to PCM: corpus frame converted, SHA-256 {want_pcm[:16]}...")
 
 if failures:
     sys.exit("smoke test failed:\n  " + "\n  ".join(failures))
