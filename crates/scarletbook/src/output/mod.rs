@@ -63,7 +63,7 @@ pub use tags::{GenreSources, TagItem, TagSet, TextSource};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Format {
-    /// DSF (8.2), with the ID3v2.4 tag of [`OutputOptions::tags`] (8.2.6, 8.3).
+    /// DSF (8.2), with the ID3v2 tag of [`OutputOptions::tags`] (8.2.6, 8.3).
     Dsf,
     /// DSDIFF with plain DSD sound data (8.4.5).
     DsdiffDsd,
@@ -96,7 +96,10 @@ pub enum Tags {
     /// These items: for example [`TagSet::from_toc`]'s, changed.
     Set(TagSet),
     /// This tag, written as it is: for DSF an ID3v2.4 tag, checked only for its header,
-    /// its size and [`MAX_TAG_BYTES`].
+    /// its size and [`MAX_TAG_BYTES`]; or an ID3v2.3 tag, checked only for the header of
+    /// 8.2.6 item 4 (version 03 00, the low five flag bits 0, a 28-bit size of `m - 10`)
+    /// and [`MAX_TAG_BYTES`]. Anything else is refused with [`Error::InvalidArgument`]
+    /// when a layout is made.
     Raw(Vec<u8>),
     /// No tag.
     None,

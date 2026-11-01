@@ -426,3 +426,84 @@ fn tag_sources_and_refusals() {
     assert_eq!(s.custom(), [("mood".to_owned(), "lively".to_owned())]);
     assert!(!s.is_empty() && TagSet::new().is_empty());
 }
+
+/// A caller's ID3v2.3 tag of `body.len() + 10` bytes, with flags byte `flags` and the
+/// 28-bit size of 8.2.6 item 4 over the body.
+fn v23(flags: u8, body: &[u8]) -> Vec<u8> {
+    let n = body.len();
+    let mut t = vec![b'I', b'D', b'3', 3, 0, flags];
+    t.extend([(n >> 21) as u8 & 0x7F, (n >> 14) as u8 & 0x7F, (n >> 7) as u8 & 0x7F, n as u8 & 0x7F]);
+    t.extend_from_slice(body);
+    t
+}
+
+/// A caller-supplied ID3v2.3 tag (specification 8, 8.2.6 item 4 and 8.6 row 3, sacd-spec
+/// e069569): written unchanged as the DSF metadata region, the header's checks refused
+/// one by one, and the frames never looked at.
+#[test]
+fn caller_id3v23_tag() {
+    let mut d = disc();
+    let none = OutputOptions::default().with_tags(Tags::None);
+    let bare = d.output_layout(Slot::TwoChannel, 0, 1, Format::Dsf, &none).unwrap();
+    let mut plain = vec![0; bare.size() as usize];
+    bare.read_at(&mut d, 0, &mut plain).unwrap();
+    // A body that is no valid frame, a size over two of the four bytes (0x01 0x48 = 200),
+    // the three flags [ID3v2.3] defines, and the smallest tag, a header alone.
+    let body: Vec<u8> = (0..200u8).map(|i| i.wrapping_mul(37) | 0x80).collect();
+    for tag in [v23(0, &body), v23(0xE0, &body), v23(0x40, b"\xFF\xFB"), v23(0, b"")] {
+        let options = OutputOptions::default().with_tags(Tags::Raw(tag.clone()));
+        let layout = d.output_layout(Slot::TwoChannel, 0, 1, Format::Dsf, &options).unwrap();
+        let mut f = vec![0; layout.size() as usize];
+        layout.read_at(&mut d, 0, &mut f).unwrap();
+        // tag_of checks the file size and the metadata pointer (8.2.1, 8.2.6).
+        assert_eq!(tag_of(&mut d, &layout).unwrap(), tag);
+        assert_eq!(f.len(), plain.len() + tag.len());
+        // Only the header's file size and metadata pointer differ before the tag.
+        let mut want = plain.clone();
+        want[12..20].copy_from_slice(&(f.len() as u64).to_le_bytes());
+        want[20..28].copy_from_slice(&(plain.len() as u64).to_le_bytes());
+        assert_eq!(f[..plain.len()], want[..]);
+        assert_eq!(f[plain.len()..], tag[..]);
+    }
+    assert_eq!(v23(0, &body)[6..10], [0, 0, 1, 0x48]);
+    let good = v23(0, &body);
+    let with = |at: usize, b: u8| {
+        let mut t = good.clone();
+        t[at] = b;
+        t
+    };
+    let mut long = good.clone();
+    long.push(0);
+    let mut short = good.clone();
+    short.pop();
+    let mut refused = vec![
+        b"ID3\x03\x00\x00\x00\x00\x00".to_vec(), // m < 10
+        with(0, b'X'),
+        with(2, b'2'),
+        with(4, 1),                                      // version 2.3.1
+        with(6, 0x80),                                   // a size byte of 0x80 or more
+        with(9, 0xC8),                                   // 200 with its high bit set, not 28-bit
+        with(9, 0x47),                                   // size m - 11
+        long,                                            // size m - 11
+        short,                                           // size m - 9
+        v23(0, &[0; 10]).into_iter().take(10).collect(), // size 10 of a header alone
+    ];
+    refused.extend((0..5).map(|bit| with(5, 1 << bit))); // the low five flag bits
+    for bad in refused {
+        let options = OutputOptions::default().with_tags(Tags::Raw(bad.clone()));
+        assert!(
+            matches!(
+                d.output_layout(Slot::TwoChannel, 0, 1, Format::Dsf, &options),
+                Err(Error::InvalidArgument(_))
+            ),
+            "{bad:02X?}"
+        );
+    }
+    // Above MAX_TAG_BYTES, as every tag.
+    let big = v23(0, &vec![0; MAX_TAG_BYTES - 9]);
+    let options = OutputOptions::default().with_tags(Tags::Raw(big));
+    assert!(matches!(
+        d.output_layout(Slot::TwoChannel, 0, 1, Format::Dsf, &options),
+        Err(Error::InvalidArgument(_))
+    ));
+}
