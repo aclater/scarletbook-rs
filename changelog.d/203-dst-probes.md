@@ -1,0 +1,2 @@
+Changed
+- The DST decoder's inner loop reads each channel's partial prediction shares and probabilities from one 1 KiB block per channel, with 64-entry probability tables (5.5.4's `min(|Spred| / 8, M_q - 1)`) instead of 8 KiB ones and a shorter arithmetic-decoder step: 6-channel DST decodes about 5 % faster on one thread in the default build, 2-channel is unchanged, and the output is the same to the bit (#203, #218).
