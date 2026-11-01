@@ -27,6 +27,9 @@ use scarletbook::{
     Slot, Speaker, Speculation, SpeculativeOptions, Stored, Track, TrackAudioCursor, TrackCursor, TrackFrame,
     WarningCode,
 };
+use scarletbook_pcm::{
+    Converter, Cutoff, FRAME_BYTES_PER_CHANNEL, FrameRun, Gain, MAX_CHANNELS, PcmConfig, PcmRate,
+};
 
 /// Result of every call: an `int32_t`, whose values are the `SB_STATUS_*` constants. In C
 /// before C23, `SbStatus` is a typedef of `int32_t`; in C23 and C++, an enumeration whose
@@ -632,6 +635,7 @@ const _: () = {
     assert_send::<SbTrackAudio>();
     assert_send::<SbRawFrames>();
     assert_send::<SbSeekIndex>();
+    assert_send::<SbPcmConverter>();
     const fn assert_sync<T: Sync>() {}
     assert_send::<SbPool>();
     assert_sync::<SbPool>();
@@ -3661,6 +3665,266 @@ pub unsafe extern "C" fn sb_dst_decode(
                 Err(Failure(SbStatus::InvalidDstFrame, format!("invalid DST frame: {e}")))
             }
         }
+    })
+}
+
+/// `cutoff` of `sb_pcm_converter_new`: passband to 40 kHz, stopband from 48 kHz.
+pub const SB_PCM_CUTOFF_DEFAULT: u32 = 0;
+/// `cutoff` of `sb_pcm_converter_new`: passband to 30 kHz, stopband from 38 kHz.
+pub const SB_PCM_CUTOFF_LOW: u32 = 1;
+/// `cutoff` of `sb_pcm_converter_new`: passband to 80 kHz, stopband from 96 kHz; 176 400
+/// and 352 800 Hz only.
+pub const SB_PCM_CUTOFF_WIDE: u32 = 2;
+
+/// `fmt` of `sb_pcm_convert_run`: each sample an `int32_t` in the platform's byte order,
+/// sign-extended from 24 bits (-8 388 608 to 8 388 607).
+pub const SB_PCM_S32: u32 = 0;
+/// `fmt` of `sb_pcm_convert_run`: each sample 3 bytes, 24-bit two's complement, least
+/// significant byte first (the layout of 24-bit WAV and FLAC samples).
+pub const SB_PCM_S24LE: u32 = 1;
+
+/// Frames `sb_pcm_convert_run` converts at a time, so that its buffer stays bounded
+/// (at most 8 x 4704 x 6 samples) whatever the run's length.
+const PCM_CHUNK_FRAMES: usize = 8;
+
+/// A DSD64 to 24-bit PCM converter (`sb_pcm_converter_new`): one rate, cutoff, channel
+/// count and gain. It belongs to no disc. Converters share nothing: give each thread
+/// that converts one of its own.
+#[derive(Debug)]
+pub struct SbPcmConverter {
+    inner: RefCell<PcmState>,
+}
+
+#[derive(Debug)]
+struct PcmState {
+    conv: Converter,
+    /// Samples of one chunk of `sb_pcm_convert_run`, before they are written out.
+    pcm: Vec<i32>,
+}
+
+/// Borrows a converter handle.
+///
+/// # Safety
+///
+/// `conv` must be NULL or a live handle from `sb_pcm_converter_new`.
+unsafe fn pcm_handle<'a>(conv: *const SbPcmConverter) -> Result<&'a SbPcmConverter, Failure> {
+    // SAFETY: NULL or a live handle by this function's contract; only shared references
+    // to it are ever made.
+    unsafe { conv.as_ref() }.ok_or_else(|| Failure::arg("NULL converter handle"))
+}
+
+/// Makes a converter of DSD64 (2 822 400 Hz, 1-bit) audio of `channels` channels (1 to
+/// 6) to 24-bit PCM at `rate_hz` (88 200, 176 400 or 352 800), with low-pass `cutoff`
+/// (`SB_PCM_CUTOFF_*`; `SB_PCM_CUTOFF_WIDE` not at 88 200 Hz) and a gain of `gain_db`
+/// decibels (-120 to +24; 0 for none). On failure `*out` is set to NULL and the call
+/// returns `SB_STATUS_INVALID_ARGUMENT`.
+///
+/// The input is Super Audio CD frames as `sb_track_audio_read` returns them: 4704 bytes,
+/// that is 37 632 one-bit samples, per channel per frame (1/75 s), channels interleaved
+/// byte by byte, the earliest sample of each byte in its most significant bit. The output
+/// is `sb_pcm_samples_per_frame` samples per channel per frame (1176, 2352 or 4704),
+/// interleaved, linear-phase, aligned to the DSD timeline (no delay), rounded half to even
+/// and not dithered. A constant input of all 1 bits is full scale (it clips); Super Audio
+/// CD content stays well below.
+///
+/// # Safety
+///
+/// `out` must be NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_pcm_converter_new(
+    rate_hz: u32,
+    cutoff: u32,
+    channels: u32,
+    gain_db: f64,
+    out: *mut *mut SbPcmConverter,
+) -> SbStatus {
+    // SAFETY: forwarded contract.
+    unsafe { clear_out(out) };
+    guard(|| {
+        if out.is_null() {
+            return Err(Failure::arg("NULL output pointer"));
+        }
+        let rate = PcmRate::from_hz(rate_hz).ok_or_else(|| {
+            Failure::arg(&format!("rate_hz must be 88200, 176400 or 352800, not {rate_hz}"))
+        })?;
+        let cutoff = match cutoff {
+            SB_PCM_CUTOFF_DEFAULT => Cutoff::Default,
+            SB_PCM_CUTOFF_LOW => Cutoff::Low,
+            SB_PCM_CUTOFF_WIDE => Cutoff::Wide,
+            c => return Err(Failure::arg(&format!("unknown cutoff {c}"))),
+        };
+        let channels = u8::try_from(channels)
+            .ok()
+            .filter(|c| (1..=MAX_CHANNELS).contains(c))
+            .ok_or_else(|| Failure::arg(&format!("channels must be 1 to 6, not {channels}")))?;
+        let gain = Gain::from_db(gain_db).map_err(|e| Failure::arg(&e.to_string()))?;
+        let config = PcmConfig::new(rate, cutoff, channels).with_gain(gain);
+        let conv = Converter::new(config).map_err(|e| Failure::arg(&e.to_string()))?;
+        let handle = Box::new(SbPcmConverter { inner: RefCell::new(PcmState { conv, pcm: Vec::new() }) });
+        // SAFETY: non-NULL and valid for a write by this function's contract.
+        unsafe { out.write(Box::into_raw(handle)) };
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// Frees a converter. NULL is ignored.
+///
+/// # Safety
+///
+/// `conv` must be NULL or a live handle, freed only once.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_pcm_converter_free(conv: *mut SbPcmConverter) {
+    let _ = guard(|| {
+        // SAFETY: forwarded contract.
+        let handle = unsafe { pcm_handle(conv) }?;
+        if handle.inner.try_borrow_mut().is_err() {
+            return Err(Failure::arg(REENTRANT));
+        }
+        // SAFETY: a live handle created by Box::into_raw and not in use, freed only once.
+        drop(unsafe { Box::from_raw(conv) });
+        Ok(SbStatus::Ok)
+    });
+}
+
+/// The output samples per channel of one frame (`*out`): 1176 at 88 200 Hz, 2352 at
+/// 176 400 Hz, 4704 at 352 800 Hz. A frame is 37 632 DSD samples per channel.
+///
+/// # Safety
+///
+/// `conv` must be NULL or a live handle; `out` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_pcm_samples_per_frame(conv: *const SbPcmConverter, out: *mut u32) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let c = unsafe { pcm_handle(conv) }?;
+        let state = c.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
+        // At most 4704.
+        // SAFETY: forwarded contract.
+        unsafe { write_out(out, state.conv.samples_per_frame() as u32) }?;
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// Converts a run of consecutive frames of one area, `frames_len` bytes at `frames` (a
+/// whole number of frames of `channels x 4704` bytes; 0 converts nothing), into `out` in
+/// format `fmt` (`SB_PCM_S32` or `SB_PCM_S24LE`): `frames_len / (channels x 4704) x
+/// sb_pcm_samples_per_frame x channels` samples, interleaved, of 4 or 3 bytes each
+/// (`out` need not be aligned). `before` and `after` are the frames just before and
+/// just after the run, each exactly `channels x 4704` bytes, or NULL where the run starts
+/// or ends the area (the audio beyond is then taken as silence). `clipped`, if not NULL,
+/// receives 6 counts: the samples of each channel clamped to the 24-bit range (0 beyond
+/// the converter's channels). A clipped sample means the gain is too high.
+///
+/// The output depends only on the input bits, not on the platform or on how an area is
+/// split into calls: converting frame f with frames f - 1 and f + 1 as `before` and
+/// `after` gives exactly the bytes of frame f in a conversion of the whole area in one
+/// call, so frames can be converted in any order and on any number of threads (one
+/// converter each). Only the few hundred bytes per channel of `before` and `after` nearest
+/// the run are read.
+///
+/// With `out` NULL or `out_len` below the output's size, the call returns
+/// `SB_STATUS_BUFFER_TOO_SMALL` and writes nothing; bytes of `out` past the output's size
+/// are never written. `SB_STATUS_INVALID_ARGUMENT`: an unknown `fmt`, a `frames_len` that
+/// is not a whole number of frames, `frames` NULL with a non-zero `frames_len`, or the
+/// handle in use.
+///
+/// # Safety
+///
+/// `conv` must be NULL or a live handle; `before` and `after` NULL or valid for
+/// `channels x 4704` bytes of reads; `frames` NULL or valid for `frames_len` bytes of
+/// reads; `out` NULL or valid for `out_len` bytes of writes and not overlapping the
+/// inputs; `clipped` NULL or valid for 6 `uint64_t` writes.
+#[allow(clippy::too_many_arguments, reason = "the run, its two neighbours, the output and the counts")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_pcm_convert_run(
+    conv: *mut SbPcmConverter,
+    before: *const u8,
+    frames: *const u8,
+    frames_len: usize,
+    after: *const u8,
+    fmt: u32,
+    out: *mut c_void,
+    out_len: usize,
+    clipped: *mut u64,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let c = unsafe { pcm_handle(conv) }?;
+        let mut state = c.inner.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))?;
+        let PcmState { conv, pcm } = &mut *state;
+        let width = match fmt {
+            SB_PCM_S32 => 4,
+            SB_PCM_S24LE => 3,
+            f => return Err(Failure::arg(&format!("fmt must be SB_PCM_S32 or SB_PCM_S24LE, not {f}"))),
+        };
+        let channels = usize::from(conv.config().channels);
+        let frame = channels * FRAME_BYTES_PER_CHANNEL;
+        if frames_len % frame != 0 {
+            let msg = format!("frames_len {frames_len} is not a whole number of {channels}-channel frames");
+            return Err(Failure(SbStatus::InvalidArgument, msg));
+        }
+        if frames.is_null() && frames_len > 0 {
+            return Err(Failure::arg("NULL frames with non-zero length"));
+        }
+        let count = frames_len / frame;
+        // Samples of one frame, all channels.
+        let per_frame = conv.samples_per_frame() * channels;
+        // At most frames_len x 8 / 8 x 4 / 4 (352.8 kHz, S32): no overflow.
+        let need = count * per_frame * width;
+        if need > 0 && (out.is_null() || out_len < need) {
+            return Err(Failure(SbStatus::BufferTooSmall, format!("the output needs {need} bytes")));
+        }
+        let neighbour = |p: *const u8| {
+            // SAFETY: NULL or valid for `frame` bytes of reads by this function's contract.
+            (!p.is_null()).then(|| unsafe { std::slice::from_raw_parts(p, frame) })
+        };
+        let (before, after) = (neighbour(before), neighbour(after));
+        let input: &[u8] = if count == 0 {
+            &[]
+        } else {
+            // SAFETY: non-NULL (checked above) and valid for `frames_len` bytes of reads by
+            // this function's contract.
+            unsafe { std::slice::from_raw_parts(frames, frames_len) }
+        };
+        let output: &mut [u8] = if need == 0 {
+            &mut []
+        } else {
+            // SAFETY: non-NULL and valid for out_len >= need bytes of writes, and not
+            // overlapping the inputs, by this function's contract.
+            unsafe { std::slice::from_raw_parts_mut(out.cast::<u8>(), need) }
+        };
+        let mut counts = [0u64; MAX_CHANNELS as usize];
+        // In chunks of frames, each with its neighbours: the same samples as one run.
+        pcm.resize(count.min(PCM_CHUNK_FRAMES) * per_frame, 0);
+        let mut written = 0;
+        for start in (0..count).step_by(PCM_CHUNK_FRAMES) {
+            let end = (start + PCM_CHUNK_FRAMES).min(count);
+            let run = FrameRun {
+                before: if start == 0 { before } else { input.get((start - 1) * frame..start * frame) },
+                frames: &input[start * frame..end * frame],
+                after: if end == count { after } else { input.get(end * frame..(end + 1) * frame) },
+            };
+            let samples = &mut pcm[..(end - start) * per_frame];
+            let stats = conv.convert_run(run, samples).map_err(|e| Failure::arg(&e.to_string()))?;
+            for (n, c) in counts.iter_mut().zip(stats.clipped) {
+                *n += c;
+            }
+            let dst = &mut output[written..written + samples.len() * width];
+            if width == 4 {
+                for (d, s) in dst.chunks_exact_mut(4).zip(samples.iter()) {
+                    d.copy_from_slice(&s.to_ne_bytes());
+                }
+            } else {
+                scarletbook_pcm::pack_s24le(samples, dst);
+            }
+            written += dst.len();
+        }
+        if !clipped.is_null() {
+            // SAFETY: non-NULL and valid for 6 writes of u64 by this function's contract;
+            // `counts` is this function's own.
+            unsafe { ptr::copy_nonoverlapping(counts.as_ptr(), clipped, counts.len()) };
+        }
+        Ok(SbStatus::Ok)
     })
 }
 
