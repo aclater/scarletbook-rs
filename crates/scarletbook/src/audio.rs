@@ -157,8 +157,10 @@ pub enum DecodeOn {
     /// The calling thread works beside the pool's threads rather than among them, unlike
     /// inside [`rayon::ThreadPool::install`]: when it does substantial work with each frame
     /// (writing it out, converting it), a pool of one thread fewer than the logical CPUs
-    /// leaves it a CPU, and was 3 to 7 % faster than one per logical CPU decoding and
-    /// writing a 50-minute 2-channel DST area on 16 (#146).
+    /// leaves it a CPU. Measured on 16 vCPUs (#146), decoding a 50-minute 2-channel DST
+    /// area through the C interface and writing each frame to files on the calling thread
+    /// took 7.7 % longer than decoding inside `install` with 16 threads, and 4.6 % longer
+    /// with 15; with a caller that does little, 16 were as fast or slightly faster.
     Pool(std::sync::Arc<rayon::ThreadPool>),
     /// The calling thread only, as without the `parallel` feature: no pool is used, not
     /// even rayon's global one.

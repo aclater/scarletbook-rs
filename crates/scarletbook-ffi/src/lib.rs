@@ -3066,10 +3066,13 @@ pub const SB_MAX_POOL_THREADS: u32 = 256;
 /// returns each frame there, and the caller then does its own work with it. When that work
 /// is substantial (writing the frames out, converting them) and the pool has a thread per
 /// logical CPU, there is one runnable thread more than CPUs. A pool of one thread fewer
-/// than the logical CPUs then leaves a CPU to the caller: decoding a 50-minute 2-channel DST
-/// area on 16 logical CPUs and writing it to files, 15 threads were 3 to 7 % faster than
-/// 16 (#146). For a caller that does little with each frame, one per logical CPU (0) is as
-/// fast or slightly faster.
+/// than the logical CPUs then leaves a CPU to the caller. Measured on 16 vCPUs (#146),
+/// decoding a 50-minute 2-channel DST area with `sb_track_audio_read` and writing each
+/// frame to files on the calling thread took 7.7 % longer than `bench decode` (whose
+/// writing runs on a pool thread) with 16 threads, and 4.6 % longer with 15. For a caller
+/// that does little with each frame, one per logical CPU (0) was as fast or slightly
+/// faster. The best count depends on the machine and the caller's work: measure it with
+/// the `decode_pool` benchmark.
 ///
 /// # Safety
 ///
