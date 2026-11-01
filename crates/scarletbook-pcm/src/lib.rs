@@ -44,9 +44,11 @@
 //! # Silence
 //!
 //! The idle pattern of Super Audio CD (every byte 0x69; sacd-spec, specification 0, 0.6)
-//! converts to samples of exactly 0, at every rate, cutoff and gain, and so does the other
-//! idle pattern, 0x55. The first stage has the factor `(1 + z^-1)^2 (1 + z^-4)` in its integer
-//! taps, which cancels both patterns exactly.
+//! converts to samples of exactly 0, at every rate, cutoff and gain, and so do the edges of
+//! an area (a neighbour of `None`). The other idle pattern, 0x55, gives exact zeros within
+//! a run of 0x55. A change between the two patterns, such as 0x55 next to an area's edge
+//! or next to 0x69, is not silent: they are different signals. The first stage has the
+//! factor `(1 + z^-1)^2 (1 + z^-4)` in its integer taps, which cancels each pattern exactly.
 //!
 //! # Determinism
 //!

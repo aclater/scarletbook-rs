@@ -486,13 +486,13 @@ pub(crate) fn tables_rs(d: &Designed) -> String {
     };
     table(
         "S1",
-        "First stage of the 40 and 30 kHz filters: 2822.4 kHz, passband 40 kHz, stopband from 304.8 kHz, factor 1 + z^-4.",
+        "First stage of the 40 and 30 kHz filters: 2822.4 kHz, passband 40 kHz, stopband from 304.8 kHz, factor (1 + z^-1)^2 (1 + z^-4).",
         &d.s1,
         Q_S1,
     );
     table(
         "S1_WIDE",
-        "First stage of the 80 kHz filters: 2822.4 kHz, passband 80 kHz, stopband from 256.8 kHz, factor 1 + z^-4.",
+        "First stage of the 80 kHz filters: 2822.4 kHz, passband 80 kHz, stopband from 256.8 kHz, factor (1 + z^-1)^2 (1 + z^-4).",
         &d.s1w,
         Q_S1,
     );
@@ -534,14 +534,31 @@ pub(crate) mod tests {
         if cfg!(all(target_arch = "x86_64", target_os = "linux")) {
             assert!(committed == generated, "src/tables.rs differs from the generator's output");
         } else {
-            let numbers = |s: &str| -> Vec<i64> {
-                s.split(|c: char| !(c.is_ascii_digit() || c == '-')).filter_map(|t| t.parse().ok()).collect()
+            // Per table: its name and taps.
+            let tables = |s: &str| -> Vec<(String, Vec<i64>)> {
+                s.split("pub(crate) const ")
+                    .skip(1)
+                    .map(|t| {
+                        let name = t.split(':').next().unwrap_or_default().to_string();
+                        let body = t.split_once('=').map_or("", |(_, b)| b);
+                        let body = body.split_once("];").map_or(body, |(b, _)| b);
+                        let v = body
+                            .split(|c: char| !(c.is_ascii_digit() || c == '-'))
+                            .filter_map(|n| n.parse().ok())
+                            .collect();
+                        (name, v)
+                    })
+                    .collect()
             };
-            let (a, b) = (numbers(&committed), numbers(&generated));
+            let (a, b) = (tables(&committed), tables(&generated));
             assert_eq!(a.len(), b.len());
-            // One unit of a rounded tap, or of a tap of the S1 cofactor, which `idle_factor`
-            // spreads over up to 8 units.
-            assert!(a.iter().zip(&b).all(|(x, y)| (x - y).abs() <= 8));
+            for ((name, x), (_, y)) in a.iter().zip(&b) {
+                // One unit of a rounded tap; for S1, one unit of a tap of the cofactor, which
+                // `idle_factor` spreads over up to 8 units (the sum of its taps).
+                let tol = if name.starts_with("S1") { 8 } else { 1 };
+                assert_eq!(x.len(), y.len(), "{name}");
+                assert!(x.iter().zip(y).all(|(p, q)| (p - q).abs() <= tol), "{name}");
+            }
         }
     }
 

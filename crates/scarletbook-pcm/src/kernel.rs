@@ -99,8 +99,9 @@ pub(crate) fn lut(half: &[i32]) -> Lut {
 }
 
 /// The idle pattern (sacd-spec, specification 0): DSD silence, and the input beyond the
-/// edges of an area. S1 has the factor `1 + z^-4` (`design::idle_factor`), which cancels it
-/// exactly, so every output whose window holds only this pattern is exactly 0.
+/// edges of an area. S1 has the factor `(1 + z^-1)^2 (1 + z^-4)` (`design::idle_factor`),
+/// whose `1 + z^-4` cancels it exactly, so every output whose window holds only this
+/// pattern is exactly 0.
 pub(crate) const IDLE: u8 = 0x69;
 
 static LUT_S1: OnceLock<Lut> = OnceLock::new();

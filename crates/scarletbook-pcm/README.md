@@ -52,8 +52,10 @@ bytes per channel of each neighbour are read: 66 to 195 bytes, depending on the 
 cutoff.
 
 **Silence.** The idle pattern of Super Audio CD (every byte 0x69, sacd-spec specification
-0) converts to samples of exactly 0 at every rate, cutoff and gain, and so does the other
-idle pattern, 0x55. As +-1 samples, 0x69 is `-1 +1 +1 -1 +1 -1 -1 +1` repeated: each half
+0) converts to samples of exactly 0 at every rate, cutoff and gain, and so do the edges of an
+area. The other idle pattern, 0x55, gives exact zeros within a run of 0x55; a change
+between the two patterns (0x55 next to an area's edge or next to 0x69) is not silent,
+since they are different signals. As +-1 samples, 0x69 is `-1 +1 +1 -1 +1 -1 -1 +1` repeated: each half
 of a byte is the negation of the other (`x[n-4] = -x[n]`), so its mean is 0 and its
 spectrum has lines only at the odd multiples of 352.8 kHz. 0x55 alternates
 (`x[n-1] = -x[n]`). S1's integer taps contain the factor `(1 + z^-1)^2 (1 + z^-4)`, which

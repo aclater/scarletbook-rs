@@ -106,3 +106,25 @@ fn silence_then_signal_has_no_edge_transient() {
     // The first frame and most of the second hear nothing but silence.
     assert!(out[..spf + spf / 2].iter().all(|&v| v == 0));
 }
+
+/// 0x55, the other idle pattern, gives exact zeros within a run of 0x55, but a change
+/// between 0x55 and 0x69 (here the area's edges, which are 0x69) is not silent: the two are
+/// different signals, and no filter makes their junction silent.
+#[test]
+fn idle_0x55_is_silent_only_within_a_run() {
+    for (rate, cutoff) in combos() {
+        let frame = FRAME_BYTES_PER_CHANNEL;
+        let area = vec![0x55u8; 3 * frame];
+        let mut conv = Converter::new(PcmConfig::new(rate, cutoff, 1)).unwrap();
+        let spf = conv.samples_per_frame();
+        let out = convert(&mut conv, FrameRun::new(&area));
+        // The middle frame is far from both edges.
+        assert!(out[spf..2 * spf].iter().all(|&v| v == 0), "{rate} {cutoff:?}");
+        // At the edges, where 0x55 meets the idle pattern 0x69, it is not.
+        assert!(out[..spf / 4].iter().any(|&v| v != 0), "{rate} {cutoff:?}");
+        assert!(out[3 * spf - spf / 4..].iter().any(|&v| v != 0), "{rate} {cutoff:?}");
+        if cfg!(miri) {
+            break;
+        }
+    }
+}

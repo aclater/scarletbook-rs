@@ -4,7 +4,7 @@
 // Do not edit. Each table holds the taps of one symmetric stage from the centre outwards:
 // `[0]` is the centre tap, `[k]` the taps at offsets -k and +k.
 
-/// First stage of the 40 and 30 kHz filters: 2822.4 kHz, passband 40 kHz, stopband from 304.8 kHz, factor 1 + z^-4. Length 63, taps scaled by 2^26.
+/// First stage of the 40 and 30 kHz filters: 2822.4 kHz, passband 40 kHz, stopband from 304.8 kHz, factor (1 + z^-1)^2 (1 + z^-4). Length 63, taps scaled by 2^26.
 #[rustfmt::skip]
 pub(crate) const S1: [i32; 32] = [
     7409628, 7232417, 6719120, 5922232, 4920970, 3810421, 2688964, 1646100,
@@ -13,7 +13,7 @@ pub(crate) const S1: [i32; 32] = [
     61495, 41851, 25795, 14261, 6925, 2830, 901, 127,
 ];
 
-/// First stage of the 80 kHz filters: 2822.4 kHz, passband 80 kHz, stopband from 256.8 kHz, factor 1 + z^-4. Length 95, taps scaled by 2^26.
+/// First stage of the 80 kHz filters: 2822.4 kHz, passband 80 kHz, stopband from 256.8 kHz, factor (1 + z^-1)^2 (1 + z^-4). Length 95, taps scaled by 2^26.
 #[rustfmt::skip]
 pub(crate) const S1_WIDE: [i32; 48] = [
     7608244, 7434516, 6929016, 6137050, 5128214, 3988472, 2810537, 1683914,
