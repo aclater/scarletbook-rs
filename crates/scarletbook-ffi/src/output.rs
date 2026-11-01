@@ -117,8 +117,8 @@ pub enum SbOutputOption {
     /// W24 (specification 8, 8.6 row 24 and 8.4.8, sacd-spec e069569): 1 (the default)
     /// writes `EMID` in `DIIN`; 0 leaves it out of a file that is not an edited master. An
     /// edited master requires `EMID` (8.4.11 item 1), so 0 makes one
-    /// `SB_STATUS_INVALID_ARGUMENT`. A `DIIN` left with none of its chunks is written with
-    /// `D = 0` (8.6 row 34 at sacd-spec 048aa1a; the C API has no option to leave it out).
+    /// `SB_STATUS_INVALID_ARGUMENT`. A `DIIN` left with none of its chunks is written or
+    /// left out as `SB_OUTPUT_OPTION_DSDIFF_EMPTY_INFO` says.
     DsdiffEditedMasterIdWritten = 33,
     /// W24 (specification 8, 8.6 row 24 and 8.4.8, sacd-spec e069569): what fills `DIAR`
     /// and `DITI` when they are written: 0 (the default) the album artist and album items;
@@ -137,6 +137,10 @@ pub enum SbOutputOption {
     /// is then ignored), with `k` counting the bytes written; 0 (the default) does not. `EMID` stays
     /// bytes 0x20 to 0x7E. **A file written with 1 is not a conforming DSDIFF file.**
     DsdiffDepartureD2 = 36,
+    /// W34 (specification 8, 8.6 row 34 and 8.4.8, sacd-spec 048aa1a): 1 (the default)
+    /// writes a `DIIN` that would hold none of its chunks (no `EMID`, markers, `DIAR` or
+    /// `DITI`; only outside an edited master) with `D = 0`, 12 bytes; 0 leaves it out.
+    DsdiffEmptyInfo = 39,
 }
 
 /// The string-valued output options of `sb_output_options_set_string`.
@@ -623,6 +627,7 @@ fn set_option(o: &mut OutputOptions, option: u32, value: i64) -> Result<(), Fail
         }
         35 => departure(o, DsdiffDeparture::D1, flag(value)?),
         36 => departure(o, DsdiffDeparture::D2, flag(value)?),
+        39 => o.dsdiff_empty_info = flag(value)?,
         _ => return Err(Failure::arg("unknown output option")),
     }
     Ok(())
