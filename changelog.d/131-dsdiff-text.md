@@ -1,2 +1,0 @@
-Added
-- DSDIFF text (specification 8, 8.4.7 item 5, 8.4.8 and 8.4.9): the artist (`DIAR`) and title (`DITI`) of `DIIN` from the file's tag items, by default in edited masters; comments (`COMT`, `output::Comment`, `CommentKind`); marker text from track titles (`MarkerText`); every reported string written as text bytes. Writer's choices: the `DIIN` chunk order (`InfoChunk`), the replacement of other code points, and whether empty text is written (#131, #154).

@@ -9,6 +9,157 @@ is shared by every crate of the workspace; releases carry the `bench` program an
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-11-01
+
+### Added
+
+- Saved confirmations (specification 4, 4.2 item 9, sacd-spec `cb9530b`): when verification
+  confirms a provisional reading, a seek index whose TOC fingerprint a disc has checked
+  (`Disc::enable_seek_index`, `Disc::set_seek_index`; an index used directly never) keeps (`L`, `u_L`) and the digest
+  of sector `L`, saves them (format version 3; versions 1 and 2 still load and are still
+  written when there is nothing to add), and after a remount reports a reading from that hint
+  for positions `u_L` or more `Speculation::Confirmed` at once, when sector `L` has that digest.
+  `AreaIndex::confirmations`; `AreaIndex::without_checkpoints` keeps only the hints,
+  confirmations and fingerprint, a few kilobytes to save per area (#124, #144).
+- Seek hints (specification 4, 4.2 item 8 locator samples, sacd-spec `cb9530b`): a seek
+  index records, from every cursor made from it, sectors with the frame number of their first
+  frame record (`IndexOptions::hint_spacing`, default every 8 frames, and `max_hints`,
+  default 2 048, `with_hints`; `AreaIndex::hints`; `seek::DEFAULT_HINT_SPACING`,
+  `DEFAULT_MAX_HINTS`, `MAX_HINTS`, `HINT_REACH`). They are saved with the index (format
+  version 2; version 1 still loads and is still written when there is nothing to add), so
+  that after a remount a provisional reading near a range read before begins at a hint with
+  one read call through the next hint, without a search. Its positions stay provisional
+  (`Speculation::Pending`). A hint whose sector does not hold its frame record is dropped with
+  a warning, and the cursor searches instead. An index kept by a disc carries a fingerprint
+  of the disc's TOC (master and area TOC fields, sector count and format), saved with it:
+  `Disc::set_seek_index` refuses an index of a disc with another TOC. `scarletbook-seekcost`
+  measures seeks after a remount (#124, #133).
+- The `seek_index` fuzz target also reads speculatively from a loaded index's seek hints,
+  and has a synthetic disc keep the index (binding its TOC fingerprint, so that saved
+  confirmations are used) and read and verify through it; readings from seek hints alone
+  must equal reads without an index from their first exact position on. New seeds hold that
+  disc's hints and confirmations (#124).
+- The x86-64 Linux C libraries (`libscarletbook_ffi.so` and every object in
+  `libscarletbook_ffi.a`, glibc and musl) carry the Intel CET shadow stack (SHSTK) property,
+  so a SHSTK-marked program that links them stays marked and glibc with shadow stacks enabled
+  loads them; `clib-test.sh` checks it with `readelf -n`. Indirect branch tracking (IBT) is
+  not marked: stable Rust's standard library has no `ENDBR64` (#125, #157).
+- `scarletbook-pcm`, a new crate: DSD64 to 24-bit PCM at 88.2, 176.4 and 352.8 kHz, with a 40 kHz (default), 30 kHz or 80 kHz (176.4 and 352.8 kHz only) linear-phase low-pass, stopband at least 105 dB and ripple within ±0.01 dB. Output is aligned to the DSD timeline, has an optional gain with clip counting and no dither, and is bit-exact per frame: converting a frame with its neighbours gives the bytes of a whole-area conversion. `Converter` (one per worker) converts frames or runs of frames (#130, #148).
+- C ABI for DSD to PCM (`scarletbook-pcm`): `sb_pcm_converter_new`, `sb_pcm_samples_per_frame`, `sb_pcm_convert_run` and `sb_pcm_converter_free` convert runs of plain DSD64 frames (4704 bytes, 37 632 samples per channel) to 24-bit PCM at 88.2, 176.4 or 352.8 kHz as `int32_t` (`SB_PCM_S32`) or 3-byte little-endian (`SB_PCM_S24LE`) samples, with the cutoffs `SB_PCM_CUTOFF_DEFAULT`, `_LOW` and `_WIDE`, a gain of -120 to +24 dB and per-channel clip counts. A frame converted with its two neighbours is byte for byte the same frame of a whole-area conversion. Additive on ABI 2; README section and ctypes bindings (#130, #160).
+- DSDIFF output layouts with plain DSD sound data (specification 8, 8.4.1 to 8.4.5): `output::Format::DsdiffDsd`, its size and every chunk from the TOC alone, channel IDs and loudspeaker configuration from the area's layout. Writer's choices are fields of `output::OutputOptions`: the property chunk order (`PropertyChunk`), channel IDs and `LSCO` for unspecified layouts, `LSCO` for defined layouts, and the absolute start time (#131, #141).
+- DSDIFF output layouts with DST sound data (specification 8, 8.4.6): `output::DstLengths` reads the lengths of a range's DST equivalents (decoding nothing unless invalid frames are replaced) and can be saved and loaded; `Layout::new_dst` and `Disc::output_layout_dst` give the exact layout from them, with `FRTE`, the `DSTF` frames unchanged, optional `DSTC` frame CRCs and the `DSTI` sound index. `PositionSource::dst_equivalent` and `Layout::input` tell a caller what to supply. Writer's choices: local chunk order (`LocalChunk`), invalid frames (`InvalidDst`), CRCs, the index and its offsets (`DstIndexOffset`) `Layout::read_at` refuses a disc of another image than the one a layout was made from (#131, #143).
+- DSDIFF text (specification 8, 8.4.7 item 5, 8.4.8 and 8.4.9): the artist (`DIAR`) and title (`DITI`) of `DIIN` from the file's tag items, by default in edited masters; comments (`COMT`, `output::Comment`, `CommentKind`); marker text from track titles (`MarkerText`); every reported string written as text bytes. Writer's choices: the `DIIN` chunk order (`InfoChunk`), the replacement of other code points, and whether empty text is written (#131, #154).
+- DSF output layouts (specification 8, 8.2): `output::Layout` and `Disc::output_layout` give a DSF file's exact size and header from the TOC alone; `Layout::positions_for`, `Layout::fill` and `Layout::read_at` produce any byte range of it from the positions' content. Writer's choices are fields of `output::OutputOptions` (bits per sample, channel type of unspecified layouts), and `Error::OutputRefused` reports an area the options can't write. Behind the default `output` feature (#131, #139).
+- DSDIFF markers and edited masters (specification 8, 8.4.7, 8.4.8, 8.4.10 and 8.4.11): the `DIIN` chunk with `EMID` and markers (`output::Marker`, `MarkerKind`, `Markers`): the play range's program, one-track programs of a source track, clipped programs of frame ranges, or the caller's own; and edited-master output, which refuses an area or range that 8.4.11 excludes with `OutputRefusal::NotEditedMaster` and the failing `EditedMasterCheck`. `output::SourceTrack` and `Layout::source_track` give a file's source track (8.1 item 7). Writer's choices: `DIIN` and `EMID`, one-track and clipped programs, and whether `MARK` sizes count the text's pad byte (#131, #145).
+- DSF and DSDIFF output through the C ABI: `sb_output_options_*` (every writer's choice of specification 8, 8.6, as `SbOutputOption`, `SbOutputString` and `SbOutputOrder`, with markers and comments), `sb_tags_*` (`SbTagItem`), `sb_dst_lengths_scan`, `_load` and `_get`, and `sb_output_layout_new`, `_new_dst`, `_info`, `_region`, `_positions`, `_read` and `_fill` (`SbPositionData`). New status codes `SB_STATUS_OUTPUT_LAYOUT_UNSPECIFIED` and `SB_STATUS_NOT_EDITED_MASTER`; `SB_ABI_VERSION` stays 2. The README's ctypes bindings cover the output API, and `clib-smoke.py` checks a DSF and a DSDIFF file made through the C library against the Rust API's output (#131, #161).
+- DSF tags (specification 8, 8.2.6 and 8.3): DSF layouts end with an ID3v2.4 tag built from the TOC (`output::TagSet::from_toc`: track text, track number, ISRC, genres, album or disc text, album set, date), from a caller's `TagSet`, or the caller's own tag bytes (`output::Tags`). Every ID3 writer's choice of 8.6 is a field of `output::Id3Options`: footer or padding, frame order, text encoding, terminators, control characters, splitting, and the frames and descriptions of the arranger, messages, album artist, copyright, album set and date (#131, #149).
+- A criterion benchmark of opening a disc and reading its whole TOC, through the C
+  interface (`sb_disc_open_callbacks_at` and every TOC query) and through the Rust API:
+  `cargo bench -p scarletbook-ffi --bench toc_read` (#132, #135).
+- C interface: `sb_disc_toc` writes the whole TOC into one caller-sized buffer (the disc,
+  areas, tracks, strings, genres, text channels, stored timecodes and warnings that the
+  per-field queries return) in a fixed, versioned binary layout: little-endian, fixed
+  offsets, described by `SbTocHeader`, `SbTocDisc`, `SbTocArea`, `SbTocTrack`,
+  `SbTocWarning` and `SbTocStr`, format `SB_TOC_MAJOR`.`SB_TOC_MINOR` 1.0. One call
+  replaces about 100 to 160 per disc. Additive on ABI 2. README ctypes bindings and an
+  example (#132, #147).
+- The `toc` fuzz target also reads every input that opens through the C interface's
+  `sb_disc_toc` (a 64 KiB buffer, then one of exactly the size given, then one byte short),
+  through `scarletbook-ffi`'s hidden `fuzz_disc_toc` behind a non-default `fuzzing`
+  feature that the C library does not enable (#132, #150).
+- The suspect mark through the C interface (specification 4, 4.2 item 8, sacd-spec
+  `eafaaba`): `sb_track_audio_suspect` and `sb_raw_frames_suspect` write an `SB_SUSPECT_*`
+  reason (`SB_SUSPECT_NONE`, `SB_SUSPECT_AREA_LAYOUT`, `SB_SUSPECT_FRAME_NUMBERS_DECREASE`,
+  `SB_SUSPECT_OTHER`), and `sb_disc_seek_policy_set` takes
+  `SB_SEEK_POLICY_SPECULATIVE_EXACT_WHEN_SUSPECT`. Additive on ABI 2 (sacd-spec#37, #153)
+- Suspect provisional readings (specification 4, 4.2 item 8, sacd-spec `eafaaba`): `suspect()`
+  on `AreaCursor`, `TrackCursor`, `TrackAudioCursor`, `TrackFrames` and `TrackAudio` gives a
+  `Suspect` reason for a provisional reading the library doubts: `AreaLayout` (the area's TOC
+  places its audio past the image's end, or, for cursors a disc makes, over the other area's
+  TOC or audio sectors) or `FrameNumbersDecrease` (the first frame records of the sectors read
+  while choosing `L` decrease). The mark is informative and changes no verdict.
+  `SpeculativeOptions::exact_when_suspect` (`with_exact_when_suspect`, default off) reads
+  such areas and ranges exactly instead. The default policy is unchanged (sacd-spec#37, #151).
+
+### Changed
+
+- Provisional (cold) seeks take at most 5 read calls and 160 KiB up to the range's first frame on
+  the 50-minute 2-channel DST area of uneven bit rate, at every one of 2 000 (and 30 000)
+  positions (#123): when the search reaches its fifth read, that read takes what is left of
+  160 KiB around its guess (or on from where a final read starts, past the probed bound), so
+  that it ends the search and holds the first frame at once; if it finds no sector before the
+  frame, the search goes on as before. Before, 21 of 1 991 positions took 6 or 7 calls (all
+  within 144 KiB); now p50 / p90 / p95 / p99 / max are 3 / 4 / 5 / 5 / 5 calls and
+  122 / 144 / 144 / 160 / 160 KiB. The constant-rate image is unchanged (#123, #164).
+- Provisional (cold) seeks keep within about 144 KiB before the range's first frame, and take
+  fewer read calls at the worst positions (#123): the search's first correction uses the
+  geometric mean of the probe's own density and the average back to the other track start;
+  once probes lie on both sides of the frame it uses regula falsi with the Illinois weighting;
+  it reads a narrow enough interval at once; and the read after the provisional start is sized
+  through the range's first frame and on toward the range's end within that budget, less than
+  32 sectors when that suffices, then on to the range's end as before. On a 50-minute
+  2-channel DST area of uneven bit rate (2 000 positions, to the first frame) the worst case
+  goes from 8 read calls and 284 KiB to 7 and 144 KiB (99th percentile 7 → 6 calls, 206 → 144
+  KiB); the median rises from 48 to 122 KiB, since the range's first frame now comes with the
+  read that also takes the rest of the range (the whole range: 116 → 128 KiB, 4 calls).
+  Reads sized after a resume from a seek index are now also exactly their size (#123, #159).
+- Seek hints are recorded only from the ranges callers read (cursors made from a seek index,
+  `TrackCursor::for_range_indexed` included), no longer by `AreaIndex::extend`,
+  `Disc::extend_seek_index` and `Disc::verify_speculation`: a pass over a whole area recorded
+  a hint every 8 frames, and thinning to `IndexOptions::max_hints` then dropped the hints of
+  the positions actually read, which are the ones a later seek needs (#124, #144).
+- `Disc::set_seek_index` refuses an index saved by a disc whose TOC fingerprint differs: one of
+  another disc of the same layout (which 0.5 accepted and rebound to this disc), and one saved
+  from a rip in another sector format (2054 or 2064 bytes against 2048) of the same disc.
+  Every index a disc keeps now has that fingerprint, so its saved form is format version 2,
+  which 0.5.1 and earlier refuse ("version not supported"): a cache of saved indexes shared
+  with an older release stops loading there. `AreaIndex::from_bytes` keeps at most
+  `max_inline_budget / 8` seek hints, now and as the index grows, in addition to the stored
+  frames. `AreaIndex::merge` likewise refuses to merge two indexes whose TOC
+  fingerprints differ (#124, #133).
+- An exact read resumed from a seek index makes its first read sized to the range (the
+  replay, the interval and up to 64 sectors), one read call instead of two or three.
+  The changed cancellation and progress bound of #123 (a read of up to 512 sectors in
+  progress) applies to it too (#124, #133).
+- C interface: a call no longer allocates to clear the thread's error message
+  (`sb_last_error_message`) when it is already empty, as it is after every successful
+  call: about 8 ns less per call (#132, #140).
+- Text strings of the TOC are decoded in one pass: control characters are replaced only
+  when a string holds some, ASCII Latin-1 text is copied as it is, and fixed text fields
+  are trimmed before they are decoded. The text is unchanged (#132, #142).
+- Opening a disc is 2.5 to 4 times faster on typical discs: the digests of the TOC sectors
+  that `Disc::share` (and `sb_disc_clone`) check a reader against are computed word by
+  word in four lanes instead of byte by byte (FNV-1a). They are never stored, so nothing
+  saved changes; seek index files keep their FNV-1a digests (#132, #138).
+- Documentation: `DecodeOn::Pool` and `sb_pool_new` recommend a pool of one thread fewer than
+  the logical CPUs when the calling thread does substantial work with each frame. Measured on
+  16 vCPUs, decoding through the C interface and writing each frame to files took 7.7 % longer
+  than `bench decode` with 16 threads and 4.6 % longer with 15 (about 3 % faster); with a
+  caller that does little, 16 were as fast or slightly faster. Measure with `decode_pool`
+  (#146, #158).
+- Unreleased APIs made extensible before their first release, so later additions stay
+  minor (#39, #166). Non-exhaustive now: `scarletbook_pcm::FrameRun`, with
+  `FrameRun::new`, `with_before` and `with_after` to build it; the variants
+  `scarletbook_pcm::PcmError::{Unsupported, InputLength, OutputLength}`,
+  `OutputRefusal::UnspecifiedLayout` and `EditedMasterCheck::TrackTooShort` (match them with
+  `..`). `output::Id3Options` gains `new` and a `with_*` method per field, and
+  `output::GenreSources` gains `new`, `with_track`, `with_album` and `with_disc`; both were
+  already non-exhaustive. Nothing released in 0.5.1 changes.
+
+### Fixed
+
+- `Disc::extend_seek_index` and `Disc::verify_speculation` never reported complete for an
+  area without existing audio sectors (its first audio LSN at or past the image's end, as in
+  the corpus image `area-audio-start-past-end`), so a loop until complete never ended: merging
+  the extended copy back took only a farther frontier, and such an area's frontier does not
+  move. `AreaIndex::merge` now also takes completeness. Affects 0.4.0 to 0.5.1 (#68, #136).
+- A provisional reading (`SeekPolicy::Speculative`) with a seek index kept could start a range
+  at the provisional checkpoint where an earlier reading far before the range ended, because a
+  later reading had passed the range's first frame, and then read every sector from there:
+  in one measured case 42 880 sectors in 32-sector calls instead of a few. A provisional
+  checkpoint is now used only with the later one of the same reading (consecutive boundaries);
+  otherwise the cursor searches as without them. Affects 0.4.1 to 0.5.1 (#94, #134).
+
 ## [0.5.1] - 2026-10-31
 
 ### Added
@@ -406,7 +557,8 @@ First release: a clean-room reader for SACD images, written from sacd-spec, pass
 - DST decoding about 3.8 times faster on one thread, and parallel decoding that overlaps
   demultiplexing with decoding within a bounded memory (#16, #17, #19).
 
-[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/aclater/scarletbook-rs/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/aclater/scarletbook-rs/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/aclater/scarletbook-rs/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/aclater/scarletbook-rs/compare/v0.4.0...v0.4.1
