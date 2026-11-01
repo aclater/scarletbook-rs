@@ -10,4 +10,4 @@ Changed
   goes from 8 read calls and 284 KiB to 7 and 144 KiB (99th percentile 7 → 6 calls, 206 → 144
   KiB); the median rises from 48 to 122 KiB, since the range's first frame now comes with the
   read that also takes the rest of the range (the whole range: 116 → 128 KiB, 4 calls).
-  Reads sized after a resume from a seek index are now also exactly their size.
+  Reads sized after a resume from a seek index are now also exactly their size (#123, #159).
