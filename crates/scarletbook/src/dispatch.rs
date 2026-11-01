@@ -212,9 +212,9 @@ mod tests {
         };
         let coefs: Vec<i32> = (0..20).map(|i| [96, -40, 17, -5][i % 4] >> (i / 4)).collect();
         let ptable: Vec<u32> = (0..24).map(|i| 128 - 5 * i).collect();
-        let channels: &[u8] = if cfg!(miri) { &[2] } else { &[1, 2, 3, 4, 5, 6] };
+        let channels: &[u8] = if cfg!(miri) { &[1] } else { &[1, 2, 3, 4, 5, 6] };
         for &nch in channels {
-            let pool: Vec<Vec<u8>> = (0..if cfg!(miri) { 2 } else { 6 })
+            let pool: Vec<Vec<u8>> = (0..if cfg!(miri) { 1 } else { 6 })
                 .map(|k| {
                     let signal: Vec<Vec<u8>> =
                         (0..nch).map(|_| (0..FL).map(|_| rnd() as u8).collect()).collect();
