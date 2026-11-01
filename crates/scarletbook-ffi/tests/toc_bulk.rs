@@ -118,7 +118,8 @@ fn per_field(f: impl Fn(*mut c_char, usize, *mut usize) -> SbStatus) -> Option<V
     }
     let mut buf = vec![0 as c_char; len + 1];
     assert_eq!(f(buf.as_mut_ptr(), len + 1, &mut len), SbStatus::Ok);
-    Some(buf[..len].iter().map(|&c| c as u8).collect())
+    // c_char is i8 or u8 by target; reinterpret the byte without a cast either way.
+    Some(buf[..len].iter().map(|&c| u8::from_ne_bytes(c.to_ne_bytes())).collect())
 }
 
 #[test]

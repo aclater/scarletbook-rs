@@ -97,7 +97,7 @@ fn string(f: impl Fn(*mut c_char, usize, *mut usize) -> SbStatus) -> Option<Stri
     let mut buf = vec![0 as c_char; len + 1];
     assert_eq!(f(buf.as_mut_ptr(), buf.len(), &mut len), SbStatus::Ok);
     assert_eq!(buf[len], 0);
-    Some(String::from_utf8(buf[..len].iter().map(|&b| b as u8).collect()).unwrap())
+    Some(String::from_utf8(buf[..len].iter().map(|&b| u8::from_ne_bytes(b.to_ne_bytes())).collect()).unwrap())
 }
 
 fn disc_string(disc: *const SbDisc, field: u32) -> Option<String> {
