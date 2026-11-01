@@ -741,6 +741,8 @@ SbStatus sb_output_layout_positions(const struct SbOutputLayout *layout, uint64_
 SbStatus sb_output_layout_read(const struct SbOutputLayout *layout, const struct SbDisc *disc, uint64_t offset, uint8_t *buf, size_t len, size_t *written);
 SbStatus sb_output_layout_fill(const struct SbOutputLayout *layout, uint64_t offset, uint8_t *buf, size_t len, const struct SbPositionData *positions, size_t count, size_t *written);
 void sb_output_layout_free(struct SbOutputLayout *layout);
+SbStatus sb_output_options_add_chunk(const struct SbOutputOptions *options, const uint8_t *id, const uint8_t *data, size_t len);
+SbStatus sb_output_options_clear_chunks(const struct SbOutputOptions *options);
 #ifdef __cplusplus
 }
 #endif

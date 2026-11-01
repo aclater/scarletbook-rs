@@ -9,10 +9,10 @@ use std::ffi::{CStr, c_char};
 
 use scarletbook::Error;
 use scarletbook::output::{
-    AlbumArtistFrame, ArrangerFrame, ArtistTitleSource, Comment, CommentKind, DateFrame, DsdiffDeparture,
-    DsfBitsPerSample, DstIndexOffset, DstLengths, Format, GenreSources, Id3Encoding, InfoChunk, Input,
-    InvalidDst, Layout, LocalChunk, Marker, MarkerKind, MarkerText, Markers, OutputOptions, PositionSource,
-    PropertyChunk, RegionKind, SourceTrack, TagItem, TagSet, Tags, TextSource,
+    AlbumArtistFrame, ArrangerFrame, ArtistTitleSource, CallerChunk, Comment, CommentKind, DateFrame,
+    DsdiffDeparture, DsfBitsPerSample, DstIndexOffset, DstLengths, Format, GenreSources, Id3Encoding,
+    InfoChunk, Input, InvalidDst, Layout, LocalChunk, Marker, MarkerKind, MarkerText, Markers, OutputOptions,
+    PositionSource, PropertyChunk, RegionKind, SourceTrack, TagItem, TagSet, Tags, TextSource,
 };
 
 use super::{
@@ -1624,4 +1624,59 @@ pub unsafe extern "C" fn sb_output_layout_fill(
 pub unsafe extern "C" fn sb_output_layout_free(layout: *mut SbOutputLayout) {
     // SAFETY: forwarded contract.
     unsafe { free(layout, |h| h.inner.try_borrow_mut().is_err()) };
+}
+
+/// Adds a DSDIFF caller chunk (specification 8, 8.4.2 item 5, at sacd-spec `e069569`; 8.6 row
+/// 33): the 4 bytes of `id`, and a copy of the `len` bytes of `data` as its data. Caller
+/// chunks are written in the order added, after the last local chunk, with a pad byte 0x00
+/// when `len` is odd (not counted in the chunk's size); they count in the `FRM8` size and
+/// in the layout's last region (`SB_OUTPUT_REGION_KIND_TRAILER`). The same ID may be added more
+/// than once, and an edited master may have them. A DSF file ignores them. Their data is the
+/// caller's: neither the DSDIFF document nor specification 8 defines it.
+///
+/// `SB_STATUS_INVALID_ARGUMENT` if `id` is not 4 bytes 0x20 to 0x7E with no space before a
+/// non-space (8.4.1 item 3), or is one of `FRM8`, `FVER`, `PROP`, `DSD `, `DST `, `DSTI`,
+/// `COMT`, `DIIN` and `MANF`; the options are then unchanged.
+///
+/// # Safety
+///
+/// `options` must be NULL or a live handle; `id` NULL or valid for 4 reads; `data` NULL or
+/// valid for `len` reads.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_output_options_add_chunk(
+    options: *const SbOutputOptions,
+    id: *const u8,
+    data: *const u8,
+    len: usize,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let h = unsafe { handle(options, "output options") }?;
+        if id.is_null() {
+            return Err(Failure::arg("NULL chunk ID"));
+        }
+        // SAFETY: forwarded contract; non-NULL, so valid for 4 reads.
+        let id = unsafe { slice(id, 4) }?;
+        let id: [u8; 4] = id.try_into().map_err(|_| Failure::arg("a chunk ID is 4 bytes"))?;
+        // SAFETY: forwarded contract.
+        let data = unsafe { slice(data, len) }?;
+        let chunk = CallerChunk::new(id, data.to_vec())?;
+        h.inner.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))?.dsdiff_caller_chunks.push(chunk);
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// Removes every DSDIFF caller chunk.
+///
+/// # Safety
+///
+/// `options` must be NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_output_options_clear_chunks(options: *const SbOutputOptions) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let h = unsafe { handle(options, "output options") }?;
+        h.inner.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))?.dsdiff_caller_chunks.clear();
+        Ok(SbStatus::Ok)
+    })
 }
