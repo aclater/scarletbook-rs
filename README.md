@@ -250,7 +250,9 @@ before use, and an index that does not match the image's sectors is discarded as
 Provisional reading (cold seeks, specification 4, 4.2 item 8) is opt-in per disc handle:
 `sb_disc_seek_policy_set(disc, slot, SB_SEEK_POLICY_SPECULATIVE, SB_SEEK_DEFAULT_MIN_GAP)`.
 After a handle's first read, `sb_track_audio_speculation` says whether its positions are
-provisional (`SbSpeculation`). With a seek index kept, `sb_disc_seek_verify` (on a clone in a
+provisional (`SbSpeculation`), and `sb_track_audio_suspect` whether the library has reasons
+of its own to doubt that reading (`SB_SUSPECT_*`, an informative mark;
+`SB_SEEK_POLICY_SPECULATIVE_EXACT_WHEN_SUSPECT` reads those exactly instead). With a seek index kept, `sb_disc_seek_verify` (on a clone in a
 thread of its own) checks provisional readings, and `sb_disc_seek_event_next` returns each
 verdict once: confirmed, or refuted with the frame from which the positions are exact
 (`exact_from`; re-read the positions below it with `SB_SEEK_POLICY_EXACT` for those of a
@@ -586,6 +588,8 @@ bind("sb_dst_decode", S, C.c_char_p, SIZE, U32, C.c_char_p, SIZE, P(U32))
 bind("sb_disc_seek_policy_set", S, H, U32, U32, C.c_uint64)
 bind("sb_track_audio_speculation", S, H, P(SbSpeculation))
 bind("sb_raw_frames_speculation", S, H, P(SbSpeculation))
+bind("sb_track_audio_suspect", S, H, P(U32))
+bind("sb_raw_frames_suspect", S, H, P(U32))
 bind("sb_disc_seek_verify", S, H, U32, C.c_uint64, P(C.c_uint8))
 bind("sb_disc_seek_event_next", S, H, U32, P(SbSpeculation))
 bind("sb_seek_index_verify", S, H, H, P(U32))
