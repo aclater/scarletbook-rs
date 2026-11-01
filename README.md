@@ -376,6 +376,15 @@ well as the C library. glibc systems have it as part of GCC's runtime (manylinux
 it); on Alpine and other musl systems it is the `libgcc` package (`apk add libgcc`). The
 static libraries list it in `native-static-libs.txt` (`-lgcc_s`).
 
+Intel CET on x86-64 Linux: the shared library and every object in the static library carry
+the shadow stack (SHSTK) property (`readelf -n` shows `x86 feature: SHSTK`; checked in CI),
+so a program built with `-fcf-protection` stays SHSTK-marked when it links either one, and
+glibc with shadow stacks enabled loads it. They are not marked for indirect branch tracking
+(IBT): stable Rust's precompiled standard library has no `ENDBR64` instructions, so a
+program that links the static library loses its IBT mark. Do not force it back with
+`-Wl,-z,ibt`. Linux does not enforce IBT in user space today. IBT marking waits for a
+stable `cf-protection` option in rustc and a standard library built with it (issue #125).
+
 The PyPA build images are pinned by digest; `.github/workflows/clib.yml` says how to move
 to newer ones.
 

@@ -26,6 +26,17 @@ case "$target" in
   *-linux-*) link=(-C link-arg=-Wl,-soname,libscarletbook_ffi.so) ;;
   *) link=() ;;
 esac
+# x86-64 Linux: mark the libraries compatible with the CET shadow stack (SHSTK), the CET
+# feature Linux enforces in user space, so that a SHSTK-marked program keeps it when it
+# links them (issue #125). The marking needs no code generation, only that no code
+# returns anywhere but to its caller: no dependency switches stacks or longjmps, and
+# unwinding goes through libgcc_s, which follows the shadow stack. Indirect branch
+# tracking (IBT) is NOT marked: it needs ENDBR64 at every indirect branch target, and
+# stable Rust's precompiled std has none, so an IBT mark would crash under enforcement.
+shstk=
+case "$target" in
+  x86_64-unknown-linux-*) shstk=1 link+=(-C link-arg=-Wl,-z,shstk) ;;
+esac
 # Profile dist: release with one codegen unit, as for the generic `bench` asset.
 CARGO_TERM_COLOR=never cargo rustc --profile dist --locked -p scarletbook-ffi --lib --target "$target" \
   -- --print native-static-libs "${link[@]}" 2>&1 | tee build.log
@@ -47,6 +58,11 @@ esac
 for f in "${shared[@]}" libscarletbook_ffi.a; do
   cp "$out/$f" "$pkg/lib/"
 done
+if [[ -n "$shstk" ]]; then
+  # The linker ANDs the property over every object it pulls from the static library, so
+  # each member needs it (rustc cannot emit it on stable).
+  "${PYTHON:-python3}" .github/scripts/clib-shstk.py "$pkg/lib/libscarletbook_ffi.a"
+fi
 printf '%s\n' "$native" > "$pkg/native-static-libs.txt"
 cp LICENSE-MIT LICENSE-APACHE "$pkg/"
 cat > "$pkg/README.txt" <<EOF
