@@ -48,6 +48,6 @@ pub use error::{EditedMasterCheck, Error, ErrorClass, OutputRefusal, Slot, Warni
 pub use image::{Image, MASTER_TOC_LSN, SECTOR_SIZE, SectorFormat};
 pub use read_at::{ReadAt, ReadAtReader};
 pub use seek::{
-    AreaIndex, IndexOptions, ResumedFrom, SeekEvent, SeekPolicy, Speculation, SpeculativeOptions,
+    AreaIndex, IndexOptions, ResumedFrom, SeekEvent, SeekPolicy, Speculation, SpeculativeOptions, Suspect,
 };
 pub use toc::{Area, AreaKind, LoudspeakerLayout, MasterToc, Speaker, Toc, Track};

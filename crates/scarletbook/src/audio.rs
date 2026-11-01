@@ -459,6 +459,8 @@ pub struct AreaCursor {
     /// or a resume from a seek index); others read
     /// [`READ_CHUNK`] sectors at a time.
     read_to: u64,
+    /// Why this provisional reading is suspect, if it is (4.2 item 8).
+    suspect: Option<crate::seek::Suspect>,
     /// Records seek hints, when made from an index that keeps them.
     hints: Option<Box<HintRecorder>>,
     /// A seek hint this cursor began at did not match the image: the index drops its hints.
@@ -517,6 +519,7 @@ impl AreaCursor {
             claim_registered: false,
             provisional: None,
             read_to: 0,
+            suspect: None,
             hints: None,
             hints_stale: false,
             sectors_read: 0,
@@ -674,7 +677,10 @@ impl AreaCursor {
             r => r?,
         };
         let (l, probes) = (located.lsn, located.reads);
-        if l <= sp.from {
+        // Frame numbers that decrease between the sectors read: suspect (4.2 item 8), and
+        // read exactly if the caller asked for that.
+        let exact_instead = located.decreasing && sp.options.exact_when_suspect;
+        if l <= sp.from || exact_instead {
             let (image_id, counts, stale) = (self.image_id, self.take_progress(), self.hints_stale);
             *self = *sp.exact;
             self.image_id = image_id;
@@ -694,6 +700,9 @@ impl AreaCursor {
         // non-decreasing number order, every frame that starts before it is numbered at most
         // its first record's, which is below `first`, so (a) and (b) hold there.
         self.start_provisional(start, (l, probes), &sp);
+        if located.decreasing && self.suspect.is_none() {
+            self.suspect = Some(crate::seek::Suspect::FrameNumbersDecrease);
+        }
         // Reads on from the probe that found `l`, without reading it again.
         if let Some((at, bytes)) = located.chunk {
             self.buf_sectors = (bytes.len() / SECTOR_SIZE) as u64;
@@ -720,6 +729,16 @@ impl AreaCursor {
             claim.set_lsn(l);
         }
         self.provisional = Some(ProvisionalRecorder::new(start, l, sp.interval));
+        if sp.options.layout_suspect {
+            self.suspect = Some(crate::seek::Suspect::AreaLayout);
+        }
+    }
+
+    /// Why this cursor's provisional reading is suspect, if it is ([`crate::Suspect`];
+    /// specification 4, 4.2 item 8): `None` for exact positions and for a provisional
+    /// reading with no reason to doubt it. Informative: the reading is settled as any other.
+    pub fn suspect(&self) -> Option<crate::seek::Suspect> {
+        self.suspect.filter(|_| self.claim.as_ref().is_some_and(|c| c.lsn() > 0))
     }
 
     /// The seek hints recorded since the last call.
@@ -1979,7 +1998,13 @@ impl TrackCursor {
         (interval, provisional): (u32, Option<&AreaIndex>),
         policy: SeekPolicy,
     ) -> Self {
-        let SeekPolicy::Speculative(options) = policy else { return self };
+        let SeekPolicy::Speculative(mut options) = policy else { return self };
+        // Audio sectors past the image's end make the area's layout suspect (4.2 item 8); a
+        // disc also checks them against the other area's (`SpeculativeOptions::layout_suspect`).
+        options.layout_suspect |= u64::from(area.audio_end_lsn) >= self.area_key.image_sectors;
+        if options.layout_suspect && options.exact_when_suspect {
+            return self;
+        }
         let from = match self.area.resumed {
             ResumedFrom::Checkpoint { lsn, .. } => lsn,
             ResumedFrom::Start => self.area.next_lsn,
@@ -2007,7 +2032,11 @@ impl TrackCursor {
             .and_then(|i| i.plan_provisional(first))
             .filter(|&(lsn, _)| lsn > from && hint.is_none())
         {
-            return TrackCursor { area: AreaCursor::provisional_at(&self.area, p, first, interval), ..self };
+            let mut area_cursor = AreaCursor::provisional_at(&self.area, p, first, interval);
+            if options.layout_suspect {
+                area_cursor.suspect = Some(crate::seek::Suspect::AreaLayout);
+            }
+            return TrackCursor { area: area_cursor, ..self };
         }
         // Track starts inside the audio sectors, as points to interpolate between (4.2 item
         // 8 lets them choose `L`; they never change what is read from it).
@@ -2035,6 +2064,11 @@ impl TrackCursor {
     /// Whether this cursor's positions are provisional (see [`SeekPolicy`]).
     pub fn speculation(&self) -> Speculation {
         self.area.speculation()
+    }
+
+    /// Why the provisional reading is suspect, if it is (see [`crate::Suspect`]).
+    pub fn suspect(&self) -> Option<crate::Suspect> {
+        self.area.suspect()
     }
 
     /// Where its malformed count and warnings begin (see [`AreaCursor::counts_from`]).
@@ -2381,6 +2415,11 @@ impl<'a, R: Read + Seek> TrackFrames<'a, R> {
         self.cursor.speculation()
     }
 
+    /// Why the provisional reading is suspect, if it is (see [`crate::Suspect`]).
+    pub fn suspect(&self) -> Option<crate::Suspect> {
+        self.cursor.suspect()
+    }
+
     /// Where the malformed count and warnings begin (see [`AreaCursor::counts_from`]).
     pub fn counts_from(&self) -> Option<u64> {
         self.cursor.counts_from()
@@ -2695,6 +2734,11 @@ impl TrackAudioCursor {
     /// and invalid counts are provisional as well (specification 4, 4.7.1 item 6).
     pub fn speculation(&self) -> Speculation {
         self.frames.speculation()
+    }
+
+    /// Why the provisional reading is suspect, if it is (see [`crate::Suspect`]).
+    pub fn suspect(&self) -> Option<crate::Suspect> {
+        self.frames.suspect()
     }
 
     /// Where its malformed count and warnings begin (see [`AreaCursor::counts_from`]).
@@ -3392,6 +3436,11 @@ impl<'a, R: Read + Seek> TrackAudio<'a, R> {
     /// Whether the positions are provisional (see [`SeekPolicy`]).
     pub fn speculation(&self) -> Speculation {
         self.cursor.speculation()
+    }
+
+    /// Why the provisional reading is suspect, if it is (see [`crate::Suspect`]).
+    pub fn suspect(&self) -> Option<crate::Suspect> {
+        self.cursor.suspect()
     }
 
     /// Where the malformed count and warnings begin (see [`AreaCursor::counts_from`]).

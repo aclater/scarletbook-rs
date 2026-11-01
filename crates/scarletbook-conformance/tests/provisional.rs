@@ -146,3 +146,56 @@ fn corpus_provisional_readings_are_exact_or_refuted() {
     assert!(provisional > 100, "{provisional}");
     assert!(past_end_refuted > 0, "area-audio-past-end gave no refuted reading");
 }
+
+/// The suspect mark (4.2 item 8, sacd-spec `eafaaba`): every provisional reading of the
+/// 2-channel area of `area-audio-past-end` (whose audio sectors run past the image's end and
+/// over the multichannel sectors) is suspect for its layout, and read exactly when asked;
+/// no reading of a valid image is suspect.
+#[test]
+#[cfg_attr(miri, ignore = "reads the whole corpus")]
+fn suspect_readings_of_the_corpus() {
+    let dir = corpus_dir();
+    let cases = load_cases(&dir).unwrap_or_else(|e| panic!("manifest: {e}"));
+    let (mut past_end, mut valid_provisional) = (0, 0);
+    for case in &cases {
+        let id = case["id"].as_str().unwrap_or_default();
+        let valid = case["category"].as_str() == Some("valid");
+        let path = dir.join("images").join(format!("{id}.iso"));
+        let open = || File::open(&path).ok().and_then(|f| Disc::open(BufReader::new(f)).ok());
+        let Some(mut plain) = open() else { continue };
+        for slot in Slot::ALL {
+            for exact_when_suspect in [false, true] {
+                let Some(mut disc) = open() else { continue };
+                let options = SpeculativeOptions::new()
+                    .with_min_gap_sectors(0)
+                    .with_exact_when_suspect(exact_when_suspect);
+                if disc.set_seek_policy(slot, SeekPolicy::Speculative(options)).is_err() {
+                    continue;
+                }
+                for range in ranges(&plain, slot) {
+                    let c = disc.range_frames_cursor(slot, range.0, range.1).unwrap();
+                    let mut it = disc.read_frames(c);
+                    let got: Frames = it.by_ref().map(|f| f.unwrap()).collect();
+                    let c = it.into_cursor();
+                    let provisional =
+                        matches!(c.resumed_from(), scarletbook::ResumedFrom::Speculative { .. });
+                    let at = format!("{id} {slot} {range:?} exact_when_suspect {exact_when_suspect}");
+                    if valid {
+                        assert_eq!(c.suspect(), None, "{at}");
+                        valid_provisional += usize::from(provisional);
+                    }
+                    if id == "area-audio-past-end" && slot == Slot::TwoChannel {
+                        if exact_when_suspect {
+                            assert!(!provisional, "{at}");
+                            assert_eq!(got, read(&mut plain, slot, range).0, "{at}");
+                        } else if provisional {
+                            assert_eq!(c.suspect(), Some(scarletbook::Suspect::AreaLayout), "{at}");
+                            past_end += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(past_end > 0 && valid_provisional > 100, "{past_end} {valid_provisional}");
+}

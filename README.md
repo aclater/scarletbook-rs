@@ -140,7 +140,12 @@ can differ (see `SeekPolicy`). Their malformed counts begin at the provisional s
 checked once the index reaches it (build it with `disc.verify_speculation(slot, sectors)`,
 for example on a clone in another thread): confirmed, or refuted with the frame from which its
 positions are exact; the cursor's `speculation()` and `disc.take_seek_events(slot)` report it,
-so that a caller can drop and re-read what it served.
+so that a caller can drop and re-read what it served. A provisional reading the library has
+its own reasons to doubt is marked **suspect** (`suspect()`: an area whose TOC places its
+audio past the image's end or over the other area's sectors, or frame numbers that decreased
+between the sectors its search read; 4.2 item 8), and
+`SpeculativeOptions::with_exact_when_suspect(true)` reads those exactly instead. The mark is
+informative: it does not change how the reading is settled.
 
 The seek index also keeps **seek hints** (the locator samples of specification 4, 4.2 item 8):
 sectors its cursors read with the frame number of their first frame record, every 8 frames,

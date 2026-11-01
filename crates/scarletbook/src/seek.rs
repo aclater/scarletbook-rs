@@ -254,7 +254,13 @@ pub enum ResumedFrom {
 /// - read exactly ([`SeekPolicy::Exact`]) in an area whose TOC is implausible, for example
 ///   one whose audio sectors run past the image's end or over the other area's TOC or audio
 ///   sectors: a provisional reading there can land in sectors that are not this area's
-///   audio, as on the corpus image `area-audio-past-end`, and is then refuted.
+///   audio, as on the corpus image `area-audio-past-end`, and is then refuted;
+/// - use the **suspect** mark (4.2 item 8, sacd-spec `eafaaba`): a cursor's
+///   [`crate::TrackCursor::suspect`] gives a reason of the library's own to doubt its reading
+///   ([`Suspect`]: such a layout, or frame numbers that decreased between the sectors its
+///   search read), and [`SpeculativeOptions::exact_when_suspect`] reads those exactly
+///   instead. The mark is informative: it does not change how the reading is settled, and
+///   a reading without it can still be refuted.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SeekPolicy {
@@ -277,11 +283,24 @@ pub struct SpeculativeOptions {
     /// Most probes per search. Default 48; at most `2 x ceil(log2(n + 1)) + 4` are made in
     /// any case, for an area of `n` audio sectors.
     pub max_probes: u32,
+    /// Read exactly, instead of provisionally, where a reading would be [`Suspect`]: in an
+    /// area whose layout is suspect, and after a search that saw frame numbers decrease
+    /// (4.2 item 8 allows either). Default `false`.
+    pub exact_when_suspect: bool,
+    /// The area's layout is suspect ([`Suspect::AreaLayout`]): set by a disc from its TOC for
+    /// the cursors it makes, not by callers.
+    pub(crate) layout_suspect: bool,
 }
 
 impl Default for SpeculativeOptions {
     fn default() -> Self {
-        SpeculativeOptions { min_gap_sectors: 2048, probe_sectors: 8, max_probes: 48 }
+        SpeculativeOptions {
+            min_gap_sectors: 2048,
+            probe_sectors: 8,
+            max_probes: 48,
+            exact_when_suspect: false,
+            layout_suspect: false,
+        }
     }
 }
 
@@ -304,6 +323,11 @@ impl SpeculativeOptions {
     /// These options with `max_probes`.
     pub fn with_max_probes(self, probes: u32) -> Self {
         SpeculativeOptions { max_probes: probes, ..self }
+    }
+
+    /// These options with `exact_when_suspect`.
+    pub fn with_exact_when_suspect(self, exact: bool) -> Self {
+        SpeculativeOptions { exact_when_suspect: exact, ..self }
     }
 }
 
@@ -359,6 +383,24 @@ pub enum Speculation {
         /// `u`.
         first: u32,
     },
+}
+
+/// Why a provisional reading is **suspect**: a reason of the reader's own to expect its
+/// conditions (a) or (b) to fail (specification 4, 4.2 item 8, sacd-spec `eafaaba`). The
+/// mark is informative: a suspect reading is provisional like any other and is settled
+/// exactly as any other ([`Speculation`]); a caller may choose not to serve its positions
+/// before it is confirmed, or to read such areas exactly
+/// ([`SpeculativeOptions::exact_when_suspect`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Suspect {
+    /// The area's TOC places its audio sectors past the end of the image, or over the other
+    /// area's TOC or audio sectors (checked by a disc from its TOC; a cursor made without a
+    /// disc checks only the end of the image).
+    AreaLayout,
+    /// The first frame records of the sectors read while choosing `L` decrease from one
+    /// sector to a later one.
+    FrameNumbersDecrease,
 }
 
 /// Most provisional readings an index keeps waiting to be checked; past it, the oldest is
@@ -677,6 +719,9 @@ pub(crate) struct Located {
     pub(crate) frame: u32,
     /// Sectors per frame around `lsn`, as (sectors, frames), frames at least 1.
     pub(crate) density: (u64, u32),
+    /// Whether the first frame records the probes read decrease from one sector to a later
+    /// one (a reason to mark the reading suspect, 4.2 item 8).
+    pub(crate) decreasing: bool,
 }
 
 /// The point to interpolate the frame `first` between, within `[lo, hi)`: the tightest of the
@@ -744,6 +789,8 @@ pub(crate) fn locate<R: Read + Seek>(
     let sectors = |(s, f): (u64, u32), frames: u32| {
         u64::try_from(u128::from(frames) * u128::from(s) / u128::from(f.max(1))).unwrap_or(u64::MAX)
     };
+    // Every (sector, first record) the probes read, to see whether they decrease.
+    let mut records: Vec<(u64, u32)> = Vec::new();
     while hi - lo > PROBE_SPAN && reads < max {
         let d = density(anchor, previous, local);
         if found_lo && sectors(d, first - lo_t) <= CLOSE_SECTORS {
@@ -785,6 +832,7 @@ pub(crate) fn locate<R: Read + Seek>(
             reads += 1;
             for i in 0..count {
                 let Some(t) = first_record(&read[i as usize * SECTOR_SIZE..]) else { continue };
+                records.push((at + i, t));
                 any = any.or(Some((at + i, t)));
                 last = Some((at + i, t));
                 if t < first {
@@ -829,7 +877,9 @@ pub(crate) fn locate<R: Read + Seek>(
         .into_iter()
         .max_by(|a, b| (u128::from(a.0) * u128::from(b.1)).cmp(&(u128::from(b.0) * u128::from(a.1))))
         .unwrap_or(average);
-    Ok(Located { lsn: lo, reads, chunk, frame: lo_t, density })
+    records.sort_unstable_by_key(|r| r.0);
+    let decreasing = records.windows(2).any(|w| w[1].1 < w[0].1);
+    Ok(Located { lsn: lo, reads, chunk, frame: lo_t, density, decreasing })
 }
 
 /// The reading state of the scan at a boundary `c = S0 + jK`, before sector `c`
@@ -2048,6 +2098,33 @@ pub(crate) fn toc_fingerprint(toc: &crate::Toc, slot: crate::Slot) -> u64 {
         }
     }
     h
+}
+
+/// Whether the TOC places the audio sectors of the area of `slot` past the end of the
+/// image, or over the other area's TOC copies or audio sectors ([`Suspect::AreaLayout`]).
+pub(crate) fn layout_suspect(toc: &crate::Toc, slot: crate::Slot) -> bool {
+    let Some(a) = toc.area(slot) else { return false };
+    let (s, e) = (u64::from(a.audio_start_lsn), u64::from(a.audio_end_lsn));
+    if e >= toc.sectors {
+        return true;
+    }
+    let overlaps = |from: u64, to: u64| from <= e && s <= to && from <= to;
+    let other = match slot {
+        crate::Slot::TwoChannel => toc.master.multichannel,
+        crate::Slot::Multichannel => toc.master.two_channel,
+    };
+    if other.is_used() {
+        let len = u64::from(other.toc_sectors);
+        for t in [other.toc1_lsn, other.toc2_lsn].into_iter().filter(|&t| t != 0) {
+            if overlaps(u64::from(t), u64::from(t) + len - 1) {
+                return true;
+            }
+        }
+    }
+    toc.areas
+        .iter()
+        .filter(|o| o.slot != slot)
+        .any(|o| overlaps(u64::from(o.audio_start_lsn), u64::from(o.audio_end_lsn)))
 }
 
 #[cfg(test)]

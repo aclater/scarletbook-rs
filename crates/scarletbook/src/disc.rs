@@ -332,6 +332,18 @@ impl<R: Read + Seek> Disc<R> {
         self.policy[slot_index(slot)]
     }
 
+    /// The seek policy the cursors of the area from `slot` are made with: this handle's,
+    /// with the area's layout checked against the TOC ([`crate::Suspect::AreaLayout`]).
+    fn cursor_policy(&self, slot: Slot) -> SeekPolicy {
+        match self.seek_policy(slot) {
+            SeekPolicy::Speculative(mut options) => {
+                options.layout_suspect = crate::seek::layout_suspect(&self.shared.toc, slot);
+                SeekPolicy::Speculative(options)
+            }
+            exact => exact,
+        }
+    }
+
     /// Stops keeping a seek index of the area from `slot`, and returns it.
     pub fn take_seek_index(&mut self, slot: Slot) -> Option<AreaIndex> {
         self.shared.seek.write(slot, Option::take)
@@ -489,7 +501,7 @@ impl<R: Read + Seek> Disc<R> {
         what: &str,
     ) -> TrackCursor {
         let n = self.image.sector_count();
-        let policy = self.seek_policy(area.slot);
+        let policy = self.cursor_policy(area.slot);
         let (cursor, how) = self.shared.seek.read(area.slot, |index| {
             let mut cursor = TrackCursor::start_with(area, (first, end), n, index, policy);
             if index.is_some() {
@@ -706,7 +718,7 @@ impl<R: Read + Seek> Disc<R> {
             .check_key(area, n)
             .inspect_err(|e| sb_log!(self.log(), Info, "area {slot} range: frames {first}..{end}: {e}"))?;
         audio::log_open(self.log(), area, None, (first, end), what, "from the seek index");
-        Ok(TrackCursor::start_with(area, (first, end), n, Some(index), self.seek_policy(slot)))
+        Ok(TrackCursor::start_with(area, (first, end), n, Some(index), self.cursor_policy(slot)))
     }
 
     /// The decoding state of the frame range `[first, end)` of the area from `slot`,
@@ -804,7 +816,7 @@ impl<R: Read + Seek> Disc<R> {
             (n, Some(self.image.id())),
             self.log(),
             Some(number),
-            (&self.shared.seek, self.seek_policy(area.slot)),
+            (&self.shared.seek, self.cursor_policy(area.slot)),
         ))
     }
 
@@ -826,7 +838,7 @@ impl<R: Read + Seek> Disc<R> {
             (n, Some(self.image.id())),
             self.log(),
             None,
-            (&self.shared.seek, self.seek_policy(area.slot)),
+            (&self.shared.seek, self.cursor_policy(area.slot)),
         ))
     }
 
