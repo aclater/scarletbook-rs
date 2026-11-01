@@ -1,0 +1,1 @@
+| 2026-11-01 | faster DSF channel separation (#202, #214) | specification 8, 8.2.2 and 8.2.3 at sacd-spec as already cited; the loops were chosen by profiling this crate's own builds (perf). Implemented from the specification text only. No new sources consulted. |
