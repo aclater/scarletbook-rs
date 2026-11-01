@@ -93,15 +93,26 @@ jobs:
         with:
           # Only main writes the cache; pull requests read it.
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        with:
+          tool: cargo-nextest@0.9.148
       # Both feature sets on Linux. macOS and Windows run one pass with every feature, and
       # leave out the bench crate (a Linux benchmark tool, built and tested on Linux): the
-      # platform-specific code is the same in both feature sets.
+      # platform-specific code is the same in both feature sets. cargo-nextest runs the test
+      # binaries in parallel, where `cargo test` ran them one after another (#205); it does
+      # not run doctests, so `cargo test --doc` runs those.
       - if: matrix.os == 'ubuntu-latest'
-        run: cargo test --workspace --locked
+        run: |
+          cargo nextest run --workspace --locked
+          cargo test --workspace --locked --doc
       - if: matrix.os == 'ubuntu-latest'
-        run: cargo test --workspace --locked --all-features
+        run: |
+          cargo nextest run --workspace --locked --all-features
+          cargo test --workspace --locked --all-features --doc
       - if: matrix.os != 'ubuntu-latest'
-        run: cargo test --workspace --locked --all-features --exclude scarletbook-bench
+        run: |
+          cargo nextest run --workspace --locked --all-features --exclude scarletbook-bench
+          cargo test --workspace --locked --all-features --exclude scarletbook-bench --doc
 
   lint:
     runs-on: ubuntu-latest
