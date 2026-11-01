@@ -15,7 +15,9 @@ use std::io::{Cursor, Read, Seek};
 
 use common::TrackSpec;
 use output_common::{Lcg, check, contents, corpus, corpus_ranges, enough, plain, synthetic};
-use scarletbook::output::{Format, LocalChunk, Marker, MarkerKind, Markers, OutputOptions, SourceTrack};
+use scarletbook::output::{
+    Format, LocalChunk, Marker, MarkerKind, Markers, OutputOptions, SourceTrack, TagItem, TagSet, Tags,
+};
 use scarletbook::toc::Area;
 use scarletbook::{Disc, EditedMasterCheck, Error, OutputRefusal, Slot};
 
@@ -176,7 +178,9 @@ fn corpus_markers_and_edited_masters() {
             checked += 1;
 
             // The edited master: refused as 8.4.11 says, or the program with `ABSS` and `LSCO`.
-            let master = OutputOptions::default().with_dsdiff_edited_master(true);
+            let master = OutputOptions::default()
+                .with_dsdiff_edited_master(true)
+                .with_dsdiff_artist_title(Some(false));
             match (
                 edited_master_check(&area),
                 disc.output_layout(area.slot, 0, p, Format::DsdiffDsd, &master),
@@ -373,7 +377,8 @@ fn edited_master_refusals() {
     let tracks = |v: &[(u32, u32)]| {
         v.iter().map(|&(start, duration)| TrackSpec { start, duration }).collect::<Vec<_>>()
     };
-    let master = OutputOptions::default().with_dsdiff_edited_master(true);
+    let master =
+        OutputOptions::default().with_dsdiff_edited_master(true).with_dsdiff_artist_title(Some(false));
     type Case<'a> = (&'a [(u32, u32)], u32, Option<EditedMasterCheck>);
     let cases: &[Case<'_>] = &[
         (&[(0, 75), (75, 75)], 160, None),
@@ -415,4 +420,13 @@ fn edited_master_refusals() {
         disc.output_layout(Slot::TwoChannel, 0, 75, Format::DsdiffDsd, &custom).unwrap_err(),
         Error::InvalidArgument(_)
     ));
+
+    // W24: by default an edited master has the artist and title (8.4.11, last paragraph).
+    let mut set = TagSet::new();
+    set.set(TagItem::AlbumArtist, "A");
+    set.set(TagItem::Album, "T");
+    let mut disc = synthetic(2, &plain(2, 75), tracks(&[(0, 75)]), 75);
+    let recommended = OutputOptions::default().with_dsdiff_edited_master(true).with_tags(Tags::Set(set));
+    let d = without_diin(&whole(&mut disc, Slot::TwoChannel, 0, 75, &recommended)).1.unwrap();
+    assert!(d.windows(4).any(|w| w == b"DIAR") && d.windows(4).any(|w| w == b"DITI"));
 }

@@ -5,10 +5,12 @@
 use std::ops::Range;
 
 use super::markers::{self, Markers};
+use super::tags::{TagItem, TagSet};
 use super::{Checked, Layout, OutputOptions, Part, RegionKind, SourceTrack};
+use super::{Tags, dsdiff_text};
 use crate::audio::FRAME_BYTES_PER_CHANNEL;
 use crate::error::Error;
-use crate::toc::{Area, LoudspeakerLayout};
+use crate::toc::{Area, LoudspeakerLayout, Toc};
 
 /// The sample rate written (8.1 item 4, 8.4.3).
 const SAMPLE_RATE: u32 = 2_822_400;
@@ -183,13 +185,20 @@ pub enum LocalChunk {
     /// `DIIN`, the edited master information (written as
     /// [`OutputOptions::dsdiff_edited_master_info`] says).
     EditedMasterInfo,
+    /// `COMT`, the comments (written when [`OutputOptions::dsdiff_comments`] has one).
+    Comments,
 }
 
 impl LocalChunk {
-    /// The default order: `PROP`, `DIIN`, the sound data, `DSTI`. Chunks added later take
+    /// The default order: `PROP`, `COMT`, `DIIN`, the sound data, `DSTI`. Chunks added later take
     /// their place in it, so it is a slice.
-    pub const DEFAULT_ORDER: &'static [LocalChunk] =
-        &[LocalChunk::Property, LocalChunk::EditedMasterInfo, LocalChunk::SoundData, LocalChunk::DstIndex];
+    pub const DEFAULT_ORDER: &'static [LocalChunk] = &[
+        LocalChunk::Property,
+        LocalChunk::Comments,
+        LocalChunk::EditedMasterInfo,
+        LocalChunk::SoundData,
+        LocalChunk::DstIndex,
+    ];
 }
 
 /// The sound data of a file, for [`assemble`].
@@ -204,6 +213,7 @@ pub(super) enum Sound {
 /// the order of the options (8.4.2).
 pub(super) fn assemble(
     layout: &mut Layout,
+    toc: &Toc,
     area: &Area,
     options: &OutputOptions,
     sound: Sound,
@@ -225,6 +235,8 @@ pub(super) fn assemble(
         edited = OutputOptions {
             dsdiff_absolute_start: Some(options.dsdiff_absolute_start.unwrap_or(0)),
             dsdiff_edited_master_info: true,
+            // W24: the artist and title the DSDIFF document recommends, unless the caller says no.
+            dsdiff_artist_title: Some(options.dsdiff_artist_title.unwrap_or(true)),
             source_track: SourceTrack::None,
             ..options.clone()
         };
@@ -232,6 +244,10 @@ pub(super) fn assemble(
     } else {
         options
     };
+    // W26: the replacement is itself a text byte (8.4.9).
+    if let Some(r) = options.dsdiff_text_replacement {
+        markers::check_text(&[r])?;
+    }
     let positions = u64::from(layout.end - layout.first);
     let cmpr = match sound {
         Sound::Dsd(..) => CMPR_DSD,
@@ -252,12 +268,23 @@ pub(super) fn assemble(
             Markers::FromToc => markers::from_toc(area, layout.first, layout.end, source, options),
             Markers::Custom(list) => list.clone(),
         };
-        Some(markers::diin(layout, &list, options)?)
+        // W24: the artist and title, from the file's tag items (8.4.8).
+        let set = match &options.tags {
+            Tags::FromToc if options.dsdiff_artist_title == Some(true) => {
+                Some(TagSet::from_toc(toc, area, source, options))
+            }
+            Tags::Set(set) if options.dsdiff_artist_title == Some(true) => Some(set.clone()),
+            _ => None,
+        };
+        let first = |item| set.as_ref().and_then(|s| s.get(item).first().map(String::as_str));
+        Some(markers::diin(layout, &list, first(TagItem::AlbumArtist), first(TagItem::Album), options)?)
     } else {
         None
     };
+    let comt = dsdiff_text::comt(layout.channels, options)?;
     let written = |c: LocalChunk| match c {
         LocalChunk::Property | LocalChunk::SoundData => true,
+        LocalChunk::Comments => comt.is_some(),
         LocalChunk::EditedMasterInfo => diin.is_some(),
         LocalChunk::DstIndex => index.is_some(),
     };
@@ -288,6 +315,7 @@ pub(super) fn assemble(
     };
     let size_of = |c: LocalChunk| match c {
         LocalChunk::Property => prop.len() as u64,
+        LocalChunk::Comments => comt.as_ref().map_or(0, |d| d.len() as u64),
         LocalChunk::EditedMasterInfo => diin.as_ref().map_or(0, |d| d.len() as u64),
         LocalChunk::SoundData => occupied(sound_d),
         LocalChunk::DstIndex => index.map_or(0, occupied),
@@ -310,6 +338,7 @@ pub(super) fn assemble(
     for &c in &order {
         match c {
             LocalChunk::Property => bytes.extend_from_slice(&prop),
+            LocalChunk::Comments => bytes.extend_from_slice(comt.as_deref().unwrap_or_default()),
             LocalChunk::EditedMasterInfo => bytes.extend_from_slice(diin.as_deref().unwrap_or_default()),
             LocalChunk::DstIndex => {
                 if let Sound::Dst(dst) = &sound {
@@ -336,11 +365,16 @@ pub(super) fn assemble(
 }
 
 /// Builds the regions of a plain DSD DSDIFF file (8.4.2, 8.4.5).
-pub(super) fn build_dsd(layout: &mut Layout, area: &Area, options: &OutputOptions) -> Result<(), Error> {
+pub(super) fn build_dsd(
+    layout: &mut Layout,
+    toc: &Toc,
+    area: &Area,
+    options: &OutputOptions,
+) -> Result<(), Error> {
     let positions = u64::from(layout.end - layout.first);
     // Even, so no pad byte follows (8.4.5).
     let d = positions * u64::from(layout.channels) * FRAME_BYTES_PER_CHANNEL as u64;
-    assemble(layout, area, options, Sound::Dsd(DsdData { channels: layout.channels }, d))
+    assemble(layout, toc, area, options, Sound::Dsd(DsdData { channels: layout.channels }, d))
 }
 
 /// Plain DSD sound data (8.4.5): the positions' content, in order, unchanged.
