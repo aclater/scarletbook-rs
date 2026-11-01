@@ -31,7 +31,7 @@ use crate::{ConvertStats, Cutoff, FRAME_BYTES_PER_CHANNEL, Frames, PcmOut, PcmRa
 
 /// Output samples computed together by the kernels (a block of independent sums the
 /// compiler can put in vector lanes).
-const LANES: usize = 8;
+const LANES: usize = 16;
 
 /// Output frames converted per pass. Each pass recomputes its stages' margins, so larger
 /// passes waste less; the scratch buffers grow with it (about 0.5 MiB at 4 frames).
@@ -225,8 +225,8 @@ impl Input<'_> {
             let (part, tail) = rest.split_at_mut(take);
             // Callers pass only positions within `valid()`, where the source exists.
             if let Some(src) = self.frame(f) {
-                for (d, &s) in part.iter_mut().zip(src[at * ch + c..].iter().step_by(ch)) {
-                    *d = s;
+                for (d, s) in part.iter_mut().zip(src[at * ch..].chunks_exact(ch)) {
+                    *d = s[c];
                 }
             }
             rest = tail;
@@ -339,11 +339,14 @@ impl Plan {
                 if lo < hi {
                     input.copy(c, lo, &mut sc.bytes[(lo - p0) as usize..(hi - p0) as usize]);
                 }
-                // S1 into `a`.
-                let n1 = levels[0].1.div_ceil(LANES) * LANES;
-                sc.a.clear();
-                sc.a.resize(n1, 0.0);
-                s1(self.lut, &sc.bytes, &mut sc.a);
+                // S1 into `a`, unless the first stage is a Dec2: that takes its even and odd
+                // inputs straight from S1.
+                if !matches!(self.ops.first(), Some(Op::Dec2(_))) {
+                    let n1 = levels[0].1.div_ceil(LANES) * LANES;
+                    sc.a.clear();
+                    sc.a.resize(n1, 0.0);
+                    s1(self.lut, &sc.bytes, 0, 1, &mut sc.a);
+                }
                 // The other stages, `a` to `b` and swap.
                 for (k, op) in self.ops.iter().enumerate() {
                     let (start_out, n_out) = levels[k + 1];
@@ -363,9 +366,16 @@ impl Plan {
                             // xe[i] = x[2(a - e + i)], xo[i] = x[2(a - o + i) + 1].
                             let (de, dodd) = (m - 2 * e, m + 1 - 2 * o);
                             sc.even.clear();
-                            sc.even.extend(sc.a.iter().skip(de).step_by(2).take(np + 2 * e));
                             sc.odd.clear();
-                            sc.odd.extend(sc.a.iter().skip(dodd).step_by(2).take(np + 2 * o));
+                            if k == 0 {
+                                sc.even.resize(np + 2 * e, 0.0);
+                                sc.odd.resize(np + 2 * o, 0.0);
+                                s1(self.lut, &sc.bytes, de, 2, &mut sc.even);
+                                s1(self.lut, &sc.bytes, dodd, 2, &mut sc.odd);
+                            } else {
+                                sc.even.extend(sc.a.iter().skip(de).step_by(2).take(np + 2 * e));
+                                sc.odd.extend(sc.a.iter().skip(dodd).step_by(2).take(np + 2 * o));
+                            }
                             sc.b.clear();
                             sc.b.resize(np, 0.0);
                             dec2(s, &sc.even, &sc.odd, &mut sc.b);
@@ -431,11 +441,15 @@ fn quantise<D>(v: &[f64], gain: f64, dst: impl Iterator<Item = D>, mut put: impl
     clipped
 }
 
-/// S1: `out[i]` = the sum of `lut[j][bytes[i + j]]`.
-fn s1(lut: &[[i32; 256]], bytes: &[u8], out: &mut [f64]) {
+/// S1: `out[k]` = the sum of `lut[j][bytes[start + stride k + j]]`.
+fn s1(lut: &[[i32; 256]], bytes: &[u8], start: usize, stride: usize, out: &mut [f64]) {
     let b = lut.len();
-    for (i, o) in out.iter_mut().enumerate() {
-        let sum: i32 = lut.iter().zip(&bytes[i..i + b]).map(|(t, &x)| t[usize::from(x)]).sum();
+    for (k, o) in out.iter_mut().enumerate() {
+        let i = start + stride * k;
+        // No partial sum wraps: the sum of the absolute taps is below `i32::MAX`
+        // (`design::tests`). `wrapping_add` keeps overflow checks out of the loop.
+        let sum =
+            lut.iter().zip(&bytes[i..i + b]).fold(0i32, |acc, (t, &x)| acc.wrapping_add(t[usize::from(x)]));
         *o = f64::from(sum);
     }
 }
@@ -443,9 +457,12 @@ fn s1(lut: &[[i32; 256]], bytes: &[u8], out: &mut [f64]) {
 /// Adds `h[j] (x[hi + j + l] + x[lo - j + l])` over `j`, for the `LANES` outputs `l`.
 #[inline(always)]
 fn add_pairs(acc: &mut [f64; LANES], h: &[f64], x: &[f64], hi: usize, lo: usize) {
-    for (j, &hj) in h.iter().enumerate() {
-        let a = &x[hi + j..hi + j + LANES];
-        let b = &x[lo - j..lo - j + LANES];
+    let Some(last) = h.len().checked_sub(1) else { return };
+    // The windows `x[hi + j..]` upwards and `x[lo - j..]` downwards, sliced once so that the
+    // loop has no bounds checks.
+    let up = x[hi..hi + last + LANES].windows(LANES);
+    let down = x[lo - last..lo + LANES].windows(LANES).rev();
+    for ((a, b), &hj) in up.zip(down).zip(h) {
         for l in 0..LANES {
             acc[l] += hj * (a[l] + b[l]);
         }
