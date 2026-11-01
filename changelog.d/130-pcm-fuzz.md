@@ -4,4 +4,4 @@ Added
   refused, and the C interface's `sb_pcm_converter_new` and `sb_pcm_convert_run` (through
   `scarletbook-ffi`'s hidden `fuzz_pcm_convert_run` behind the non-default `fuzzing`
   feature) must refuse the same arguments and give the same bytes and clip counts in both
-  formats, writing nothing outside the output (#130, #PR).
+  formats, writing nothing outside the output (#130, #168).
