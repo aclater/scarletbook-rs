@@ -317,6 +317,7 @@ fn options_are_checked() {
         (SbOutputOption::Tags, 1, 2),
         (SbOutputOption::DsdiffEditedMasterIdWritten, 0, 2),
         (SbOutputOption::DsdiffArtistTitleSource, 2, 3),
+        (SbOutputOption::DsdiffEmptyInfo, 0, 2),
     ] {
         assert_eq!(set(o, option, ok), SbStatus::Ok, "{option:?}");
         assert_eq!(set(o, option, bad), SbStatus::InvalidArgument, "{option:?}");
@@ -565,6 +566,50 @@ fn diin_choices_equal_the_rust_api() {
     );
     assert_eq!(read(l, d, 5_000), want);
     c!(sb_output_layout_free(l));
+    c!(sb_output_options_free(o));
+    c!(sb_disc_free(d));
+}
+
+/// A `DIIN` with none of its chunks (specification 8, 8.4.8 and 8.6 row 34 at sacd-spec
+/// 048aa1a): written with `D = 0` by default, left out with option 39 at 0, as in Rust.
+#[test]
+#[cfg_attr(miri, ignore = "rayon's crossbeam-epoch fails Stacked Borrows; run with Tree Borrows")]
+fn empty_diin_equals_the_rust_api() {
+    let frames: Vec<common::PFrame> = (0..3u32)
+        .map(|number| common::PFrame { number, dst: false, data: vec![number as u8; 2 * 4704] })
+        .collect();
+    let tracks =
+        vec![common::TrackSpec { start: 0, duration: 1 }, common::TrackSpec { start: 1, duration: 2 }];
+    let bytes = common::Spec { channels: 2, playtime: 3, tracks, audio: common::pack(&frames) }.build();
+    let d = open(&bytes);
+    let mut disc = Disc::open(Cursor::new(bytes.clone())).unwrap();
+    let o = options();
+    assert_eq!(set(o, SbOutputOption::DsdiffEditedMasterInfo, 1), SbStatus::Ok);
+    assert_eq!(set(o, SbOutputOption::DsdiffEditedMasterIdWritten, 0), SbStatus::Ok);
+    let rust = OutputOptions::default()
+        .with_dsdiff_edited_master_info(true)
+        .with_dsdiff_edited_master_id_written(false);
+    let dsdiff = SbOutputFormat::DsdiffDsd as u32;
+    let mut sizes = Vec::new();
+    for (value, rust) in [(1, rust.clone()), (0, rust.with_dsdiff_empty_info(false))] {
+        assert_eq!(set(o, SbOutputOption::DsdiffEmptyInfo, value), SbStatus::Ok);
+        // Track 2 has no markers by default, and there is no artist or title.
+        let layout = disc.output_layout(Slot::TwoChannel, 1, 3, Format::DsdiffDsd, &rust).unwrap();
+        let want = rust_file(&mut disc, &layout);
+        let diin = want.windows(4).position(|w| w == b"DIIN");
+        if value == 1 {
+            let at = diin.unwrap();
+            assert_eq!(want[at..at + 12], [&b"DIIN"[..], &0u64.to_be_bytes()].concat());
+        } else {
+            assert_eq!(diin, None);
+        }
+        let mut l = ptr::null_mut();
+        assert_eq!(c!(sb_output_layout_new(d, 0, 1, 3, dsdiff, o, &mut l)), SbStatus::Ok);
+        assert_eq!(read(l, d, 5_000), want);
+        c!(sb_output_layout_free(l));
+        sizes.push(want.len());
+    }
+    assert_eq!(sizes[0], sizes[1] + 12);
     c!(sb_output_options_free(o));
     c!(sb_disc_free(d));
 }

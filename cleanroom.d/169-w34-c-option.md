@@ -1,0 +1,1 @@
+| 2026-11-01 | C option for the empty `DIIN` (#169, #PR) | specification 8, 8.4.8 and 8.6 row 34 at sacd-spec `048aa1a`; the C side of the Rust option of #184. No other program's code or output was consulted. No new sources consulted. |
