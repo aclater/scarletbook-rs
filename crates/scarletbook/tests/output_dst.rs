@@ -4,7 +4,8 @@
 //! known from the TOC and the frame lengths equals a sequential write's, the `DSTF` frames
 //! decode to the range's audio (8.4.6 "Decoding"), the `DSTC` CRCs and `DSTI` entries are
 //! those of 8.4.6.1 and 8.4.6.2, and byte ranges read at random equal the sequential
-//! write's.
+//! write's. Caller chunks (8.4.2 item 5, at sacd-spec `e069569`; issue #169) follow the
+//! local chunks.
 
 #![cfg(feature = "output")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -26,7 +27,8 @@ use output_common::{
 use proptest::prelude::*;
 use scarletbook::audio::FRAME_BYTES_PER_CHANNEL;
 use scarletbook::output::{
-    DstIndexOffset, DstLengths, Format, InvalidDst, Layout, LocalChunk, OutputOptions, PositionSource,
+    CallerChunk, DstIndexOffset, DstLengths, Format, InvalidDst, Layout, LocalChunk, OutputOptions,
+    PositionSource, RegionKind,
 };
 use scarletbook::{Disc, DstDecoder, Error, FrameContent, Slot};
 
@@ -333,6 +335,35 @@ fn lengths_are_checked() {
     let mut held = output_common::Held { first: 0, content: &[], asked: Vec::new() };
     let e = layout.fill(0, &mut vec![0; layout.size() as usize], &mut held).unwrap_err();
     assert!(matches!(e, Error::InvalidArgument(_)), "{e}");
+}
+
+#[test]
+fn caller_chunks_follow_the_local_chunks() {
+    let frames = vec![
+        plain(2, 1).pop().unwrap(),
+        PFrame { number: 1, dst: true, data: (0..23).collect() },
+        plain(2, 3).pop().unwrap(),
+    ];
+    let mut disc = synthetic(2, &frames, vec![TrackSpec { start: 0, duration: 3 }], 3);
+    let lengths = DstLengths::scan(&mut disc, Slot::TwoChannel, 0, 3, InvalidDst::Stored).unwrap();
+    let mut p = positions(&mut disc, Slot::TwoChannel, 0, 3, InvalidDst::Stored);
+    let callers = vec![
+        CallerChunk::new(*b"ID3 ", vec![1, 2, 3]).unwrap(),
+        CallerChunk::new(*b"ID3 ", vec![4, 5]).unwrap(),
+    ];
+    let c = Choices { crc: true, index: Some(DstIndexOffset::ChunkHeader), index_first: false };
+    let mut expected = sequential(&p, &[b"SLFT", b"SRGT"], 0, &c);
+    let base = expected.len() as u64;
+    // 8.4.1 item 1: `D` 3 with a pad byte, then `D` 2; `FRM8` counts them (8.4.2 item 4).
+    expected.extend_from_slice(b"ID3 \0\0\0\0\0\0\0\x03\x01\x02\x03\0ID3 \0\0\0\0\0\0\0\x02\x04\x05");
+    let frm8 = expected.len() as u64 - 12;
+    expected[4..12].copy_from_slice(&frm8.to_be_bytes());
+    let layout = disc.output_layout_dst(&lengths, &options(&c).with_dsdiff_caller_chunks(callers)).unwrap();
+    check_with(&mut disc, &layout, &expected, &mut p, &mut Lcg(7));
+    // `DSTI` and the caller chunks make the last region.
+    let last = layout.regions().last().unwrap();
+    assert_eq!((last.kind, last.offset + last.len), (RegionKind::Trailer, layout.size()));
+    assert!(last.offset < base);
 }
 
 fn config() -> ProptestConfig {

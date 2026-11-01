@@ -14,8 +14,8 @@ use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
 use scarletbook::output::{
-    ArtistTitleSource, Comment, CommentKind, DsfBitsPerSample, DstIndexOffset, DstLengths, Format,
-    InvalidDst, Layout, MarkerText, OutputOptions, TagItem, TagSet, Tags,
+    ArtistTitleSource, CallerChunk, Comment, CommentKind, DsfBitsPerSample, DstIndexOffset, DstLengths,
+    Format, InvalidDst, Layout, MarkerText, OutputOptions, TagItem, TagSet, Tags,
 };
 use scarletbook::{Disc, Slot};
 use scarletbook_ffi::*;
@@ -789,4 +789,80 @@ fn caller_id3v23_tag() {
     }
     c!(sb_output_options_free(o));
     c!(sb_disc_free(d));
+}
+
+/// Caller chunks (specification 8, 8.4.2 item 5, at sacd-spec `e069569`; 8.6 row 33)
+/// added through the C ABI give the Rust API's file, size and regions; the region info
+/// counts them.
+#[test]
+#[cfg_attr(miri, ignore = "rayon's crossbeam-epoch fails Stacked Borrows; run with Tree Borrows")]
+fn caller_chunks_equal_the_rust_api() {
+    let frames: Vec<common::PFrame> = (0..2u32)
+        .map(|number| common::PFrame { number, dst: false, data: vec![number as u8; 2 * 4704] })
+        .collect();
+    let tracks = vec![common::TrackSpec { start: 0, duration: 2 }];
+    let bytes = common::Spec { channels: 2, playtime: 2, tracks, audio: common::pack(&frames) }.build();
+    let d = open(&bytes);
+    let mut disc = Disc::open(Cursor::new(bytes.clone())).unwrap();
+    let o = options();
+    assert_eq!(c!(sb_output_options_add_chunk(o, b"ID3 ".as_ptr(), [1u8, 2, 3].as_ptr(), 3)), SbStatus::Ok);
+    assert_eq!(c!(sb_output_options_add_chunk(o, b"ID3 ".as_ptr(), ptr::null(), 0)), SbStatus::Ok);
+    let rust = OutputOptions::default().with_dsdiff_caller_chunks(vec![
+        CallerChunk::new(*b"ID3 ", vec![1, 2, 3]).unwrap(),
+        CallerChunk::new(*b"ID3 ", Vec::new()).unwrap(),
+    ]);
+    let layout = disc.output_layout(Slot::TwoChannel, 0, 2, Format::DsdiffDsd, &rust).unwrap();
+    let want = rust_file(&mut disc, &layout);
+    assert_eq!(want[want.len() - 28..], *b"ID3 \0\0\0\0\0\0\0\x03\x01\x02\x03\0ID3 \0\0\0\0\0\0\0\0");
+    let mut l = ptr::null_mut();
+    assert_eq!(
+        c!(sb_output_layout_new(d, 0, 0, 2, SbOutputFormat::DsdiffDsd as u32, o, &mut l)),
+        SbStatus::Ok
+    );
+    let i = info(l);
+    assert_eq!(i.size, want.len() as u64);
+    assert_eq!(i.regions as usize, layout.regions().len());
+    let mut r = SbOutputRegion::default();
+    assert_eq!(c!(sb_output_layout_region(l, i.regions - 1, &mut r)), SbStatus::Ok);
+    assert_eq!((r.kind, r.offset + r.len), (SbOutputRegionKind::Trailer as u32, i.size));
+    assert!(r.len >= 28);
+    assert_eq!(read(l, d, 5_000), want);
+    c!(sb_output_layout_free(l));
+    // Cleared, the file is the default one.
+    assert_eq!(c!(sb_output_options_clear_chunks(o)), SbStatus::Ok);
+    assert_eq!(
+        c!(sb_output_layout_new(d, 0, 0, 2, SbOutputFormat::DsdiffDsd as u32, o, &mut l)),
+        SbStatus::Ok
+    );
+    assert_eq!(info(l).size, want.len() as u64 - 28);
+    c!(sb_output_layout_free(l));
+    c!(sb_output_options_free(o));
+    c!(sb_disc_free(d));
+}
+
+/// Caller chunk IDs are checked when added (8.4.1 item 3, 8.4.2 item 5).
+#[test]
+fn caller_chunk_ids_are_checked() {
+    let o = options();
+    for id in
+        [b"FRM8", b"FVER", b"PROP", b"DSD ", b"DST ", b"DSTI", b"COMT", b"DIIN", b"MANF", b" ID3", b"ID3\x7F"]
+    {
+        assert_eq!(
+            c!(sb_output_options_add_chunk(o, id.as_ptr(), [0u8].as_ptr(), 1)),
+            SbStatus::InvalidArgument
+        );
+    }
+    assert_eq!(c!(sb_output_options_add_chunk(o, ptr::null(), ptr::null(), 0)), SbStatus::InvalidArgument);
+    assert_eq!(
+        c!(sb_output_options_add_chunk(o, b"ID3 ".as_ptr(), ptr::null(), 1)),
+        SbStatus::InvalidArgument
+    );
+    assert_eq!(
+        c!(sb_output_options_add_chunk(ptr::null(), b"ID3 ".as_ptr(), ptr::null(), 0)),
+        SbStatus::InvalidArgument
+    );
+    assert_eq!(c!(sb_output_options_add_chunk(o, b"ID3 ".as_ptr(), [7u8; 5].as_ptr(), 5)), SbStatus::Ok);
+    assert_eq!(c!(sb_output_options_clear_chunks(o)), SbStatus::Ok);
+    assert_eq!(c!(sb_output_options_clear_chunks(ptr::null())), SbStatus::InvalidArgument);
+    c!(sb_output_options_free(o));
 }
