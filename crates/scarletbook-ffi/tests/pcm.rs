@@ -364,8 +364,10 @@ fn argument_errors() {
     free(c);
 }
 
-/// One small conversion under Miri: the slices built from the C arguments, an unaligned
-/// `SB_PCM_S32` output, bytes past the output untouched, both neighbours.
+/// One small conversion, the one under Miri: the slices built from the C arguments, an
+/// unaligned `SB_PCM_S32` output, bytes past the output untouched, both neighbours. Under
+/// Miri only `SB_PCM_S32` and without the Rust converter's reference (each conversion takes
+/// Miri about 15 s); the other tests compare the output.
 #[test]
 fn small_conversion() {
     let c = new(88_200, SB_PCM_CUTOFF_LOW, 1, -6.0).unwrap();
@@ -374,11 +376,13 @@ fn small_conversion() {
     let (prev, rest) = all.split_at(FRAME_BYTES_PER_CHANNEL);
     let (cur, next) = rest.split_at(FRAME_BYTES_PER_CHANNEL);
     let config = PcmConfig::new(PcmRate::Hz88200, Cutoff::Low, 1).with_gain(Gain::from_db(-6.0).unwrap());
-    let (pcm, _) = convert_rust(config, FrameRun { before: Some(prev), frames: cur, after: Some(next) });
-    for fmt in [SB_PCM_S32, SB_PCM_S24LE] {
-        let want = bytes_of(&pcm, fmt);
+    let reference = (!cfg!(miri))
+        .then(|| convert_rust(config, FrameRun { before: Some(prev), frames: cur, after: Some(next) }).0);
+    let formats: &[u32] = if cfg!(miri) { &[SB_PCM_S32] } else { &[SB_PCM_S32, SB_PCM_S24LE] };
+    for &fmt in formats {
+        let len = 1176 * if fmt == SB_PCM_S32 { 4 } else { 3 };
         // One byte in, so that an S32 output is misaligned; 5 spare bytes after.
-        let mut out = vec![0xEEu8; want.len() + 6];
+        let mut out = vec![0xEEu8; len + 6];
         let mut clipped = [9u64; 6];
         let s = convert_raw(
             c,
@@ -388,13 +392,15 @@ fn small_conversion() {
             Some(next),
             fmt,
             Some(&mut out[1..]),
-            want.len() + 5,
+            len + 5,
             Some(&mut clipped),
         );
         assert_eq!(s, SbStatus::Ok, "{}", last_error());
-        assert!(out[1..=want.len()] == want[..]);
+        if let Some(pcm) = &reference {
+            assert!(out[1..=len] == bytes_of(pcm, fmt)[..]);
+        }
         assert_eq!(out[0], 0xEE);
-        assert!(out[want.len() + 1..].iter().all(|&b| b == 0xEE));
+        assert!(out[len + 1..].iter().all(|&b| b == 0xEE));
         assert_eq!(clipped, [0; 6]);
     }
     free(c);
