@@ -77,6 +77,8 @@ SB_STATUS_THREADS_UNAVAILABLE = -16,
 SB_STATUS_OUT_OF_MEMORY = -17,
 SB_STATUS_SECTOR_RANGE_INVALID = -18,
 SB_STATUS_CANCELLED = -19,
+SB_STATUS_OUTPUT_LAYOUT_UNSPECIFIED = -20,
+SB_STATUS_NOT_EDITED_MASTER = -21,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -209,13 +211,181 @@ typedef enum SbTrackString SbTrackString;
 typedef uint32_t SbTrackString;
 #endif
 #endif
+enum SbOutputFormat
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+: uint32_t
+#endif
+{
+SB_OUTPUT_FORMAT_DSF = 0,
+SB_OUTPUT_FORMAT_DSDIFF_DSD = 1,
+SB_OUTPUT_FORMAT_DSDIFF_DST = 2,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum SbOutputFormat SbOutputFormat;
+#else
+typedef uint32_t SbOutputFormat;
+#endif
+#endif
+enum SbOutputOption
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+: uint32_t
+#endif
+{
+SB_OUTPUT_OPTION_DSF_BITS_PER_SAMPLE = 0,
+SB_OUTPUT_OPTION_DSF_UNSPECIFIED_CHANNEL_TYPE = 1,
+SB_OUTPUT_OPTION_DSDIFF_UNSPECIFIED_LOUDSPEAKER_CONFIGURATION = 2,
+SB_OUTPUT_OPTION_DSDIFF_LOUDSPEAKER_CONFIGURATION = 3,
+SB_OUTPUT_OPTION_DSDIFF_ABSOLUTE_START = 4,
+SB_OUTPUT_OPTION_DSDIFF_DST_CRC = 5,
+SB_OUTPUT_OPTION_DSDIFF_DST_INDEX = 6,
+SB_OUTPUT_OPTION_DSDIFF_DST_INDEX_OFFSET = 7,
+SB_OUTPUT_OPTION_SOURCE_TRACK = 8,
+SB_OUTPUT_OPTION_DSDIFF_EDITED_MASTER = 9,
+SB_OUTPUT_OPTION_DSDIFF_EDITED_MASTER_INFO = 10,
+SB_OUTPUT_OPTION_DSDIFF_SOURCE_TRACK_MARKERS = 11,
+SB_OUTPUT_OPTION_DSDIFF_CLIPPED_PROGRAM = 12,
+SB_OUTPUT_OPTION_DSDIFF_TEXT_PAD_COUNTED = 13,
+SB_OUTPUT_OPTION_DSDIFF_ARTIST_TITLE = 14,
+SB_OUTPUT_OPTION_DSDIFF_MARKER_TEXT = 15,
+SB_OUTPUT_OPTION_DSDIFF_TEXT_REPLACEMENT = 16,
+SB_OUTPUT_OPTION_DSDIFF_EMPTY_TEXT = 17,
+SB_OUTPUT_OPTION_TAGS = 18,
+SB_OUTPUT_OPTION_TEXT_SOURCE = 19,
+SB_OUTPUT_OPTION_GENRES = 20,
+SB_OUTPUT_OPTION_ID3_FOOTER = 21,
+SB_OUTPUT_OPTION_ID3_PADDING = 22,
+SB_OUTPUT_OPTION_ID3_ENCODING = 23,
+SB_OUTPUT_OPTION_ID3_TERMINATE_LAST = 24,
+SB_OUTPUT_OPTION_ID3_CONTROL_REPLACEMENT = 25,
+SB_OUTPUT_OPTION_ID3_ARRANGER = 26,
+SB_OUTPUT_OPTION_ID3_PHONETIC = 27,
+SB_OUTPUT_OPTION_ID3_TRACK_COUNT = 28,
+SB_OUTPUT_OPTION_ID3_ALBUM_ARTIST = 29,
+SB_OUTPUT_OPTION_ID3_COPYRIGHT = 30,
+SB_OUTPUT_OPTION_ID3_ALBUM_SET_ALONE = 31,
+SB_OUTPUT_OPTION_ID3_DATE = 32,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum SbOutputOption SbOutputOption;
+#else
+typedef uint32_t SbOutputOption;
+#endif
+#endif
+enum SbOutputString
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+: uint32_t
+#endif
+{
+SB_OUTPUT_STRING_DSDIFF_EDITED_MASTER_ID = 0,
+SB_OUTPUT_STRING_ID3_SPLIT = 1,
+SB_OUTPUT_STRING_ID3_JOIN_MESSAGES = 2,
+SB_OUTPUT_STRING_ID3_LANGUAGE = 3,
+SB_OUTPUT_STRING_ID3_MESSAGE_DESCRIPTION = 4,
+SB_OUTPUT_STRING_ID3_EXTRA_MESSAGE_DESCRIPTION = 5,
+SB_OUTPUT_STRING_ID3_ARRANGER_DESCRIPTION = 6,
+SB_OUTPUT_STRING_ID3_ALBUM_ARTIST_DESCRIPTION = 7,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum SbOutputString SbOutputString;
+#else
+typedef uint32_t SbOutputString;
+#endif
+#endif
+enum SbOutputOrder
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+: uint32_t
+#endif
+{
+SB_OUTPUT_ORDER_PROPERTY = 0,
+SB_OUTPUT_ORDER_LOCAL = 1,
+SB_OUTPUT_ORDER_INFO = 2,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum SbOutputOrder SbOutputOrder;
+#else
+typedef uint32_t SbOutputOrder;
+#endif
+#endif
+enum SbTagItem
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+: uint32_t
+#endif
+{
+SB_TAG_ITEM_TRACK_TITLE = 0,
+SB_TAG_ITEM_PERFORMER = 1,
+SB_TAG_ITEM_SONGWRITER = 2,
+SB_TAG_ITEM_COMPOSER = 3,
+SB_TAG_ITEM_ARRANGER = 4,
+SB_TAG_ITEM_MESSAGE = 5,
+SB_TAG_ITEM_EXTRA_MESSAGE = 6,
+SB_TAG_ITEM_TITLE_PHONETIC = 7,
+SB_TAG_ITEM_PERFORMER_PHONETIC = 8,
+SB_TAG_ITEM_TRACK_NUMBER = 9,
+SB_TAG_ITEM_TRACK_COUNT = 10,
+SB_TAG_ITEM_ISRC = 11,
+SB_TAG_ITEM_GENRE = 12,
+SB_TAG_ITEM_ALBUM = 13,
+SB_TAG_ITEM_ALBUM_ARTIST = 14,
+SB_TAG_ITEM_PUBLISHER = 15,
+SB_TAG_ITEM_COPYRIGHT = 16,
+SB_TAG_ITEM_DISC_NUMBER = 17,
+SB_TAG_ITEM_DISC_COUNT = 18,
+SB_TAG_ITEM_DATE = 19,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum SbTagItem SbTagItem;
+#else
+typedef uint32_t SbTagItem;
+#endif
+#endif
+enum SbOutputInput
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+: uint32_t
+#endif
+{
+SB_OUTPUT_INPUT_CONTENT = 0,
+SB_OUTPUT_INPUT_DST_EQUIVALENTS = 1,
+SB_OUTPUT_INPUT_DST_EQUIVALENTS_AND_CONTENT = 2,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum SbOutputInput SbOutputInput;
+#else
+typedef uint32_t SbOutputInput;
+#endif
+#endif
+enum SbOutputRegionKind
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+: uint32_t
+#endif
+{
+SB_OUTPUT_REGION_KIND_HEADER = 0,
+SB_OUTPUT_REGION_KIND_SOUND_DATA = 1,
+SB_OUTPUT_REGION_KIND_TRAILER = 2,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum SbOutputRegionKind SbOutputRegionKind;
+#else
+typedef uint32_t SbOutputRegionKind;
+#endif
+#endif
 typedef struct SbCancel SbCancel;
 typedef struct SbDisc SbDisc;
+typedef struct SbDstLengths SbDstLengths;
+typedef struct SbOutputLayout SbOutputLayout;
+typedef struct SbOutputOptions SbOutputOptions;
 typedef struct SbPcmConverter SbPcmConverter;
 typedef struct SbPool SbPool;
 typedef struct SbProgress SbProgress;
 typedef struct SbRawFrames SbRawFrames;
 typedef struct SbSeekIndex SbSeekIndex;
+typedef struct SbTags SbTags;
 typedef struct SbTrackAudio SbTrackAudio;
 typedef void(*SbLogFn)(void *user, int32_t level, const char *message);
 typedef int64_t(*SbReadFn)(void *user, uint8_t *buf, size_t len);
@@ -315,6 +485,49 @@ uint32_t last_returned;
 uint32_t exact_from;
 uint32_t reserved;
 } SbSpeculation;
+typedef struct SbComment {
+const char *text;
+uint32_t year;
+uint32_t kind;
+uint32_t reference;
+uint8_t month;
+uint8_t day;
+uint8_t hour;
+uint8_t minutes;
+} SbComment;
+typedef struct SbMarker {
+const char *text;
+uint32_t frame;
+uint32_t kind;
+uint32_t track_flags;
+uint32_t reserved;
+} SbMarker;
+typedef struct SbOutputLayoutInfo {
+uint64_t size;
+uint64_t memory;
+uint32_t format;
+uint32_t slot;
+uint32_t first;
+uint32_t end;
+uint32_t channels;
+uint32_t source_track;
+uint32_t input;
+uint32_t regions;
+} SbOutputLayoutInfo;
+typedef struct SbOutputRegion {
+uint64_t offset;
+uint64_t len;
+uint32_t kind;
+uint32_t reserved;
+} SbOutputRegion;
+typedef struct SbPositionData {
+const uint8_t *content;
+size_t content_len;
+const uint8_t *dst_equivalent;
+size_t dst_equivalent_len;
+uint32_t number;
+uint32_t reserved;
+} SbPositionData;
 typedef struct SbTocHeader {
 uint8_t magic [ 8 ];
 uint16_t major;
@@ -490,6 +703,40 @@ SbStatus sb_raw_frames_progress(const struct SbRawFrames *raw, struct SbProgress
 SbStatus sb_progress_get(const struct SbProgress *progress, uint64_t *sectors_read, uint64_t *sectors_expected);
 void sb_progress_free(struct SbProgress *progress);
 SbStatus sb_disc_toc(const struct SbDisc *disc, uint32_t flags, uint8_t *buf, size_t cap, size_t *len);
+SbStatus sb_output_options_new(struct SbOutputOptions **out);
+void sb_output_options_free(struct SbOutputOptions *options);
+SbStatus sb_output_options_set(const struct SbOutputOptions *options, uint32_t option, int64_t value);
+SbStatus sb_output_options_set_string(const struct SbOutputOptions *options, uint32_t which, const char *value);
+SbStatus sb_output_options_set_order(const struct SbOutputOptions *options, uint32_t which, const uint32_t *items, size_t count);
+SbStatus sb_output_options_set_id3_frame_order(const struct SbOutputOptions *options, const char *ids, size_t count);
+SbStatus sb_output_options_set_channel_numbers(const struct SbOutputOptions *options, const uint16_t *numbers, size_t count);
+SbStatus sb_output_options_add_comment(const struct SbOutputOptions *options, const struct SbComment *comment);
+SbStatus sb_output_options_clear_comments(const struct SbOutputOptions *options);
+SbStatus sb_output_options_add_marker(const struct SbOutputOptions *options, const struct SbMarker *marker);
+SbStatus sb_output_options_clear_markers(const struct SbOutputOptions *options);
+SbStatus sb_output_options_set_tags(const struct SbOutputOptions *options, const struct SbTags *tags);
+SbStatus sb_output_options_set_raw_tag(const struct SbOutputOptions *options, const uint8_t *tag, size_t len);
+SbStatus sb_tags_new(struct SbTags **out);
+SbStatus sb_tags_from_toc(const struct SbDisc *disc, uint32_t slot, uint32_t source_track, const struct SbOutputOptions *options, struct SbTags **out);
+SbStatus sb_tags_set(const struct SbTags *tags, uint32_t item, const char *value);
+SbStatus sb_tags_push(const struct SbTags *tags, uint32_t item, const char *value);
+SbStatus sb_tags_remove(const struct SbTags *tags, uint32_t item);
+SbStatus sb_tags_set_custom(const struct SbTags *tags, const char *description, const char *value);
+SbStatus sb_tags_count(const struct SbTags *tags, uint32_t item, uint32_t *count);
+SbStatus sb_tags_get(const struct SbTags *tags, uint32_t item, uint32_t index, char *buf, size_t cap, size_t *len);
+void sb_tags_free(struct SbTags *tags);
+SbStatus sb_dst_lengths_scan(const struct SbDisc *disc, uint32_t slot, uint32_t first, uint32_t end, uint32_t replace_invalid, struct SbDstLengths **out);
+SbStatus sb_dst_lengths_load(const struct SbDisc *disc, uint32_t slot, uint32_t first, uint32_t end, uint32_t replace_invalid, const uint32_t *lengths, size_t count, struct SbDstLengths **out);
+SbStatus sb_dst_lengths_get(const struct SbDstLengths *lengths, uint32_t *out, size_t cap, size_t *count);
+void sb_dst_lengths_free(struct SbDstLengths *lengths);
+SbStatus sb_output_layout_new(const struct SbDisc *disc, uint32_t slot, uint32_t first, uint32_t end, uint32_t format, const struct SbOutputOptions *options, struct SbOutputLayout **out);
+SbStatus sb_output_layout_new_dst(const struct SbDisc *disc, const struct SbDstLengths *lengths, const struct SbOutputOptions *options, struct SbOutputLayout **out);
+SbStatus sb_output_layout_info(const struct SbOutputLayout *layout, struct SbOutputLayoutInfo *info);
+SbStatus sb_output_layout_region(const struct SbOutputLayout *layout, uint32_t index, struct SbOutputRegion *region);
+SbStatus sb_output_layout_positions(const struct SbOutputLayout *layout, uint64_t offset, uint64_t len, uint32_t *first, uint32_t *end);
+SbStatus sb_output_layout_read(const struct SbOutputLayout *layout, const struct SbDisc *disc, uint64_t offset, uint8_t *buf, size_t len, size_t *written);
+SbStatus sb_output_layout_fill(const struct SbOutputLayout *layout, uint64_t offset, uint8_t *buf, size_t len, const struct SbPositionData *positions, size_t count, size_t *written);
+void sb_output_layout_free(struct SbOutputLayout *layout);
 #ifdef __cplusplus
 }
 #endif
