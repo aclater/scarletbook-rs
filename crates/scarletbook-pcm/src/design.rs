@@ -678,7 +678,7 @@ pub(crate) mod tests {
         let config = PcmConfig::new(rate, cutoff, channels as u8);
         let mut conv = Converter::new(config).unwrap();
         let mut got = vec![0i32; frames * conv.samples_per_frame() * channels];
-        conv.convert_run(FrameRun { before: None, frames: &input, after: None }, &mut got).unwrap();
+        conv.convert_run(FrameRun::new(&input), &mut got).unwrap();
         let f = |h: &[i32], q: u32| -> Vec<f64> {
             full(h).iter().map(|&x| x as f64 / (1u64 << q) as f64).collect()
         };

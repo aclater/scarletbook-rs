@@ -114,7 +114,7 @@ fn unspecified_layouts_are_refused_unless_a_channel_type_is_given() {
     let mut disc = synthetic(4, &plain(4, 3), vec![TrackSpec { start: 0, duration: 3 }], 3);
     let e = disc.output_layout(Slot::TwoChannel, 0, 3, Format::Dsf, &untagged()).unwrap_err();
     assert!(
-        matches!(e, Error::OutputRefused(OutputRefusal::UnspecifiedLayout { channels: 4, config: 0 })),
+        matches!(e, Error::OutputRefused(OutputRefusal::UnspecifiedLayout { channels: 4, config: 0, .. })),
         "{e}"
     );
     assert_eq!(e.class(), scarletbook::ErrorClass::Usage);

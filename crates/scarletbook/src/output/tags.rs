@@ -85,6 +85,28 @@ impl Default for GenreSources {
     }
 }
 
+impl GenreSources {
+    /// The default: all three.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// These sources with or without the source track's genre.
+    pub fn with_track(self, track: bool) -> Self {
+        GenreSources { track, ..self }
+    }
+
+    /// These sources with or without the album genres.
+    pub fn with_album(self, album: bool) -> Self {
+        GenreSources { album, ..self }
+    }
+
+    /// These sources with or without the disc genres.
+    pub fn with_disc(self, disc: bool) -> Self {
+        GenreSources { disc, ..self }
+    }
+}
+
 /// The tag items of a file, each with one or more values, and user-defined items with a
 /// description of their own. [`TagSet::from_toc`] fills one from the TOC; the caller may
 /// change it and pass it in [`super::Tags::Set`].
@@ -238,7 +260,7 @@ impl TagSet {
 
 #[cfg(test)]
 mod tests {
-    use super::timestamp;
+    use super::{GenreSources, timestamp};
     use crate::toc::Date;
 
     /// The rules of specification 8, 8.3.8.
@@ -255,5 +277,15 @@ mod tests {
         assert_eq!(ts(5, 1, 0).as_deref(), Some("0005-01"));
         assert_eq!(ts(0, 1, 1), None);
         assert_eq!(ts(10_000, 1, 1), None);
+    }
+
+    #[test]
+    fn genre_sources_builders() {
+        let g = GenreSources::new().with_track(false).with_disc(false);
+        assert_eq!(g, GenreSources { track: false, album: true, disc: false });
+        assert_eq!(
+            g.with_track(true).with_album(false).with_disc(true),
+            GenreSources { track: true, album: false, disc: true }
+        );
     }
 }

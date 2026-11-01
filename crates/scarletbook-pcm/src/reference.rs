@@ -144,8 +144,7 @@ pub(crate) mod tests {
                     let want = convert_area(config, &input);
                     let mut conv = Converter::new(config).unwrap();
                     let mut got = vec![0i32; want.len()];
-                    conv.convert_run(FrameRun { before: None, frames: &input, after: None }, &mut got)
-                        .unwrap();
+                    conv.convert_run(FrameRun::new(&input), &mut got).unwrap();
                     let bad = got.iter().zip(&want).position(|(a, b)| a != b);
                     assert_eq!(bad, None, "{rate} {cutoff:?} {channels} ch {frames} frames");
                 }

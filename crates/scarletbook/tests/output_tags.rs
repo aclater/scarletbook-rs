@@ -311,9 +311,7 @@ fn every_encoding_round_trips() {
         (Id3Encoding::Latin1OrUtf8, 0),
     ] {
         for last in [false, true] {
-            let mut id3 = Id3Options::default();
-            id3.encoding = enc;
-            id3.terminate_last = last;
+            let id3 = Id3Options::new().with_encoding(enc).with_terminate_last(last);
             let options = OutputOptions::default().with_tags(Tags::Set(set())).with_id3(id3);
             let (frames, ..) = parse(&tag_with(&options).unwrap().unwrap());
             let get =
@@ -339,19 +337,19 @@ fn every_encoding_round_trips() {
 
 #[test]
 fn frame_choices() {
-    let mut id3 = Id3Options::default();
-    id3.footer = false;
-    id3.padding = 33;
-    id3.arranger = ArrangerFrame::Txxx;
-    id3.album_artist = AlbumArtistFrame::Tpe2;
-    id3.date = DateFrame::Tdrc;
-    id3.phonetic = true;
-    id3.track_count = false;
-    id3.join_messages = Some(" / ".into());
-    id3.language = *b"eng";
-    id3.control_replacement = Some('?');
-    id3.split = Some(" ✓ ".into());
-    id3.frame_order = vec![*b"TDRC", *b"TXXX"];
+    let id3 = Id3Options::new()
+        .with_footer(false)
+        .with_padding(33)
+        .with_arranger(ArrangerFrame::Txxx)
+        .with_album_artist(AlbumArtistFrame::Tpe2)
+        .with_date(DateFrame::Tdrc)
+        .with_phonetic(true)
+        .with_track_count(false)
+        .with_join_messages(Some(" / "))
+        .with_language(*b"eng")
+        .with_control_replacement(Some('?'))
+        .with_split(Some(" ✓ "))
+        .with_frame_order(vec![*b"TDRC", *b"TXXX"]);
     let options = OutputOptions::default().with_tags(Tags::Set(set())).with_id3(id3);
     let (frames, footer, padding, _) = parse(&tag_with(&options).unwrap().unwrap());
     assert!(!footer && padding == 33);

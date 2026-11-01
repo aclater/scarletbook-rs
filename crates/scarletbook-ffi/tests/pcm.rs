@@ -213,7 +213,8 @@ fn c_output_is_the_rust_converters() {
                 for (before, after) in
                     [(None, None), (Some(prev), Some(next)), (Some(prev), None), (None, Some(next))]
                 {
-                    let (pcm, stats) = convert_rust(config, FrameRun { before, frames, after });
+                    let (pcm, stats) =
+                        convert_rust(config, FrameRun::new(frames).with_before(before).with_after(after));
                     for fmt in [SB_PCM_S32, SB_PCM_S24LE] {
                         let width = if fmt == SB_PCM_S32 { 4 } else { 3 };
                         let what = format!("{rate} {cutoff:?} {channels} ch fmt {fmt} {}", before.is_some());
@@ -258,7 +259,7 @@ fn clip_counts() {
         let c = new(176_400, SB_PCM_CUTOFF_DEFAULT, 3, gain).unwrap();
         let config =
             PcmConfig::new(PcmRate::Hz176400, Cutoff::Default, 3).with_gain(Gain::from_db(gain).unwrap());
-        let (pcm, stats) = convert_rust(config, FrameRun { before: None, frames: &frames, after: None });
+        let (pcm, stats) = convert_rust(config, FrameRun::new(&frames));
         let want = bytes_of(&pcm, SB_PCM_S24LE);
         let (got, clipped) = convert_c(c, None, &frames, None, SB_PCM_S24LE, want.len());
         assert!(got == want);
@@ -377,7 +378,7 @@ fn small_conversion() {
     let (cur, next) = rest.split_at(FRAME_BYTES_PER_CHANNEL);
     let config = PcmConfig::new(PcmRate::Hz88200, Cutoff::Low, 1).with_gain(Gain::from_db(-6.0).unwrap());
     let reference = (!cfg!(miri))
-        .then(|| convert_rust(config, FrameRun { before: Some(prev), frames: cur, after: Some(next) }).0);
+        .then(|| convert_rust(config, FrameRun::new(cur).with_before(Some(prev)).with_after(Some(next))).0);
     let formats: &[u32] = if cfg!(miri) { &[SB_PCM_S32] } else { &[SB_PCM_S32, SB_PCM_S24LE] };
     for &fmt in formats {
         let len = 1176 * if fmt == SB_PCM_S32 { 4 } else { 3 };
@@ -436,10 +437,10 @@ fn corpus_frame_digest() {
     let (got, _) = convert_c(c, Some(prev), cur, Some(next), SB_PCM_S24LE, 2352 * 2 * 3);
     free(c);
     let config = PcmConfig::new(PcmRate::Hz176400, Cutoff::Default, 2);
-    let (pcm, _) = convert_rust(config, FrameRun { before: Some(prev), frames: cur, after: Some(next) });
+    let (pcm, _) = convert_rust(config, FrameRun::new(cur).with_before(Some(prev)).with_after(Some(next)));
     assert!(got == bytes_of(&pcm, SB_PCM_S24LE));
     // The whole track, in one run: frame 1's bytes are the same.
-    let (whole, _) = convert_rust(config, FrameRun { before: None, frames: &frames, after: None });
+    let (whole, _) = convert_rust(config, FrameRun::new(&frames));
     assert!(got == bytes_of(&whole[2352 * 2..2 * 2352 * 2], SB_PCM_S24LE));
     let digest: String = Sha256::digest(&got).iter().map(|b| format!("{b:02x}")).collect();
     assert_eq!(digest, CORPUS_PCM_SHA256);
