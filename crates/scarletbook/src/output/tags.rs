@@ -74,7 +74,7 @@ pub enum ArtistTitleSource {
     /// The album artist and album items: the album or disc artist and title (2.5.4), as
     /// [`OutputOptions::text_source`] chooses.
     Album,
-    /// The source track's performer and title items (specification 3, 3.5, item types 0x02
+    /// The source track's performer and title items (specification 3, 3.8, item types 0x02
     /// and 0x01). A file without a source track (8.1 item 7), such as an edited master, has
     /// neither chunk.
     Track,

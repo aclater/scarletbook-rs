@@ -953,7 +953,7 @@ enum SbOutputOption
   /*
    W24 (specification 8, 8.6 row 24 and 8.4.8, sacd-spec e069569): what fills `DIAR`
    and `DITI` when they are written: 0 (the default) the album artist and album items;
-   1 the source track's performer and title items (specification 3, 3.5, types 0x02 and
+   1 the source track's performer and title items (specification 3, 3.8, types 0x02 and
    0x01), none in a file without a source track; 2 each of those, or else the album
    item.
    */

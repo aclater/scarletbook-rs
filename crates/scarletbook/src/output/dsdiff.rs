@@ -333,7 +333,7 @@ pub(super) fn assemble(
         };
         let first = |item| set.as_ref().and_then(|s| s.get(item).first().map(String::as_str));
         // W24 (8.4.8 as of sacd-spec e069569): in a file with a source track, the track's
-        // performer and title (3.5, types 0x02 and 0x01) may fill `DIAR` and `DITI`
+        // performer and title (3.8, types 0x02 and 0x01) may fill `DIAR` and `DITI`
         // instead; a file without one has no track strings.
         let pick = |track: TagItem, album: TagItem| {
             let track = || source.and_then(|_| first(track));
