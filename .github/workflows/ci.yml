@@ -76,6 +76,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      # Line tables are enough for backtraces in a failing test; full debug info made the
+      # Windows link (PDBs) a large part of its 3-minute build.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -85,8 +90,15 @@ jobs:
         with:
           # Only main writes the cache; pull requests read it.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo test --workspace --locked
-      - run: cargo test --workspace --locked --all-features
+      # Both feature sets on Linux. macOS and Windows run one pass with every feature, and
+      # leave out the bench crate (a Linux benchmark tool, built and tested on Linux): the
+      # platform-specific code is the same in both feature sets.
+      - if: matrix.os == 'ubuntu-latest'
+        run: cargo test --workspace --locked
+      - if: matrix.os == 'ubuntu-latest'
+        run: cargo test --workspace --locked --all-features
+      - if: matrix.os != 'ubuntu-latest'
+        run: cargo test --workspace --locked --all-features --exclude scarletbook-bench
 
   lint:
     runs-on: ubuntu-latest
