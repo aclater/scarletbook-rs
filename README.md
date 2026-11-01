@@ -122,6 +122,11 @@ choices") is a field of `OutputOptions` with a documented default; `TagSet::from
 the tag items, which the caller may change. In C: `sb_output_options_*`, `sb_tags_*`,
 `sb_dst_lengths_*` and `sb_output_layout_*` (see [Output files](#output-files)).
 
+The departures from the DSDIFF document that some existing programs make (8.7: D1, `CMPR`'s
+size counting its pad byte; D2, text as ISO 8859-1) are made only when named, in
+`OutputOptions::dsdiff_departures` or with `SB_OUTPUT_OPTION_DSDIFF_DEPARTURE_D1` and `_D2`.
+A file written with one is not a conforming DSDIFF file.
+
 ### Seeking within an area
 
 A range far into an area normally costs a scan of the area up to it: which frames a range

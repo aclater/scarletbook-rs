@@ -29,6 +29,9 @@
 //!
 //! Every point where the formats allow more than one valid output (specification 8, 8.6,
 //! "writer's choices") is a field of [`OutputOptions`], with a documented default.
+//! The departures from the DSDIFF document that some existing programs make (8.7) are made
+//! only when named in [`OutputOptions::dsdiff_departures`]; a file written with one is not a
+//! conforming DSDIFF file.
 
 mod dsdiff;
 mod dsdiff_dst;
@@ -39,7 +42,7 @@ mod markers;
 mod tags;
 
 use std::borrow::Cow;
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::io::{Read, Seek};
 use std::ops::Range;
 
@@ -51,7 +54,7 @@ use crate::dst::DstDecoder;
 use crate::error::{Error, Slot};
 use crate::toc::{Area, Toc, TocDigests, Track};
 
-pub use dsdiff::{CallerChunk, LocalChunk, PropertyChunk};
+pub use dsdiff::{CallerChunk, DsdiffDeparture, LocalChunk, PropertyChunk};
 pub use dsdiff_dst::{DstIndexOffset, DstLengths, InvalidDst};
 pub use dsdiff_text::{Comment, CommentKind};
 pub use dsf::{DsfBitsPerSample, DsfChainFile, plan_dsf_chain};
@@ -210,10 +213,12 @@ pub struct OutputOptions {
     /// W25, the comments of `COMT` (8.4.8), in order. Default none, and so no `COMT`.
     pub dsdiff_comments: Vec<Comment>,
     /// W26, the text byte that replaces a code point outside U+0020 to U+007E in DSDIFF
-    /// text (8.4.9); `None` removes it. Default `Some(b'?')`.
+    /// text (8.4.9); `None` removes it. Default `Some(b'?')`. Departure
+    /// [`DsdiffDeparture::D2`] ignores it: every code point it doesn't write is removed (8.7).
     pub dsdiff_text_replacement: Option<u8>,
     /// W31, whether a `DIAR`, `DITI` or comment whose text is empty, or becomes empty under
-    /// W26, is written with `k = 0` (8.4.8). Default `false`: it is left out.
+    /// W26 (or [`DsdiffDeparture::D2`]), is written with `k = 0` (8.4.8). Default `false`:
+    /// it is left out.
     pub dsdiff_empty_text: bool,
     /// W33, the caller chunks of a DSDIFF file (8.4.2 item 5, at sacd-spec `e069569`), in
     /// order, after the last local chunk; the same ID may appear more than once, and an
@@ -236,6 +241,14 @@ pub struct OutputOptions {
     /// or left out (8.4.8 at sacd-spec 048aa1a). Both say the file has no edited master
     /// information. Default `true`: written.
     pub dsdiff_empty_info: bool,
+    /// The departures from the DSDIFF document of specification 8, 8.7, that a DSDIFF file
+    /// makes, each named by its number. Default none.
+    ///
+    /// **A DSDIFF file written with any departure is not a conforming DSDIFF file**: it does
+    /// not conform to the DSDIFF document or to specification 8. The departures exist only to
+    /// reproduce the files some existing programs write; see [`DsdiffDeparture`]. DSF files
+    /// ignore them.
+    pub dsdiff_departures: BTreeSet<DsdiffDeparture>,
     /// W32, what a DSF file holds (8.2.7, sacd-spec e069569 and fa558a8): with this and
     /// [`OutputOptions::dsf_chain_end`], the byte range of the range `[a_i, b_i)` in a
     /// chain whose first range starts at frame `a_1`, this. Default `None`: the range of
@@ -288,6 +301,7 @@ impl Default for OutputOptions {
             dsdiff_edited_master_id_written: true,
             dsdiff_artist_title_source: ArtistTitleSource::Album,
             dsdiff_empty_info: true,
+            dsdiff_departures: BTreeSet::new(),
             dsf_chain_first: None,
             dsf_chain_end: None,
         }
@@ -463,6 +477,19 @@ impl OutputOptions {
     /// These options with an empty `DIIN` written, or left out (W34).
     pub fn with_dsdiff_empty_info(self, write: bool) -> Self {
         OutputOptions { dsdiff_empty_info: write, ..self }
+    }
+
+    /// These options with the DSDIFF departures `departures` (8.7) and no others.
+    ///
+    /// **A DSDIFF file written with any departure is not a conforming DSDIFF file**
+    /// ([`OutputOptions::dsdiff_departures`]).
+    pub fn with_dsdiff_departures(self, departures: impl IntoIterator<Item = DsdiffDeparture>) -> Self {
+        OutputOptions { dsdiff_departures: departures.into_iter().collect(), ..self }
+    }
+
+    /// Whether a DSDIFF file makes departure `d` (8.7).
+    pub(crate) fn departs(&self, d: DsdiffDeparture) -> bool {
+        self.dsdiff_departures.contains(&d)
     }
 
     /// These options for the byte range of a DSF file in the chain `[a_1, b_K)` (W32,

@@ -946,8 +946,8 @@ enum SbOutputOption
    W24 (specification 8, 8.6 row 24 and 8.4.8, sacd-spec e069569): 1 (the default)
    writes `EMID` in `DIIN`; 0 leaves it out of a file that is not an edited master. An
    edited master requires `EMID` (8.4.11 item 1), so 0 makes one
-   `SB_STATUS_INVALID_ARGUMENT`. A `DIIN` left with none of its chunks is written with
-   `D = 0` (8.6 row 34 at sacd-spec 048aa1a; the C API has no option to leave it out).
+   `SB_STATUS_INVALID_ARGUMENT`. A `DIIN` left with none of its chunks is written or
+   left out as `SB_OUTPUT_OPTION_DSDIFF_EMPTY_INFO` says.
    */
   SB_OUTPUT_OPTION_DSDIFF_EDITED_MASTER_ID_WRITTEN = 33,
   /*
@@ -958,6 +958,21 @@ enum SbOutputOption
    item.
    */
   SB_OUTPUT_OPTION_DSDIFF_ARTIST_TITLE_SOURCE = 34,
+  /*
+   Departure D1 of specification 8, 8.7 (sacd-spec `e069569`): 1 writes a plain DSD
+   file's `CMPR` with `D = 20`, counting its pad byte, instead of 19; 0 (the default)
+   does not. The bytes are the same apart from `D`; DST files are unchanged. **A file
+   written with 1 is not a conforming DSDIFF file.**
+   */
+  SB_OUTPUT_OPTION_DSDIFF_DEPARTURE_D1 = 35,
+  /*
+   Departure D2 of specification 8, 8.7 (sacd-spec `e069569`): 1 writes `DIAR`, `DITI`,
+   marker and comment text as ISO 8859-1, U+0020 to U+007E and U+00A0 to U+00FF as one
+   byte each and every other code point removed (`SB_OUTPUT_OPTION_DSDIFF_TEXT_REPLACEMENT`
+   is then ignored), with `k` counting the bytes written; 0 (the default) does not. `EMID` stays
+   bytes 0x20 to 0x7E. **A file written with 1 is not a conforming DSDIFF file.**
+   */
+  SB_OUTPUT_OPTION_DSDIFF_DEPARTURE_D2 = 36,
   /*
    W32 (specification 8, 8.6 row 32; 8.2.7, sacd-spec e069569): -1 (the default) for a
    DSF file holding its range of positions; otherwise, with
@@ -976,6 +991,12 @@ enum SbOutputOption
    `SB_OUTPUT_OPTION_DSF_CHAIN_FIRST`.
    */
   SB_OUTPUT_OPTION_DSF_CHAIN_END = 38,
+  /*
+   W34 (specification 8, 8.6 row 34 and 8.4.8, sacd-spec 048aa1a): 1 (the default)
+   writes a `DIIN` that would hold none of its chunks (no `EMID`, markers, `DIAR` or
+   `DITI`; only outside an edited master) with `D = 0`, 12 bytes; 0 leaves it out.
+   */
+  SB_OUTPUT_OPTION_DSDIFF_EMPTY_INFO = 39,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -1782,7 +1803,10 @@ typedef struct SbComment {
  */
 typedef struct SbMarker {
   /*
-   NUL-terminated text bytes 0x20 to 0x7E, or NULL for none.
+   NUL-terminated UTF-8 text, or NULL for none. Each code point is written as the one
+   byte of the same value: U+0020 to U+007E, or with departure D2
+   (`SB_OUTPUT_OPTION_DSDIFF_DEPARTURE_D2`) also U+00A0 to U+00FF. A code point above
+   U+00FF is refused by `sb_output_options_add_marker`; others when a layout is made.
    */
   const char *text;
   /*

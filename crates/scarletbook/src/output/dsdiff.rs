@@ -112,6 +112,32 @@ fn channels(area: &Area, options: &OutputOptions) -> Result<(Vec<[u8; 4]>, Optio
     })
 }
 
+/// A departure from the DSDIFF document (specification 8, 8.7, at sacd-spec `e069569`), for
+/// [`OutputOptions::dsdiff_departures`].
+///
+/// **A file written with a departure is not a conforming DSDIFF file.** It does not conform to
+/// the DSDIFF document or to specification 8. Some existing programs write such files;
+/// specification 8 defines the departures byte for byte only so that a writer asked to
+/// reproduce those files does so knowingly and the same way as others. None is made unless
+/// it is named.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
+pub enum DsdiffDeparture {
+    /// D1, the `CMPR` size counts the pad byte: with plain DSD, `CMPR` is written with
+    /// `D = 20` instead of 19. The pad byte 0x00 after the compression name is still
+    /// written, now counted, so the chunk still occupies 32 bytes and no other size changes.
+    /// With DST, `D` is 16 and nothing changes.
+    D1,
+    /// D2, DSDIFF text as ISO 8859-1: in `DIAR`, `DITI`, marker text and comment text, a
+    /// code point from U+0020 to U+007E or from U+00A0 to U+00FF is written as the one byte
+    /// of the same value, and every other code point is removed, whatever
+    /// [`OutputOptions::dsdiff_text_replacement`] says. Text lengths `k` count the bytes
+    /// written; the pad byte after odd text and W22 are unchanged. The bytes of a custom
+    /// [`super::Marker`]'s text may then also be 0xA0 to 0xFF. `EMID` and chunk IDs are
+    /// unchanged: still bytes 0x20 to 0x7E.
+    D2,
+}
+
 /// The compression type of plain DSD (8.4.3).
 const CMPR_DSD: (&[u8; 4], &[u8]) = (b"DSD ", b"not compressed");
 
@@ -147,6 +173,11 @@ fn property(area: &Area, options: &OutputOptions, n: u64, cmpr: (&[u8; 4], &[u8]
                 let mut d = cmpr.0.to_vec();
                 d.push(cmpr.1.len() as u8);
                 d.extend_from_slice(cmpr.1);
+                // 8.7 D1: an odd `D` counts its pad byte (plain DSD, 19 to 20); the bytes
+                // are the same, since `chunk` would otherwise add the pad uncounted.
+                if options.departs(DsdiffDeparture::D1) && d.len() % 2 == 1 {
+                    d.push(0);
+                }
                 chunk(&mut prop, b"CMPR", &d);
             }
             PropertyChunk::AbsoluteStartTime => {
