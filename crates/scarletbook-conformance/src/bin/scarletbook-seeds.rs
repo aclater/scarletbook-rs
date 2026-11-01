@@ -4,7 +4,8 @@
 //!
 //! `toc`: each image from LSN 510 on, cut to 160 sectors (the TOC region of every case).
 //! `demux`: for each area of each accepted case, its channel count followed by its first
-//! 64 audio sectors.
+//! 64 audio sectors; and DSD frames for 1, 2 and 6 channels that the harness also converts
+//! to PCM (not from the corpus).
 //! `dst`: up to 8 DST frames of each area, each preceded by its channel count minus 1.
 //! `seek_index`: saved seek indexes of the fuzz harness's synthetic area and of its
 //! synthetic disc, without their checksums (not from the corpus).
@@ -55,6 +56,10 @@ fn run(out: &std::path::Path) -> Result<usize, String> {
     }
     for (i, seed) in harness::seek_index_disc_seeds().into_iter().enumerate() {
         std::fs::write(seek_dir.join(format!("disc-{i}")), seed).map_err(|e| e.to_string())?;
+        n += 1;
+    }
+    for (i, seed) in harness::pcm_seeds().into_iter().enumerate() {
+        std::fs::write(demux_dir.join(format!("pcm-{i}")), seed).map_err(|e| e.to_string())?;
         n += 1;
     }
     for case in load_cases(&corpus)? {
