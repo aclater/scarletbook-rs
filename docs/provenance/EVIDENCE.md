@@ -1,0 +1,363 @@
+# Evidence record for the technique inventory (#40)
+
+**Status: a record, not a legal opinion.** Prepared on 2026-11-01 under the owner's decision of
+that day on issue #40: *"We're not going to send this to a lawyer at this time. Gather all
+evidence needed so that if one day we need to, we can."* No patent, patent database or patent
+search result was opened to prepare it. Patent links that appeared among ordinary web search
+results were skipped unopened.
+
+This file is the index. It holds citations, dates, page references and hashes, and no copies.
+The copies (PDFs, HTML captures, metadata JSON, exports of the GitHub records and git bundles)
+are kept outside the repository, because most of them are under third-party copyright:
+
+- **Evidence store:** `/home/dev/evidence/scarletbook-rs/` on the clean-room VM
+  (`scarletbook-cleanroom`). Every file is read-only.
+- **`MANIFEST.tsv`** at its root lists every stored file (180 files): its path, SHA-256, source URL,
+  retrieval date (UTC) and Wayback Machine URL. Its own SHA-256 as of 2026-11-01:
+  `d69c8a79a4c55eafbe5d282507590de424200832eec73a3f4555a5572cdadedf`.
+- `fulltext/<source>/`: the full texts, each with a `.retrieval.json` sidecar (URL, HTTP
+  status, content type, size, SHA-256, retrieval time).
+- `metadata/crossref/`, `metadata/openalex/`, `metadata/catalogue/`: the raw API records
+  (Crossref and OpenAlex for every DOI; DataCite and arXiv for the two arXiv items;
+  OpenLibrary for two books).
+- `wayback/`: the Wayback lookups and the Save Page Now requests.
+- `process/`: the clean-room process records (see "Process evidence" below), and
+  `process/STATEMENT.md`, which describes them.
+
+To check a copy years from now, hash it (`sha256sum`) and compare it with the "SHA-256"
+column below and with `MANIFEST.tsv`. If the store is lost, obtain the text again from the
+URL or Wayback capture listed, or from the publisher by its DOI, and compare the hash. A
+publisher may re-issue a PDF with a new cover page, which changes the hash but not the text.
+
+## Scope and method
+
+- **Inventory:** the 2026-11-01 "Technique inventory for the pre-1.0 legal review" comment on
+  #40 (`origin/main` at `65d3f53`), plus the sources in CLEANROOM.md ("Patent hygiene",
+  "General references consulted", "Sources consulted") and sacd-spec `PROVENANCE.md` at
+  `eafaaba`. The technique IDs (D1 to Z2) are the inventory's.
+- **Metadata:** Crossref (`api.crossref.org/works/<DOI>`) and OpenAlex
+  (`api.openalex.org/works/doi:<DOI>`) for every DOI, fetched 2026-11-01. OpenAlex's
+  open-access field was used to find free copies.
+- **Full texts:** only open-access copies, author or institutional copies, publisher free
+  PDFs (the ACM Digital Library made its 1951-2000 backfile free to read; where the ACM site
+  refused automated download, its own PDF was taken from a Wayback Machine capture of the
+  `dl.acm.org/doi/pdf/<DOI>` URL), arXiv, and copies the owner placed in `~/papers` for #40.
+  No paywall was circumvented. Personal mirrors and upload sites (gwern.net, Scribd,
+  Academia.edu, ResearchGate, Studocu) were not used.
+- **Wayback Machine:** each source URL was looked up in the CDX index; where it had no
+  capture, Save Page Now (`web.archive.org/save/<url>`) was requested on 2026-11-01.
+- **Verification:** each obtained text was converted with `pdftotext` (scans with
+  `tesseract`), searched for the claim, and the passage read. Page numbers are the printed
+  journal pages. "Verified 2026-11-01" means the passage was read for this record;
+  "on record" means it was read earlier (#40, CLEANROOM.md) and the copy is now hashed.
+- **Code guardrail:** program listings inside papers (for example Brent's ALGOL 60 procedures,
+  the C program in Witten et al.) were not read; only the prose was used. No code-only
+  artefact was downloaded.
+- **Not to be read under the clean-room rules:** the DSF, DSDIFF and ID3 documents behind
+  sacd-spec specification 8, and any SACD or DST implementation. Only their citations and
+  Wayback capture dates (CDX index lookups of the exact URLs in sacd-spec `PROVENANCE.md`) are
+  recorded; the documents were not opened.
+
+### Status legend
+
+- **CLEARED**: a pre-2006 full text was read and states the technique.
+- **PARTIAL**: a pre-2006 full text was read and states part of it; what is missing is said.
+- **BIBLIO**: a pre-2006 source exists, but only its metadata was obtained.
+- **SPEC**: mandated by the sacd-spec specification (no design-around); see #40.
+- **OPEN**: no source, or only sources from 2006 or later.
+
+## Techniques and their sources
+
+Each row names the technique, then its sources by key (full citation, DOI, date, Wayback URL and
+hash in "Source register" below), and the page or section of each that supports it, or the
+fact that it does not.
+
+### DST decoding
+
+| # | Technique | Sources and supporting passage | Status |
+|---|---|---|---|
+| D1 | Frame syntax: segmentation, table segmentation, filter and ptable mapping (sacd-spec 5.2-5.3.4) | sacd-spec spec 5 (2026). No dated publication of the format is sought on this side (clean-room rule). | SPEC |
+| D2 | Filter coefficients and ptable entries by fixed polynomial prediction plus Rice codes (5.3.5, 5.3.6, 5.3.8) | sacd-spec spec 5 (2026). Background: `golomb1966` (metadata only). | SPEC |
+| D3 | Prediction of each 1-bit sample by an FIR of order <= 128, sign indicator, ptable lookup (5.5.2-5.5.4) | sacd-spec spec 5 (2026). Background: `makhoul1975` (metadata only). | SPEC |
+| D4 | Binary arithmetic decoder: 12-bit A and C, `Q = A>>8` with bit-7 correction, renormalisation, end-of-frame check (5.5.7, 5.5.8) | sacd-spec spec 5 (2026). General arithmetic coding: `witten1987` (obtained; on record as read for #40), `rissanen1976`, `rissanen_langdon1979` (metadata only). | SPEC |
+| D5 | Half-probability region; interleaved output packing (5.5.5, 5.5.9; spec 0, 0.6) | sacd-spec specs 5 and 0 (2026). | SPEC |
+| D6 | Code bits past the end of the code read as 0 | `said2004` p. 57 (verified 2026-11-01): the code value selection assumes "that the decoder pads the buffer d with sufficient zeros". `witten1987` pp. 527-528 (on record from #40: reading past end-of-file; the passage is in the program listing and was not re-read under the code guardrail). | CLEARED |
+| D7 | Prediction sum regrouped into precomputed tables of coefficient partial sums, one 256-entry table per history byte (distributed arithmetic) | `white1989` p. 5 (verified): the selected sum "may have only 2^K possible values. Rather than compute these values on line, we may precompute the values and store them in a ROM. The input data can be used to directly address the memory"; p. 7 (verified): several bits per input at once, "word capacity becomes 2^KL"; p. 4: first described by Peled and Liu. White's ref. [1] is `peled_liu1973` and ref. [2] `peled_liu1974` (both metadata only). `ntu_slides2002` slide pp. 7-8 (verified; secondary). `jackson1968` p. 413 (verified): ROMs store the coefficients themselves, **does not state** the technique. `liu_nctu2011` and `nagajyothi2017` state it but are after 2006 and are not relied on. | CLEARED |
+| D8 | Multi-bit renormalisation from a wide code register (C and the next code bits in one u64, scaled by 2^52) | `moffat_neal_witten1998` §4.2, pp. 272-273 (verified): renormalisation keeps the interval within b bits; p. 273 describes byte-by-byte output from the renormalisation loop (Schindler 1998). This is the multi-bit renormalisation idea; the specific layout (a 64-bit register scaled by 2^52) is this project's own and is not stated. `marpe2006` (EUSIPCO, September 2006, after the cut-off) and `marpe2003` (metadata only) are secondary. | PARTIAL |
+| D9 | Normalisation by count-leading-zeros and one shift | `schmookler_nowka2001` p. 7 (verified): the leading-zero anticipator or detector "is pivotal to the normalization of results". `alpha_arm2002` §4.4.7, p. 4-32 (verified): CTLZ, "Count Leading Zero". The match is to floating-point normalisation, not to arithmetic coding. | CLEARED |
+| D10 | Branch-free selection (conditional moves) | `mahlke1992` p. 45 (verified): if-conversion; "control dependences are converted to data dependences". `alpha_arm2002` (verified): "Conditional move instructions for avoiding branch instructions" (architecture overview, PDF page 37) and "CMOVxx may be used to avoid branching" (PDF page 81). | CLEARED |
+| D11 | Bit buffer refilled by 8-byte loads from a realigned, zero-padded copy | `moffat_turpin1997` p. 1203 (verified): a value "maintained as a w-bit window into the compressed bit stream"; p. 1204: w "chosen either as the next multiple of eight ... or as the machine word size"; p. 1206, footnote 1: "a 32-bit input token ... rather than an 8-bit input token". `moffat_turpin1996` (metadata only); `moffat_turpin2002` (front matter only, does not state it). | CLEARED |
+| D12 | Interleaving 2-4 independent frames in lockstep on one thread | `lam1988` pp. 318-319 (verified): iterations "are continuously initiated at constant intervals"; p. 320: "four times the speed of the original program". `rau_glaeser1981` p. 185 (verified 2026-11-01): successive iterations "are initiated at regular intervals" (the initiation interval). `giesen2014` p. 1 (after 2006, secondary): interleaving independent entropy coders. Applied here to independent decoders rather than loop iterations. | CLEARED |
+| D13 | Probability lookup tables expanded per ptable over every \|Spred\|/8 value, clamped to the last entry | none found (a trivial lookup table). | OPEN (low) |
+| D14 | Loop specialisation by const generics and whole-byte unrolling | `dongarra_hinds1979` p. 219 (verified): "The technique of 'unrolling' to improve the performance of short program loops". Specialisation (procedure cloning): `cooper1993` (metadata only). | PARTIAL (unrolling cleared; specialisation BIBLIO) |
+
+### Demultiplexing and timeline
+
+| # | Technique | Sources and supporting passage | Status |
+|---|---|---|---|
+| M1 | Audio sector demultiplexing, frame reassembly, timeline, track and range mapping (spec 4.2-4.8) | sacd-spec spec 4 (2026). | SPEC |
+| M2 | Stored content and DST equivalents (4.6.1) | sacd-spec 4.6.1 (2026). | SPEC |
+| M3 | TOC parsing, text and charsets, master TOC comparison (specs 1-3) | sacd-spec specs 1-3 (2026). | SPEC |
+
+### Seeking and provisional reading
+
+| # | Technique | Sources and supporting passage | Status |
+|---|---|---|---|
+| S1 | Seek index: reading state saved every K sectors, resuming from a checkpoint | sacd-spec 4.2 item 7 (`da6b900`, 2026-10-31) only. | OPEN |
+| S2 | Persistent seek index with 64-bit FNV-1a checksum and per-checkpoint FNV-1a digest | `fnv_page`: the 2002-08-11 capture (verified) defines FNV-1a and gives the 64-bit offset basis 14695981039346656037 and prime 1099511628211, the constants in the code; the 2001-08-23 capture gives the same 64-bit constants for FNV-1 but does not yet mention FNV-1a; the 2000-09-02 capture has neither. A web page, not peer-reviewed. The file format itself is this project's own. | CLEARED (hash); format OPEN |
+| S3 | Provisional reading, later confirmed or refuted; suspect mark; locator samples; saved confirmations | sacd-spec 4.2 items 8 and 9 (2026) only. | OPEN |
+| S4 | Interpolation search over frame-record timecodes, track starts as knots | `perl1978` p. 550 (verified): interpolation search, crediting Peterson [7], and its log log N average. `peterson1957` (metadata only). Using track starts as knots that never narrow the interval is not stated. | PARTIAL |
+| S5 | Regula falsi with the Illinois weighting; secant density from the last two probes | `dowell_jarratt1971` §2, p. 169 (verified): "The method follows the Regula Falsi except that ... ii) if f(i+1)f(i) > 0, then (x(i-1), f(i-1)) is replaced by (x(i-1), f(i-1)/2)", "designed to speed convergence by preventing the retention of an end point". | CLEARED |
+| S6 | Bisection safeguard after two steps that fail to halve the remaining frames | `brent1971` §3, pp. 422-423 (verified, OCR of the author's scan; ALGOL listing not read): the modification "ensures that a bisection is done at least once in every 2 log2(\|b - c\|/delta) consecutive steps ... Thus \|e\| decreases by at least a factor of two on every second step". | CLEARED |
+| S7 | Brent's method itself | not used. | n/a |
+| S8 | Own search heuristics (geometric-mean first correction, early aim, whole final interval within 144 KiB, range-sized reads) | none found. | OPEN |
+
+### DSD-to-PCM (`scarletbook-pcm`)
+
+| # | Technique | Sources and supporting passage | Status |
+|---|---|---|---|
+| P1 | Byte-table FIR (distributed arithmetic) on the 1-bit input | as D7: `white1989` pp. 5, 7. | CLEARED |
+| P2 | Multistage decimation, each stage's stopband from F - fst; polyphase decimating FIRs; halfband interpolation by 2 | `crochiere_rabiner1981` (verified 2026-11-01): p. 300 (abstract) and §V, multistage implementations; §III-C, p. 308, "Polyphase FIR structures for integer decimators and interpolators"; p. 324, eq. (124b): the stage-1 transition band is "F_p <= f <= F_1 - F_s". Halfband: `vaidyanathan_nguyen1987` p. 297 (verified): about half of the coefficients are zero (eq. (3)). `mintzer1982`, `crochiere_rabiner1983` (metadata only). | CLEARED |
+| P3 | Equiripple design by the Remez exchange (Parks-McClellan), barycentric form | `rabiner1975` (verified 2026-11-01): weighted Chebyshev approximation and the Remez exchange (pp. 595-596); p. 602: "the Lagrange interpolation formula in the barycentric form is used"; pp. 597-598: the four cases of linear-phase filters, including Case 2 (N even, symmetric). The factorisation of a type II response as a cosine polynomial times cos(w/2) was not found by text search of the scan. `parks_mcclellan1972` (metadata only). `herrmann1973` (obtained; length estimates only). `kaiser1974` (citation only). | CLEARED (method); type II form not confirmed |
+| P4 | Halfband from a one-band type II prototype, `H(z) = (z^-(2K-1) + G(z^2))/2` | `vaidyanathan_nguyen1987` §II, p. 297 (verified): design "a one-band prototype linear-phase filter G(z) of order (N-1)/2"; eq. (4), H(z) = (G(z^2) + z^-(N-1)/2)/2 "is a half-band filter". | CLEARED |
+| P5 | Exact integer arithmetic in binary64 (below 2^53); rounding half to even by adding and subtracting 1.5 x 2^52 | `goldberg1991` §1.5, p. 13 (verified): exactly rounded operations and round to even. **Does not state** the add-and-subtract rounding trick (searched for "2^52", "1.5", "magic"). `ieee754_1985` (metadata only). | PARTIAL (trick OPEN) |
+| P6 | Exactness per frame: a frame converted with its neighbours' context bytes equals a whole-area conversion (sectioned FIR with input overlap) | `stockham1966` p. 230 (verified): sectioning the long input, each section convolved and "additively overlapped with its neighbors", "each overlap margin has width N". | CLEARED |
+| P7 | Symmetric FIR evaluated by folding pairs of samples | `crochiere_rabiner1981` p. 308 (verified): "An alternate form of this structure which can exploit symmetry in h(n) (for linear phase designs)". `oppenheim_schafer1999` (citation only). | CLEARED |
+| P8 | Fifth-order sigma-delta modulator (test only) | `chao1990`, `schreier_temes2005` (metadata only). | BIBLIO (test only) |
+
+### Output: DSF, DSDIFF, ID3 and the CRC
+
+| # | Technique | Sources and supporting passage | Status |
+|---|---|---|---|
+| O1 | DSF, DSDIFF and ID3v2.4 layouts | sacd-spec spec 8 only. Per sacd-spec `PROVENANCE.md`: Sony DSF 1.01 (date not on record), Philips DSDIFF 1.5 (2004-04-27), ID3v2.4.0 (2000-11-01). Not read on this side. Wayback capture dates in "Specification 8 documents" below. | SPEC |
+| O2 | DSDIFF frame CRC evaluated byte-wise from a 256-entry table | `sarwate1988` p. 1009 (verified): "this method uses table look-ups to handle eight bits (one byte) at a time"; for degree-32 polynomials the tables can be organised "as one table of 256 32-bit double words". `peterson_brown1961` (metadata only). | CLEARED |
+| O3 | Output files never written: byte ranges produced on demand from the TOC | none found. | OPEN |
+
+### Parallel decoding pipeline
+
+| # | Technique | Sources and supporting passage | Status |
+|---|---|---|---|
+| X1 | Bounded look-ahead window on a pool, results in order, waiter woken only when waiting | `halstead1985` p. 502 (verified): "(future X) immediately returns a future for the value of the expression X and concurrently begins evaluating X". `hoare1974` p. 550 (verified): the condition "wait" and "signal" operations; pp. 552-553: "Example: Bounded Buffer". `blumofe_leiserson1999` p. 720 (verified): "work stealing" (as in the rayon dependency). | CLEARED |
+| X2 | Abandoned jobs skip decoding when the owner dropped its handles (reference count) | `collins1960` p. 655 (verified): reference counts, "a tally of the number of arrows pointing" to a list. Reference counting itself only; using it to cancel work is not stated. | PARTIAL (low) |
+
+### TOC digests
+
+| # | Technique | Sources and supporting passage | Status |
+|---|---|---|---|
+| T1 | Four-lane rotate-xor-multiply TOC digest with golden-ratio constant and xorshift-multiply finaliser | `wang_inthash1997` (1999-09-03 capture, verified): Knuth's multiplicative method with the golden ratio, and shift/xor mixing. `carter_wegman1979` (metadata only). Per-word xor-then-multiply as in FNV-1a (S2); lanes as in D12. No source states the combination. | OPEN (low; parts only) |
+
+### Build, tests and tooling
+
+| # | Technique | Sources and supporting passage | Status |
+|---|---|---|---|
+| B1 | Profile-guided and link-time optimisation (measured, not adopted) | `wall1986` WRL 86/3 abstract and p. 12 (verified): "previously collected profile information to guide the allocation" at link time. | CLEARED |
+| Z1 | Test DST encoder (informative annex 5.A) | sacd-spec annex 5.A (2026). Test only. | test only |
+| Z2 | Synthetic image generator | sacd-spec specs 1-4. Tooling only. | tooling only |
+
+## Source register
+
+One row per source. **Full text**: *obtained* (a copy is in the evidence store), *front matter only*, or *not obtained* with where it can be had. **Wayback** is a capture of the URL the copy came from (for ACM PDFs, the capture the copy was taken from). **SHA-256** is of the stored copy named; further copies of the same source are listed in `MANIFEST.tsv`.
+
+| Key | Citation | DOI or ID | Published | Pre-2006 | Full text | Wayback | SHA-256 (stored file) |
+|---|---|---|---|---|---|---|---|
+| `golomb1966` | S. W. Golomb, "Run-length encodings", IEEE Trans. Information Theory 12(3), pp. 399-401 | [10.1109/TIT.1966.1053907](https://doi.org/10.1109/TIT.1966.1053907) | 1966-07 | yes | **not obtained**; metadata only. Obtain from: IEEE Xplore (paywalled); university libraries | n/a | n/a |
+| `makhoul1975` | J. Makhoul, "Linear prediction: A tutorial review", Proc. IEEE 63(4), pp. 561-580 | [10.1109/PROC.1975.9792](https://doi.org/10.1109/PROC.1975.9792) | 1975-04 | yes | **not obtained**; metadata only. Obtain from: IEEE Xplore (paywalled); university libraries | n/a | n/a |
+| `witten1987` | I. H. Witten, R. M. Neal, J. G. Cleary, "Arithmetic coding for data compression", CACM 30(6), pp. 520-540 | [10.1145/214762.214771](https://doi.org/10.1145/214762.214771) | 1987-06 | yes | obtained: ACM DL open backfile (free) | [capture](https://web.archive.org/web/20230506003019/https://dl.acm.org/doi/pdf/10.1145/214762.214771) | `1d4afddc22f2b98c4d02a309d553c7810c1feaac92eef8cce08c5fbc800519f2` (acm-214762.214771.pdf) |
+| `rissanen1976` | J. J. Rissanen, "Generalized Kraft inequality and arithmetic coding", IBM J. Res. Dev. 20(3), pp. 198-203 | [10.1147/rd.203.0198](https://doi.org/10.1147/rd.203.0198) | 1976-05 | yes | **not obtained**; metadata only. Obtain from: IEEE Xplore / IBM JRD archive (paywalled); university libraries | n/a | n/a |
+| `rissanen_langdon1979` | J. Rissanen, G. G. Langdon, "Arithmetic coding", IBM J. Res. Dev. 23(2), pp. 149-162 | [10.1147/rd.232.0149](https://doi.org/10.1147/rd.232.0149) | 1979-03 | yes | **not obtained**; metadata only. Obtain from: IEEE Xplore / IBM JRD archive (paywalled); university libraries | n/a | n/a |
+| `said2004` | A. Said, "Introduction to Arithmetic Coding - Theory and Practice", HP Labs report HPL-2004-76 (dated 2004-04-21); arXiv 2302.00819 (deposited 2023) | [10.48550/arXiv.2302.00819](https://doi.org/10.48550/arXiv.2302.00819) | 2004-04-21 | yes (report 2004; arXiv 2023) | obtained: arXiv | [capture](https://web.archive.org/web/20260317040456/https://arxiv.org/pdf/2302.00819) | `e29d62b752afe111dfa4664ebfd1dd32e0b5360e599afd9ecbe947c2d4389173` (2302.00819.pdf) |
+| `white1989` | S. A. White, "Applications of distributed arithmetic to digital signal processing: a tutorial review", IEEE ASSP Magazine 6(3), pp. 4-19 | [10.1109/53.29648](https://doi.org/10.1109/53.29648) | 1989-07 | yes | obtained: owner-supplied copy (source not recorded); IEEE Xplore | n/a (owner-supplied, no source URL) | `08b74a16496519d5ef66ec33d30b6489965791997680e804834e76d044dd18c3` (Applications_of_distributed_arithmetic_to_digital_signal_processing_a_tutorial_review.pdf) |
+| `peled_liu1973` | A. Peled, B. Liu, "A new approach to the realization of nonrecursive digital filters", IEEE Trans. Audio Electroacoustics 21(6), pp. 477-484 (White 1989, ref. [1]; found 2026-11-01) | [10.1109/TAU.1973.1162521](https://doi.org/10.1109/TAU.1973.1162521) | 1973-12 | yes | **not obtained**; metadata only. Obtain from: IEEE Xplore (paywalled); university libraries | n/a | n/a |
+| `peled_liu1974` | A. Peled, B. Liu, "A new hardware realization of digital filters", IEEE Trans. ASSP 22(6), pp. 456-462 | [10.1109/TASSP.1974.1162619](https://doi.org/10.1109/TASSP.1974.1162619) | 1974-12 | yes | **not obtained**; metadata only. Obtain from: IEEE Xplore (paywalled); university libraries | n/a | n/a |
+| `jackson1968` | L. B. Jackson, J. F. Kaiser, H. S. McDonald, "An approach to the implementation of digital filters", IEEE Trans. Audio Electroacoustics 16(3), pp. 413-421 | [10.1109/TAU.1968.1162002](https://doi.org/10.1109/TAU.1968.1162002) | 1968-09 | yes | obtained: owner-supplied copy (source not recorded) | n/a (owner-supplied, no source URL) | `8045dc4bc85b2535e5acbdb79d936c44ce6fa25d3b1a7e9cee5881974c374de6` (an-approach-to-the-implementation-of-digital-filters-4wdph72nog.pdf) |
+| `ntu_slides2002` | NTU Graduate Institute of Electronics Engineering, lecture slides on White 1989 (PDF creation date 2002-10-08, file metadata only) | none | 2002-10-08 (file metadata) | yes | obtained: owner-supplied copy (source not recorded) | n/a (owner-supplied, no source URL) | `93aeb7e10410bdbc13f9f295370a423989281487c978916df58947c2e784eec6` (997772e006a6e5c167c83398a85600f6a801.pdf) |
+| `liu_nctu2011` | C.-W. Liu, NCTU "VSP Lecture 11 Distributed Arithmetic" slides (PDF creation date 2011-07-03) | none | 2011-07-03 (file metadata) | no | obtained: owner-supplied copy (source not recorded) | n/a (owner-supplied, no source URL) | `a79a8a6aad81a557cdd5e9ec28e7e4d4b855e50b9011df592eee385cffbdd2fb` (5967a3cc6220ef68aba06f16edda372f3a12.pdf) |
+| `nagajyothi2017` | Nagajyothi & SriDevi, review paper on distributed arithmetic, WiSPNET 2017 | none | 2017 | no | obtained: owner-supplied copy (source not recorded) | n/a (owner-supplied, no source URL) | `8a7dea6aeac56aa827fb527d1eec36eeca81fddc10dcc3bf27a10c69d7759c8d` (reviewpaper-2017.pdf) |
+| `moffat_neal_witten1998` | A. Moffat, R. M. Neal, I. H. Witten, "Arithmetic coding revisited", ACM TOIS 16(3), pp. 256-294 | [10.1145/290159.290162](https://doi.org/10.1145/290159.290162) | 1998-07 | yes | obtained: ACM DL open backfile (free) | [capture](https://web.archive.org/web/20240728180425/https://dl.acm.org/doi/pdf/10.1145/290159.290162) | `4e68c25f5b89a0eb71b7d0312904a8664cdc7681ac3814fefa5185623aa7829b` (acm-290159.290162.pdf) +1 |
+| `schmookler_nowka2001` | M. S. Schmookler, K. J. Nowka, "Leading zero anticipation and detection - a comparison of methods", Proc. ARITH-15, pp. 7-12 | [10.1109/ARITH.2001.930098](https://doi.org/10.1109/ARITH.2001.930098) | 2001-06 | yes | obtained: university course copy (UMBC) | [capture](https://web.archive.org/web/20260130102008/https://userpages.cs.umbc.edu/phatak/645/supl/lza/lza-survey-arith01.pdf) | `c85dea461486581fb62cbe32f910c103ec859f25733ed233279b0cb8b24c15d9` (lza-survey-arith01.pdf) |
+| `alpha_arm2002` | Compaq, Alpha Architecture Reference Manual, 4th ed. | none | 2002-01 | yes | obtained: university club mirror (csclub.uwaterloo.ca) | [capture](https://web.archive.org/web/20250831132446/https://csclub.uwaterloo.ca/~pbarfuss/alpha_arch_ref.pdf) | `e69e3f4a8ae0266c0df1efca78acd73319cb92fd0c0b5a5d183e6f49d4035511` (alpha_arch_ref.pdf) |
+| `mahlke1992` | S. A. Mahlke, D. C. Lin, W. Y. Chen, R. E. Hank, R. A. Bringmann, "Effective compiler support for predicated execution using the hyperblock", MICRO-25, pp. 45-54 (also ACM SIGMICRO Newsletter 23(1-2), 10.1145/144965.144998) | [10.1109/MICRO.1992.696999](https://doi.org/10.1109/MICRO.1992.696999) | 1992-12 | yes | obtained: author copy (Michigan) | [capture](https://web.archive.org/web/20261101124155/https://web.eecs.umich.edu/~mahlke/courses/583f18/reading/mahlke_micro92.pdf) | `baf3725718b6a8c0c97c2bf7cdc1fbac723cf7637640c2cb51ae242dd1020abb` (mahlke_micro92.pdf) |
+| `moffat_turpin1997` | A. Moffat, A. Turpin, "On the implementation of minimum redundancy prefix codes", IEEE Trans. Communications 45(10), pp. 1200-1207 | [10.1109/26.634683](https://doi.org/10.1109/26.634683) | 1997-10 | yes | obtained: owner-supplied copy (source not recorded); IEEE Xplore | n/a (owner-supplied, no source URL) | `763299d1dab404431efd56368b6c5b8a5c7eeee888ee14cb4fdedd98ac64c157` (MoffatTurpin97-_On_the_implementation_of_minimum_redundancy_prefix_codes.pdf) |
+| `moffat_turpin1996` | A. Moffat, A. Turpin, "On the implementation of minimum-redundancy prefix codes", Proc. DCC '96, pp. 170-179 | [10.1109/DCC.1996.488322](https://doi.org/10.1109/DCC.1996.488322) | 1996-03/04 | yes | **not obtained**; metadata only. Obtain from: IEEE Xplore (paywalled); university libraries | n/a | n/a |
+| `moffat_turpin2002` | A. Moffat, A. Turpin, Compression and Coding Algorithms, Kluwer (now Springer) | [10.1007/978-1-4615-0935-6](https://doi.org/10.1007/978-1-4615-0935-6) | 2002 (preface dated January 2002) | yes | front matter only (does not cover the technique): Springer (paywalled); libraries | n/a (owner-supplied, no source URL) | `2a92b67adabef6da1b4f5e186bc4465ab032b2bce673fb924829c2e3d9b15f53` (Compression_and_Coding_Algorithms.pdf) |
+| `lam1988` | M. Lam, "Software pipelining: an effective scheduling technique for VLIW machines", Proc. SIGPLAN '88 (PLDI), pp. 318-328; reprinted ACM SIGPLAN Notices 23(7), 10.1145/960116.54022 | [10.1145/53990.54022](https://doi.org/10.1145/53990.54022) | 1988-06-22/24 | yes | obtained: ACM DL open backfile (free); university seminar copy (Paderborn) | [capture](https://web.archive.org/web/20240714211954/https://fg-kastens.cs.uni-paderborn.de/lehre/pgrekonf/seminar/Lam1988.pdf) | `67d55affc6f10cbeec421b809b5def804263bc2b07c7e6f7e7ab4a5f0405d428` (Lam1988.pdf) +2 |
+| `rau_glaeser1981` | B. R. Rau, C. D. Glaeser, "Some scheduling techniques and an easily schedulable horizontal architecture for high performance scientific computing", MICRO-14, ACM SIGMICRO Newsletter 12(4), pp. 183-198 | [10.1145/1014192.802449](https://doi.org/10.1145/1014192.802449) | 1981-12 | yes | obtained: ACM DL open backfile (free) | [capture](https://web.archive.org/web/20230807174329/https://dl.acm.org/doi/pdf/10.1145/1014192.802449) | `ed709617195b7f505d5ac4ca82c890f36ee93d4f0a9ef33aa1fd396459d7c9cf` (acm-1014192.802449.pdf) |
+| `giesen2014` | F. Giesen, "Interleaved entropy coders", arXiv 1402.3392 | [10.48550/arXiv.1402.3392](https://doi.org/10.48550/arXiv.1402.3392) | 2014-02-14 | no | obtained: arXiv | [capture](https://web.archive.org/web/20260623002349/https://arxiv.org/pdf/1402.3392) | `9a4a7762908c44c7cedc8b64a976d7e6ec2b9326ca6f25d570fd63bf58ce95b1` (1402.3392.pdf) |
+| `dongarra_hinds1979` | J. J. Dongarra, A. R. Hinds, "Unrolling loops in FORTRAN", Software: Practice and Experience 9(3), pp. 219-226 | [10.1002/spe.4380090307](https://doi.org/10.1002/spe.4380090307) | 1979-03 | yes | obtained: author copy (netlib) | [capture](https://web.archive.org/web/20240716153216/https://www.netlib.org//utk/people/JackDongarra-20130-07-11/PAPERS/001_1979_unrolling-loops-in-fortran.pdf) | `011664f7c6b01fcc8e4eff082f75ee8cc01200e18c100ddad7903526fb251756` (001_1979_unrolling-loops-in-fortran.pdf) |
+| `cooper1993` | K. D. Cooper, M. W. Hall, K. Kennedy, "A methodology for procedure cloning", Computer Languages 19(2), pp. 105-117 | [10.1016/0096-0551(93)90005-L](https://doi.org/10.1016/0096-0551(93)90005-L) | 1993-04 | yes | **not obtained**; metadata only. Obtain from: ScienceDirect (OpenAlex marks it open, "hybrid"; automated download refused with HTTP 403; read in a browser) | n/a | n/a |
+| `fnv_page` | L. C. Noll, "Fowler / Noll / Vo (FNV) Hash" web page, http://www.isthe.com/chongo/tech/comp/fnv/index.html | none | captures 2000-09-02 (no FNV-1a), 2001-08-23 (64-bit constants, no FNV-1a), 2002-08-11 (FNV-1a) | yes | obtained: Wayback Machine captures | [capture](https://web.archive.org/web/20020811115135/http://www.isthe.com:80/chongo/tech/comp/fnv/index.html) | `da119815382278b3018d25d7e0a700eb8454e73e1218ce593687f65f6d68cb67` (fnv-20020811115135.html) +2 |
+| `peterson1957` | W. W. Peterson, "Addressing for random-access storage", IBM J. Res. Dev. 1(2), pp. 130-146 | [10.1147/rd.12.0130](https://doi.org/10.1147/rd.12.0130) | 1957-04 | yes | **not obtained**; metadata only. Obtain from: IEEE Xplore / IBM JRD archive (paywalled); libraries. A copy on a personal mirror (gwern.net) was found and not used, as it is not an author, publisher or institutional copy | n/a | n/a |
+| `perl1978` | Y. Perl, A. Itai, H. Avni, "Interpolation search - a log log N search", CACM 21(7), pp. 550-553 | [10.1145/359545.359557](https://doi.org/10.1145/359545.359557) | 1978-07 | yes | obtained: ACM DL open backfile (free) | [capture](https://web.archive.org/web/20220616053212/https://dl.acm.org/doi/pdf/10.1145/359545.359557) | `af4eeeec858429b3758789b29f0ea6f0265d5272277bc2bb412691d9635d1d54` (acm-359545.359557.pdf) |
+| `dowell_jarratt1971` | M. Dowell, P. Jarratt, "A modified regula falsi method for computing the root of an equation", BIT 11(2), pp. 168-174 | [10.1007/BF01934364](https://doi.org/10.1007/BF01934364) | 1971-06 | yes | obtained: university course copy (UBC); Springer (paywalled) | [capture](https://web.archive.org/web/20251220181657/https://personal.math.ubc.ca/~loew/mech2/Dowell+Jarratt.pdf) | `b102d1e12b0c2f16772ae8cfa485fce49feb5fe6bb1b6b7a6d6a938f74c2d43d` (Dowell+Jarratt.pdf) |
+| `brent1971` | R. P. Brent, "An algorithm with guaranteed convergence for finding a zero of a function", The Computer Journal 14(4), pp. 422-425 | [10.1093/comjnl/14.4.422](https://doi.org/10.1093/comjnl/14.4.422) | 1971 (received Aug 1970, revised Mar 1971) | yes | obtained: author copy (Brent, ANU) | [capture](https://web.archive.org/web/20261004081950/https://maths-people.anu.edu.au/~brent/pd/rpb005.pdf) | `15e5313c100a5ad8d1009acab362c26e803f03a9b4d93607ac0e5efda3dbbbbd` (rpb005.pdf) |
+| `crochiere_rabiner1981` | R. E. Crochiere, L. R. Rabiner, "Interpolation and decimation of digital signals - A tutorial review", Proc. IEEE 69(3), pp. 300-331 | [10.1109/PROC.1981.11969](https://doi.org/10.1109/PROC.1981.11969) | 1981-03 | yes | obtained: author reprint (Rabiner, UCSB) | [capture](https://web.archive.org/web/20220314081510/https://web.ece.ucsb.edu/Faculty/Rabiner/ece259/Reprints/179_interpolation_decimation.pdf) | `0499ca4057ec64dcfc3baaeac88686f645080180f082d231ad0869427b24d4e5` (179_interpolation_decimation.pdf) |
+| `crochiere_rabiner1983` | R. E. Crochiere, L. R. Rabiner, Multirate Digital Signal Processing, Prentice-Hall, ISBN 0-13-605162-6 | ISBN 0-13-605162-6 | 1983 | yes | **not obtained**; metadata only. Obtain from: libraries (LC TK5102.5 .C76 1983); Internet Archive controlled lending (multiratedigital00croc) | n/a | n/a |
+| `mintzer1982` | F. Mintzer, "On half-band, third-band, and Nth-band FIR filters and their design", IEEE Trans. ASSP 30(5), pp. 734-738 | [10.1109/TASSP.1982.1163950](https://doi.org/10.1109/TASSP.1982.1163950) | 1982-10 | yes | **not obtained**; metadata only. Obtain from: IEEE Xplore (paywalled); university libraries | n/a | n/a |
+| `parks_mcclellan1972` | T. W. Parks, J. H. McClellan, "Chebyshev approximation for nonrecursive digital filters with linear phase", IEEE Trans. Circuit Theory 19(2), pp. 189-194 | [10.1109/TCT.1972.1083419](https://doi.org/10.1109/TCT.1972.1083419) | 1972-03 | yes | **not obtained**; metadata only. Obtain from: IEEE Xplore (paywalled); university libraries | n/a | n/a |
+| `rabiner1975` | L. R. Rabiner, J. H. McClellan, T. W. Parks, "FIR digital filter design techniques using weighted Chebyshev approximation", Proc. IEEE 63(4), pp. 595-610 | [10.1109/PROC.1975.9794](https://doi.org/10.1109/PROC.1975.9794) | 1975-04 | yes | obtained: author reprint (Rabiner, UCSB) | [capture](https://web.archive.org/web/20240818210503/https://web.ece.ucsb.edu/Faculty/Rabiner/ece259/Reprints/080_FIR_digital_filter_designs.pdf) | `fe582549ce174ed88936166d676751da24ce96b883d0d8058457342a179b6056` (080_FIR_digital_filter_designs.pdf) |
+| `herrmann1973` | O. Herrmann, L. R. Rabiner, D. S. K. Chan, "Practical design rules for optimum finite impulse response low-pass digital filters", Bell Syst. Tech. J. 52(6), pp. 769-799 | [10.1002/j.1538-7305.1973.tb01990.x](https://doi.org/10.1002/j.1538-7305.1973.tb01990.x) | 1973-07/08 | yes | obtained: scan of the whole journal issue (bitsavers archive) | [capture](https://web.archive.org/web/20261101123902/https://ftp.mirrorservice.org/sites/www.bitsavers.org/magazines/Bell_System_Technical_Journal/BSTJ_V52N06_197307.pdf) | `52f6a7c60bc3a4ade44d10b4e00e77c1b84ce4edebac0b857a825cb6f74e6d32` (BSTJ_V52N06_197307.pdf) |
+| `kaiser1974` | J. F. Kaiser, "Nonrecursive digital filter design using the I0-sinh window function", Proc. IEEE ISCAS 1974, pp. 20-23 | none | 1974 | yes | **not obtained**; no metadata record (citation only). Obtain from: no Crossref record; IEEE ISCAS 1974 proceedings in libraries | n/a | n/a |
+| `vaidyanathan_nguyen1987` | P. P. Vaidyanathan, T. Q. Nguyen, "A 'trick' for the design of FIR half-band filters", IEEE Trans. CAS 34(3), pp. 297-300 | [10.1109/TCS.1987.1086124](https://doi.org/10.1109/TCS.1987.1086124) | 1987-03 | yes | obtained: institutional repository (CaltechAUTHORS, reprinted with IEEE permission) | [capture](https://web.archive.org/web/20231114103103/https://authors.library.caltech.edu/records/czbzh-df707/files/VAIieeetcs87a.pdf) | `954eafabfe640e6782e67ce3308824eb646405d1794c499510ecb8289f1d0fa4` (VAIieeetcs87a.pdf) |
+| `hogenauer1981` | E. B. Hogenauer, "An economical class of digital filters for decimation and interpolation", IEEE Trans. ASSP 29(2), pp. 155-162 (considered, not used) | [10.1109/TASSP.1981.1163535](https://doi.org/10.1109/TASSP.1981.1163535) | 1981-04 | yes | **not obtained**; metadata only. Obtain from: IEEE Xplore (paywalled); university libraries | n/a | n/a |
+| `goldberg1991` | D. Goldberg, "What every computer scientist should know about floating-point arithmetic", ACM Computing Surveys 23(1), pp. 5-48 | [10.1145/103162.103163](https://doi.org/10.1145/103162.103163) | 1991-03 | yes | obtained: ACM DL open backfile (free); Sun/Oracle reprint | [capture](https://web.archive.org/web/20221006105551/https://dl.acm.org/doi/pdf/10.1145/103162.103163) | `b56225827c50d5a2c6ebf3108333248bf7284decc8ce518e79241ad6911868f3` (acm-103162.103163.pdf) +1 |
+| `ieee754_1985` | IEEE Std 754-1985, IEEE Standard for Binary Floating-Point Arithmetic | [10.1109/IEEESTD.1985.82928](https://doi.org/10.1109/IEEESTD.1985.82928) | 1985 (approved 1985-03-21) | yes | **not obtained**; metadata only. Obtain from: IEEE Standards / IEEE Xplore (paywalled; superseded) | n/a | n/a |
+| `stockham1966` | T. G. Stockham, "High-speed convolution and correlation", AFIPS Spring Joint Computer Conference 1966, pp. 229-233 | [10.1145/1464182.1464209](https://doi.org/10.1145/1464182.1464209) | 1966-04-26/28 | yes | obtained: ACM DL open backfile (free) | [capture](https://web.archive.org/web/20240416052543/https://dl.acm.org/doi/pdf/10.1145/1464182.1464209) | `38c47c44e45c5de4cd4c61d5878655905ff1b8d11b9eb979738cb5de5d3486e1` (acm-1464182.1464209.pdf) |
+| `oppenheim_schafer1999` | A. V. Oppenheim, R. W. Schafer, J. R. Buck, Discrete-Time Signal Processing, 2nd ed., Prentice-Hall, ISBN 0-13-754920-2 | ISBN 0-13-754920-2 | 1999 | yes | **not obtained**; metadata only. Obtain from: libraries (LC TK5102.9 .O67 1999) | n/a | n/a |
+| `chao1990` | K. C.-H. Chao, S. Nadeem, W. L. Lee, C. G. Sodini, "A higher order topology for interpolative modulators for oversampling A/D converters", IEEE Trans. CAS 37(3), pp. 309-318 | [10.1109/31.52724](https://doi.org/10.1109/31.52724) | 1990-03 | yes | **not obtained**; metadata only. Obtain from: IEEE Xplore (paywalled); university libraries | n/a | n/a |
+| `schreier_temes2005` | R. Schreier, G. C. Temes, Understanding Delta-Sigma Data Converters, Wiley-IEEE Press | [10.1109/9780470546772](https://doi.org/10.1109/9780470546772) | 2004/2005 (Crossref: 2004) | yes | **not obtained**; metadata only. Obtain from: IEEE Xplore / Wiley (paywalled); libraries | n/a | n/a |
+| `sarwate1988` | D. V. Sarwate, "Computation of cyclic redundancy checks via table look-up", CACM 31(8), pp. 1008-1013 | [10.1145/63030.63037](https://doi.org/10.1145/63030.63037) | 1988-08 | yes | obtained: ACM DL open backfile (free) | [capture](https://web.archive.org/web/20230810163136/https://dl.acm.org/doi/pdf/10.1145/63030.63037) | `8a89d09087a8b93a8356eb54fed411a77c1d4d6920763220e8e2082a19ed8655` (acm-63030.63037.pdf) |
+| `peterson_brown1961` | W. W. Peterson, D. T. Brown, "Cyclic codes for error detection", Proc. IRE 49(1), pp. 228-235 | [10.1109/JRPROC.1961.287814](https://doi.org/10.1109/JRPROC.1961.287814) | 1961-01 | yes | **not obtained**; metadata only. Obtain from: IEEE Xplore (paywalled); university libraries | n/a | n/a |
+| `halstead1985` | R. H. Halstead, "Multilisp: a language for concurrent symbolic computation", ACM TOPLAS 7(4), pp. 501-538 | [10.1145/4472.4478](https://doi.org/10.1145/4472.4478) | 1985-10 | yes | obtained: ACM DL open backfile (free) | [capture](https://web.archive.org/web/20221005231503/https://dl.acm.org/doi/pdf/10.1145/4472.4478) | `db49b0082e7e2195b42f7e7a211278351e5b0b8ad757a64c77b8234653b5a05d` (acm-4472.4478.pdf) |
+| `hoare1974` | C. A. R. Hoare, "Monitors: an operating system structuring concept", CACM 17(10), pp. 549-557 | [10.1145/355620.361161](https://doi.org/10.1145/355620.361161) | 1974-10 | yes | obtained: ACM DL open backfile (free) | [capture](https://web.archive.org/web/20230726060733/https://dl.acm.org/doi/pdf/10.1145/355620.361161) | `5be561ea6db4e8c5f799db737e55c33d87d576268e2292c452114091f89654c0` (acm-355620.361161.pdf) |
+| `blumofe_leiserson1999` | R. D. Blumofe, C. E. Leiserson, "Scheduling multithreaded computations by work stealing", JACM 46(5), pp. 720-748 | [10.1145/324133.324234](https://doi.org/10.1145/324133.324234) | 1999-09 | yes | obtained: ACM DL open backfile (free) | [capture](https://web.archive.org/web/20220818020039/https://dl.acm.org/doi/pdf/10.1145/324133.324234) | `a8ec2e12a6e0fb98b33c1434af76ea6ae6ee1b4955a387af96a8ed749d03f444` (acm-324133.324234.pdf) +1 |
+| `collins1960` | G. E. Collins, "A method for overlapping and erasure of lists", CACM 3(12), pp. 655-657 | [10.1145/367487.367501](https://doi.org/10.1145/367487.367501) | 1960-12 | yes | obtained: ACM DL open backfile (free) | [capture](https://web.archive.org/web/20220729144134/https://dl.acm.org/doi/pdf/10.1145/367487.367501) | `b79e0e0d5c81867e8ee9c0030412d7ad971121cbdc59af4b4fc36a3c6becd0e8` (acm-367487.367501.pdf) |
+| `carter_wegman1979` | J. L. Carter, M. N. Wegman, "Universal classes of hash functions", JCSS 18(2), pp. 143-154 | [10.1016/0022-0000(79)90044-8](https://doi.org/10.1016/0022-0000(79)90044-8) | 1979-04 | yes | **not obtained**; metadata only. Obtain from: ScienceDirect, Elsevier open archive (free to read; automated download refused with HTTP 403; read in a browser) | n/a | n/a |
+| `wang_inthash1997` | T. Wang, "Integer Hash Function" web page (dated January 1997 on the page), http://www.concentric.net/~Ttwang/tech/inthash.htm | none | 1997-01 (page); earliest capture 1999-09-03 | yes | obtained: Wayback Machine capture | [capture](https://web.archive.org/web/19990903131503/http://www.concentric.net:80/%7ETtwang/tech/inthash.htm) | `af5c08b3f6bc2833b2acc2c447cb8a499331db8dffb6b236de50cec8610db8f7` (inthash-19990903131503.htm) |
+| `wall1986` | D. W. Wall, "Global register allocation at link time", Proc. SIGPLAN '86 Symposium on Compiler Construction, pp. 264-275 (also SIGPLAN Notices 21(7), 10.1145/13310.13338); DEC WRL Research Report 86/3 | [10.1145/12276.13338](https://doi.org/10.1145/12276.13338) | 1986-07 | yes | obtained: ACM DL open backfile (free); DEC WRL report (bitsavers) | [capture](https://web.archive.org/web/20261101124100/https://ftp.mirrorservice.org/sites/www.bitsavers.org/pdf/dec/tech_reports/WRL-86-3.pdf) | `7a650fc0196d2818b1b53c5d56f47202d732228ec035d87a56f54cf3be4e7e14` (WRL-86-3.pdf) |
+| `marpe2006` | D. Marpe, H. Kirchhoffer, G. Marten, "Fast renormalization for H.264/MPEG4-AVC arithmetic coding", EUSIPCO 2006 | none | 2006-09 | no | obtained: publisher free PDF (EURASIP) | [capture](https://web.archive.org/web/20261101124308/https://new.eurasip.org/Proceedings/Eusipco/Eusipco2006/papers/1568982338.pdf) | `82c0db50f2ae3ba58e207ecfab90c7b85c85c1d58b3f3fe53d09f9e3e974c135` (1568982338.pdf) |
+| `marpe2003` | D. Marpe, H. Schwarz, T. Wiegand, "Context-based adaptive binary arithmetic coding in the H.264/AVC video compression standard", IEEE TCSVT 13(7), pp. 620-636 | [10.1109/TCSVT.2003.815173](https://doi.org/10.1109/TCSVT.2003.815173) | 2003-07 | yes | **not obtained**; metadata only. Obtain from: IEEE Xplore (paywalled) | n/a | n/a |
+| `sze2013` | V. Sze, M. Budagavi, "A comparison of CABAC throughput for HEVC/H.265 vs. AVC/H.264", IEEE SiPS 2013, pp. 165-170 | [10.1109/SiPS.2013.6674499](https://doi.org/10.1109/SiPS.2013.6674499) | 2013-10 | no | obtained: author copy (MIT EEMS) | [capture](https://web.archive.org/web/20261008082142/https://eems.mit.edu/wp-content/uploads/2013/11/sze_sips_2013.pdf) | `ed31e8d6ee15091628cd44b1c30f3242c49def55dcd8408fb79daae85202d387` (sze_sips_2013.pdf) |
+
+## Other web sources in CLEANROOM.md
+
+The #33 research survey's web sources (CLEANROOM.md "General references consulted", S4-S35; S1-S3, S6, S8 and S9 are in the register above) and the documentation pages under "Sources consulted". They support no flagged technique (performance tooling, CPU data, Rust and CI documentation, mostly after 2006); only their Wayback captures are recorded, and no copy is stored. S36 (FFmpeg `cabac_functions.h`, dav1d `msac.c`) was not fetched again: decision B forbids opening FFmpeg files, and nothing depends on either. S37 (AMD's Zen 5 guide) was never read.
+
+| Ref | URL | Wayback (latest capture) | First capture | SPN requested 2026-11-01 |
+|---|---|---|---|---|
+| S4 | https://hugi.scene.org/online/coding/hugi%2018%20-%20corange.htm | [capture](https://web.archive.org/web/20260615084511/https://www.hugi.scene.org/online/coding/hugi%2018%20-%20corange.htm) | 20160217092152 | no |
+| S5 | https://discourse.llvm.org/t/rfc-cmov-vs-branch-optimization/6040 | [capture](https://web.archive.org/web/20251218031121/https://discourse.llvm.org/t/rfc-cmov-vs-branch-optimization/6040) | 20220205164549 | no |
+| S7 | https://cyber.bibl.u-szeged.hu/index.php/actcybern/article/view/3827 | [capture](https://web.archive.org/web/20260304003247/https://cyber.bibl.u-szeged.hu/index.php/actcybern/article/view/3827) | 20220802040249 | no |
+| S10 | https://fgiesen.wordpress.com/2018/02/20/reading-bits-in-far-too-many-ways-part-2/ | [capture](https://web.archive.org/web/20260923233222/https://fgiesen.wordpress.com/2018/02/20/reading-bits-in-far-too-many-ways-part-2/) | 20180220123118 | no |
+| S11 | https://fgiesen.wordpress.com/2018/02/19/reading-bits-in-far-too-many-ways-part-1/ | [capture](https://web.archive.org/web/20260826042552/https://fgiesen.wordpress.com/2018/02/19/reading-bits-in-far-too-many-ways-part-1/) | 20180219085610 | no |
+| S12 | https://chipsandcheese.com/p/discussing-amds-zen-5-at-hot-chips-2024 | [capture](https://web.archive.org/web/20261004024657/https://chipsandcheese.com/p/discussing-amds-zen-5-at-hot-chips-2024) | 20241008173357 | no |
+| S13 | https://fgiesen.wordpress.com/2018/03/05/a-whirlwind-introduction-to-dataflow-graphs/ | [capture](https://web.archive.org/web/20260815110332/https://fgiesen.wordpress.com/2018/03/05/a-whirlwind-introduction-to-dataflow-graphs/) | 20180305105254 | no |
+| S14 | https://doc.rust-lang.org/cargo/reference/profiles.html | [capture](https://web.archive.org/web/20261022153345/https://doc.rust-lang.org/cargo/reference/profiles.html) | 20200325154445 | no |
+| S15 | https://nnethercote.github.io/perf-book/build-configuration.html | [capture](https://web.archive.org/web/20260924185707/https://nnethercote.github.io/perf-book/build-configuration.html) | 20201122213110 | no |
+| S16 | https://android-developers.googleblog.com/2023/12/faster-rust-toolchains-for-android.html | [capture](https://web.archive.org/web/20260828123454/https://android-developers.googleblog.com/2023/12/faster-rust-toolchains-for-android.html) | 20231213103547 | no |
+| S17 | https://reloaded-project.github.io/Reloaded-III/Research/Microarchitecture-Levels.html | [capture](https://web.archive.org/web/20260814194530/https://reloaded-project.github.io/Reloaded-III/Research/Microarchitecture-Levels.html) | 20251012134317 | no |
+| S18 | https://wiki.cachyos.org/ko/features/optimized_repos | [capture](https://web.archive.org/web/20260607185107/https://wiki.cachyos.org/ko/features/optimized_repos/) | 20260607185107 | no |
+| S19 | https://github.com/rust-lang/rust/issues/86656 | [capture](https://web.archive.org/web/20261009142027/https://github.com/rust-lang/rust/issues/86656) | 20211117161529 | no |
+| S20 | https://blog.rust-lang.org/2025/04/03/Rust-1.86.0/ | [capture](https://web.archive.org/web/20261015203930/https://blog.rust-lang.org/2025/04/03/Rust-1.86.0/) | 20250414204047 | no |
+| S21 | https://rust-lang.github.io/rfcs/2396-target-feature-1.1.html | [capture](https://web.archive.org/web/20261013154953/https://rust-lang.github.io/rfcs/2396-target-feature-1.1.html) | 20200216195032 | no |
+| S22 | https://docs.rs/pulp/latest/pulp/ | [capture](https://web.archive.org/web/20260926062611/https://docs.rs/pulp/latest/pulp/) | 20241113041915 | no |
+| S23 | https://github.com/sarah-quinones/pulp | [capture](https://web.archive.org/web/20260927204044/https://github.com/sarah-quinones/pulp) | 20241113075718 | no |
+| S24 | https://docs.rs/multiversion/latest/multiversion/ | [capture](https://web.archive.org/web/20260212104243/https://docs.rs/multiversion/latest/multiversion/) | 20220517132628 | no |
+| S25 | https://docs.rs/multiversion/0.6.1/multiversion/attr.multiversion.html | [capture](https://web.archive.org/web/20261101125009/https://docs.rs/multiversion/0.6.1/multiversion/attr.multiversion.html) | 20261101125009 | yes |
+| S26 | https://docs.rs/wide/latest/wide/ | [capture](https://web.archive.org/web/20261022210220/https://docs.rs/wide/latest/wide/) | 20220521164028 | no |
+| S27 | https://docs.rs/rayon/latest/rayon/struct.ThreadPoolBuilder.html | [capture](https://web.archive.org/web/20261021113333/https://docs.rs/rayon/latest/rayon/struct.ThreadPoolBuilder.html) | 20220609073052 | no |
+| S28 | https://docs.rs/rayon/latest/rayon/iter/trait.IndexedParallelIterator.html | [capture](https://web.archive.org/web/20261006161152/https://docs.rs/rayon/latest/rayon/iter/trait.IndexedParallelIterator.html) | 20220416173708 | no |
+| S29 | https://github.com/rayon-rs/rayon/blob/main/rayon-core/src/sleep/README.md | [capture](https://web.archive.org/web/20261101125133/https://github.com/rayon-rs/rayon/blob/main/rayon-core/src/sleep/README.md) | 20261101125133 | yes |
+| S30 | https://github.com/rayon-rs/rayon/issues/576 | [capture](https://web.archive.org/web/20201221024246/https://github.com/rayon-rs/rayon/issues/576) | 20201111165158 | no |
+| S31 | https://old.chipsandcheese.com/2024/08/14/amds-ryzen-9950x-zen-5-on-desktop/ | none (SPN error HTTP Error 520: UNKNOWN) | n/a | no |
+| S32 | https://uops.info/ | [capture](https://web.archive.org/web/20260818021721/https://uops.info/) | 20181009163101 | no |
+| S33 | https://doc.rust-lang.org/rustc/profile-guided-optimization.html | [capture](https://web.archive.org/web/20260924122951/https://doc.rust-lang.org/rustc/profile-guided-optimization.html) | 20190815162551 | no |
+| S34 | https://github.com/Kobzol/cargo-pgo | [capture](https://web.archive.org/web/20260528202143/https://github.com/Kobzol/cargo-pgo) | 20220803192851 | no |
+| S35 | https://github.com/zamazan4ik/awesome-pgo | [capture](https://web.archive.org/web/20260820124114/https://github.com/zamazan4ik/awesome-pgo) | 20230909164827 | no |
+| SC | https://doc.rust-lang.org/std/os/unix/fs/trait.FileExt.html | [capture](https://web.archive.org/web/20260905022008/https://doc.rust-lang.org/std/os/unix/fs/trait.FileExt.html) | 20170209223645 | no |
+| SC | https://doc.rust-lang.org/std/os/windows/fs/trait.FileExt.html | [capture](https://web.archive.org/web/20260901205536/https://doc.rust-lang.org/std/os/windows/fs/trait.FileExt.html) | 20190921221226 | no |
+| SC | https://doc.rust-lang.org/nightly/rustc/platform-support.html | [capture](https://web.archive.org/web/20261021042053/https://doc.rust-lang.org/nightly/rustc/platform-support.html) | 20200911151525 | no |
+| SC | https://github.blog/changelog/2025-09-19-github-actions-macos-13-runner-image-is-closing-down/ | [capture](https://web.archive.org/web/20260913144912/https://github.blog/changelog/2025-09-19-github-actions-macos-13-runner-image-is-closing-down/) | 20250920082407 | no |
+| SC | https://github.com/actions/runner-images/blob/main/images/windows/Windows2025-Readme.md | [capture](https://web.archive.org/web/20261019203335/https://github.com/actions/runner-images/blob/main/images/windows/Windows2025-Readme.md) | 20250102181649 | no |
+
+## Specification 8 documents (not read)
+
+Cited from sacd-spec `PROVENANCE.md` at `eafaaba`. Under the clean-room rules this side does not read them; only the Wayback CDX index was queried for the exact URLs there (files `wayback/spec8-cdx-*.json`). A first capture bounds when the copy at that URL was public; it is not the publication date.
+
+| Document | Date per sacd-spec PROVENANCE | URL | First Wayback capture of that URL |
+|---|---|---|---|
+| Sony, *DSF File Format Specification* 1.01 | not on record | https://dsd-guide.com/sites/default/files/white-papers/DSFFileFormatSpec_E.pdf | 2013-11-02 (`20131102071453`) |
+| Philips, *DSDIFF* 1.5 | 2004-04-27 | https://dsd-guide.com/sites/default/files/white-papers/DSDIFF_1.5_Spec.pdf | 2014-04-07 (`20140407032235`) |
+| M. Nilsson, *ID3 tag version 2.4.0* | 2000-11-01 | https://github.com/id3/ID3v2.4 | 2018-06-11 (`20180611014413`; the repository, not the original id3.org pages) |
+
+## Process evidence (clean-room conduct)
+
+Kept in `process/` of the evidence store, hashed in `MANIFEST.tsv`, and described in
+`process/STATEMENT.md`. Exported on 2026-11-01.
+
+- **GitHub records.** `gh api --paginate` JSON exports, for scarletbook-rs and sacd-spec, of
+  every issue and pull request (`state=all`), every conversation comment, every pull request,
+  every review of every pull request, and every inline review comment; plus the scarletbook-rs
+  releases. At export time: scarletbook-rs had 167 issues and pull requests (104 pull
+  requests), 238 conversation comments, 159 reviews and 2 inline review comments; sacd-spec
+  had 38 issues and pull requests (22 pull requests) and no comments or reviews. GitHub's own
+  timestamps date each item: the dated record of what was read and decided.
+- **Git history.** `git log -p --format=fuller` of `CLEANROOM.md` and `cleanroom.d/` (the
+  clean-room record and its fragments, every version); the tag list with tag objects, target
+  commits and dates (`v0.1.0` 2026-10-30 to `v0.5.2` 2026-11-01); `git log -p` of sacd-spec
+  `PROVENANCE.md`; and `git bundle create --all` bundles of both repositories, which
+  `git bundle verify` checks and from which every commit hash cited in the record can be
+  re-checked. The exports were taken at scarletbook-rs `03732e7` and sacd-spec `eafaaba`.
+- **The agent brief.** `process/brief/brief-common.md` is the current common brief for agent
+  sessions (copied from `~/.cache/scarletbook-agents/brief-common.md`, last modified
+  2026-11-01 09:16 UTC). **Earlier versions were lost** when `/tmp`, where they were kept, was
+  wiped. What earlier sessions were told survives only where it is quoted in issues, pull
+  requests and CLEANROOM.md ("Rules followed", "Performance work", "General references
+  consulted").
+- **The 2026-11-01 exposure.** On 2026-11-01 at about 07:05Z, at the owner's direction, the
+  development session read part of `aclater/sacd` (its file listing, `DECISIONS.md`, the
+  first 40 lines of `README.md` and five commit subjects); the owner then ruled these outside
+  the clean room. The full statement is the CLEANROOM.md Log row from PR #155 ("Clean-room
+  record: aclater/sacd exposure on 2026-11-01", commit `b73fc6b`, folded into CLEANROOM.md
+  by the 0.5.2 release). It records that the files contain no code and no SACD/DST format
+  detail. Neither file was opened for this record.
+- **Earlier reading for #40.** The texts the owner placed in `~/papers` on 2026-10-30, which the
+  #40 thread and CLEANROOM.md "Patent hygiene" record as read, are now hashed in the store
+  (`white1989`, `moffat_turpin1997`, `moffat_turpin2002`, `jackson1968`, `ntu_slides2002`,
+  `liu_nctu2011`, `nagajyothi2017`). Where they came from was not recorded when they were
+  placed.
+- **Earlier sessions' lost source list.** CLEANROOM.md "Rules followed" records that the
+  first agent session on #31 failed before reporting and its list of sources was lost.
+
+## Still open
+
+### Techniques whose earliest source is from 2006 or later, or missing
+
+- **D1-D5, M1-M3 (spec-mandated DST decoding and demultiplexing).** On this side the earliest
+  dated source is sacd-spec (2026). The clean-room rules forbid this side from looking for a
+  dated publication of the DST format; establishing the format's publication and
+  standardisation dates, and whether a licensing programme applies, is for counsel outside
+  the clean room. sacd-spec `PROVENANCE.md` ("Disclosure") describes how specification 5 was
+  written.
+- **S1 (seek index) and S3 (provisional reading, suspect mark, locator samples, saved
+  confirmations):** only sacd-spec text from 2026, written for this project.
+- **S2:** the FNV-1a hash is cleared by the 2002 page; the seek-index file format is this
+  project's own, with no source.
+- **S8 (own search heuristics)** and **O3 (output files produced on demand, never written):**
+  no source.
+- **D13 (expanded probability lookup tables, low):** no source.
+- **T1 (TOC digest, low):** parts only (Wang 1997, FNV-1a 2002, Lam 1988); no source states
+  the combination. FNV-1a, which it replaced, could be restored at some speed cost.
+- **Partly supported:** D8 (the 2^52-scaled 64-bit register layout), D14 (specialisation by
+  cloning, `cooper1993` metadata only), S4 (track starts as interpolation knots), P3 (the
+  cos(w/2) factorisation of type II responses not found by text search), P5 (the
+  add-and-subtract 1.5 x 2^52 rounding trick: not in Goldberg 1991; IEEE 754-1985 not
+  obtained), X2 (reference counts used to cancel abandoned work).
+- **O1:** the date of Sony's DSF File Format Specification 1.01 is not on record. The only
+  date this side may record is that the Wayback Machine first captured the copy at the URL in
+  sacd-spec `PROVENANCE.md` on 2013-11-02; that bounds its public availability at that URL,
+  not its publication date.
+
+### Full texts not obtained
+
+All are pre-2006 unless marked; each has its Crossref and OpenAlex record in the store, and
+the register says where to obtain it.
+
+- **Flagged techniques:** `peled_liu1973` and `peled_liu1974` (D7/P1; White 1989 states the
+  technique, so the clearance does not rest on them), `peterson1957` (S4), `cooper1993`
+  (D14), `carter_wegman1979` (T1), `peterson_brown1961` (O2), `ieee754_1985` (P5).
+- **PCM papers:** `parks_mcclellan1972` (P3), `mintzer1982` (P2/P4), `hogenauer1981`
+  (considered, not used), `chao1990` and `schreier_temes2005` (P8, test only); books
+  `crochiere_rabiner1983` and `oppenheim_schafer1999`; `kaiser1974` (citation only, no
+  metadata record). Crochiere & Rabiner 1981, Rabiner, McClellan & Parks 1975 and
+  Vaidyanathan & Nguyen 1987 were obtained.
+- **Background to spec-mandated rows:** `golomb1966`, `makhoul1975`, `rissanen1976`,
+  `rissanen_langdon1979`.
+- **Fallbacks:** `moffat_turpin1996` (D11, cleared by the 1997 journal version) and
+  `moffat_turpin2002` (front matter only); `marpe2003` (#33 survey, secondary).
+- **Free but refused to automated download:** `cooper1993` and `carter_wegman1979` are free
+  to read on ScienceDirect (OpenAlex: hybrid and bronze), which answered HTTP 403. They can
+  be saved from a browser.
+- **Copies whose origin was not recorded:** the seven owner-supplied texts in `~/papers`
+  (see "Process evidence"). Their hashes are recorded; where each was downloaded from is not.
+- **Wayback gap:** Save Page Now failed (HTTP 520) for the #33 survey's S31 page
+  (Chips and Cheese, 2024-08-14), which has no capture; it supports no flagged technique.
