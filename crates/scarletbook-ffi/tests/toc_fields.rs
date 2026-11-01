@@ -119,7 +119,7 @@ fn copied(f: impl Fn(*mut c_char, usize, *mut usize) -> SbStatus) -> Vec<u8> {
     assert!(buf.iter().all(|&b| b == 0x55));
     assert_eq!(f(buf.as_mut_ptr(), len + 1, &mut len), SbStatus::Ok);
     assert_eq!((buf[len], buf[len + 1]), (0, 0x55));
-    buf[..len].iter().map(|&b| b as u8).collect()
+    buf[..len].iter().map(|&b| u8::from_ne_bytes(b.to_ne_bytes())).collect()
 }
 
 fn catalog_stored(disc: *const SbDisc, field: SbDiscString) -> Vec<u8> {
