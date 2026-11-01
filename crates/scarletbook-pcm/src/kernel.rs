@@ -452,6 +452,34 @@ fn quantise<D>(v: &[f64], gain: f64, dst: impl Iterator<Item = D>, mut put: impl
 
 /// S1: `out[k]` = the sum of `lut[j][bytes[start + stride k + j]]`.
 fn s1(lut: &[[i32; 256]], bytes: &[u8], start: usize, stride: usize, out: &mut [f64]) {
+    // S1's 8 tables, and `Wide`'s 12, as arrays: the sum over a window is unrolled, with no
+    // bounds checks (issue #216).
+    if let Ok(lut) = <&[[i32; 256]; 8]>::try_from(lut) {
+        s1_n(lut, bytes, start, stride, out);
+    } else if let Ok(lut) = <&[[i32; 256]; 12]>::try_from(lut) {
+        s1_n(lut, bytes, start, stride, out);
+    } else {
+        s1_any(lut, bytes, start, stride, out);
+    }
+}
+
+/// [`s1`] with `B` tables.
+#[inline(always)]
+fn s1_n<const B: usize>(lut: &[[i32; 256]; B], bytes: &[u8], start: usize, stride: usize, out: &mut [f64]) {
+    let Some(last) = out.len().checked_sub(1) else { return };
+    let windows = bytes[start..start + stride * last + B].windows(B).step_by(stride);
+    for (o, w) in out.iter_mut().zip(windows) {
+        // As in `s1_any`: no partial sum wraps.
+        let mut sum = 0i32;
+        for j in 0..B {
+            sum = sum.wrapping_add(lut[j][usize::from(w[j])]);
+        }
+        *o = f64::from(sum);
+    }
+}
+
+/// [`s1`] with any number of tables.
+fn s1_any(lut: &[[i32; 256]], bytes: &[u8], start: usize, stride: usize, out: &mut [f64]) {
     let b = lut.len();
     for (k, o) in out.iter_mut().enumerate() {
         let i = start + stride * k;
