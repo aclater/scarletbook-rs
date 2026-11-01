@@ -358,6 +358,10 @@ pub const MAX_LANES: usize = 4;
 /// The 1-, 3- and 4-channel choices were measured on generated frames; their output is
 /// checked by the corpus's 1-, 3- and 4-channel DST cases (sacd-spec#15).
 pub fn lanes(channels: u8) -> usize {
+    // EXPERIMENT (#203, #61), not for main: see `lanes_override`.
+    if let Some(k) = lanes_override() {
+        return k;
+    }
     let avx512 = cfg!(target_feature = "avx512cd");
     match channels {
         1 => {
@@ -372,6 +376,19 @@ pub fn lanes(channels: u8) -> usize {
         2..=6 => 2,
         _ => 1,
     }
+}
+
+/// EXPERIMENT (#203, #61), not for main: `SCARLETBOOK_DST_LANES=1|2|3|4`, read once per
+/// process, replaces [`lanes`] for every channel count, so that the lane count can be
+/// measured on machines with SMT. Any other value, or none, keeps the default.
+fn lanes_override() -> Option<usize> {
+    static OVERRIDE: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    *OVERRIDE.get_or_init(|| parse_lanes(std::env::var("SCARLETBOOK_DST_LANES").ok().as_deref()))
+}
+
+/// The lane count of `SCARLETBOOK_DST_LANES`, if it is 1 to [`MAX_LANES`].
+fn parse_lanes(value: Option<&str>) -> Option<usize> {
+    value.and_then(|v| v.trim().parse().ok()).filter(|k| (1..=MAX_LANES).contains(k))
 }
 
 /// The buffers of one frame being decoded, reused from frame to frame.
@@ -1385,6 +1402,17 @@ mod tests {
     #[test]
     fn fast_loop_matches_general_1_frame() {
         fast_loop_matches_general(1);
+    }
+
+    #[test]
+    fn lanes_override_values() {
+        assert_eq!(parse_lanes(None), None);
+        for (v, k) in [("1", Some(1)), ("2", Some(2)), (" 3 ", Some(3)), ("4", Some(4))] {
+            assert_eq!(parse_lanes(Some(v)), k);
+        }
+        for v in ["0", "5", "-1", "", "two"] {
+            assert_eq!(parse_lanes(Some(v)), None, "{v:?}");
+        }
     }
 
     #[test]
