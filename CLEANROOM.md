@@ -553,7 +553,7 @@ changes the bytes of any file:
   master;
 - D1's reasoning names `MARK`, `DIAR` and `DITI`.
 
-The code already did all of this. The only change here is the section reference, which three
+The code already did all of this: #183 (caller chunks), #185 (ID3v2.3), #187 (D1 and D2) and #186 (the DSF chain planner, checked against fa558a8 items 2, 3 and 7 with no code change and a new test for the empty-range split). The only change here is the section reference, which three
 doc comments (and the generated header) and one test comment had copied as 3.5. `PROVENANCE.md` and specification 8
 change (`git diff --stat 048aa1a fa558a8`). The black-box checks described in sacd-spec#43
 were made on the specification side and are not part of this repository.
