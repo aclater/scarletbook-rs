@@ -330,21 +330,29 @@ impl Plan {
                     sc.a.resize(n1, 0.0);
                     s1(self.lut, &sc.bytes, 0, 1, &mut sc.a);
                 }
-                // The other stages, `a` to `b` and swap.
+                // The other stages, `a` to `b` and swap; the last one into `out`.
+                let mut pcm = Pcm { out: &mut out[o0 as usize * ch..], c, ch, n, gain, clipped: 0 };
+                let last = self.ops.len() - 1;
                 for (k, op) in self.ops.iter().enumerate() {
                     let (start_out, n_out) = levels[k + 1];
                     let start_in = levels[k].0;
+                    let n_blocks = n_out.div_ceil(LANES);
+                    sc.b.clear();
+                    let mut sink = if k == last {
+                        Sink::Pcm(&mut pcm)
+                    } else {
+                        sc.b.resize(n_blocks * LANES, 0.0);
+                        Sink::Grid(&mut sc.b)
+                    };
                     match op {
                         Op::Fir1(s) => {
-                            sc.b.clear();
-                            sc.b.resize(n_out.div_ceil(LANES) * LANES, 0.0);
                             debug_assert_eq!(start_out - start_in, s.half_len() as i64);
-                            fir1(s, &sc.a, &mut sc.b);
+                            fir1(s, &sc.a, n_blocks, &mut sink);
                         }
                         Op::Dec2(s) => {
                             let m = s.half_len();
                             let (e, o) = (s.even.len() - 1, s.odd.len());
-                            let np = n_out.div_ceil(LANES) * LANES;
+                            let np = n_blocks * LANES;
                             debug_assert_eq!(start_in, 2 * start_out - m as i64);
                             // xe[i] = x[2(a - e + i)], xo[i] = x[2(a - o + i) + 1].
                             let (de, dodd) = (m - 2 * e, m + 1 - 2 * o);
@@ -359,43 +367,29 @@ impl Plan {
                                 sc.even.extend(sc.a.iter().skip(de).step_by(2).take(np + 2 * e));
                                 sc.odd.extend(sc.a.iter().skip(dodd).step_by(2).take(np + 2 * o));
                             }
-                            sc.b.clear();
-                            sc.b.resize(np, 0.0);
-                            dec2(s, &sc.even, &sc.odd, &mut sc.b);
+                            dec2(s, &sc.even, &sc.odd, n_blocks, &mut sink);
                         }
                         Op::Interp2(s) => {
+                            // Always the last stage: the even outputs are the input samples.
                             let o = s.odd.len();
                             let half = (n_out / 2).div_ceil(LANES) * LANES;
                             debug_assert_eq!(start_in, start_out / 2 - o as i64);
                             sc.even.clear();
                             sc.even.resize(half, 0.0);
                             interp2_odd(s, &sc.a, &mut sc.even);
-                            sc.b.clear();
-                            for i in 0..n_out / 2 {
-                                sc.b.push(sc.a[o + i]);
-                                sc.b.push(sc.even[i]);
+                            if let Sink::Pcm(pcm) = sink {
+                                for i in 0..n_out / 2 {
+                                    pcm.put(2 * i, sc.a[o + i]);
+                                    pcm.put(2 * i + 1, sc.even[i]);
+                                }
                             }
                         }
                     }
-                    std::mem::swap(&mut sc.a, &mut sc.b);
+                    if k < last {
+                        std::mem::swap(&mut sc.a, &mut sc.b);
+                    }
                 }
-                // To 24 bits: `a` holds the outputs on the 2^26 grid.
-                let mut clipped = 0u64;
-                let dst = out[o0 as usize * ch..].iter_mut().skip(c).step_by(ch);
-                for (d, &v) in dst.zip(&sc.a[..n]) {
-                    let y = round_even((v * gain) * 0.125);
-                    let y = if y > 8_388_607.0 {
-                        clipped += 1;
-                        8_388_607
-                    } else if y < -8_388_608.0 {
-                        clipped += 1;
-                        -8_388_608
-                    } else {
-                        y as i32
-                    };
-                    *d = y;
-                }
-                stats.clipped[c] += clipped;
+                stats.clipped[c] += pcm.clipped;
             }
             f0 += nf;
         }
@@ -430,36 +424,81 @@ fn add_pairs(acc: &mut [f64; LANES], h: &[f64], x: &[f64], hi: usize, lo: usize)
     }
 }
 
-/// Runs `f` on each block of `LANES` outputs and stores the rounded, rescaled sums.
+/// Where a stage's outputs go.
+enum Sink<'a, 'o> {
+    /// Samples on the 2^26 grid, for the next stage (whole blocks of `LANES`).
+    Grid(&'a mut [f64]),
+    /// The converter's output: the first `n` samples, as 24-bit PCM, into channel `c` of
+    /// `out` (`ch` channels interleaved).
+    Pcm(&'a mut Pcm<'o>),
+}
+
+/// The last step: gain, rounding to 24 bits and clamping, into interleaved output.
+struct Pcm<'a> {
+    out: &'a mut [i32],
+    c: usize,
+    ch: usize,
+    n: usize,
+    gain: f64,
+    clipped: u64,
+}
+
+impl Pcm<'_> {
+    /// Output sample `i` from `v`, on the 2^26 grid.
+    #[inline(always)]
+    fn put(&mut self, i: usize, v: f64) {
+        let y = round_even((v * self.gain) * 0.125);
+        let y = if y > 8_388_607.0 {
+            self.clipped += 1;
+            8_388_607
+        } else if y < -8_388_608.0 {
+            self.clipped += 1;
+            -8_388_608
+        } else {
+            y as i32
+        };
+        self.out[i * self.ch + self.c] = y;
+    }
+}
+
+/// Runs `f` on each of `blocks` blocks of `LANES` outputs and sends the rounded, rescaled
+/// sums to `sink`.
 #[inline(always)]
-fn blocks(out: &mut [f64], scale: f64, f: impl Fn(usize, &mut [f64; LANES])) {
-    for (bi, o) in out.chunks_exact_mut(LANES).enumerate() {
+fn blocks(blocks: usize, scale: f64, f: impl Fn(usize, &mut [f64; LANES]), sink: &mut Sink<'_, '_>) {
+    for bi in 0..blocks {
         let mut acc = [0.0f64; LANES];
         f(bi * LANES, &mut acc);
-        for (d, a) in o.iter_mut().zip(acc) {
-            *d = round_even(a * scale);
+        let v = acc.map(|a| round_even(a * scale));
+        match sink {
+            Sink::Grid(out) => out[bi * LANES..(bi + 1) * LANES].copy_from_slice(&v),
+            Sink::Pcm(pcm) => {
+                for (l, &v) in v.iter().enumerate().take(pcm.n.saturating_sub(bi * LANES)) {
+                    pcm.put(bi * LANES + l, v);
+                }
+            }
         }
     }
 }
 
-/// Fir1: `out[i]` centred on `x[i + m]`.
-fn fir1(s: &Sym, x: &[f64], out: &mut [f64]) {
+/// Fir1: output `i` centred on `x[i + m]`.
+fn fir1(s: &Sym, x: &[f64], n_blocks: usize, sink: &mut Sink<'_, '_>) {
     let m = s.half_len();
     let (h0, h) = (s.full[0], &s.full[1..]);
-    blocks(out, s.scale, |i, acc| {
+    let f = |i, acc: &mut [f64; LANES]| {
         for (l, a) in acc.iter_mut().enumerate() {
             *a = h0 * x[i + m + l];
         }
         add_pairs(acc, h, x, i + m + 1, i + m - 1);
-    });
+    };
+    blocks(n_blocks, s.scale, f, sink);
 }
 
-/// Dec2: `out[i]` centred on `xe[i + e]` (`e` = the even taps after the centre), with the
+/// Dec2: output `i` centred on `xe[i + e]` (`e` = the even taps after the centre), with the
 /// odd taps on `xo[i + o + j]` and `xo[i + o - 1 - j]`.
-fn dec2(s: &Sym, xe: &[f64], xo: &[f64], out: &mut [f64]) {
+fn dec2(s: &Sym, xe: &[f64], xo: &[f64], n_blocks: usize, sink: &mut Sink<'_, '_>) {
     let (e, o) = (s.even.len() - 1, s.odd.len());
     let (h0, he) = (s.even[0], &s.even[1..]);
-    blocks(out, s.scale, |i, acc| {
+    let f = |i, acc: &mut [f64; LANES]| {
         for (l, a) in acc.iter_mut().enumerate() {
             *a = h0 * xe[i + e + l];
         }
@@ -467,14 +506,16 @@ fn dec2(s: &Sym, xe: &[f64], xo: &[f64], out: &mut [f64]) {
             add_pairs(acc, he, xe, i + e + 1, i + e - 1);
         }
         add_pairs(acc, &s.odd, xo, i + o, i + o - 1);
-    });
+    };
+    blocks(n_blocks, s.scale, f, sink);
 }
 
 /// The odd outputs of Interp2: `out[i]` between `w[i + o]` and `w[i + o + 1]`. The
 /// interpolation gain of 2 is in the scale (2^-(q - 1)).
 fn interp2_odd(s: &Sym, w: &[f64], out: &mut [f64]) {
     let o = s.odd.len();
-    blocks(out, s.scale * 2.0, |i, acc| add_pairs(acc, &s.odd, w, i + o + 1, i + o));
+    let f = |i, acc: &mut [f64; LANES]| add_pairs(acc, &s.odd, w, i + o + 1, i + o);
+    blocks(out.len() / LANES, s.scale * 2.0, f, &mut Sink::Grid(out));
 }
 
 #[cfg(test)]
