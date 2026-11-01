@@ -1,1 +1,0 @@
-| 2026-11-01 | track-text section reference 3.8 (#193) | sacd-spec `fa558a8` (see "Update to `fa558a8`"): doc comments only, citing specification 3, 3.8 for item types 0x01 and 0x02. Implemented from the specification text only; no other program's code or output was consulted. No new sources consulted. |
