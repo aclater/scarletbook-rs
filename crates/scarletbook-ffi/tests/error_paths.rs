@@ -191,8 +191,9 @@ fn every_status_has_a_name() {
 fn a_disc_handle_debug_prints() {
     let bytes = small_image(5);
     let disc = open(&bytes);
-    // SAFETY: a live handle, only read here.
-    let text = format!("{:?}", unsafe { &*disc });
+    // SAFETY: NULL or a live handle, only read here.
+    let handle = unsafe { disc.as_ref() }.expect("a live handle");
+    let text = format!("{handle:?}");
     assert!(text.starts_with("SbDisc") && text.contains("id"), "{text}");
     free(disc);
 }
