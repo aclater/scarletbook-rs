@@ -539,6 +539,25 @@ writer's choice. `PROVENANCE.md` records that the answer comes from the DSDIFF d
 section 3.7, which this side has not read. Only `PROVENANCE.md` and specification 8 change
 (`git diff --stat e069569 048aa1a`).
 
+**Update to `fa558a8`** ("Merge pull request #43", a cold read of the sacd-spec#39 and #41
+text; spec commit `762683c`). Specification 8 gets eleven clarifications. None of them
+changes the bytes of any file:
+- the ID3v2.3 header check names `T[0]` to `T[2]`, and a frameless tag is written unchanged
+  (8.2.6 item 4);
+- the chain and which of its files are written are the caller's choice, every range is
+  checked before any file is written, and an empty range splits the chain (8.2.7);
+- a caller chunk with a bad ID is refused (8.4.2 item 5), and the `FRM8` data is the local
+  chunks followed by the caller chunks;
+- the track text items are specification 3, **3.8** (not 3.5) (8.4.8);
+- D2's text rules (8.4.8, 8.7), and that a requested departure is allowed in an edited
+  master;
+- D1's reasoning names `MARK`, `DIAR` and `DITI`.
+
+The code already did all of this: #183 (caller chunks), #185 (ID3v2.3), #187 (D1 and D2) and #186 (the DSF chain planner, checked against fa558a8 items 2, 3 and 7 with no code change and a new test for the empty-range split). The only change here is the section reference, which three
+doc comments (and the generated header) and one test comment had copied as 3.5. `PROVENANCE.md` and specification 8
+change (`git diff --stat 048aa1a fa558a8`). The black-box checks described in sacd-spec#43
+were made on the specification side and are not part of this repository.
+
 ## Specification issues filed
 
 | Issue | Gap | Resolution | scarletbook-rs |

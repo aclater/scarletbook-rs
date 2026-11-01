@@ -325,7 +325,7 @@ fn diin_without_emid() {
 }
 
 /// `DIAR` and `DITI` from the source track's performer and title (8.4.8 and 8.6 row 24 at
-/// sacd-spec `e069569`; specification 3, 3.5, types 0x02 and 0x01).
+/// sacd-spec `e069569`; specification 3, 3.8, types 0x02 and 0x01).
 #[test]
 fn artist_and_title_of_the_source_track() {
     let mut disc = disc();
