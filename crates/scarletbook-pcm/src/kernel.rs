@@ -214,7 +214,7 @@ impl Input<'_> {
 
     /// Channel `c`'s bytes from run-relative position `from` on, into `dst` (all within
     /// `valid()`), one frame at a time.
-    fn copy(&self, c: usize, from: i64, dst: &mut [u8]) {
+    fn copy(&self, isa: Isa, c: usize, from: i64, dst: &mut [u8]) {
         let fb = FRAME_BYTES_PER_CHANNEL as i64;
         let ch = self.channels;
         let mut p = from;
@@ -226,12 +226,35 @@ impl Input<'_> {
             let (part, tail) = rest.split_at_mut(take);
             // Callers pass only positions within `valid()`, where the source exists.
             if let Some(src) = self.frame(f) {
-                for (d, s) in part.iter_mut().zip(src[at * ch..].chunks_exact(ch)) {
-                    *d = s[c];
-                }
+                dispatch::pick(isa, part, &src[at * ch..], ch, c);
             }
             rest = tail;
             p += take as i64;
+        }
+    }
+}
+
+/// Byte `c` of each group of `ch` bytes of `src`, into `dst`: one channel of interleaved
+/// input. The channel count is a constant in each arm, so that the loop vectorises.
+#[inline(always)]
+pub(crate) fn pick(dst: &mut [u8], src: &[u8], ch: usize, c: usize) {
+    #[inline(always)]
+    fn pick_n<const CH: usize>(dst: &mut [u8], src: &[u8], c: usize) {
+        for (d, s) in dst.iter_mut().zip(src.chunks_exact(CH)) {
+            *d = s[c];
+        }
+    }
+    match ch {
+        1 => pick_n::<1>(dst, src, c),
+        2 => pick_n::<2>(dst, src, c),
+        3 => pick_n::<3>(dst, src, c),
+        4 => pick_n::<4>(dst, src, c),
+        5 => pick_n::<5>(dst, src, c),
+        6 => pick_n::<6>(dst, src, c),
+        _ => {
+            for (d, s) in dst.iter_mut().zip(src.chunks_exact(ch)) {
+                *d = s[c];
+            }
         }
     }
 }
@@ -245,6 +268,8 @@ pub(crate) struct Scratch {
     b: Vec<f64>,
     even: Vec<f64>,
     odd: Vec<f64>,
+    /// The chunk's 24-bit samples, channel by channel.
+    q: Vec<i32>,
 }
 
 /// The stages of one rate and cutoff.
@@ -346,7 +371,7 @@ impl Plan {
                 let lo = valid.start.max(p0);
                 let hi = valid.end.min(p0 + plen as i64);
                 if lo < hi {
-                    input.copy(c, lo, &mut sc.bytes[(lo - p0) as usize..(hi - p0) as usize]);
+                    input.copy(self.isa, c, lo, &mut sc.bytes[(lo - p0) as usize..(hi - p0) as usize]);
                 }
                 // S1 into `a`, unless the first stage is a Dec2: that takes its even and odd
                 // inputs straight from S1.
@@ -406,48 +431,80 @@ impl Plan {
                     std::mem::swap(&mut sc.a, &mut sc.b);
                 }
                 // To 24 bits, frame by frame: `a` holds the outputs on the 2^26 grid.
-                for (j, v) in sc.a[..n].chunks_exact(self.spf).enumerate() {
-                    let at = (o0 as usize + j * self.spf) * ch + c;
-                    let clipped = match out {
-                        PcmOut::I32(o) => quantise(v, gain, o[at..].iter_mut().step_by(ch), |d, y| *d = y),
-                        PcmOut::S24le(o) => {
-                            let o = &mut o[3 * at..];
-                            quantise(v, gain, (0..v.len()).map(|i| 3 * ch * i), |k, y| {
-                                let [b0, b1, b2, _] = y.to_le_bytes();
-                                o[k..k + 3].copy_from_slice(&[b0, b1, b2]);
-                            })
-                        }
-                    };
+                sc.q.resize(ch * n, 0);
+                let q = &mut sc.q[c * n..(c + 1) * n];
+                for (j, (v, q)) in
+                    sc.a[..n].chunks_exact(self.spf).zip(q.chunks_exact_mut(self.spf)).enumerate()
+                {
+                    let clipped = dispatch::quantise(self.isa, v, gain, q);
                     stats.clipped[c] += clipped;
                     if let Some(fc) = frame_clipped.as_deref_mut() {
                         fc[f0 + j] += clipped;
                     }
                 }
             }
+            // The channels, interleaved, into the output.
+            dispatch::interleave(self.isa, &sc.q, ch, out, o0 as usize * ch);
             f0 += nf;
         }
     }
 }
 
-/// Rounds the outputs `v` (on the 2^26 grid) times `gain` to 24 bits, clamped, and stores
-/// them through `put` into `dst`; returns the number clamped.
+/// Rounds the outputs `v` (on the 2^26 grid) times `gain` to 24 bits, clamped, into `q`;
+/// returns the number clamped. Without branches, so that it vectorises.
 #[inline(always)]
-fn quantise<D>(v: &[f64], gain: f64, dst: impl Iterator<Item = D>, mut put: impl FnMut(D, i32)) -> u64 {
+pub(crate) fn quantise(v: &[f64], gain: f64, q: &mut [i32]) -> u64 {
+    const MAX: f64 = 8_388_607.0;
+    const MIN: f64 = -8_388_608.0;
     let mut clipped = 0u64;
-    for (d, &v) in dst.zip(v) {
+    for (d, &v) in q.iter_mut().zip(v) {
         let y = round_even((v * gain) * 0.125);
-        let y = if y > 8_388_607.0 {
-            clipped += 1;
-            8_388_607
-        } else if y < -8_388_608.0 {
-            clipped += 1;
-            -8_388_608
-        } else {
-            y as i32
-        };
-        put(d, y);
+        let c = y.clamp(MIN, MAX);
+        // At most `v.len()` clips: no overflow, and no overflow check to keep the loop from
+        // vectorising.
+        clipped = clipped.wrapping_add(u64::from(c != y));
+        *d = c as i32;
     }
     clipped
+}
+
+/// Writes the samples `q` of `ch` channels, channel by channel (`q[c n + i]` is sample `i`
+/// of channel `c`), interleaved into `out` from sample `at` on.
+#[inline(always)]
+pub(crate) fn interleave(q: &[i32], ch: usize, out: &mut PcmOut<'_>, at: usize) {
+    let n = q.len() / ch;
+    match out {
+        PcmOut::I32(o) => by_channels(q, ch, &mut o[at..at + ch * n], 1, |d, y| d[0] = y),
+        PcmOut::S24le(o) => by_channels(q, ch, &mut o[3 * at..3 * (at + ch * n)], 3, |d, y| {
+            let [b0, b1, b2, _] = y.to_le_bytes();
+            d.copy_from_slice(&[b0, b1, b2]);
+        }),
+    }
+}
+
+/// [`interleave`] into `w` elements of `out` per sample, through `put`. The channel count
+/// is a constant in each arm, so that the loop is unrolled.
+#[inline(always)]
+fn by_channels<T>(q: &[i32], ch: usize, out: &mut [T], w: usize, put: impl Fn(&mut [T], i32)) {
+    #[inline(always)]
+    fn by<T, const CH: usize>(q: &[i32], out: &mut [T], w: usize, put: impl Fn(&mut [T], i32)) {
+        let n = q.len() / CH;
+        let q: [&[i32]; CH] = std::array::from_fn(|c| &q[c * n..(c + 1) * n]);
+        for (i, d) in out.chunks_exact_mut(CH * w).enumerate() {
+            for (c, d) in d.chunks_exact_mut(w).enumerate() {
+                put(d, q[c][i]);
+            }
+        }
+    }
+    match ch {
+        1 => by::<T, 1>(q, out, w, put),
+        2 => by::<T, 2>(q, out, w, put),
+        3 => by::<T, 3>(q, out, w, put),
+        4 => by::<T, 4>(q, out, w, put),
+        5 => by::<T, 5>(q, out, w, put),
+        // 6: `Converter::new` allows no more.
+        _ => by::<T, 6>(q, out, w, put),
+    }
 }
 
 /// S1: `out[k]` = the sum of `lut[j][bytes[start + stride k + j]]`.
