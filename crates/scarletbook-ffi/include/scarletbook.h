@@ -943,6 +943,22 @@ enum SbOutputOption
    */
   SB_OUTPUT_OPTION_ID3_DATE = 32,
   /*
+   W24 (specification 8, 8.6 row 24 and 8.4.8, sacd-spec e069569): 1 (the default)
+   writes `EMID` in `DIIN`; 0 leaves it out of a file that is not an edited master. An
+   edited master requires `EMID` (8.4.11 item 1), so 0 makes one
+   `SB_STATUS_INVALID_ARGUMENT`. A `DIIN` left with none of its chunks is written with
+   `D = 0` (8.6 row 34 at sacd-spec 048aa1a; the C API has no option to leave it out).
+   */
+  SB_OUTPUT_OPTION_DSDIFF_EDITED_MASTER_ID_WRITTEN = 33,
+  /*
+   W24 (specification 8, 8.6 row 24 and 8.4.8, sacd-spec e069569): what fills `DIAR`
+   and `DITI` when they are written: 0 (the default) the album artist and album items;
+   1 the source track's performer and title items (specification 3, 3.5, types 0x02 and
+   0x01), none in a file without a source track; 2 each of those, or else the album
+   item.
+   */
+  SB_OUTPUT_OPTION_DSDIFF_ARTIST_TITLE_SOURCE = 34,
+  /*
    W32 (specification 8, 8.6 row 32; 8.2.7, sacd-spec e069569): -1 (the default) for a
    DSF file holding its range of positions; otherwise, with
    `SB_OUTPUT_OPTION_DSF_CHAIN_END`, the file holds the byte range of its range
@@ -1038,7 +1054,7 @@ enum SbOutputOrder
   SB_OUTPUT_ORDER_LOCAL = 1,
   /*
    W14, inside `DIIN`: 0 `EMID`, 1 the markers, 2 `DIAR`, 3 `DITI`, each once (the
-   default 0 1 2 3).
+   default 0 1 2 3); chunks that aren't written are skipped.
    */
   SB_OUTPUT_ORDER_INFO = 2,
 };
@@ -4394,6 +4410,38 @@ SbStatus sb_output_layout_fill(const struct SbOutputLayout *layout,
  `layout` must be NULL or a live handle, freed only once.
  */
 void sb_output_layout_free(struct SbOutputLayout *layout);
+
+/*
+ Adds a DSDIFF caller chunk (specification 8, 8.4.2 item 5, at sacd-spec `e069569`; 8.6 row
+ 33): the 4 bytes of `id`, and a copy of the `len` bytes of `data` as its data. Caller
+ chunks are written in the order added, after the last local chunk, with a pad byte 0x00
+ when `len` is odd (not counted in the chunk's size); they count in the `FRM8` size and
+ in the layout's last region (`SB_OUTPUT_REGION_KIND_TRAILER`). The same ID may be added more
+ than once, and an edited master may have them. A DSF file ignores them. Their data is the
+ caller's: neither the DSDIFF document nor specification 8 defines it.
+
+ `SB_STATUS_INVALID_ARGUMENT` if `id` is not 4 bytes 0x20 to 0x7E with no space before a
+ non-space (8.4.1 item 3), or is one of `FRM8`, `FVER`, `PROP`, `DSD `, `DST `, `DSTI`,
+ `COMT`, `DIIN` and `MANF`; the options are then unchanged.
+
+ # Safety
+
+ `options` must be NULL or a live handle; `id` NULL or valid for 4 reads; `data` NULL or
+ valid for `len` reads.
+ */
+SbStatus sb_output_options_add_chunk(const struct SbOutputOptions *options,
+                                     const uint8_t *id,
+                                     const uint8_t *data,
+                                     size_t len);
+
+/*
+ Removes every DSDIFF caller chunk.
+
+ # Safety
+
+ `options` must be NULL or a live handle.
+ */
+SbStatus sb_output_options_clear_chunks(const struct SbOutputOptions *options);
 
 /*
  Plans the DSF files of a chain of ranges of the area from `slot` (specification 8,

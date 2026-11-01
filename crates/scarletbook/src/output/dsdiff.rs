@@ -5,7 +5,7 @@
 use std::ops::Range;
 
 use super::markers::{self, Markers};
-use super::tags::{TagItem, TagSet};
+use super::tags::{ArtistTitleSource, TagItem, TagSet};
 use super::{Checked, Layout, OutputOptions, Part, RegionKind, SourceTrack};
 use super::{Tags, dsdiff_text};
 use crate::audio::FRAME_BYTES_PER_CHANNEL;
@@ -201,6 +201,57 @@ impl LocalChunk {
     ];
 }
 
+/// A caller chunk of a DSDIFF file (specification 8, 8.4.2 item 5, at sacd-spec `e069569`;
+/// 8.6 row 33): an ID and data bytes that the caller supplies, written after the last local
+/// chunk as 8.4.1 item 1 says, with a pad byte 0x00, not counted in `D`, when `D` is odd.
+/// Neither the DSDIFF document nor specification 8 defines its data, which is written as it
+/// is. For example an `ID3 ` chunk holding an ID3 tag.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct CallerChunk {
+    id: [u8; 4],
+    data: Vec<u8>,
+}
+
+/// The IDs of the chunks specification 8 defines, which a caller chunk may not have
+/// (8.4.2 item 5).
+const RESERVED_IDS: [&[u8; 4]; 9] =
+    [b"FRM8", b"FVER", b"PROP", b"DSD ", b"DST ", b"DSTI", b"COMT", b"DIIN", b"MANF"];
+
+impl CallerChunk {
+    /// A chunk with ID `id` and data `data`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidArgument`] if `id` is not 4 bytes from 0x20 to 0x7E with no space
+    /// before a non-space (8.4.1 item 3), or is one of `FRM8`, `FVER`, `PROP`, `DSD `,
+    /// `DST `, `DSTI`, `COMT`, `DIIN` and `MANF` (8.4.2 item 5).
+    pub fn new(id: [u8; 4], data: Vec<u8>) -> Result<CallerChunk, Error> {
+        if !id.iter().all(|b| (0x20..=0x7E).contains(b))
+            || id.windows(2).any(|w| w[0] == b' ' && w[1] != b' ')
+        {
+            return Err(Error::InvalidArgument(
+                "a chunk ID is 4 bytes 0x20 to 0x7E, with no space before a non-space",
+            ));
+        }
+        if RESERVED_IDS.contains(&&id) {
+            return Err(Error::InvalidArgument(
+                "a caller chunk may not have the ID of a chunk specification 8 defines",
+            ));
+        }
+        Ok(CallerChunk { id, data })
+    }
+
+    /// The ID.
+    pub fn id(&self) -> [u8; 4] {
+        self.id
+    }
+
+    /// The data, without the pad byte.
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+}
+
 /// The sound data of a file, for [`assemble`].
 pub(super) enum Sound {
     /// Plain DSD (8.4.5): data size `D`.
@@ -210,7 +261,7 @@ pub(super) enum Sound {
 }
 
 /// Lays out a DSDIFF file: `FRM8`, `DSD `, `FVER`, then `PROP`, the sound data and `DSTI` in
-/// the order of the options (8.4.2).
+/// the order of the options, then the caller chunks (8.4.2).
 pub(super) fn assemble(
     layout: &mut Layout,
     toc: &Toc,
@@ -231,6 +282,10 @@ pub(super) fn assemble(
         // `LSCO` is required (8.4.11 item 1; 8.6 row 16).
         if !options.dsdiff_loudspeaker_configuration {
             return Err(Error::InvalidArgument("an edited master has LSCO"));
+        }
+        // So is `EMID` (8.4.11 item 1; 8.4.8 and 8.6 row 24 as of sacd-spec e069569).
+        if !options.dsdiff_edited_master_id_written {
+            return Err(Error::InvalidArgument("an edited master has EMID"));
         }
         edited = OutputOptions {
             dsdiff_absolute_start: Some(options.dsdiff_absolute_start.unwrap_or(0)),
@@ -277,7 +332,20 @@ pub(super) fn assemble(
             _ => None,
         };
         let first = |item| set.as_ref().and_then(|s| s.get(item).first().map(String::as_str));
-        Some(markers::diin(layout, &list, first(TagItem::AlbumArtist), first(TagItem::Album), options)?)
+        // W24 (8.4.8 as of sacd-spec e069569): in a file with a source track, the track's
+        // performer and title (3.5, types 0x02 and 0x01) may fill `DIAR` and `DITI`
+        // instead; a file without one has no track strings.
+        let pick = |track: TagItem, album: TagItem| {
+            let track = || source.and_then(|_| first(track));
+            match options.dsdiff_artist_title_source {
+                ArtistTitleSource::Album => first(album),
+                ArtistTitleSource::Track => track(),
+                ArtistTitleSource::TrackThenAlbum => track().or_else(|| first(album)),
+            }
+        };
+        let artist = pick(TagItem::Performer, TagItem::AlbumArtist);
+        let title = pick(TagItem::TrackTitle, TagItem::Album);
+        markers::diin(layout, &list, artist, title, options)?
     } else {
         None
     };
@@ -320,8 +388,11 @@ pub(super) fn assemble(
         LocalChunk::SoundData => occupied(sound_d),
         LocalChunk::DstIndex => index.map_or(0, occupied),
     };
-    // `FRM8` data: the ID `DSD `, `FVER`, then the local chunks (8.4.2 item 4).
-    let frm8 = 4 + 16 + order.iter().map(|&c| size_of(c)).sum::<u64>();
+    // 8.4.2 item 5 (e069569): the caller chunks, after the last local chunk.
+    let callers: u64 = options.dsdiff_caller_chunks.iter().map(|c| occupied(c.data.len() as u64)).sum();
+    // `FRM8` data: the ID `DSD `, `FVER`, then the local chunks, caller chunks included
+    // (8.4.2 item 4).
+    let frm8 = 4 + 16 + order.iter().map(|&c| size_of(c)).sum::<u64>() + callers;
     let mut bytes = Vec::with_capacity(32 + prop.len());
     chunk_head(&mut bytes, b"FRM8", frm8);
     bytes.extend_from_slice(b"DSD ");
@@ -357,6 +428,9 @@ pub(super) fn assemble(
                 }
             }
         }
+    }
+    for c in &options.dsdiff_caller_chunks {
+        chunk(&mut bytes, &c.id, &c.data);
     }
     if !bytes.is_empty() {
         layout.push(RegionKind::Trailer, bytes.len() as u64, Part::Bytes(bytes));

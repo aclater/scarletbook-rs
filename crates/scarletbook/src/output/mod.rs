@@ -51,13 +51,13 @@ use crate::dst::DstDecoder;
 use crate::error::{Error, Slot};
 use crate::toc::{Area, Toc, TocDigests, Track};
 
-pub use dsdiff::{LocalChunk, PropertyChunk};
+pub use dsdiff::{CallerChunk, LocalChunk, PropertyChunk};
 pub use dsdiff_dst::{DstIndexOffset, DstLengths, InvalidDst};
 pub use dsdiff_text::{Comment, CommentKind};
 pub use dsf::{DsfBitsPerSample, DsfChainFile, plan_dsf_chain};
 pub use id3::{AlbumArtistFrame, ArrangerFrame, DateFrame, Id3Encoding, Id3Options, MAX_TAG_BYTES};
 pub use markers::{InfoChunk, Marker, MarkerKind, MarkerText, Markers};
-pub use tags::{GenreSources, TagItem, TagSet, TextSource};
+pub use tags::{ArtistTitleSource, GenreSources, TagItem, TagSet, TextSource};
 
 /// An output file format (specification 8).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -166,8 +166,9 @@ pub struct OutputOptions {
     /// Default `false`.
     pub dsdiff_edited_master: bool,
     /// W24, whether a DSDIFF file has an edited master information chunk `DIIN` (8.4.8),
-    /// with `EMID` and the markers of [`OutputOptions::dsdiff_markers`]. Default `false`
-    /// (an edited master always has one).
+    /// with `EMID` (unless [`OutputOptions::dsdiff_edited_master_id_written`] says no) and
+    /// the markers of [`OutputOptions::dsdiff_markers`]. Default `false` (an edited master
+    /// always has one).
     pub dsdiff_edited_master_info: bool,
     /// W24, the text of `EMID`: text bytes 0x20 to 0x7E. Default empty. The DSDIFF document recommends
     /// something unique per file.
@@ -194,13 +195,14 @@ pub struct OutputOptions {
     pub genres: GenreSources,
     /// W4 to W12, the ID3 writer's choices.
     pub id3: Id3Options,
-    /// W24, whether `DIIN` has the artist (`DIAR`) and title (`DITI`): the album artist
-    /// and album items of the tag ([`OutputOptions::tags`]; none for raw or no tags).
+    /// W24, whether `DIIN` has the artist (`DIAR`) and title (`DITI`): the items of the
+    /// tag ([`OutputOptions::tags`]; none for raw or no tags) that
+    /// [`OutputOptions::dsdiff_artist_title_source`] names, by default album artist and album.
     /// Default `None`: in an edited master, as the DSDIFF document recommends; otherwise
     /// not.
     pub dsdiff_artist_title: Option<bool>,
-    /// W14, the order of the chunks inside `DIIN` (8.4.8): each [`InfoChunk`] once.
-    /// Default [`InfoChunk::TABLE_ORDER`]: `EMID`, the markers, `DIAR`, `DITI`.
+    /// W14, the order of the chunks inside `DIIN` (8.4.8): each [`InfoChunk`] once; chunks
+    /// that aren't written are skipped. Default [`InfoChunk::TABLE_ORDER`]: `EMID`, the markers, `DIAR`, `DITI`.
     pub dsdiff_info_order: [InfoChunk; 4],
     /// W23, the text of the markers made from the TOC (8.4.7 item 5). Default
     /// [`MarkerText::Empty`].
@@ -213,6 +215,27 @@ pub struct OutputOptions {
     /// W31, whether a `DIAR`, `DITI` or comment whose text is empty, or becomes empty under
     /// W26, is written with `k = 0` (8.4.8). Default `false`: it is left out.
     pub dsdiff_empty_text: bool,
+    /// W33, the caller chunks of a DSDIFF file (8.4.2 item 5, at sacd-spec `e069569`), in
+    /// order, after the last local chunk; the same ID may appear more than once, and an
+    /// edited master may have them. Their space counts in the `FRM8` size and they are part
+    /// of the last [`RegionKind::Trailer`] region. A DSF file ignores them. Default none.
+    pub dsdiff_caller_chunks: Vec<CallerChunk>,
+    /// W24, whether `DIIN` has `EMID` in a file that is not an edited master (8.4.8 as of
+    /// sacd-spec e069569: `DIIN` may hold any of its chunks without the others). Default
+    /// `true`. An edited master requires `EMID` (8.4.11 item 1): `false` with
+    /// [`OutputOptions::dsdiff_edited_master`] is an [`Error::InvalidArgument`]. Without
+    /// `EMID`, markers, artist or title, `DIIN` is empty: see
+    /// [`OutputOptions::dsdiff_empty_info`].
+    pub dsdiff_edited_master_id_written: bool,
+    /// W24, which items fill `DIAR` and `DITI` when [`OutputOptions::dsdiff_artist_title`]
+    /// writes them (8.4.8 as of sacd-spec e069569). Default [`ArtistTitleSource::Album`],
+    /// the album artist and album items.
+    pub dsdiff_artist_title_source: ArtistTitleSource,
+    /// W34, whether a `DIIN` that would hold none of its chunks (no `EMID`, markers, `DIAR`
+    /// or `DITI`; possible only outside an edited master) is written with `D = 0`, 12 bytes,
+    /// or left out (8.4.8 at sacd-spec 048aa1a). Both say the file has no edited master
+    /// information. Default `true`: written.
+    pub dsdiff_empty_info: bool,
     /// W32, what a DSF file holds (8.2.7, sacd-spec e069569): with this and
     /// [`OutputOptions::dsf_chain_end`], the byte range of the range `[a_i, b_i)` in a
     /// chain whose first range starts at frame `a_1`, this. Default `None`: the range of
@@ -258,6 +281,10 @@ impl Default for OutputOptions {
             dsdiff_comments: Vec::new(),
             dsdiff_text_replacement: Some(b'?'),
             dsdiff_empty_text: false,
+            dsdiff_caller_chunks: Vec::new(),
+            dsdiff_edited_master_id_written: true,
+            dsdiff_artist_title_source: ArtistTitleSource::Album,
+            dsdiff_empty_info: true,
             dsf_chain_first: None,
             dsf_chain_end: None,
         }
@@ -415,6 +442,26 @@ impl OutputOptions {
         OutputOptions { dsdiff_dst_index_offset: offset, ..self }
     }
 
+    /// These options with DSDIFF caller chunks `chunks` (W33).
+    pub fn with_dsdiff_caller_chunks(self, chunks: Vec<CallerChunk>) -> Self {
+        OutputOptions { dsdiff_caller_chunks: chunks, ..self }
+    }
+
+    /// These options with or without `EMID` outside an edited master (W24).
+    pub fn with_dsdiff_edited_master_id_written(self, write: bool) -> Self {
+        OutputOptions { dsdiff_edited_master_id_written: write, ..self }
+    }
+
+    /// These options with `DIAR` and `DITI` from `source` (W24).
+    pub fn with_dsdiff_artist_title_source(self, source: ArtistTitleSource) -> Self {
+        OutputOptions { dsdiff_artist_title_source: source, ..self }
+    }
+
+    /// These options with an empty `DIIN` written, or left out (W34).
+    pub fn with_dsdiff_empty_info(self, write: bool) -> Self {
+        OutputOptions { dsdiff_empty_info: write, ..self }
+    }
+
     /// These options for the byte range of a DSF file in the chain `[a_1, b_K)` (W32,
     /// 8.2.7), such as [`DsfChainFile::chain`], or for a range of positions (`None`).
     pub fn with_dsf_chain(self, chain: Option<(u32, u32)>) -> Self {
@@ -431,7 +478,7 @@ pub enum RegionKind {
     /// The sound data: audio of the range's positions, and the framing and padding the
     /// format puts among it.
     SoundData,
-    /// Chunks after the sound data, such as a DST sound index.
+    /// Chunks after the sound data, such as a DST sound index or caller chunks.
     Trailer,
 }
 

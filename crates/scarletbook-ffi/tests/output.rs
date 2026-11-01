@@ -14,8 +14,8 @@ use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
 use scarletbook::output::{
-    Comment, CommentKind, DsfBitsPerSample, DstIndexOffset, DstLengths, Format, InvalidDst, Layout,
-    MarkerText, OutputOptions, TagItem, TagSet, Tags,
+    ArtistTitleSource, CallerChunk, Comment, CommentKind, DsfBitsPerSample, DstIndexOffset, DstLengths,
+    Format, InvalidDst, Layout, MarkerText, OutputOptions, TagItem, TagSet, Tags,
 };
 use scarletbook::{Disc, Slot};
 use scarletbook_ffi::*;
@@ -315,12 +315,14 @@ fn options_are_checked() {
         (SbOutputOption::Id3AlbumArtist, 2, 3),
         (SbOutputOption::Id3Date, 1, 2),
         (SbOutputOption::Tags, 1, 2),
+        (SbOutputOption::DsdiffEditedMasterIdWritten, 0, 2),
+        (SbOutputOption::DsdiffArtistTitleSource, 2, 3),
     ] {
         assert_eq!(set(o, option, ok), SbStatus::Ok, "{option:?}");
         assert_eq!(set(o, option, bad), SbStatus::InvalidArgument, "{option:?}");
     }
     assert_eq!(set(o, SbOutputOption::Id3Date, 0), SbStatus::Ok);
-    assert_eq!(c!(sb_output_options_set(o, 33, 0)), SbStatus::InvalidArgument);
+    assert_eq!(c!(sb_output_options_set(o, 1000, 0)), SbStatus::InvalidArgument);
     let order = [4u32, 3, 2, 1, 0];
     let bad = [0u32, 0, 0, 0, 0];
     let ids = c"TDRLTIT2";
@@ -518,6 +520,75 @@ fn small_disc_layouts_equal_the_rust_api() {
         assert_eq!(fill(l, &mut disc, Slot::TwoChannel, at, 5_000), want[at as usize..][..5_000]);
         c!(sb_output_layout_free(l));
     }
+    c!(sb_output_options_free(o));
+    c!(sb_disc_free(d));
+}
+
+/// `DIIN` without `EMID`, with the source track's title in `DITI` (specification 8, 8.4.8
+/// and 8.6 row 24 at sacd-spec e069569), set through options 33 and 34.
+#[test]
+#[cfg_attr(miri, ignore = "rayon's crossbeam-epoch fails Stacked Borrows; run with Tree Borrows")]
+fn diin_choices_equal_the_rust_api() {
+    let frames: Vec<common::PFrame> = (0..3u32)
+        .map(|number| common::PFrame { number, dst: false, data: vec![number as u8; 2 * 4704] })
+        .collect();
+    let tracks =
+        vec![common::TrackSpec { start: 0, duration: 1 }, common::TrackSpec { start: 1, duration: 2 }];
+    let bytes = common::Spec { channels: 2, playtime: 3, tracks, audio: common::pack(&frames) }.build();
+    let d = open(&bytes);
+    let mut disc = Disc::open(Cursor::new(bytes.clone())).unwrap();
+    let o = options();
+    for (option, value) in [
+        (SbOutputOption::DsdiffEditedMasterInfo, 1),
+        (SbOutputOption::DsdiffArtistTitle, 1),
+        (SbOutputOption::DsdiffEditedMasterIdWritten, 0),
+        (SbOutputOption::DsdiffArtistTitleSource, 1),
+    ] {
+        assert_eq!(set(o, option, value), SbStatus::Ok, "{option:?}");
+    }
+    let rust = OutputOptions::default()
+        .with_dsdiff_edited_master_info(true)
+        .with_dsdiff_artist_title(Some(true))
+        .with_dsdiff_edited_master_id_written(false)
+        .with_dsdiff_artist_title_source(ArtistTitleSource::Track);
+    let layout = disc.output_layout(Slot::TwoChannel, 1, 3, Format::DsdiffDsd, &rust).unwrap();
+    let want = rust_file(&mut disc, &layout);
+    // Track 2's `DIIN`: only `DITI` with its title `T2`, no `EMID`, markers or `DIAR`.
+    let at = want.windows(4).position(|w| w == b"DIIN").unwrap();
+    let diin = [&b"DIIN"[..], &18u64.to_be_bytes(), b"DITI", &6u64.to_be_bytes(), &2u32.to_be_bytes(), b"T2"]
+        .concat();
+    assert_eq!(want[at..at + diin.len()], diin);
+    let mut l = ptr::null_mut();
+    assert_eq!(
+        c!(sb_output_layout_new(d, 0, 1, 3, SbOutputFormat::DsdiffDsd as u32, o, &mut l)),
+        SbStatus::Ok
+    );
+    assert_eq!(read(l, d, 5_000), want);
+    c!(sb_output_layout_free(l));
+    c!(sb_output_options_free(o));
+    c!(sb_disc_free(d));
+}
+
+/// An edited master requires `EMID` (specification 8, 8.4.11 item 1): option 33's 0 makes
+/// one `SB_STATUS_INVALID_ARGUMENT`.
+#[test]
+#[cfg_attr(miri, ignore = "75-frame tracks are too large for Miri")]
+fn edited_master_requires_emid() {
+    let frames: Vec<common::PFrame> =
+        (0..160u32).map(|number| common::PFrame { number, dst: false, data: vec![0x69; 2 * 4704] }).collect();
+    let tracks =
+        vec![common::TrackSpec { start: 0, duration: 75 }, common::TrackSpec { start: 75, duration: 75 }];
+    let bytes = common::Spec { channels: 2, playtime: 160, tracks, audio: common::pack(&frames) }.build();
+    let d = open(&bytes);
+    let o = options();
+    assert_eq!(set(o, SbOutputOption::DsdiffEditedMaster, 1), SbStatus::Ok);
+    let mut l = ptr::null_mut();
+    let dsdiff = SbOutputFormat::DsdiffDsd as u32;
+    assert_eq!(c!(sb_output_layout_new(d, 0, 0, 160, dsdiff, o, &mut l)), SbStatus::Ok);
+    c!(sb_output_layout_free(l));
+    assert_eq!(set(o, SbOutputOption::DsdiffEditedMasterIdWritten, 0), SbStatus::Ok);
+    assert_eq!(c!(sb_output_layout_new(d, 0, 0, 160, dsdiff, o, &mut l)), SbStatus::InvalidArgument);
+    assert!(l.is_null());
     c!(sb_output_options_free(o));
     c!(sb_disc_free(d));
 }
@@ -856,4 +927,80 @@ fn caller_id3v23_tag() {
     }
     c!(sb_output_options_free(o));
     c!(sb_disc_free(d));
+}
+
+/// Caller chunks (specification 8, 8.4.2 item 5, at sacd-spec `e069569`; 8.6 row 33)
+/// added through the C ABI give the Rust API's file, size and regions; the region info
+/// counts them.
+#[test]
+#[cfg_attr(miri, ignore = "rayon's crossbeam-epoch fails Stacked Borrows; run with Tree Borrows")]
+fn caller_chunks_equal_the_rust_api() {
+    let frames: Vec<common::PFrame> = (0..2u32)
+        .map(|number| common::PFrame { number, dst: false, data: vec![number as u8; 2 * 4704] })
+        .collect();
+    let tracks = vec![common::TrackSpec { start: 0, duration: 2 }];
+    let bytes = common::Spec { channels: 2, playtime: 2, tracks, audio: common::pack(&frames) }.build();
+    let d = open(&bytes);
+    let mut disc = Disc::open(Cursor::new(bytes.clone())).unwrap();
+    let o = options();
+    assert_eq!(c!(sb_output_options_add_chunk(o, b"ID3 ".as_ptr(), [1u8, 2, 3].as_ptr(), 3)), SbStatus::Ok);
+    assert_eq!(c!(sb_output_options_add_chunk(o, b"ID3 ".as_ptr(), ptr::null(), 0)), SbStatus::Ok);
+    let rust = OutputOptions::default().with_dsdiff_caller_chunks(vec![
+        CallerChunk::new(*b"ID3 ", vec![1, 2, 3]).unwrap(),
+        CallerChunk::new(*b"ID3 ", Vec::new()).unwrap(),
+    ]);
+    let layout = disc.output_layout(Slot::TwoChannel, 0, 2, Format::DsdiffDsd, &rust).unwrap();
+    let want = rust_file(&mut disc, &layout);
+    assert_eq!(want[want.len() - 28..], *b"ID3 \0\0\0\0\0\0\0\x03\x01\x02\x03\0ID3 \0\0\0\0\0\0\0\0");
+    let mut l = ptr::null_mut();
+    assert_eq!(
+        c!(sb_output_layout_new(d, 0, 0, 2, SbOutputFormat::DsdiffDsd as u32, o, &mut l)),
+        SbStatus::Ok
+    );
+    let i = info(l);
+    assert_eq!(i.size, want.len() as u64);
+    assert_eq!(i.regions as usize, layout.regions().len());
+    let mut r = SbOutputRegion::default();
+    assert_eq!(c!(sb_output_layout_region(l, i.regions - 1, &mut r)), SbStatus::Ok);
+    assert_eq!((r.kind, r.offset + r.len), (SbOutputRegionKind::Trailer as u32, i.size));
+    assert!(r.len >= 28);
+    assert_eq!(read(l, d, 5_000), want);
+    c!(sb_output_layout_free(l));
+    // Cleared, the file is the default one.
+    assert_eq!(c!(sb_output_options_clear_chunks(o)), SbStatus::Ok);
+    assert_eq!(
+        c!(sb_output_layout_new(d, 0, 0, 2, SbOutputFormat::DsdiffDsd as u32, o, &mut l)),
+        SbStatus::Ok
+    );
+    assert_eq!(info(l).size, want.len() as u64 - 28);
+    c!(sb_output_layout_free(l));
+    c!(sb_output_options_free(o));
+    c!(sb_disc_free(d));
+}
+
+/// Caller chunk IDs are checked when added (8.4.1 item 3, 8.4.2 item 5).
+#[test]
+fn caller_chunk_ids_are_checked() {
+    let o = options();
+    for id in
+        [b"FRM8", b"FVER", b"PROP", b"DSD ", b"DST ", b"DSTI", b"COMT", b"DIIN", b"MANF", b" ID3", b"ID3\x7F"]
+    {
+        assert_eq!(
+            c!(sb_output_options_add_chunk(o, id.as_ptr(), [0u8].as_ptr(), 1)),
+            SbStatus::InvalidArgument
+        );
+    }
+    assert_eq!(c!(sb_output_options_add_chunk(o, ptr::null(), ptr::null(), 0)), SbStatus::InvalidArgument);
+    assert_eq!(
+        c!(sb_output_options_add_chunk(o, b"ID3 ".as_ptr(), ptr::null(), 1)),
+        SbStatus::InvalidArgument
+    );
+    assert_eq!(
+        c!(sb_output_options_add_chunk(ptr::null(), b"ID3 ".as_ptr(), ptr::null(), 0)),
+        SbStatus::InvalidArgument
+    );
+    assert_eq!(c!(sb_output_options_add_chunk(o, b"ID3 ".as_ptr(), [7u8; 5].as_ptr(), 5)), SbStatus::Ok);
+    assert_eq!(c!(sb_output_options_clear_chunks(o)), SbStatus::Ok);
+    assert_eq!(c!(sb_output_options_clear_chunks(ptr::null())), SbStatus::InvalidArgument);
+    c!(sb_output_options_free(o));
 }

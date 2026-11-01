@@ -9,10 +9,10 @@ use std::ffi::{CStr, c_char};
 
 use scarletbook::Error;
 use scarletbook::output::{
-    AlbumArtistFrame, ArrangerFrame, Comment, CommentKind, DateFrame, DsfBitsPerSample, DstIndexOffset,
-    DstLengths, Format, GenreSources, Id3Encoding, InfoChunk, Input, InvalidDst, Layout, LocalChunk, Marker,
-    MarkerKind, MarkerText, Markers, OutputOptions, PositionSource, PropertyChunk, RegionKind, SourceTrack,
-    TagItem, TagSet, Tags, TextSource, plan_dsf_chain,
+    AlbumArtistFrame, ArrangerFrame, ArtistTitleSource, CallerChunk, Comment, CommentKind, DateFrame,
+    DsfBitsPerSample, DstIndexOffset, DstLengths, Format, GenreSources, Id3Encoding, InfoChunk, Input,
+    InvalidDst, Layout, LocalChunk, Marker, MarkerKind, MarkerText, Markers, OutputOptions, PositionSource,
+    PropertyChunk, RegionKind, SourceTrack, TagItem, TagSet, Tags, TextSource, plan_dsf_chain,
 };
 
 use super::{
@@ -114,6 +114,18 @@ pub enum SbOutputOption {
     Id3AlbumSetAlone = 31,
     /// W11: 0 (the default) the date in `TDRL`, 1 in `TDRC`.
     Id3Date = 32,
+    /// W24 (specification 8, 8.6 row 24 and 8.4.8, sacd-spec e069569): 1 (the default)
+    /// writes `EMID` in `DIIN`; 0 leaves it out of a file that is not an edited master. An
+    /// edited master requires `EMID` (8.4.11 item 1), so 0 makes one
+    /// `SB_STATUS_INVALID_ARGUMENT`. A `DIIN` left with none of its chunks is written with
+    /// `D = 0` (8.6 row 34 at sacd-spec 048aa1a; the C API has no option to leave it out).
+    DsdiffEditedMasterIdWritten = 33,
+    /// W24 (specification 8, 8.6 row 24 and 8.4.8, sacd-spec e069569): what fills `DIAR`
+    /// and `DITI` when they are written: 0 (the default) the album artist and album items;
+    /// 1 the source track's performer and title items (specification 3, 3.5, types 0x02 and
+    /// 0x01), none in a file without a source track; 2 each of those, or else the album
+    /// item.
+    DsdiffArtistTitleSource = 34,
     /// W32 (specification 8, 8.6 row 32; 8.2.7, sacd-spec e069569): -1 (the default) for a
     /// DSF file holding its range of positions; otherwise, with
     /// `SB_OUTPUT_OPTION_DSF_CHAIN_END`, the file holds the byte range of its range
@@ -163,7 +175,7 @@ pub enum SbOutputOrder {
     /// 3 1 2).
     Local = 1,
     /// W14, inside `DIIN`: 0 `EMID`, 1 the markers, 2 `DIAR`, 3 `DITI`, each once (the
-    /// default 0 1 2 3).
+    /// default 0 1 2 3); chunks that aren't written are skipped.
     Info = 2,
 }
 
@@ -591,6 +603,13 @@ fn set_option(o: &mut OutputOptions, option: u32, value: i64) -> Result<(), Fail
         30 => o.id3.copyright = flag(value)?,
         31 => o.id3.album_set_alone = flag(value)?,
         32 => o.id3.date = choice(value, &[DateFrame::Tdrl, DateFrame::Tdrc])?,
+        33 => o.dsdiff_edited_master_id_written = flag(value)?,
+        34 => {
+            o.dsdiff_artist_title_source = choice(
+                value,
+                &[ArtistTitleSource::Album, ArtistTitleSource::Track, ArtistTitleSource::TrackThenAlbum],
+            )?
+        }
         37 => o.dsf_chain_first = if value == -1 { None } else { Some(u32_of(value)?) },
         38 => o.dsf_chain_end = if value == -1 { None } else { Some(u32_of(value)?) },
         _ => return Err(Failure::arg("unknown output option")),
@@ -1588,6 +1607,61 @@ pub unsafe extern "C" fn sb_output_layout_fill(
 pub unsafe extern "C" fn sb_output_layout_free(layout: *mut SbOutputLayout) {
     // SAFETY: forwarded contract.
     unsafe { free(layout, |h| h.inner.try_borrow_mut().is_err()) };
+}
+
+/// Adds a DSDIFF caller chunk (specification 8, 8.4.2 item 5, at sacd-spec `e069569`; 8.6 row
+/// 33): the 4 bytes of `id`, and a copy of the `len` bytes of `data` as its data. Caller
+/// chunks are written in the order added, after the last local chunk, with a pad byte 0x00
+/// when `len` is odd (not counted in the chunk's size); they count in the `FRM8` size and
+/// in the layout's last region (`SB_OUTPUT_REGION_KIND_TRAILER`). The same ID may be added more
+/// than once, and an edited master may have them. A DSF file ignores them. Their data is the
+/// caller's: neither the DSDIFF document nor specification 8 defines it.
+///
+/// `SB_STATUS_INVALID_ARGUMENT` if `id` is not 4 bytes 0x20 to 0x7E with no space before a
+/// non-space (8.4.1 item 3), or is one of `FRM8`, `FVER`, `PROP`, `DSD `, `DST `, `DSTI`,
+/// `COMT`, `DIIN` and `MANF`; the options are then unchanged.
+///
+/// # Safety
+///
+/// `options` must be NULL or a live handle; `id` NULL or valid for 4 reads; `data` NULL or
+/// valid for `len` reads.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_output_options_add_chunk(
+    options: *const SbOutputOptions,
+    id: *const u8,
+    data: *const u8,
+    len: usize,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let h = unsafe { handle(options, "output options") }?;
+        if id.is_null() {
+            return Err(Failure::arg("NULL chunk ID"));
+        }
+        // SAFETY: forwarded contract; non-NULL, so valid for 4 reads.
+        let id = unsafe { slice(id, 4) }?;
+        let id: [u8; 4] = id.try_into().map_err(|_| Failure::arg("a chunk ID is 4 bytes"))?;
+        // SAFETY: forwarded contract.
+        let data = unsafe { slice(data, len) }?;
+        let chunk = CallerChunk::new(id, data.to_vec())?;
+        h.inner.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))?.dsdiff_caller_chunks.push(chunk);
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// Removes every DSDIFF caller chunk.
+///
+/// # Safety
+///
+/// `options` must be NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_output_options_clear_chunks(options: *const SbOutputOptions) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let h = unsafe { handle(options, "output options") }?;
+        h.inner.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))?.dsdiff_caller_chunks.clear();
+        Ok(SbStatus::Ok)
+    })
 }
 
 /// One file of a chain of ranges (`sb_output_dsf_chain_plan`; specification 8, 8.2.7,
