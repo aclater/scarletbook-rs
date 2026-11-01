@@ -12,7 +12,7 @@ use scarletbook::output::{
     AlbumArtistFrame, ArrangerFrame, Comment, CommentKind, DateFrame, DsfBitsPerSample, DstIndexOffset,
     DstLengths, Format, GenreSources, Id3Encoding, InfoChunk, Input, InvalidDst, Layout, LocalChunk, Marker,
     MarkerKind, MarkerText, Markers, OutputOptions, PositionSource, PropertyChunk, RegionKind, SourceTrack,
-    TagItem, TagSet, Tags, TextSource,
+    TagItem, TagSet, Tags, TextSource, plan_dsf_chain,
 };
 
 use super::{
@@ -114,6 +114,18 @@ pub enum SbOutputOption {
     Id3AlbumSetAlone = 31,
     /// W11: 0 (the default) the date in `TDRL`, 1 in `TDRC`.
     Id3Date = 32,
+    /// W32 (specification 8, 8.6 row 32; 8.2.7, sacd-spec e069569): -1 (the default) for a
+    /// DSF file holding its range of positions; otherwise, with
+    /// `SB_OUTPUT_OPTION_DSF_CHAIN_END`, the file holds the byte range of its range
+    /// `[a_i, b_i)` in a chain whose first range starts at this frame `a_1`.
+    /// `sb_output_dsf_chain_plan` gives both values per file. Both are set or neither,
+    /// with `a_1 <= a_i < b_i <= b_K`, DSF only; otherwise the layout is
+    /// `SB_STATUS_INVALID_ARGUMENT`.
+    DsfChainFirst = 37,
+    /// W32: -1 (the default), or the end `b_K` of the chain's last range (8.2.7 item 3);
+    /// the file whose range ends there is the last of the chain. See
+    /// `SB_OUTPUT_OPTION_DSF_CHAIN_FIRST`.
+    DsfChainEnd = 38,
 }
 
 /// The string-valued output options of `sb_output_options_set_string`.
@@ -579,6 +591,8 @@ fn set_option(o: &mut OutputOptions, option: u32, value: i64) -> Result<(), Fail
         30 => o.id3.copyright = flag(value)?,
         31 => o.id3.album_set_alone = flag(value)?,
         32 => o.id3.date = choice(value, &[DateFrame::Tdrl, DateFrame::Tdrc])?,
+        37 => o.dsf_chain_first = if value == -1 { None } else { Some(u32_of(value)?) },
+        38 => o.dsf_chain_end = if value == -1 { None } else { Some(u32_of(value)?) },
         _ => return Err(Failure::arg("unknown output option")),
     }
     Ok(())
@@ -1569,4 +1583,106 @@ pub unsafe extern "C" fn sb_output_layout_fill(
 pub unsafe extern "C" fn sb_output_layout_free(layout: *mut SbOutputLayout) {
     // SAFETY: forwarded contract.
     unsafe { free(layout, |h| h.inner.try_borrow_mut().is_err()) };
+}
+
+/// One file of a chain of ranges (`sb_output_dsf_chain_plan`; specification 8, 8.2.7,
+/// sacd-spec e069569).
+///
+/// Layout: 40 bytes, aligned to 8, without padding (2 fields of 8 bytes, then 6 of 4).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SbDsfChainFile {
+    /// `p_i`, the first byte of each channel's byte timeline the file holds (8.2.7 items 1
+    /// to 3); 0 when `status` is not `SB_STATUS_OK`.
+    pub byte_first: u64,
+    /// `p_{i+1}`, the end of those bytes: the stream holds `S = byte_end - byte_first`
+    /// bytes per channel.
+    pub byte_end: u64,
+    /// `a_i`, the range's first frame.
+    pub first: u32,
+    /// `b_i`, the range's end frame (exclusive).
+    pub end: u32,
+    /// `a_1` of the file's chain, for the option `SB_OUTPUT_OPTION_DSF_CHAIN_FIRST`; 0 when `status` is not
+    /// `SB_STATUS_OK`.
+    pub chain_first: u32,
+    /// `b_K` of the file's chain, for the option `SB_OUTPUT_OPTION_DSF_CHAIN_END`; 0 when `status` is not
+    /// `SB_STATUS_OK`.
+    pub chain_end: u32,
+    /// `SB_STATUS_OK`, or the status of the checks that skip or refuse the range (8.1 item
+    /// 2): the one `sb_output_layout_new` gives for it, such as `SB_STATUS_TRACK_EMPTY`.
+    /// Such a range splits the chain (8.2.7 item 3).
+    pub status: i32,
+    /// 0.
+    pub reserved: u32,
+}
+
+/// Plans the DSF files of a chain of ranges of the area from `slot` (specification 8,
+/// 8.2.7 and 8.6 row 32, sacd-spec e069569), from the TOC alone: `bounds` are the `count`
+/// frames `a_1, a_2, ..., a_K, b_K`, so range `i` is `[bounds[i - 1], bounds[i])`, for
+/// example the tracks with pause (`sb_track_range_with_pause`) of consecutive tracks
+/// that meet end to end. `files` receives one `SbDsfChainFile` per range, `count - 1` of
+/// them, and `*written` their number; with `cap` below that, nothing is written to
+/// `files` and the call gives `SB_STATUS_BUFFER_TOO_SMALL`.
+///
+/// A range that the checks of 8.1 item 2 skip or refuse has that status in its entry and
+/// splits the chain: the ranges before it and after it form separate chains, each with its
+/// own `chain_first` and `chain_end`. Each other range's file is
+/// `sb_output_layout_new(disc, slot, first, end, SB_OUTPUT_FORMAT_DSF, options, ...)`
+/// with the options `SB_OUTPUT_OPTION_DSF_CHAIN_FIRST` and `SB_OUTPUT_OPTION_DSF_CHAIN_END` set to its `chain_first` and
+/// `chain_end`. To split elsewhere, plan each part separately.
+///
+/// `SB_STATUS_NO_SUCH_AREA`; `SB_STATUS_INVALID_ARGUMENT` for fewer than two bounds.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle; `bounds` NULL or valid for `count` reads; `files`
+/// NULL or valid for `cap` writes; `written` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_output_dsf_chain_plan(
+    disc: *const SbDisc,
+    slot: u32,
+    bounds: *const u32,
+    count: usize,
+    files: *mut SbDsfChainFile,
+    cap: usize,
+    written: *mut usize,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?.get()?;
+        // SAFETY: forwarded contract.
+        let bounds = unsafe { slice(bounds, count) }?;
+        let plan = plan_dsf_chain(d.toc(), slot_from(slot)?, bounds)?;
+        // SAFETY: forwarded contract.
+        unsafe { write_out(written, plan.len()) }?;
+        if files.is_null() || cap < plan.len() {
+            return Ok(SbStatus::BufferTooSmall);
+        }
+        for (i, (file, w)) in plan.into_iter().zip(bounds.windows(2)).enumerate() {
+            let value = match file {
+                Ok(f) => SbDsfChainFile {
+                    byte_first: f.bytes.0,
+                    byte_end: f.bytes.1,
+                    first: f.range.0,
+                    end: f.range.1,
+                    chain_first: f.chain.0,
+                    chain_end: f.chain.1,
+                    status: SbStatus::Ok as i32,
+                    reserved: 0,
+                },
+                Err(e) => SbDsfChainFile {
+                    first: w[0],
+                    end: w[1],
+                    status: Failure::from(e).0 as i32,
+                    ..SbDsfChainFile::default()
+                },
+            };
+            // SAFETY: i < plan.len() <= cap, within the array of this function's contract.
+            let at = unsafe { files.add(i) };
+            // SAFETY: non-NULL and valid for a write by this function's contract; written
+            // without reading what was there, which may be uninitialized.
+            unsafe { at.write(value) };
+        }
+        Ok(SbStatus::Ok)
+    })
 }

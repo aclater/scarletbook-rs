@@ -671,3 +671,91 @@ fn overlapping_fill_buffers_are_refused() {
     c!(sb_output_options_free(o));
     c!(sb_disc_free(d));
 }
+
+/// DSF byte ranges of a chain (specification 8, 8.2.7; issue #169): the plan through
+/// `sb_output_dsf_chain_plan` is the Rust API's, with the split's status, and each file
+/// made with `SB_OUTPUT_OPTION_DSF_CHAIN_FIRST` and `_END` equals the Rust layout through
+/// `sb_output_layout_read` and `sb_output_layout_fill`.
+#[test]
+fn dsf_chains() {
+    let frame = |n: u32| -> Vec<u8> { (0..2 * 4704).map(|i| (i as u32 * 7 + n * 13) as u8).collect() };
+    // Position 4 is missing: its fill is carried into the file of [5, 9).
+    let frames: Vec<common::PFrame> = (0..9)
+        .filter(|&n| n != 4)
+        .map(|number| common::PFrame { number, dst: false, data: frame(number) })
+        .collect();
+    let tracks = vec![common::TrackSpec { start: 0, duration: 9 }];
+    let bytes = common::Spec { channels: 2, playtime: 9, tracks, audio: common::pack(&frames) }.build();
+    let d = open(&bytes);
+    let mut disc = Disc::open(Cursor::new(bytes.clone())).unwrap();
+    let bounds = [0, 3, 3, 5, 9];
+    let rust = disc.plan_dsf_chain(Slot::TwoChannel, &bounds).unwrap();
+
+    let mut files = [SbDsfChainFile::default(); 4];
+    let mut written = 0;
+    assert_eq!(
+        c!(sb_output_dsf_chain_plan(d, 0, bounds.as_ptr(), 5, files.as_mut_ptr(), 3, &mut written)),
+        SbStatus::BufferTooSmall
+    );
+    assert_eq!(written, 4);
+    assert_eq!(
+        c!(sb_output_dsf_chain_plan(d, 0, bounds.as_ptr(), 5, files.as_mut_ptr(), 4, &mut written)),
+        SbStatus::Ok
+    );
+    assert_eq!(files[1].status, SbStatus::TrackEmpty as i32);
+    assert_eq!((files[1].first, files[1].end, files[1].byte_end), (3, 3, 0));
+    for (f, r) in files.iter().zip(&rust) {
+        let Ok(r) = r else { continue };
+        assert_eq!(f.status, 0);
+        assert_eq!(
+            (f.first, f.end, f.chain_first, f.chain_end),
+            (r.range.0, r.range.1, r.chain.0, r.chain.1)
+        );
+        assert_eq!((f.byte_first, f.byte_end), r.bytes);
+        let o = options();
+        assert_eq!(set(o, SbOutputOption::DsfChainFirst, f.chain_first.into()), SbStatus::Ok);
+        assert_eq!(set(o, SbOutputOption::DsfChainEnd, f.chain_end.into()), SbStatus::Ok);
+        let mut l = ptr::null_mut();
+        assert_eq!(c!(sb_output_layout_new(d, 0, f.first, f.end, 0, o, &mut l)), SbStatus::Ok);
+        let options = OutputOptions::default().with_dsf_chain(Some(r.chain));
+        let layout = disc.output_layout(Slot::TwoChannel, f.first, f.end, Format::Dsf, &options).unwrap();
+        let want = rust_file(&mut disc, &layout);
+        assert_eq!(read(l, d, 5_000), want);
+        let sound = 92;
+        let got = fill(l, &mut disc, Slot::TwoChannel, sound, 6_000);
+        assert_eq!(got, want[sound as usize..sound as usize + 6_000]);
+        c!(sb_output_layout_free(l));
+        c!(sb_output_options_free(o));
+    }
+    // The file of [5, 9) starts with the end of position 4.
+    assert!(files[3].byte_first < 5 * 4704);
+
+    // Options: one of the two alone, a chain for DSDIFF, a range outside the chain, and
+    // bad values.
+    let o = options();
+    let mut l = ptr::null_mut();
+    assert_eq!(set(o, SbOutputOption::DsfChainFirst, 3), SbStatus::Ok);
+    assert_eq!(c!(sb_output_layout_new(d, 0, 3, 5, 0, o, &mut l)), SbStatus::InvalidArgument);
+    assert_eq!(set(o, SbOutputOption::DsfChainEnd, 9), SbStatus::Ok);
+    assert_eq!(c!(sb_output_layout_new(d, 0, 3, 5, 1, o, &mut l)), SbStatus::InvalidArgument);
+    assert_eq!(c!(sb_output_layout_new(d, 0, 2, 5, 0, o, &mut l)), SbStatus::InvalidArgument);
+    assert!(l.is_null());
+    assert_eq!(set(o, SbOutputOption::DsfChainFirst, -2), SbStatus::InvalidArgument);
+    assert_eq!(set(o, SbOutputOption::DsfChainEnd, 1 << 32), SbStatus::InvalidArgument);
+    // -1 clears both: a range of positions again.
+    assert_eq!(set(o, SbOutputOption::DsfChainFirst, -1), SbStatus::Ok);
+    assert_eq!(set(o, SbOutputOption::DsfChainEnd, -1), SbStatus::Ok);
+    assert_eq!(c!(sb_output_layout_new(d, 0, 3, 5, 0, o, &mut l)), SbStatus::Ok);
+    c!(sb_output_layout_free(l));
+    c!(sb_output_options_free(o));
+    // Fewer than two bounds, and no area.
+    assert_eq!(
+        c!(sb_output_dsf_chain_plan(d, 0, bounds.as_ptr(), 1, files.as_mut_ptr(), 4, &mut written)),
+        SbStatus::InvalidArgument
+    );
+    assert_eq!(
+        c!(sb_output_dsf_chain_plan(d, 1, bounds.as_ptr(), 5, files.as_mut_ptr(), 4, &mut written)),
+        SbStatus::NoSuchArea
+    );
+    c!(sb_disc_free(d));
+}

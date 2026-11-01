@@ -1,0 +1,1 @@
+| 2026-11-01 | #169 DSF byte ranges of a chain (#PR) | specification 8, 8.1 items 2 and 7, 8.2.1 to 8.2.5, 8.2.7 and 8.6 row 32 at sacd-spec `e069569`; the checks of specification 4, 4.8 and 4.7.1 items 4 and 5 as before. No new sources consulted. |

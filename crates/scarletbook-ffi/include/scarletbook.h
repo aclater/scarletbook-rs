@@ -942,6 +942,22 @@ enum SbOutputOption
    W11: 0 (the default) the date in `TDRL`, 1 in `TDRC`.
    */
   SB_OUTPUT_OPTION_ID3_DATE = 32,
+  /*
+   W32 (specification 8, 8.6 row 32; 8.2.7, sacd-spec e069569): -1 (the default) for a
+   DSF file holding its range of positions; otherwise, with
+   `SB_OUTPUT_OPTION_DSF_CHAIN_END`, the file holds the byte range of its range
+   `[a_i, b_i)` in a chain whose first range starts at this frame `a_1`.
+   `sb_output_dsf_chain_plan` gives both values per file. Both are set or neither,
+   with `a_1 <= a_i < b_i <= b_K`, DSF only; otherwise the layout is
+   `SB_STATUS_INVALID_ARGUMENT`.
+   */
+  SB_OUTPUT_OPTION_DSF_CHAIN_FIRST = 37,
+  /*
+   W32: -1 (the default), or the end `b_K` of the chain's last range (8.2.7 item 3);
+   the file whose range ends there is the last of the chain. See
+   `SB_OUTPUT_OPTION_DSF_CHAIN_FIRST`.
+   */
+  SB_OUTPUT_OPTION_DSF_CHAIN_END = 38,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -1873,6 +1889,53 @@ typedef struct SbPositionData {
    */
   uint32_t reserved;
 } SbPositionData;
+
+/*
+ One file of a chain of ranges (`sb_output_dsf_chain_plan`; specification 8, 8.2.7,
+ sacd-spec e069569).
+
+ Layout: 40 bytes, aligned to 8, without padding (2 fields of 8 bytes, then 6 of 4).
+ */
+typedef struct SbDsfChainFile {
+  /*
+   `p_i`, the first byte of each channel's byte timeline the file holds (8.2.7 items 1
+   to 3); 0 when `status` is not `SB_STATUS_OK`.
+   */
+  uint64_t byte_first;
+  /*
+   `p_{i+1}`, the end of those bytes: the stream holds `S = byte_end - byte_first`
+   bytes per channel.
+   */
+  uint64_t byte_end;
+  /*
+   `a_i`, the range's first frame.
+   */
+  uint32_t first;
+  /*
+   `b_i`, the range's end frame (exclusive).
+   */
+  uint32_t end;
+  /*
+   `a_1` of the file's chain, for the option `SB_OUTPUT_OPTION_DSF_CHAIN_FIRST`; 0 when `status` is not
+   `SB_STATUS_OK`.
+   */
+  uint32_t chain_first;
+  /*
+   `b_K` of the file's chain, for the option `SB_OUTPUT_OPTION_DSF_CHAIN_END`; 0 when `status` is not
+   `SB_STATUS_OK`.
+   */
+  uint32_t chain_end;
+  /*
+   `SB_STATUS_OK`, or the status of the checks that skip or refuse the range (8.1 item
+   2): the one `sb_output_layout_new` gives for it, such as `SB_STATUS_TRACK_EMPTY`.
+   Such a range splits the chain (8.2.7 item 3).
+   */
+  int32_t status;
+  /*
+   0.
+   */
+  uint32_t reserved;
+} SbDsfChainFile;
 
 /*
  The header of a `sb_disc_toc` layout, at offset 0.
@@ -4326,6 +4389,37 @@ SbStatus sb_output_layout_fill(const struct SbOutputLayout *layout,
  `layout` must be NULL or a live handle, freed only once.
  */
 void sb_output_layout_free(struct SbOutputLayout *layout);
+
+/*
+ Plans the DSF files of a chain of ranges of the area from `slot` (specification 8,
+ 8.2.7 and 8.6 row 32, sacd-spec e069569), from the TOC alone: `bounds` are the `count`
+ frames `a_1, a_2, ..., a_K, b_K`, so range `i` is `[bounds[i - 1], bounds[i])`, for
+ example the tracks with pause (`sb_track_range_with_pause`) of consecutive tracks
+ that meet end to end. `files` receives one `SbDsfChainFile` per range, `count - 1` of
+ them, and `*written` their number; with `cap` below that, nothing is written to
+ `files` and the call gives `SB_STATUS_BUFFER_TOO_SMALL`.
+
+ A range that the checks of 8.1 item 2 skip or refuse has that status in its entry and
+ splits the chain: the ranges before it and after it form separate chains, each with its
+ own `chain_first` and `chain_end`. Each other range's file is
+ `sb_output_layout_new(disc, slot, first, end, SB_OUTPUT_FORMAT_DSF, options, ...)`
+ with the options `SB_OUTPUT_OPTION_DSF_CHAIN_FIRST` and `SB_OUTPUT_OPTION_DSF_CHAIN_END` set to its `chain_first` and
+ `chain_end`. To split elsewhere, plan each part separately.
+
+ `SB_STATUS_NO_SUCH_AREA`; `SB_STATUS_INVALID_ARGUMENT` for fewer than two bounds.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `bounds` NULL or valid for `count` reads; `files`
+ NULL or valid for `cap` writes; `written` NULL or valid for a write.
+ */
+SbStatus sb_output_dsf_chain_plan(const struct SbDisc *disc,
+                                  uint32_t slot,
+                                  const uint32_t *bounds,
+                                  size_t count,
+                                  struct SbDsfChainFile *files,
+                                  size_t cap,
+                                  size_t *written);
 
 #ifdef __cplusplus
 }  // extern "C"
