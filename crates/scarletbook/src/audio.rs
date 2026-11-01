@@ -459,6 +459,9 @@ pub struct AreaCursor {
     /// or a resume from a seek index); others read
     /// [`READ_CHUNK`] sectors at a time.
     read_to: u64,
+    /// After that, reads below this LSN reach up to it in the same way: the rest of a
+    /// provisional range, past what its first read could take.
+    read_then: u64,
     /// Why this provisional reading is suspect, if it is (4.2 item 8).
     suspect: Option<crate::seek::Suspect>,
     /// Records seek hints, when made from an index that keeps them.
@@ -519,6 +522,7 @@ impl AreaCursor {
             claim_registered: false,
             provisional: None,
             read_to: 0,
+            read_then: 0,
             suspect: None,
             hints: None,
             hints_stale: false,
@@ -715,7 +719,18 @@ impl AreaCursor {
         let span =
             u128::from(sp.end.saturating_sub(located.frame)) * u128::from(sectors) / u128::from(frames);
         let span = u64::try_from(span + span / 4 + 4).unwrap_or(u64::MAX);
-        self.read_to = l.saturating_add(span);
+        let through_first =
+            u128::from(sp.first + 1 - located.frame) * u128::from(sectors) / u128::from(frames);
+        let through_first = u64::try_from(through_first + through_first / 4 + 4).unwrap_or(u64::MAX);
+        // From the first sector not yet read: past the probe kept, or `l`.
+        let from = if self.buf_sectors > 0 { (self.buf_lsn + self.buf_sectors).max(l) } else { l };
+        // Through the range's first frame and on to its estimated end, as far as the budget
+        // left after the search allows; that much and no more (it can be less than a chunk).
+        let left = crate::seek::FIRST_FRAME_BUDGET.saturating_sub(located.used).max(1);
+        let need = (l + through_first).saturating_sub(from);
+        let range = l.saturating_add(span).saturating_sub(from);
+        self.read_to = from + need.max(range).min(left);
+        self.read_then = l.saturating_add(span);
         Ok(())
     }
 
@@ -1069,8 +1084,10 @@ impl AreaCursor {
 
     fn sector<R: Read + Seek>(&mut self, image: &mut Image<R>, lsn: u64) -> Result<[u8; SECTOR_SIZE], Error> {
         if !(self.buf_lsn..self.buf_lsn + self.buf_sectors).contains(&lsn) {
-            let n = READ_CHUNK
-                .max(self.read_to.saturating_sub(lsn))
+            // A read sized to the range reads what it was sized to, less than a chunk too.
+            let sized = self.read_to.saturating_sub(lsn);
+            let then = self.read_then.saturating_sub(lsn);
+            let n = if sized > 0 { sized } else { READ_CHUNK.max(then) }
                 .min(crate::seek::MAX_READ_SECTORS)
                 .min(self.end_lsn - lsn);
             image.check_cancel()?;

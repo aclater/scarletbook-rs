@@ -269,7 +269,9 @@ fn sized_read_cancelled(prepare: impl Fn(&mut Disc<Hooked>)) {
     let (got, cancels) = through_within(&hook, MAX_READ_SECTORS, || it.next());
     assert_eq!(got, want);
     assert!(cancels > 0);
-    assert_eq!(hook.max_after.get(), len, "the sized read completes after the request");
+    // The sized read in progress completes after the request (and so may later sized reads
+    // of the range, each at most MAX_READ_SECTORS).
+    assert!(hook.max_after.get() >= len, "the sized read completes after the request");
     let (read, expected) = p.get();
     assert_eq!(read, expected, "complete");
     let long: Vec<_> = reads.iter().filter(|r| r.0 >= base && r.1 > BOUND * S as u64).collect();
