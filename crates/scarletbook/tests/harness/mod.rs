@@ -11,6 +11,8 @@ use scarletbook::audio::{FRAME_BYTES_PER_CHANNEL, MAX_FRAME_BYTES};
 use scarletbook::dst::FL;
 use scarletbook::{AreaIndex, Demuxer, Disc, DstDecoder, FrameKind};
 
+pub mod output;
+
 /// Bytes of 510 empty plain sectors, prepended to fuzz input so that the input starts at
 /// the master TOC.
 pub const PREFIX: u64 = 510 * 2048;
@@ -62,10 +64,13 @@ impl Seek for Prefixed<'_> {
     }
 }
 
-/// Parses the TOC of `PREFIX` zeros followed by `data` and checks the TOC invariants.
+/// Parses the TOC of `PREFIX` zeros followed by `data` and checks the TOC invariants,
+/// then the output files of a range of it that the input's last bytes choose
+/// ([`output::CONTROL`]).
 pub fn toc(data: &[u8]) {
-    if let Ok(disc) = Disc::open(Prefixed::new(data)) {
+    if let Ok(mut disc) = Disc::open(Prefixed::new(data)) {
         check_toc(&disc);
+        output::check_outputs(&mut disc, data);
     }
 }
 
