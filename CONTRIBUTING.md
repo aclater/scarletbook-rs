@@ -53,7 +53,10 @@ a `TODO` that names the issue, and carry on with the rest.
 ## Code
 
 - The core crate is `#![forbid(unsafe_code)]`; `unsafe` lives only in `scarletbook-ffi`,
-  where every unsafe operation has its own `SAFETY:` comment.
+  where every unsafe operation has its own `SAFETY:` comment. The one exception is
+  `scarletbook-pcm`'s `dispatch` module (the crate denies `unsafe_code` elsewhere): calls to
+  `#[target_feature]` builds of its safe kernels after run-time feature detection, with no
+  intrinsics or raw pointers (#173; `tests/unsafe_policy.rs` checks it).
 - Images are hostile input: bound every allocation (specification 7), check every position,
   return typed errors, and never panic across the C ABI.
 - Every new source file starts with an SPDX header:

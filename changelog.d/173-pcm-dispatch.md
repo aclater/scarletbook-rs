@@ -1,0 +1,2 @@
+Changed
+- `scarletbook-pcm` runs its filters with AVX2 and FMA, chosen at run time, on x86-64 CPUs that have them, with output unchanged to the bit: 176.4 kHz `Default` stereo, one thread, on a generic build is about 298× real time (222× without). Other targets and older CPUs use the portable kernels. The crate now denies `unsafe_code` instead of forbidding it, and allows it in one module, which only calls the `#[target_feature]` builds of the safe kernels (#173, #180).

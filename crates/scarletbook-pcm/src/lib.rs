@@ -93,12 +93,15 @@
 //! content stays far below 100 % modulation, so clipped samples mean that the [`Gain`] is
 //! too high. Output samples are rounded half to even and are not dithered.
 
-#![forbid(unsafe_code)]
+// `unsafe` is denied everywhere except in `dispatch`, which calls the AVX2 and FMA build of
+// the filter kernels after checking for those features (CONTRIBUTING).
+#![deny(unsafe_code)]
 #![warn(missing_docs)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 #[cfg(test)]
 mod design;
+mod dispatch;
 mod kernel;
 #[cfg(test)]
 mod quality;
