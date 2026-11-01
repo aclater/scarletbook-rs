@@ -705,8 +705,9 @@ const CLOSE_SECTORS: u64 = 16;
 
 /// The most sectors the search and the read through the range's first frame are meant to
 /// take together (144 KiB): the search reads all of a narrow enough interval at once within
-/// it, and the read after a provisional start reaches the range's estimated end only as far
-/// as it allows, unless the first frame needs more.
+/// it, and the read after a provisional start goes through the range's first frame and on
+/// toward the range's estimated end only as far as it allows (if the first frame is further
+/// than the budget reaches, the reads after it, toward the range's end, get it).
 pub(crate) const FIRST_FRAME_BUDGET: u64 = 72;
 
 /// Most sectors a cursor reads in one call (1 MiB): after a provisional start, a cursor reads
