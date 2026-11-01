@@ -48,7 +48,7 @@ jobs:
         run: |
           if [[ "$GITHUB_EVENT_NAME" != pull_request ]]; then
             echo "code=true" >> "$GITHUB_OUTPUT"
-            echo 'miri=["ffi","parallel"]' >> "$GITHUB_OUTPUT"
+            echo 'miri=["ffi","ffi-slow","parallel"]' >> "$GITHUB_OUTPUT"
             exit 0
           fi
           changed=$(git diff --name-only "$BASE_SHA" HEAD)
@@ -61,13 +61,14 @@ jobs:
           # Miri checks unsafe code: scarletbook-ffi's own, and the dependencies'. `scarletbook`
           # and `scarletbook-pcm` deny unsafe code outside one run-time dispatch module each
           # (#146, #173), so their full tests run under Miri only in miri-full.yml (main and
-          # nightly). `ffi` runs when any crate it calls changes; `parallel` (rayon under Tree
-          # Borrows) when the core crate does; `core-dispatch` (the core dispatch module's
-          # bit-identity test) when that module or the decoder it builds does; all three when
-          # the dependencies, the toolchain or these workflows do.
+          # nightly). `ffi` and `ffi-slow` (scarletbook-ffi's tests, split in two, #205) run
+          # when any crate it calls changes; `parallel` (rayon under Tree Borrows) when the core
+          # crate does; `core-dispatch` (the core dispatch module's bit-identity test) when that
+          # module or the decoder it builds does; all of them when the dependencies, the
+          # toolchain or these workflows do.
           shared='^(Cargo\.lock$|rust-toolchain|\.github/workflows/(ci|miri)\.yml$)'
           slices=()
-          if grep -qE "^crates/|$shared" <<< "$changed"; then slices+=('"ffi"'); fi
+          if grep -qE "^crates/|$shared" <<< "$changed"; then slices+=('"ffi"' '"ffi-slow"'); fi
           if grep -qE "^crates/scarletbook/|$shared" <<< "$changed"; then slices+=('"parallel"'); fi
           if grep -qE "^crates/scarletbook/src/(dispatch|dst)\.rs$|$shared" <<< "$changed"; then slices+=('"core-dispatch"'); fi
           echo "miri=[$(IFS=,; echo "${slices[*]}")]" >> "$GITHUB_OUTPUT"

@@ -54,6 +54,8 @@ jobs:
       - name: Miri slice
         env:
           SLICE: ${{ matrix.slice }}
+          # scarletbook-ffi's slowest test binaries under Miri, the `ffi-slow` slice.
+          FFI_SLOW: sectors pcm
         run: |
           # Every named test must exist and run: a renamed test fails the slice instead of
           # leaving it to pass with nothing run. `named N` checks the libtest summaries of the
@@ -75,7 +77,21 @@ jobs:
             fi
           }
           case "$SLICE" in
-            ffi) miri -p scarletbook-ffi ;;
+            # scarletbook-ffi's tests, in two slices of about 4 minutes each (#205): `ffi-slow`
+            # runs the two slowest test binaries, `ffi` the library's unit tests, every other
+            # test binary (listed from tests/, so a new file lands here) and the doctests.
+            ffi)
+              args=(--lib)
+              for f in crates/scarletbook-ffi/tests/*.rs; do
+                t=$(basename "$f" .rs)
+                [[ " $FFI_SLOW " == *" $t "* ]] || args+=(--test "$t")
+              done
+              miri -p scarletbook-ffi "${args[@]}"
+              miri -p scarletbook-ffi --doc ;;
+            ffi-slow)
+              args=()
+              for t in $FFI_SLOW; do args+=(--test "$t"); done
+              miri -p scarletbook-ffi "${args[@]}" ;;
             core) miri -p scarletbook --test '*' ;;
             core-lib) miri -p scarletbook --lib -- --skip fast_loop_matches_general ;;
             # The run-time dispatch of the DST decoder, the core crate's unsafe code (#146): on
