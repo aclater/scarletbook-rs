@@ -308,8 +308,15 @@ impl Demuxer {
                             (u32::from(byte(r)) * 60 + u32::from(byte(r + 1))) * 75 + u32::from(byte(r + 2));
                         let remaining = if dst { i32::from((byte(r + 3) >> 2) & 0x1F) } else { 0 };
                         let kind = if dst { FrameKind::Dst } else { FrameKind::Dsd };
-                        self.assembling =
-                            Some(Assembly { number, kind, data: Vec::new(), remaining, start_lsn: at.lsn });
+                        // A plain frame is complete at C x 4704 bytes (4.4.2): reserved at
+                        // once, it is never reallocated as its sectors arrive.
+                        let data = match kind {
+                            FrameKind::Dsd => Vec::with_capacity(
+                                (usize::from(self.channels) * FRAME_BYTES_PER_CHANNEL).min(MAX_FRAME_BYTES),
+                            ),
+                            FrameKind::Dst => Vec::new(),
+                        };
+                        self.assembling = Some(Assembly { number, kind, data, remaining, start_lsn: at.lsn });
                         x += 1;
                     } else {
                         self.reason.get_or_insert(Malformed::NoRecord { p, f });
