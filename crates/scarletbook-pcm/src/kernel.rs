@@ -27,11 +27,12 @@
 use std::ops::Range;
 use std::sync::OnceLock;
 
+use crate::dispatch::{self, Isa};
 use crate::{ConvertStats, Cutoff, FRAME_BYTES_PER_CHANNEL, Frames, PcmOut, PcmRate, Run, tables};
 
-/// Output samples computed together by the kernels (a block of independent sums the
-/// compiler can put in vector lanes).
-const LANES: usize = 16;
+/// Stage outputs are computed in multiples of this: a multiple of every kernel's block of
+/// independent sums (`dispatch`).
+const LANES: usize = 32;
 
 /// Output frames converted per pass. Each pass recomputes its stages' margins, so larger
 /// passes waste less; the scratch buffers grow with it (about 0.5 MiB at 4 frames).
@@ -115,7 +116,7 @@ fn pow2(e: i32) -> f64 {
 
 /// A symmetric filter, from its table (taps from the centre out).
 #[derive(Clone, Debug)]
-struct Sym {
+pub(crate) struct Sym {
     /// Taps from the centre out.
     full: Vec<f64>,
     /// Taps at even offsets 0, 2, 4, ... (trailing zeros removed).
@@ -253,6 +254,8 @@ pub(crate) struct Plan {
     ops: Vec<Op>,
     spf: usize,
     context: usize,
+    /// The kernels' instruction set, detected once.
+    isa: Isa,
 }
 
 impl Plan {
@@ -278,11 +281,17 @@ impl Plan {
                 (LUT_S1.get_or_init(|| lut(&tables::S1)), ops)
             }
         };
-        let mut plan = Plan { lut, ops, spf: rate.samples_per_frame(), context: 0 };
+        let mut plan = Plan { lut, ops, spf: rate.samples_per_frame(), context: 0, isa: Isa::detect() };
         let (bytes_lo, bytes_len) = plan.byte_range((0, plan.spf), false);
         let fb = FRAME_BYTES_PER_CHANNEL as i64;
         plan.context = (-bytes_lo).max(bytes_lo + bytes_len as i64 - fb).max(0) as usize;
         plan
+    }
+
+    /// Runs the kernels on `isa` instead of the detected one.
+    #[cfg(test)]
+    pub(crate) fn set_isa(&mut self, isa: Isa) {
+        self.isa = isa;
     }
 
     /// Bytes per channel read from each neighbour (at most; less than a frame).
@@ -356,7 +365,7 @@ impl Plan {
                             sc.b.clear();
                             sc.b.resize(n_out.div_ceil(LANES) * LANES, 0.0);
                             debug_assert_eq!(start_out - start_in, s.half_len() as i64);
-                            fir1(s, &sc.a, &mut sc.b);
+                            dispatch::fir1(self.isa, s, &sc.a, &mut sc.b);
                         }
                         Op::Dec2(s) => {
                             let m = s.half_len();
@@ -378,7 +387,7 @@ impl Plan {
                             }
                             sc.b.clear();
                             sc.b.resize(np, 0.0);
-                            dec2(s, &sc.even, &sc.odd, &mut sc.b);
+                            dispatch::dec2(self.isa, s, &sc.even, &sc.odd, &mut sc.b);
                         }
                         Op::Interp2(s) => {
                             let o = s.odd.len();
@@ -386,7 +395,7 @@ impl Plan {
                             debug_assert_eq!(start_in, start_out / 2 - o as i64);
                             sc.even.clear();
                             sc.even.resize(half, 0.0);
-                            interp2_odd(s, &sc.a, &mut sc.even);
+                            dispatch::interp2_odd(self.isa, s, &sc.a, &mut sc.even);
                             sc.b.clear();
                             for i in 0..n_out / 2 {
                                 sc.b.push(sc.a[o + i]);
@@ -454,27 +463,42 @@ fn s1(lut: &[[i32; 256]], bytes: &[u8], start: usize, stride: usize, out: &mut [
     }
 }
 
-/// Adds `h[j] (x[hi + j + l] + x[lo - j + l])` over `j`, for the `LANES` outputs `l`.
+// The kernels are generic over their block of independent outputs `L` (a divisor of
+// `LANES`), which the compiler puts in vector lanes, and over fused multiply-adds (`FMA`).
+// `dispatch` picks both for the CPU. Fused or not, every sum is the same: each product and
+// partial sum is an exact integer below 2^53, so both roundings are exact.
+
+/// Adds `h[j] (x[hi + j + l] + x[lo - j + l])` over `j`, for the `L` outputs `l`.
 #[inline(always)]
-fn add_pairs(acc: &mut [f64; LANES], h: &[f64], x: &[f64], hi: usize, lo: usize) {
+fn add_pairs<const L: usize, const FMA: bool>(
+    acc: &mut [f64; L],
+    h: &[f64],
+    x: &[f64],
+    hi: usize,
+    lo: usize,
+) {
     let Some(last) = h.len().checked_sub(1) else { return };
     // The windows `x[hi + j..]` upwards and `x[lo - j..]` downwards, sliced once so that the
     // loop has no bounds checks.
-    let up = x[hi..hi + last + LANES].windows(LANES);
-    let down = x[lo - last..lo + LANES].windows(LANES).rev();
+    let up = x[hi..hi + last + L].windows(L);
+    let down = x[lo - last..lo + L].windows(L).rev();
     for ((a, b), &hj) in up.zip(down).zip(h) {
-        for l in 0..LANES {
-            acc[l] += hj * (a[l] + b[l]);
+        for l in 0..L {
+            if FMA {
+                acc[l] = hj.mul_add(a[l] + b[l], acc[l]);
+            } else {
+                acc[l] += hj * (a[l] + b[l]);
+            }
         }
     }
 }
 
-/// Runs `f` on each block of `LANES` outputs and stores the rounded, rescaled sums.
+/// Runs `f` on each block of `L` outputs and stores the rounded, rescaled sums.
 #[inline(always)]
-fn blocks(out: &mut [f64], scale: f64, f: impl Fn(usize, &mut [f64; LANES])) {
-    for (bi, o) in out.chunks_exact_mut(LANES).enumerate() {
-        let mut acc = [0.0f64; LANES];
-        f(bi * LANES, &mut acc);
+fn blocks<const L: usize>(out: &mut [f64], scale: f64, f: impl Fn(usize, &mut [f64; L])) {
+    for (bi, o) in out.chunks_exact_mut(L).enumerate() {
+        let mut acc = [0.0f64; L];
+        f(bi * L, &mut acc);
         for (d, a) in o.iter_mut().zip(acc) {
             *d = round_even(a * scale);
         }
@@ -482,38 +506,41 @@ fn blocks(out: &mut [f64], scale: f64, f: impl Fn(usize, &mut [f64; LANES])) {
 }
 
 /// Fir1: `out[i]` centred on `x[i + m]`.
-fn fir1(s: &Sym, x: &[f64], out: &mut [f64]) {
+#[inline(always)]
+pub(crate) fn fir1<const L: usize, const FMA: bool>(s: &Sym, x: &[f64], out: &mut [f64]) {
     let m = s.half_len();
     let (h0, h) = (s.full[0], &s.full[1..]);
-    blocks(out, s.scale, |i, acc| {
+    blocks::<L>(out, s.scale, |i, acc| {
         for (l, a) in acc.iter_mut().enumerate() {
             *a = h0 * x[i + m + l];
         }
-        add_pairs(acc, h, x, i + m + 1, i + m - 1);
+        add_pairs::<L, FMA>(acc, h, x, i + m + 1, i + m - 1);
     });
 }
 
 /// Dec2: `out[i]` centred on `xe[i + e]` (`e` = the even taps after the centre), with the
 /// odd taps on `xo[i + o + j]` and `xo[i + o - 1 - j]`.
-fn dec2(s: &Sym, xe: &[f64], xo: &[f64], out: &mut [f64]) {
+#[inline(always)]
+pub(crate) fn dec2<const L: usize, const FMA: bool>(s: &Sym, xe: &[f64], xo: &[f64], out: &mut [f64]) {
     let (e, o) = (s.even.len() - 1, s.odd.len());
     let (h0, he) = (s.even[0], &s.even[1..]);
-    blocks(out, s.scale, |i, acc| {
+    blocks::<L>(out, s.scale, |i, acc| {
         for (l, a) in acc.iter_mut().enumerate() {
             *a = h0 * xe[i + e + l];
         }
         if e > 0 {
-            add_pairs(acc, he, xe, i + e + 1, i + e - 1);
+            add_pairs::<L, FMA>(acc, he, xe, i + e + 1, i + e - 1);
         }
-        add_pairs(acc, &s.odd, xo, i + o, i + o - 1);
+        add_pairs::<L, FMA>(acc, &s.odd, xo, i + o, i + o - 1);
     });
 }
 
 /// The odd outputs of Interp2: `out[i]` between `w[i + o]` and `w[i + o + 1]`. The
 /// interpolation gain of 2 is in the scale (2^-(q - 1)).
-fn interp2_odd(s: &Sym, w: &[f64], out: &mut [f64]) {
+#[inline(always)]
+pub(crate) fn interp2_odd<const L: usize, const FMA: bool>(s: &Sym, w: &[f64], out: &mut [f64]) {
     let o = s.odd.len();
-    blocks(out, s.scale * 2.0, |i, acc| add_pairs(acc, &s.odd, w, i + o + 1, i + o));
+    blocks::<L>(out, s.scale * 2.0, |i, acc| add_pairs::<L, FMA>(acc, &s.odd, w, i + o + 1, i + o));
 }
 
 #[cfg(test)]
