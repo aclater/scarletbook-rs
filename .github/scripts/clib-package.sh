@@ -30,7 +30,10 @@ esac
 # feature Linux enforces in user space, so that a SHSTK-marked program keeps it when it
 # links them (issue #125). The marking needs no code generation, only that no code
 # returns anywhere but to its caller: no dependency switches stacks or longjmps, and
-# unwinding goes through libgcc_s, which follows the shadow stack. Indirect branch
+# neither library carries an unwinder of its own (`_Unwind_RaiseException` is undefined in
+# both targets' archives, and the .so needs libgcc_s.so.1), so a panic unwinds through the
+# consumer's system libgcc_s, which follows the shadow stack where glibc enforces it (GCC
+# builds it with --enable-cet there). Indirect branch
 # tracking (IBT) is NOT marked: it needs ENDBR64 at every indirect branch target, and
 # stable Rust's precompiled std has none, so an IBT mark would crash under enforcement.
 shstk=

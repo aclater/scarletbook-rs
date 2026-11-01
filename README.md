@@ -379,7 +379,12 @@ static libraries list it in `native-static-libs.txt` (`-lgcc_s`).
 Intel CET on x86-64 Linux: the shared library and every object in the static library carry
 the shadow stack (SHSTK) property (`readelf -n` shows `x86 feature: SHSTK`; checked in CI),
 so a program built with `-fcf-protection` stays SHSTK-marked when it links either one, and
-glibc with shadow stacks enabled loads it. They are not marked for indirect branch tracking
+glibc with shadow stacks enabled loads it. The libraries carry no unwinder of their own: a
+panic caught at the C boundary unwinds through the system `libgcc_s`, which keeps the shadow
+stack in step on distributions that enable it (for example Fedora 44's libgcc 16.2.1 is
+itself marked IBT and SHSTK). Shadow stacks are enabled per thread by glibc; musl has no
+shadow-stack support today, so on musl systems the mark only matters if the library ends up
+in a glibc program. They are not marked for indirect branch tracking
 (IBT): stable Rust's precompiled standard library has no `ENDBR64` instructions, so a
 program that links the static library loses its IBT mark. Do not force it back with
 `-Wl,-z,ibt`. Linux does not enforce IBT in user space today. IBT marking waits for a
