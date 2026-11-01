@@ -527,6 +527,7 @@ fn small_disc_layouts_equal_the_rust_api() {
 /// `DIIN` without `EMID`, with the source track's title in `DITI` (specification 8, 8.4.8
 /// and 8.6 row 24 at sacd-spec e069569), set through options 33 and 34.
 #[test]
+#[cfg_attr(miri, ignore = "rayon's crossbeam-epoch fails Stacked Borrows; run with Tree Borrows")]
 fn diin_choices_equal_the_rust_api() {
     let frames: Vec<common::PFrame> = (0..3u32)
         .map(|number| common::PFrame { number, dst: false, data: vec![number as u8; 2 * 4704] })
