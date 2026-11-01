@@ -537,9 +537,10 @@ fn set_option(o: &mut OutputOptions, option: u32, value: i64) -> Result<(), Fail
             if !(0..=7).contains(&value) {
                 return Err(Failure::arg("genre sources are a mask of 1, 2 and 4"));
             }
-            let mut g = GenreSources::default();
-            (g.track, g.album, g.disc) = (value & 1 != 0, value & 2 != 0, value & 4 != 0);
-            o.genres = g;
+            o.genres = GenreSources::new()
+                .with_track(value & 1 != 0)
+                .with_album(value & 2 != 0)
+                .with_disc(value & 4 != 0);
         }
         21 => o.id3.footer = flag(value)?,
         22 => o.id3.padding = u32_of(value)?,
