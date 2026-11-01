@@ -3928,11 +3928,9 @@ pub unsafe extern "C" fn sb_pcm_convert_run(
         let mut written = 0;
         for start in (0..count).step_by(PCM_CHUNK_FRAMES) {
             let end = (start + PCM_CHUNK_FRAMES).min(count);
-            let run = FrameRun {
-                before: if start == 0 { before } else { input.get((start - 1) * frame..start * frame) },
-                frames: &input[start * frame..end * frame],
-                after: if end == count { after } else { input.get(end * frame..(end + 1) * frame) },
-            };
+            let run = FrameRun::new(&input[start * frame..end * frame])
+                .with_before(if start == 0 { before } else { input.get((start - 1) * frame..start * frame) })
+                .with_after(if end == count { after } else { input.get(end * frame..(end + 1) * frame) });
             let samples = &mut pcm[..(end - start) * per_frame];
             let stats = conv.convert_run(run, samples).map_err(|e| Failure::arg(&e.to_string()))?;
             for (n, c) in counts.iter_mut().zip(stats.clipped) {

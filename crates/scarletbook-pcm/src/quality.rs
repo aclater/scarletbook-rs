@@ -97,7 +97,7 @@ fn modulate(frames: usize, x: impl Fn(f64) -> f64) -> Vec<u8> {
 fn convert(rate: PcmRate, cutoff: Cutoff, gain: Gain, input: &[u8]) -> (Vec<i32>, u64) {
     let mut conv = Converter::new(PcmConfig::new(rate, cutoff, 1).with_gain(gain)).unwrap();
     let mut out = vec![0i32; input.len() / FRAME_BYTES_PER_CHANNEL * conv.samples_per_frame()];
-    let stats = conv.convert_run(FrameRun { before: None, frames: input, after: None }, &mut out).unwrap();
+    let stats = conv.convert_run(FrameRun::new(input), &mut out).unwrap();
     (out, stats.clipped_total())
 }
 
@@ -314,12 +314,12 @@ fn full_scale() {
         let frame = vec![0xFFu8; FRAME_BYTES_PER_CHANNEL];
         let mut conv = Converter::new(PcmConfig::new(rate, Cutoff::Default, 1)).unwrap();
         let mut out = vec![0i32; conv.samples_per_frame()];
-        let run = FrameRun { before: Some(&frame), frames: &frame, after: Some(&frame) };
+        let run = FrameRun::new(&frame).with_before(Some(&frame)).with_after(Some(&frame));
         let stats = conv.convert_run(run, &mut out).unwrap();
         assert!(out.iter().all(|&v| v == 8_388_607));
         assert_eq!(stats.clipped[0], out.len() as u64);
         let zeros = vec![0u8; FRAME_BYTES_PER_CHANNEL];
-        let run = FrameRun { before: Some(&zeros), frames: &zeros, after: Some(&zeros) };
+        let run = FrameRun::new(&zeros).with_before(Some(&zeros)).with_after(Some(&zeros));
         let stats = conv.convert_run(run, &mut out).unwrap();
         assert!(out.iter().all(|&v| v == -8_388_608));
         assert_eq!(stats.clipped_total(), 0);

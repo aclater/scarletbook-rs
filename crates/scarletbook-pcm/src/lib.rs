@@ -17,7 +17,7 @@
 //! // Three frames of a 2-channel area, the whole area: no neighbours.
 //! let frames = vec![0x69u8; 3 * 2 * FRAME_BYTES_PER_CHANNEL];
 //! let mut pcm = vec![0i32; 3 * conv.samples_per_frame() * 2];
-//! conv.convert_run(FrameRun { before: None, frames: &frames, after: None }, &mut pcm)?;
+//! conv.convert_run(FrameRun::new(&frames), &mut pcm)?;
 //! # Ok(())
 //! # }
 //! ```
@@ -246,6 +246,7 @@ impl PcmConfig {
 pub enum PcmError {
     /// The cutoff is not available at the rate (`Wide` at 88.2 kHz).
     #[error("the {cutoff:?} filter is not available at {rate}")]
+    #[non_exhaustive]
     Unsupported {
         /// The rate asked for.
         rate: PcmRate,
@@ -261,6 +262,7 @@ pub enum PcmError {
     /// An input is not a whole number of frames of the converter's channel count (a
     /// neighbour must be exactly one frame).
     #[error("input of {len} bytes is not {what}")]
+    #[non_exhaustive]
     InputLength {
         /// Bytes given.
         len: usize,
@@ -269,6 +271,7 @@ pub enum PcmError {
     },
     /// The output buffer does not have exactly the samples of the input frames.
     #[error("output of {len} samples, {expected} expected")]
+    #[non_exhaustive]
     OutputLength {
         /// Samples given.
         len: usize,
@@ -293,7 +296,10 @@ impl ConvertStats {
 }
 
 /// A run of consecutive frames of one area and the frames around it.
+///
+/// Made with [`FrameRun::new`] and the `with_*` methods.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct FrameRun<'a> {
     /// The frame before the run, or `None` if the run starts the area.
     pub before: Option<&'a [u8]>,
@@ -301,6 +307,23 @@ pub struct FrameRun<'a> {
     pub frames: &'a [u8],
     /// The frame after the run, or `None` if the run ends the area.
     pub after: Option<&'a [u8]>,
+}
+
+impl<'a> FrameRun<'a> {
+    /// The run `frames`, with no frame before or after it: a whole area.
+    pub fn new(frames: &'a [u8]) -> FrameRun<'a> {
+        FrameRun { before: None, frames, after: None }
+    }
+
+    /// The same run with the frame before it, `None` if the run starts the area.
+    pub fn with_before(self, before: Option<&'a [u8]>) -> FrameRun<'a> {
+        FrameRun { before, ..self }
+    }
+
+    /// The same run with the frame after it, `None` if the run ends the area.
+    pub fn with_after(self, after: Option<&'a [u8]>) -> FrameRun<'a> {
+        FrameRun { after, ..self }
+    }
 }
 
 /// A converter for one stream: one per worker thread.
@@ -359,7 +382,7 @@ impl Converter {
         if cur.len() != frame {
             return Err(PcmError::InputLength { len: cur.len(), what: "one frame" });
         }
-        self.convert_run(FrameRun { before: prev, frames: cur, after: next }, out)
+        self.convert_run(FrameRun::new(cur).with_before(prev).with_after(next), out)
     }
 
     /// Converts a run of frames into `out`: `frames x samples_per_frame() x channels`

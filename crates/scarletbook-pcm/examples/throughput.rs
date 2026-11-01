@@ -44,7 +44,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     for f in 0..frames {
                         let before = f.checked_sub(1).map(|p| &input[p * frame..(p + 1) * frame]);
                         let after = (f + 1 < frames).then(|| &input[(f + 1) * frame..(f + 2) * frame]);
-                        let run = FrameRun { before, frames: &input[f * frame..(f + 1) * frame], after };
+                        let run = FrameRun::new(&input[f * frame..(f + 1) * frame])
+                            .with_before(before)
+                            .with_after(after);
                         conv.convert_run(run, &mut out[f * spf..(f + 1) * spf])?;
                     }
                     if pass > 0 {

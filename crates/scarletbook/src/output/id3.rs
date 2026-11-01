@@ -151,6 +151,113 @@ impl Default for Id3Options {
     }
 }
 
+impl Id3Options {
+    /// The defaults.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// These options with or without a footer (W4).
+    pub fn with_footer(self, write: bool) -> Self {
+        Id3Options { footer: write, ..self }
+    }
+
+    /// These options with `bytes` of padding (W5).
+    pub fn with_padding(self, bytes: u32) -> Self {
+        Id3Options { padding: bytes, ..self }
+    }
+
+    /// These options with frame order `order` (W6).
+    pub fn with_frame_order(self, order: Vec<[u8; 4]>) -> Self {
+        Id3Options { frame_order: order, ..self }
+    }
+
+    /// These options with text encoding `encoding` (W7).
+    pub fn with_encoding(self, encoding: Id3Encoding) -> Self {
+        Id3Options { encoding, ..self }
+    }
+
+    /// These options with or without a terminator after the last string (W8).
+    pub fn with_terminate_last(self, terminate: bool) -> Self {
+        Id3Options { terminate_last: terminate, ..self }
+    }
+
+    /// These options with control characters replaced by `replacement`, or removed (W9).
+    pub fn with_control_replacement(self, replacement: Option<char>) -> Self {
+        Id3Options { control_replacement: replacement, ..self }
+    }
+
+    /// These options with values split at `separator` (W10).
+    pub fn with_split(self, separator: Option<&str>) -> Self {
+        Id3Options { split: separator.map(str::to_owned), ..self }
+    }
+
+    /// These options with the arranger in `frame` (W11).
+    pub fn with_arranger(self, frame: ArrangerFrame) -> Self {
+        Id3Options { arranger: frame, ..self }
+    }
+
+    /// These options with the messages joined by `separator`, or one `COMM` each (W11 and W12).
+    pub fn with_join_messages(self, separator: Option<&str>) -> Self {
+        Id3Options { join_messages: separator.map(str::to_owned), ..self }
+    }
+
+    /// These options with or without the phonetic title and performer (W11).
+    pub fn with_phonetic(self, write: bool) -> Self {
+        Id3Options { phonetic: write, ..self }
+    }
+
+    /// These options with or without the track count in `TRCK` (W11).
+    pub fn with_track_count(self, write: bool) -> Self {
+        Id3Options { track_count: write, ..self }
+    }
+
+    /// These options with the album or disc artist in `frame` (W11).
+    pub fn with_album_artist(self, frame: AlbumArtistFrame) -> Self {
+        Id3Options { album_artist: frame, ..self }
+    }
+
+    /// These options with or without the copyright (W11).
+    pub fn with_copyright(self, write: bool) -> Self {
+        Id3Options { copyright: write, ..self }
+    }
+
+    /// These options with or without a sequence number outside the set size alone in `TPOS` (W11).
+    pub fn with_album_set_alone(self, write: bool) -> Self {
+        Id3Options { album_set_alone: write, ..self }
+    }
+
+    /// These options with the date in `frame` (W11).
+    pub fn with_date(self, frame: DateFrame) -> Self {
+        Id3Options { date: frame, ..self }
+    }
+
+    /// These options with `COMM` language `language` (W12).
+    pub fn with_language(self, language: [u8; 3]) -> Self {
+        Id3Options { language, ..self }
+    }
+
+    /// These options with the message's `COMM` description `description` (W12).
+    pub fn with_message_description(self, description: &str) -> Self {
+        Id3Options { message_description: description.to_owned(), ..self }
+    }
+
+    /// These options with the extra message's `COMM` description `description` (W12).
+    pub fn with_extra_message_description(self, description: &str) -> Self {
+        Id3Options { extra_message_description: description.to_owned(), ..self }
+    }
+
+    /// These options with the arranger's `TXXX` description `description` (W12).
+    pub fn with_arranger_description(self, description: &str) -> Self {
+        Id3Options { arranger_description: description.to_owned(), ..self }
+    }
+
+    /// These options with the album artist's `TXXX` description `description` (W12).
+    pub fn with_album_artist_description(self, description: &str) -> Self {
+        Id3Options { album_artist_description: description.to_owned(), ..self }
+    }
+}
+
 /// Whether `c` is a control character (8.3.4 item 1).
 fn control(c: char) -> bool {
     matches!(c, '\u{0}'..='\u{1F}' | '\u{7F}'..='\u{9F}')

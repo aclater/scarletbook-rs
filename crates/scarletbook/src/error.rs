@@ -125,6 +125,7 @@ pub enum OutputRefusal {
     #[error(
         "the area's layout ({channels} channels, configuration {config:#04x}) is unspecified, and the options give no channel type for it"
     )]
+    #[non_exhaustive]
     UnspecifiedLayout {
         /// The area's channel count.
         channels: u8,
@@ -152,6 +153,7 @@ pub enum EditedMasterCheck {
     TrackCount,
     /// A track's duration is below 75 frames (item 5).
     #[error("track {track} is shorter than 75 frames")]
+    #[non_exhaustive]
     TrackTooShort {
         /// The track's number.
         track: u8,

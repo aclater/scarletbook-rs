@@ -98,19 +98,44 @@ fn play_program(area: &Area) -> Vec<(u32, u16)> {
     m
 }
 
+/// An expected [`EditedMasterCheck`], which a test can build: `TrackTooShort` is
+/// non-exhaustive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Check {
+    Layout,
+    TrackCount,
+    TrackTooShort(u8),
+    TracksNotInOrder,
+    ProgramTooLong,
+}
+
+impl Check {
+    /// Whether `got` is this check.
+    fn is(self, got: EditedMasterCheck) -> bool {
+        match got {
+            EditedMasterCheck::Layout => self == Check::Layout,
+            EditedMasterCheck::TrackCount => self == Check::TrackCount,
+            EditedMasterCheck::TrackTooShort { track, .. } => self == Check::TrackTooShort(track),
+            EditedMasterCheck::TracksNotInOrder => self == Check::TracksNotInOrder,
+            EditedMasterCheck::ProgramTooLong => self == Check::ProgramTooLong,
+            _ => false,
+        }
+    }
+}
+
 /// What 8.4.11 says of an edited master of an area.
-fn edited_master_check(area: &Area) -> Option<EditedMasterCheck> {
+fn edited_master_check(area: &Area) -> Option<Check> {
     let t = &area.tracks;
     if area.channel_speakers().is_none() {
-        Some(EditedMasterCheck::Layout)
+        Some(Check::Layout)
     } else if t.is_empty() || t.len() > 255 {
-        Some(EditedMasterCheck::TrackCount)
+        Some(Check::TrackCount)
     } else if let Some(short) = t.iter().find(|t| t.duration_frames < 75) {
-        Some(EditedMasterCheck::TrackTooShort { track: short.number })
+        Some(Check::TrackTooShort(short.number))
     } else if !t.windows(2).all(|w| w[0].start_frame + w[0].duration_frames <= w[1].start_frame) {
-        Some(EditedMasterCheck::TracksNotInOrder)
+        Some(Check::TracksNotInOrder)
     } else if t.last().unwrap().end_frame() > (255 * 60 + 59) * 75 + 74 {
-        Some(EditedMasterCheck::ProgramTooLong)
+        Some(Check::ProgramTooLong)
     } else {
         None
     }
@@ -186,7 +211,7 @@ fn corpus_markers_and_edited_masters() {
                 disc.output_layout(area.slot, 0, p, Format::DsdiffDsd, &master),
             ) {
                 (Some(want), Err(Error::OutputRefused(OutputRefusal::NotEditedMaster(got)))) => {
-                    assert_eq!(got, want)
+                    assert!(want.is(got), "{want:?} but {got:?}")
                 }
                 (None, Ok(_)) => {
                     let f = whole(&mut disc, area.slot, 0, p, &master);
@@ -379,13 +404,13 @@ fn edited_master_refusals() {
     };
     let master =
         OutputOptions::default().with_dsdiff_edited_master(true).with_dsdiff_artist_title(Some(false));
-    type Case<'a> = (&'a [(u32, u32)], u32, Option<EditedMasterCheck>);
+    type Case<'a> = (&'a [(u32, u32)], u32, Option<Check>);
     let cases: &[Case<'_>] = &[
         (&[(0, 75), (75, 75)], 160, None),
         (&[(5, 75), (85, 75)], 160, None),
-        (&[(0, 75), (70, 80)], 160, Some(EditedMasterCheck::TracksNotInOrder)),
-        (&[(0, 75), (75, 74)], 160, Some(EditedMasterCheck::TrackTooShort { track: 2 })),
-        (&[(80, 75), (0, 75)], 160, Some(EditedMasterCheck::TracksNotInOrder)),
+        (&[(0, 75), (70, 80)], 160, Some(Check::TracksNotInOrder)),
+        (&[(0, 75), (75, 74)], 160, Some(Check::TrackTooShort(2))),
+        (&[(80, 75), (0, 75)], 160, Some(Check::TracksNotInOrder)),
     ];
     for (t, p, want) in cases {
         let mut disc = synthetic(2, &plain(2, *p), tracks(t), *p);
@@ -400,7 +425,9 @@ fn edited_master_refusals() {
                 let l = disc.output_layout(Slot::TwoChannel, 0, *p, Format::DsdiffDsd, &named).unwrap();
                 assert_eq!(l.source_track(), None);
             }
-            (Some(w), Err(Error::OutputRefused(OutputRefusal::NotEditedMaster(g)))) => assert_eq!(&g, w),
+            (Some(w), Err(Error::OutputRefused(OutputRefusal::NotEditedMaster(g)))) => {
+                assert!(w.is(g), "{w:?} but {g:?}")
+            }
             (w, g) => panic!("{t:?}: {w:?} but {:?}", g.map(|l| l.size())),
         }
     }

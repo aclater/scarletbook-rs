@@ -38,7 +38,7 @@ fn whole(config: PcmConfig, input: &[u8]) -> Vec<i32> {
     let mut conv = Converter::new(config).unwrap();
     let frames = input.len() / (usize::from(config.channels) * FRAME_BYTES_PER_CHANNEL);
     let mut out = vec![0i32; frames * conv.samples_per_frame() * usize::from(config.channels)];
-    conv.convert_run(FrameRun { before: None, frames: input, after: None }, &mut out).unwrap();
+    conv.convert_run(FrameRun::new(input), &mut out).unwrap();
     out
 }
 
@@ -50,7 +50,11 @@ fn run(conv: &mut Converter, input: &[u8], a: usize, b: usize) -> Vec<i32> {
     let before = a.checked_sub(1).map(|p| &input[p * frame..a * frame]);
     let after = (b < frames).then(|| &input[b * frame..(b + 1) * frame]);
     let mut out = vec![0i32; (b - a) * conv.samples_per_frame() * ch];
-    conv.convert_run(FrameRun { before, frames: &input[a * frame..b * frame], after }, &mut out).unwrap();
+    conv.convert_run(
+        FrameRun::new(&input[a * frame..b * frame]).with_before(before).with_after(after),
+        &mut out,
+    )
+    .unwrap();
     out
 }
 
@@ -176,7 +180,7 @@ fn errors() {
     assert!(out.iter().all(|&v| v == 0));
     conv.convert_frame(None, &frame, None, &mut out).unwrap();
     // An empty run converts to nothing.
-    assert!(conv.convert_run(FrameRun { before: None, frames: &[], after: None }, &mut []).is_ok());
+    assert!(conv.convert_run(FrameRun::new(&[]), &mut []).is_ok());
 }
 
 #[test]
