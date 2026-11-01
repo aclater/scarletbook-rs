@@ -12,7 +12,10 @@
 //! `H(z) = (z^-(2K-1) + G(z^2)) / 2`, whose even taps are exactly zero and whose centre tap
 //! is exactly 1/2. Stage edges follow the multistage decimation rules of Crochiere & Rabiner
 //! (Proc. IEEE 69(3), 1981): the stopband of a stage that decimates to rate `F` starts at
-//! `F - fst`, so nothing aliases into `[0, fst]`.
+//! `F - fst`, so nothing aliases into `[0, fst]`. The first stages carry the integer factor
+//! `(1 + z^-1)^2 (1 + z^-4)`, which cancels the idle patterns exactly (`idle_factor`); the
+//! rest of them is designed with the factor moved into the desired response and the weight
+//! (`lowpass_idle`).
 //!
 //! `SCARLETBOOK_PCM_REGENERATE=1 cargo test -p scarletbook-pcm --lib tables` rewrites
 //! `src/tables.rs`; without the variable the test checks the committed file.
@@ -227,6 +230,63 @@ pub(crate) fn lowpass(m: usize, wp: f64, ws: f64, k: f64) -> Option<(Vec<f64>, f
     Some((h, delta.abs()))
 }
 
+/// A type I low-pass of length `2m + 1` with the factor of `idle_factor` (amplitude
+/// `Q(w) = (2 + 2 cos w) 2 cos 2w`), as `lowpass`; returns the other factor `G` (length
+/// `2m - 5`) and the passband ripple. The factor's zeros, at `w = pi/4`, `3 pi/4` and `pi`,
+/// are where the idle patterns have their spectral lines. As for the types II to IV in
+/// Parks & McClellan (1972) and Rabiner, McClellan & Parks (1975), the fixed factor `Q`
+/// moves into the approximation problem: `G` approximates `D / Q` with weight `W |Q|`, so that the weighted
+/// error of `Q G` is the Chebyshev optimum. Grid points where `Q` vanishes carry no weight
+/// and are left out (the product is exactly 0 there).
+pub(crate) fn lowpass_idle(m: usize, wp: f64, ws: f64, k: f64) -> Option<(Vec<f64>, f64)> {
+    let q = |w: f64| 2.0 * (2.0 * w).cos() * (2.0 + 2.0 * w.cos());
+    let d = move |w: f64| 1.0 / q(w);
+    let wt = move |w: f64| q(w).abs();
+    let zero = |_: f64| 0.0;
+    let wk = move |w: f64| k * q(w).abs();
+    let mut g = grid(&[(0.0, wp, &d, &wt), (ws, PI, &zero, &wk)], m - 2);
+    for band in &mut g {
+        band.retain(|p| p.wt > 1e-6);
+    }
+    let (a, delta) = remez(&g, m - 2)?;
+    let mg = m - 3;
+    let mut h = vec![0.0; 2 * mg + 1];
+    h[mg] = a[0];
+    for (i, &ai) in a.iter().enumerate().skip(1) {
+        h[mg - i] = ai / 2.0;
+        h[mg + i] = ai / 2.0;
+    }
+    Some((h, delta.abs()))
+}
+
+/// `g` times `F(z) = (1 + z^-1)^2 (1 + z^-4)`, taps `1 2 1 0 1 2 1`, in integers.
+///
+/// The idle patterns of sacd-spec specification 0, 0.6 are silence, and both are cancelled
+/// by a factor of `F`:
+///
+/// - 0x69 (bits `0110 1001`) is, as +-1 samples, `-1 +1 +1 -1 +1 -1 -1 +1` repeated. Each
+///   half of a byte is the negation of the other, so `x[n - 4] = -x[n]` for every `n`, and
+///   `1 + z^-4` adds pairs `x[n] + x[n - 4] = 0`. In frequency terms: the pattern has period
+///   8, a mean of 0 (four +1, four -1) and lines only at the odd multiples of
+///   2.8224 MHz / 8 (its even DFT bins vanish because `x[n - 4] = -x[n]`), which are the
+///   zeros of `1 + z^-4`, `z^4 = -1`.
+/// - 0x55 (`0101 0101`) alternates, `x[n - 1] = -x[n]`, a single line at 1.4112 MHz, the
+///   zero of `1 + z^-1` (doubled, for a symmetric odd-length filter).
+///
+/// A filter with this factor gives exactly 0 on either pattern, at any bit phase and
+/// whatever its other taps are, in exact integer arithmetic. The factor's amplitude is
+/// `(2 + 2 cos w) 2 cos 2w`, and its sum is 8.
+pub(crate) fn idle_factor(g: &[i64]) -> Vec<i64> {
+    const F: [i64; 7] = [1, 2, 1, 0, 1, 2, 1];
+    let mut h = vec![0i64; g.len() + 6];
+    for (i, &v) in g.iter().enumerate() {
+        for (j, &f) in F.iter().enumerate() {
+            h[i + j] += f * v;
+        }
+    }
+    h
+}
+
 /// A halfband filter of length `4K - 1` (Vaidyanathan & Nguyen) with passband `[0, wp]`
 /// (and so stopband `[pi - wp, pi]`); returns the taps and the ripple of both bands.
 pub(crate) fn halfband(k: usize, wp: f64) -> Option<(Vec<f64>, f64)> {
@@ -309,15 +369,25 @@ pub(crate) fn amplitude(h: &[i64], q: u32, w: f64) -> f64 {
 
 /// The shortest type I low-pass with passband ripple at most `dp` and stopband attenuation
 /// at least `STOP_DB` after quantisation to `q` bits, searching `m` in `ms` (with the given
-/// step, so that S1 lengths fill whole bytes).
-fn shortest_lowpass(ms: impl Iterator<Item = usize>, wp: f64, ws: f64, dp: f64, q: u32) -> (Vec<i64>, usize) {
+/// step, so that S1 lengths fill whole bytes). With `idle`, the filter has the factor of
+/// `idle_factor` (exactly, in its integer taps).
+fn shortest_lowpass(
+    ms: impl Iterator<Item = usize>,
+    wp: f64,
+    ws: f64,
+    dp: f64,
+    q: u32,
+    idle: bool,
+) -> (Vec<i64>, usize) {
     let ds = 10f64.powf(-STOP_DB / 20.0);
     for m in ms {
-        let Some((h, ripple)) = lowpass(m, wp, ws, dp / ds) else { continue };
+        let design = if idle { lowpass_idle(m, wp, ws, dp / ds) } else { lowpass(m, wp, ws, dp / ds) };
+        let Some((h, ripple)) = design else { continue };
         if ripple > dp {
             continue;
         }
-        let hq = quantise(&h, q, false);
+        // With the factor, `G` is quantised to sum to 2^(q - 3): the factor's DC gain is 8.
+        let hq = if idle { idle_factor(&quantise(&h, q - 3, false)) } else { quantise(&h, q, false) };
         if worst_stop_db(&hq, q, ws) >= STOP_DB - 2.0 {
             return (hq, m);
         }
@@ -349,6 +419,7 @@ pub(crate) struct Designed {
     pub hb: Vec<i64>,
     pub f40: Vec<i64>,
     pub f30: Vec<i64>,
+    pub f80: Vec<i64>,
 }
 
 /// Coefficient scale of the first stage (its outputs are on the 2^26 grid directly).
@@ -368,10 +439,10 @@ pub(crate) fn design() -> Designed {
     // S1: decimates by 8 to 352.8 kHz. Half-length m = 8k + 7: the taps then fill 2k + 2
     // whole bytes on each output's grid (one tap position, beyond the end, is zero); see
     // `kernel::lut`.
-    let (s1, _) =
-        shortest_lowpass((1..20).map(|k| 8 * k + 7), rad(40e3, FS), rad(r352 - 48e3, FS), DP_S1, Q_S1);
-    let (s1w, _) =
-        shortest_lowpass((1..20).map(|k| 8 * k + 7), rad(80e3, FS), rad(r352 - 96e3, FS), DP_S1, Q_S1);
+    // Both have the factor of `idle_factor`, so that the idle pattern converts to exact 0.
+    let bytes = || (1..20).map(|k| 8 * k + 7);
+    let (s1, _) = shortest_lowpass(bytes(), rad(40e3, FS), rad(r352 - 48e3, FS), DP_S1, Q_S1, true);
+    let (s1w, _) = shortest_lowpass(bytes(), rad(80e3, FS), rad(r352 - 96e3, FS), DP_S1, Q_S1, true);
     // Halfband 352.8 -> 176.4 kHz, passband to 48 kHz (stopband from 128.4 kHz).
     let ds = 10f64.powf(-STOP_DB / 20.0);
     let hb = (2..60)
@@ -382,9 +453,12 @@ pub(crate) fn design() -> Designed {
         })
         .expect("halfband");
     // The sharp filters at 176.4 kHz (F40 also serves as the wide filter at 352.8 kHz).
-    let (f40, _) = shortest_lowpass(20..200, rad(40e3, r176), rad(48e3, r176), DP_F, Q_FIR);
-    let (f30, _) = shortest_lowpass(20..200, rad(30e3, r176), rad(38e3, r176), DP_F, Q_FIR);
-    Designed { s1, s1w, hb, f40, f30 }
+    let (f40, _) = shortest_lowpass(20..200, rad(40e3, r176), rad(48e3, r176), DP_F, Q_FIR, false);
+    let (f30, _) = shortest_lowpass(20..200, rad(30e3, r176), rad(36e3, r176), DP_F, Q_FIR, false);
+    // The wide filter for 176.4 kHz output, at 352.8 kHz: stopband from the output's Nyquist
+    // frequency, so that nothing folds back below it.
+    let (f80, _) = shortest_lowpass(20..300, rad(80e3, r352), rad(88.2e3, r352), DP_F, Q_FIR, false);
+    Designed { s1, s1w, hb, f40, f30, f80 }
 }
 
 /// `src/tables.rs` for the designed filters: the taps from the centre outwards (`[0]` is the
@@ -412,13 +486,13 @@ pub(crate) fn tables_rs(d: &Designed) -> String {
     };
     table(
         "S1",
-        "First stage of the 40 and 30 kHz filters: 2822.4 kHz, passband 40 kHz, stopband from 304.8 kHz.",
+        "First stage of the 40 and 30 kHz filters: 2822.4 kHz, passband 40 kHz, stopband from 304.8 kHz, factor 1 + z^-4.",
         &d.s1,
         Q_S1,
     );
     table(
         "S1_WIDE",
-        "First stage of the 80 kHz filter: 2822.4 kHz, passband 80 kHz, stopband from 256.8 kHz.",
+        "First stage of the 80 kHz filters: 2822.4 kHz, passband 80 kHz, stopband from 256.8 kHz, factor 1 + z^-4.",
         &d.s1w,
         Q_S1,
     );
@@ -429,7 +503,13 @@ pub(crate) fn tables_rs(d: &Designed) -> String {
         &d.f40,
         Q_FIR,
     );
-    table("F30", "Sharp filter at 176.4 kHz: passband 30 kHz, stopband from 38 kHz.", &d.f30, Q_FIR);
+    table("F30", "Sharp filter at 176.4 kHz: passband 30 kHz, stopband from 36 kHz.", &d.f30, Q_FIR);
+    table(
+        "F80",
+        "Wide filter at 352.8 kHz for 176.4 kHz output: passband 80 kHz, stopband from 88.2 kHz.",
+        &d.f80,
+        Q_FIR,
+    );
     s.truncate(s.trim_end().len());
     s.push('\n');
     s
@@ -478,8 +558,9 @@ pub(crate) mod tests {
     pub(crate) fn response(rate: PcmRate, cutoff: Cutoff, f: f64) -> f64 {
         let (r352, r176) = (FS / 8.0, FS / 16.0);
         if cutoff == Cutoff::Wide {
+            let fw = if rate == PcmRate::Hz176400 { &tables::F80[..] } else { &tables::F40[..] };
             return amplitude(&full(&tables::S1_WIDE), Q_S1, rad(f, FS))
-                * amplitude(&full(&tables::F40), Q_FIR, rad(f, r352));
+                * amplitude(&full(fw), Q_FIR, rad(f, r352));
         }
         let fq = if cutoff == Cutoff::Low { &tables::F30[..] } else { &tables::F40[..] };
         let base = amplitude(&full(&tables::S1), Q_S1, rad(f, FS))
@@ -510,7 +591,7 @@ pub(crate) mod tests {
     fn figures(rate: PcmRate, cutoff: Cutoff) -> Figures {
         let db = |f: f64| 20.0 * response(rate, cutoff, f).abs().log10();
         let fp = f64::from(cutoff.passband_hz());
-        let fst = f64::from(cutoff.stopband_hz());
+        let fst = f64::from(cutoff.stopband_hz_at(rate));
         let (mut ripple_20k, mut ripple_fp) = (0.0f64, 0.0f64);
         let mut f = 0.0;
         while f <= fp {
@@ -577,11 +658,51 @@ pub(crate) mod tests {
             (&tables::HB[..], Q_FIR),
             (&tables::F40[..], Q_FIR),
             (&tables::F30[..], Q_FIR),
+            (&tables::F80[..], Q_FIR),
         ] {
             assert_eq!(full(half).iter().sum::<i64>(), 1 << q);
         }
         assert_eq!(tables::HB[0], 1 << (Q_FIR - 1));
         assert!(tables::HB.iter().skip(2).step_by(2).all(|&h| h == 0));
+    }
+
+    /// #171: the idle patterns 0x69 and 0x55 give every S1 output exactly 0, at all 8 bit
+    /// phases: the sum of the integer taps against the +-1 pattern is 0 (exactly, in i64).
+    #[test]
+    fn s1_cancels_the_idle_patterns_exactly() {
+        for half in [&tables::S1[..], &tables::S1_WIDE[..]] {
+            let h = full(half);
+            let m = (h.len() / 2) as i64;
+            for byte in [0x69u8, 0x55] {
+                let x = |n: i64| if (byte >> (7 - n.rem_euclid(8))) & 1 == 1 { 1i64 } else { -1 };
+                for phase in 0..8 {
+                    let sum: i64 = h.iter().enumerate().map(|(i, &t)| t * x(phase - (i as i64 - m))).sum();
+                    assert_eq!(sum, 0, "{byte:#04x} phase {phase}");
+                }
+            }
+        }
+    }
+
+    /// #170: `Wide` at 176.4 kHz attenuates at least 105 dB from 88.2 kHz to 1.4112 MHz, and
+    /// `Low` from 36 kHz, at every rate (aliases included: the response at 2.8224 MHz).
+    #[test]
+    fn stopband_edges_of_issue_170() {
+        let worst = |rate: PcmRate, cutoff: Cutoff, from: f64| {
+            let mut worst = f64::INFINITY;
+            let mut f = from;
+            while f <= FS / 2.0 {
+                worst = worst.min(-20.0 * response(rate, cutoff, f).abs().log10());
+                f += 10.0;
+            }
+            worst
+        };
+        assert!(worst(PcmRate::Hz176400, Cutoff::Wide, 88_200.0) >= 105.0);
+        for rate in PcmRate::ALL {
+            assert!(worst(rate, Cutoff::Low, 36_000.0) >= 105.0, "{rate}");
+        }
+        assert_eq!(Cutoff::Wide.stopband_hz_at(PcmRate::Hz176400), 88_200);
+        assert_eq!(Cutoff::Wide.stopband_hz_at(PcmRate::Hz352800), 96_000);
+        assert_eq!(Cutoff::Low.stopband_hz_at(PcmRate::Hz88200), 36_000);
     }
 
     /// Every sum the kernels carry in `f64` is an integer below 2^53, so exact: per stage,
@@ -617,8 +738,10 @@ pub(crate) mod tests {
             // The gain multiply: at most +24 dB (x 15.85), still exact-integer input.
             assert!(y * 16 < limit);
         }
-        let w = stage(abs(&tables::S1_WIDE), &tables::F40, Q_FIR);
-        assert!(w * 16 < limit);
+        for f in [&tables::F40[..], &tables::F80[..]] {
+            let w = stage(abs(&tables::S1_WIDE), f, Q_FIR);
+            assert!(w * 16 < limit);
+        }
     }
 
     /// The figures for the crate README: `cargo test -p scarletbook-pcm --release --lib
@@ -649,12 +772,13 @@ pub(crate) mod tests {
         }
         let d = |h: &[i32]| 2 * h.len() - 1;
         println!(
-            "\nLengths: S1 {}, S1 wide {}, halfband {}, F40 {}, F30 {}",
+            "\nLengths: S1 {}, S1 wide {}, halfband {}, F40 {}, F30 {}, F80 {}",
             d(&tables::S1),
             d(&tables::S1_WIDE),
             d(&tables::HB),
             d(&tables::F40),
-            d(&tables::F30)
+            d(&tables::F30),
+            d(&tables::F80)
         );
     }
 
@@ -686,11 +810,12 @@ pub(crate) mod tests {
         let (mut worst, mut differ) = (0.0f64, 0usize);
         for c in 0..channels {
             let x = |s: i64| -> f64 {
-                if s < 0 || s >= samples {
-                    return 0.0;
-                }
-                let byte = input[(s as usize / 8) * channels + c];
-                if (byte >> (7 - s % 8)) & 1 == 1 { 1.0 } else { -1.0 }
+                let byte = if s < 0 || s >= samples {
+                    crate::kernel::IDLE
+                } else {
+                    input[(s as usize / 8) * channels + c]
+                };
+                if (byte >> (7 - s.rem_euclid(8))) & 1 == 1 { 1.0 } else { -1.0 }
             };
             // An equivalent filter applied at DSD sample `centre`.
             let apply = |h: &[f64], centre: i64| -> f64 {
@@ -698,7 +823,8 @@ pub(crate) mod tests {
                 h.iter().enumerate().map(|(i, &hi)| hi * x(centre + i as i64 - m)).sum()
             };
             let model: Box<dyn Fn(i64) -> f64> = if cutoff == Cutoff::Wide {
-                let heq = cascade(&f(&tables::S1_WIDE, Q_S1), &f(&tables::F40, Q_FIR), 8);
+                let fw = if rate == PcmRate::Hz176400 { &tables::F80[..] } else { &tables::F40[..] };
+                let heq = cascade(&f(&tables::S1_WIDE, Q_S1), &f(fw, Q_FIR), 8);
                 let d = rate.decimation() as i64;
                 Box::new(move |n| apply(&heq, d * n))
             } else {
