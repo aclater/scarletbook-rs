@@ -348,11 +348,13 @@ impl Plan {
                 if lo < hi {
                     input.copy(c, lo, &mut sc.bytes[(lo - p0) as usize..(hi - p0) as usize]);
                 }
+                // The buffers that `s1` and the kernels write are resized, not cleared: those
+                // write every element (whole blocks of `LANES`), so zeroing them first is
+                // wasted (issue #216).
                 // S1 into `a`, unless the first stage is a Dec2: that takes its even and odd
                 // inputs straight from S1.
                 if !matches!(self.ops.first(), Some(Op::Dec2(_))) {
                     let n1 = levels[0].1.div_ceil(LANES) * LANES;
-                    sc.a.clear();
                     sc.a.resize(n1, 0.0);
                     s1(self.lut, &sc.bytes, 0, 1, &mut sc.a);
                 }
@@ -362,7 +364,6 @@ impl Plan {
                     let start_in = levels[k].0;
                     match op {
                         Op::Fir1(s) => {
-                            sc.b.clear();
                             sc.b.resize(n_out.div_ceil(LANES) * LANES, 0.0);
                             debug_assert_eq!(start_out - start_in, s.half_len() as i64);
                             dispatch::fir1(self.isa, s, &sc.a, &mut sc.b);
@@ -374,18 +375,17 @@ impl Plan {
                             debug_assert_eq!(start_in, 2 * start_out - m as i64);
                             // xe[i] = x[2(a - e + i)], xo[i] = x[2(a - o + i) + 1].
                             let (de, dodd) = (m - 2 * e, m + 1 - 2 * o);
-                            sc.even.clear();
-                            sc.odd.clear();
                             if k == 0 {
                                 sc.even.resize(np + 2 * e, 0.0);
                                 sc.odd.resize(np + 2 * o, 0.0);
                                 s1(self.lut, &sc.bytes, de, 2, &mut sc.even);
                                 s1(self.lut, &sc.bytes, dodd, 2, &mut sc.odd);
                             } else {
+                                sc.even.clear();
+                                sc.odd.clear();
                                 sc.even.extend(sc.a.iter().skip(de).step_by(2).take(np + 2 * e));
                                 sc.odd.extend(sc.a.iter().skip(dodd).step_by(2).take(np + 2 * o));
                             }
-                            sc.b.clear();
                             sc.b.resize(np, 0.0);
                             dispatch::dec2(self.isa, s, &sc.even, &sc.odd, &mut sc.b);
                         }
@@ -393,7 +393,6 @@ impl Plan {
                             let o = s.odd.len();
                             let half = (n_out / 2).div_ceil(LANES) * LANES;
                             debug_assert_eq!(start_in, start_out / 2 - o as i64);
-                            sc.even.clear();
                             sc.even.resize(half, 0.0);
                             dispatch::interp2_odd(self.isa, s, &sc.a, &mut sc.even);
                             sc.b.clear();
