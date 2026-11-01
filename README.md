@@ -469,9 +469,11 @@ conformance manifest.
 | `x86_64-unknown-linux-musl-v3` | as `x86_64-unknown-linux-musl`, on an x86-64-v3 CPU only | musllinux_1_2 image, `-C target-cpu=x86-64-v3` |
 
 The two `-v3` archives are the x86_64 Linux libraries built a second time for
-microarchitecture level x86-64-v3 of the x86-64 psABI. They have the same ABI, header and
-packaging as the baseline archives next to them, which stay built for the baseline x86-64
-level; only the instructions differ. Decoding DST is about 14 % faster with them (#146).
+microarchitecture level x86-64-v3 of the x86-64 psABI: the v3 archive is compiled entirely
+for x86-64-v3, every crate of it. They have the same ABI, header and packaging as the
+baseline archives next to them, which stay built for the baseline x86-64 level; only the
+instructions differ. They are meant for benchmarks and for consumers who build per CPU
+(#146).
 **They need x86-64-v3: AVX, AVX2, BMI1, BMI2, F16C, FMA, LZCNT, MOVBE and OSXSAVE, on
 top of the x86-64-v2 features (CMPXCHG16B, LAHF/SAHF, POPCNT, SSE3, SSE4.1, SSE4.2,
 SSSE3).** On a CPU without one of them the library fails with an illegal instruction
