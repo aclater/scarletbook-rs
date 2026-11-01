@@ -16,6 +16,11 @@ conv.convert_frame(prev, frame, next, &mut pcm)?;     // prev/next: None at the 
 // or a whole run: conv.convert_run(FrameRun { before, frames, after }, &mut pcm)?
 ```
 
+`Converter::convert` is the general form: it takes a run's frames in one buffer or one
+buffer per frame (`&[&[u8]]`, read in place), writes `i32` samples or 3-byte little-endian
+WAV/FLAC samples directly, and can report the clipped samples of each frame of the run
+(the same count whether the frame is converted alone or in a run).
+
 One `Converter` per worker thread. A `Gain` from -120 to +24 dB can be set; samples
 that exceed the 24-bit range are clamped and counted per channel. 100 % modulation is full
 scale, so a sustained all-ones input reports clips; Super Audio CD content stays well below

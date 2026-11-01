@@ -478,6 +478,16 @@ web search was made. All sources are from before 2006.
 - [P11] K. C.-H. Chao, S. Nadeem, W. L. Lee, C. G. Sodini, "A higher order topology for interpolative modulators for oversampling A/D converters", IEEE Trans. CAS 37(3), 1990, https://doi.org/10.1109/31.52724; R. Schreier, G. C. Temes, *Understanding Delta-Sigma Data Converters*, Wiley-IEEE Press, 2005 (citation only) — the test-only sigma-delta modulator (largest NTF gain 1.5).
 - [P12] A. V. Oppenheim, R. W. Schafer, *Discrete-Time Signal Processing*, 2nd ed., Prentice-Hall, 1999 (citation only) — type I and II linear-phase FIRs, the bilinear transform, Butterworth poles (test modulator).
 
+### Evidence record (#40)
+
+On 2026-11-01, by the owner's decision on #40, the sources above and those of the #40
+technique inventory were gathered into a preserved evidence record, indexed in
+`docs/provenance/EVIDENCE.md`: dated Crossref and OpenAlex metadata for every source, legally
+free full texts with their SHA-256 hashes and Wayback captures (kept outside the repository),
+the page or section of each that supports a technique or the fact that it does not, and the
+process records (GitHub exports, git history, the agent brief). Every source consulted for it
+is listed in its Log row. No patent was opened.
+
 ## Statement
 
 None of the forbidden sources listed under "Rules followed" was read, searched for, fetched

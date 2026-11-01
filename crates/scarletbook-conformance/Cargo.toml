@@ -10,6 +10,8 @@ publish = false
 
 [dependencies]
 scarletbook = { path = "../scarletbook" }
+# The fuzz harness (scarletbook-seeds) converts DSD to PCM.
+scarletbook-pcm = { path = "../scarletbook-pcm" }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.11"
 

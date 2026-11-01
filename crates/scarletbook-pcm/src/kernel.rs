@@ -27,7 +27,7 @@
 use std::ops::Range;
 use std::sync::OnceLock;
 
-use crate::{ConvertStats, Cutoff, FRAME_BYTES_PER_CHANNEL, FrameRun, PcmRate, tables};
+use crate::{ConvertStats, Cutoff, FRAME_BYTES_PER_CHANNEL, Frames, PcmOut, PcmRate, Run, tables};
 
 /// Output samples computed together by the kernels (a block of independent sums the
 /// compiler can put in vector lanes).
@@ -177,7 +177,7 @@ impl Op {
 /// The run being converted.
 #[derive(Debug)]
 pub(crate) struct Input<'a> {
-    pub run: FrameRun<'a>,
+    pub run: Run<'a>,
     pub channels: usize,
     pub frames: usize,
 }
@@ -193,25 +193,44 @@ impl Input<'_> {
         lo..hi
     }
 
+    /// Frame `f` of the run: -1 is the frame before it, `frames` the frame after it.
+    fn frame(&self, f: i64) -> Option<&[u8]> {
+        if f < 0 {
+            self.run.before
+        } else if f >= self.frames as i64 {
+            self.run.after
+        } else {
+            let f = f as usize;
+            match self.run.frames {
+                Frames::Contiguous(b) => {
+                    let len = FRAME_BYTES_PER_CHANNEL * self.channels;
+                    Some(&b[f * len..(f + 1) * len])
+                }
+                Frames::Separate(s) => Some(s[f]),
+            }
+        }
+    }
+
     /// Channel `c`'s bytes from run-relative position `from` on, into `dst` (all within
-    /// `valid()`).
+    /// `valid()`), one frame at a time.
     fn copy(&self, c: usize, from: i64, dst: &mut [u8]) {
         let fb = FRAME_BYTES_PER_CHANNEL as i64;
-        let end = self.frames as i64 * fb;
         let ch = self.channels;
-        for (i, d) in dst.iter_mut().enumerate() {
-            let p = from + i as i64;
-            let (src, at) = if p < 0 {
-                (self.run.before, p + fb)
-            } else if p < end {
-                (Some(self.run.frames), p)
-            } else {
-                (self.run.after, p - end)
-            };
+        let mut p = from;
+        let mut rest = dst;
+        while !rest.is_empty() {
+            let f = p.div_euclid(fb);
+            let at = (p - f * fb) as usize;
+            let take = rest.len().min(FRAME_BYTES_PER_CHANNEL - at);
+            let (part, tail) = rest.split_at_mut(take);
             // Callers pass only positions within `valid()`, where the source exists.
-            if let Some(src) = src {
-                *d = src[at as usize * ch + c];
+            if let Some(src) = self.frame(f) {
+                for (d, &s) in part.iter_mut().zip(src[at * ch + c..].iter().step_by(ch)) {
+                    *d = s;
+                }
             }
+            rest = tail;
+            p += take as i64;
         }
     }
 }
@@ -296,8 +315,9 @@ impl Plan {
         input: &Input<'_>,
         gain: f64,
         sc: &mut Scratch,
-        out: &mut [i32],
+        out: &mut PcmOut<'_>,
         stats: &mut ConvertStats,
+        mut frame_clipped: Option<&mut [u64]>,
     ) {
         debug_assert!(self.context < FRAME_BYTES_PER_CHANNEL);
         let ch = input.channels;
@@ -366,27 +386,49 @@ impl Plan {
                     }
                     std::mem::swap(&mut sc.a, &mut sc.b);
                 }
-                // To 24 bits: `a` holds the outputs on the 2^26 grid.
-                let mut clipped = 0u64;
-                let dst = out[o0 as usize * ch..].iter_mut().skip(c).step_by(ch);
-                for (d, &v) in dst.zip(&sc.a[..n]) {
-                    let y = round_even((v * gain) * 0.125);
-                    let y = if y > 8_388_607.0 {
-                        clipped += 1;
-                        8_388_607
-                    } else if y < -8_388_608.0 {
-                        clipped += 1;
-                        -8_388_608
-                    } else {
-                        y as i32
+                // To 24 bits, frame by frame: `a` holds the outputs on the 2^26 grid.
+                for (j, v) in sc.a[..n].chunks_exact(self.spf).enumerate() {
+                    let at = (o0 as usize + j * self.spf) * ch + c;
+                    let clipped = match out {
+                        PcmOut::I32(o) => quantise(v, gain, o[at..].iter_mut().step_by(ch), |d, y| *d = y),
+                        PcmOut::S24le(o) => {
+                            let o = &mut o[3 * at..];
+                            quantise(v, gain, (0..v.len()).map(|i| 3 * ch * i), |k, y| {
+                                let [b0, b1, b2, _] = y.to_le_bytes();
+                                o[k..k + 3].copy_from_slice(&[b0, b1, b2]);
+                            })
+                        }
                     };
-                    *d = y;
+                    stats.clipped[c] += clipped;
+                    if let Some(fc) = frame_clipped.as_deref_mut() {
+                        fc[f0 + j] += clipped;
+                    }
                 }
-                stats.clipped[c] += clipped;
             }
             f0 += nf;
         }
     }
+}
+
+/// Rounds the outputs `v` (on the 2^26 grid) times `gain` to 24 bits, clamped, and stores
+/// them through `put` into `dst`; returns the number clamped.
+#[inline(always)]
+fn quantise<D>(v: &[f64], gain: f64, dst: impl Iterator<Item = D>, mut put: impl FnMut(D, i32)) -> u64 {
+    let mut clipped = 0u64;
+    for (d, &v) in dst.zip(v) {
+        let y = round_even((v * gain) * 0.125);
+        let y = if y > 8_388_607.0 {
+            clipped += 1;
+            8_388_607
+        } else if y < -8_388_608.0 {
+            clipped += 1;
+            -8_388_608
+        } else {
+            y as i32
+        };
+        put(d, y);
+    }
+    clipped
 }
 
 /// S1: `out[i]` = the sum of `lut[j][bytes[i + j]]`.

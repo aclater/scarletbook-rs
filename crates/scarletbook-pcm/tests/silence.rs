@@ -7,7 +7,9 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use scarletbook_pcm::{Converter, Cutoff, FRAME_BYTES_PER_CHANNEL, FrameRun, Gain, PcmConfig, PcmRate};
+use scarletbook_pcm::{
+    Converter, Cutoff, FRAME_BYTES_PER_CHANNEL, FrameRun, Frames, Gain, PcmConfig, PcmOut, PcmRate, Run,
+};
 
 fn combos() -> Vec<(PcmRate, Cutoff)> {
     PcmRate::ALL
@@ -123,6 +125,48 @@ fn idle_0x55_is_silent_only_within_a_run() {
         // At the edges, where 0x55 meets the idle pattern 0x69, it is not.
         assert!(out[..spf / 4].iter().any(|&v| v != 0), "{rate} {cutoff:?}");
         assert!(out[3 * spf - spf / 4..].iter().any(|&v| v != 0), "{rate} {cutoff:?}");
+        if cfg!(miri) {
+            break;
+        }
+    }
+}
+
+/// The same through `Converter::convert`: frames in separate buffers, 3-byte output, and
+/// per-frame clip counts. 0x69 frames are all-zero bytes with no clipped sample, with or
+/// without neighbours, and a `None` neighbour equals a 0x69 neighbour frame on any content.
+#[test]
+fn convert_with_separate_frames_and_s24le() {
+    for (rate, cutoff) in combos() {
+        for channels in channel_counts() {
+            let ch = usize::from(channels);
+            let frame = ch * FRAME_BYTES_PER_CHANNEL;
+            let idle = vec![0x69u8; frame];
+            let mut conv = Converter::new(
+                PcmConfig::new(rate, cutoff, channels).with_gain(Gain::from_db(24.0).unwrap()),
+            )
+            .unwrap();
+            let bytes = 2 * conv.samples_per_frame() * ch * 3;
+            let separate = [&idle[..], &idle[..]];
+            for (before, after) in [(None, None), (Some(&idle[..]), Some(&idle[..])), (None, Some(&idle[..]))]
+            {
+                let run = Run::new(Frames::Separate(&separate)).with_before(before).with_after(after);
+                let mut out = vec![0xEEu8; bytes];
+                let mut clipped = [7u64; 2];
+                let stats = conv.convert(run, PcmOut::S24le(&mut out), Some(&mut clipped)).unwrap();
+                assert!(out.iter().all(|&b| b == 0), "{rate} {cutoff:?} {channels} ch");
+                assert_eq!(clipped, [0, 0]);
+                assert_eq!(stats.clipped_total(), 0);
+            }
+            // Any content: `None` neighbours are 0x69 neighbour frames, in either layout.
+            let content = noise(u64::from(channels) + 40, 2 * frame);
+            let parts = [&content[..frame], &content[frame..]];
+            let mut with_none = vec![0u8; bytes];
+            let mut with_idle = vec![0u8; bytes];
+            conv.convert(Run::new(Frames::Separate(&parts)), PcmOut::S24le(&mut with_none), None).unwrap();
+            let run = Run::new(Frames::Separate(&parts)).with_before(Some(&idle)).with_after(Some(&idle));
+            conv.convert(run, PcmOut::S24le(&mut with_idle), None).unwrap();
+            assert!(with_none == with_idle, "{rate} {cutoff:?} {channels} ch");
+        }
         if cfg!(miri) {
             break;
         }

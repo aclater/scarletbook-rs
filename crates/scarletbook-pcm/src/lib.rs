@@ -6,8 +6,8 @@
 //! per frame (1/75 s), channels interleaved byte by byte (byte `k x C + c` is byte `k` of
 //! channel `c`), the earliest sample of each byte in its most significant bit (sacd-spec,
 //! specification 0, 0.6). A 1 bit is +1 and a 0 bit is -1. The output is 24-bit PCM at
-//! 88 200, 176 400 or 352 800 Hz, interleaved, as sign-extended `i32`
-//! ([`pack_s24le`] packs it into the 3-byte little-endian layout of WAV and FLAC).
+//! 88 200, 176 400 or 352 800 Hz, interleaved, as sign-extended `i32` or packed in the
+//! 3-byte little-endian layout of WAV and FLAC ([`PcmOut`]).
 //!
 //! ```
 //! use scarletbook_pcm::{Converter, Cutoff, FrameRun, PcmConfig, PcmRate, FRAME_BYTES_PER_CHANNEL};
@@ -50,6 +50,27 @@
 //! or next to 0x69, is not silent: they are different signals. The first stage has the
 //! factor `(1 + z^-1)^2 (1 + z^-4)` in its integer taps, which cancels each pattern exactly.
 //!
+//! [`Converter::convert`] is the general form: it takes the run's frames in one buffer or
+//! one buffer per frame ([`Frames`]), writes either sample layout ([`PcmOut`]), and can
+//! count the clipped samples of each frame.
+//!
+//! ```
+//! use scarletbook_pcm::{Converter, Cutoff, PcmConfig, PcmOut, PcmRate, Run, FRAME_BYTES_PER_CHANNEL};
+//!
+//! # fn main() -> Result<(), scarletbook_pcm::PcmError> {
+//! let mut conv = Converter::new(PcmConfig::new(PcmRate::Hz176400, Cutoff::Default, 2))?;
+//! // Frames 1 and 2 of an area, each in its own buffer, with frames 0 and 3 around them.
+//! let area: Vec<Vec<u8>> = (0..4).map(|_| vec![0x69u8; 2 * FRAME_BYTES_PER_CHANNEL]).collect();
+//! let frames = [&area[1][..], &area[2][..]];
+//! let run = Run::new(&frames[..]).with_before(Some(&area[0])).with_after(Some(&area[3]));
+//! let mut wav = vec![0u8; 2 * conv.samples_per_frame() * 2 * 3];
+//! let mut clipped = [0u64; 2];
+//! let stats = conv.convert(run, PcmOut::S24le(&mut wav), Some(&mut clipped))?;
+//! assert_eq!(clipped.iter().sum::<u64>(), stats.clipped_total());
+//! # Ok(())
+//! # }
+//! ```
+//!
 //! # Determinism
 //!
 //! Every output sample is an exact function of the input bits around it: the filters use
@@ -57,12 +78,13 @@
 //! not depend on the CPU, on how the input is split into calls, or on threads. Converting
 //! frame `f` with frames `f - 1` and `f + 1` as neighbours ([`Converter::convert_frame`])
 //! gives exactly the bytes of frame `f` in a conversion of the whole area; so does any run
-//! of frames with its two neighbours ([`Converter::convert_run`]). A neighbour of `None`
-//! marks the edge of the area: the input beyond it is the idle pattern, so a neighbour of
-//! `None` gives exactly the output of a neighbour frame of 0x69 bytes, and an area that
-//! starts or ends in silence has no transient at its edges. Only the
-//! [`Converter::context_bytes`] bytes per channel of each neighbour nearest the frame are
-//! used.
+//! of frames with its two neighbours ([`Converter::convert_run`], [`Converter::convert`]),
+//! whether the frames are in one buffer or not, and so does each frame's clip count. The
+//! two output layouts hold the same samples. A neighbour of `None` marks the edge of the
+//! area: the input beyond it is the idle pattern, so a neighbour of `None` gives exactly the
+//! output of a neighbour frame of 0x69 bytes, and an area that starts or ends in silence
+//! has no transient at its edges. Only the [`Converter::context_bytes`] bytes per channel
+//! of each neighbour nearest the frame are used.
 //!
 //! # Level
 //!
@@ -302,6 +324,24 @@ pub enum PcmError {
         /// Samples the input converts to.
         expected: usize,
     },
+    /// The packed output buffer does not have exactly the bytes of the input frames.
+    #[error("output of {len} bytes, {expected} expected")]
+    #[non_exhaustive]
+    OutputBytes {
+        /// Bytes given.
+        len: usize,
+        /// Bytes the input converts to.
+        expected: usize,
+    },
+    /// The per-frame clip counts do not have exactly one entry per frame of the run.
+    #[error("{len} per-frame clip counts for {expected} frames")]
+    #[non_exhaustive]
+    FrameCounts {
+        /// Entries given.
+        len: usize,
+        /// Frames in the run.
+        expected: usize,
+    },
 }
 
 /// Counts from one conversion call.
@@ -348,6 +388,80 @@ impl<'a> FrameRun<'a> {
     pub fn with_after(self, after: Option<&'a [u8]>) -> FrameRun<'a> {
         FrameRun { after, ..self }
     }
+}
+
+/// The frames of a [`Run`], each `C x 4704` bytes in interleaved layout.
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub enum Frames<'a> {
+    /// Frames back to back in one buffer (a whole number of frames).
+    Contiguous(&'a [u8]),
+    /// One buffer per frame, each exactly one frame; they are read in place, not copied
+    /// together.
+    Separate(&'a [&'a [u8]]),
+}
+
+impl<'a> From<&'a [u8]> for Frames<'a> {
+    fn from(frames: &'a [u8]) -> Frames<'a> {
+        Frames::Contiguous(frames)
+    }
+}
+
+impl<'a> From<&'a [&'a [u8]]> for Frames<'a> {
+    fn from(frames: &'a [&'a [u8]]) -> Frames<'a> {
+        Frames::Separate(frames)
+    }
+}
+
+/// A run of consecutive frames of one area and the frames around it, for
+/// [`Converter::convert`]: a [`FrameRun`] whose frames may also be separate buffers.
+///
+/// Made with [`Run::new`] and the `with_*` methods, or from a [`FrameRun`].
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub struct Run<'a> {
+    /// The frame before the run, or `None` if the run starts the area.
+    pub before: Option<&'a [u8]>,
+    /// The frames to convert.
+    pub frames: Frames<'a>,
+    /// The frame after the run, or `None` if the run ends the area.
+    pub after: Option<&'a [u8]>,
+}
+
+impl<'a> Run<'a> {
+    /// The run `frames` (`&[u8]` or `&[&[u8]]`), with no frame before or after it: a whole
+    /// area.
+    pub fn new(frames: impl Into<Frames<'a>>) -> Run<'a> {
+        Run { before: None, frames: frames.into(), after: None }
+    }
+
+    /// The same run with the frame before it, `None` if the run starts the area.
+    pub fn with_before(self, before: Option<&'a [u8]>) -> Run<'a> {
+        Run { before, ..self }
+    }
+
+    /// The same run with the frame after it, `None` if the run ends the area.
+    pub fn with_after(self, after: Option<&'a [u8]>) -> Run<'a> {
+        Run { after, ..self }
+    }
+}
+
+impl<'a> From<FrameRun<'a>> for Run<'a> {
+    fn from(run: FrameRun<'a>) -> Run<'a> {
+        Run { before: run.before, frames: Frames::Contiguous(run.frames), after: run.after }
+    }
+}
+
+/// The output buffer of [`Converter::convert`] and its sample layout. Either holds
+/// `frames x samples_per_frame() x channels` interleaved samples.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum PcmOut<'o> {
+    /// Sign-extended `i32` samples, as [`Converter::convert_run`] writes them.
+    I32(&'o mut [i32]),
+    /// 3-byte little-endian samples (the layout of 24-bit WAV and FLAC): exactly the bytes
+    /// of [`pack_s24le`] of the `I32` output, written directly.
+    S24le(&'o mut [u8]),
 }
 
 /// A converter for one stream: one per worker thread.
@@ -412,24 +526,74 @@ impl Converter {
     /// Converts a run of frames into `out`: `frames x samples_per_frame() x channels`
     /// interleaved samples. A whole area is one run with no neighbours.
     pub fn convert_run(&mut self, run: FrameRun<'_>, out: &mut [i32]) -> Result<ConvertStats, PcmError> {
+        self.convert(run.into(), PcmOut::I32(out), None)
+    }
+
+    /// Converts a run of frames, in one buffer or one buffer per frame, into `out`:
+    /// `frames x samples_per_frame() x channels` interleaved samples in either layout. The
+    /// samples are those of [`Converter::convert_run`] on the same frames.
+    ///
+    /// With `frame_clipped`, which must have one entry per frame of the run, each entry is
+    /// set to the samples clamped in that frame (over all channels). The entries sum to the
+    /// returned [`ConvertStats::clipped_total`], and a frame's count is the same in any run
+    /// that converts it with the same neighbouring frames, alone or not.
+    pub fn convert(
+        &mut self,
+        run: Run<'_>,
+        mut out: PcmOut<'_>,
+        frame_clipped: Option<&mut [u64]>,
+    ) -> Result<ConvertStats, PcmError> {
         let channels = usize::from(self.config.channels);
         let frame = FRAME_BYTES_PER_CHANNEL * channels;
-        if run.frames.len() % frame != 0 {
-            return Err(PcmError::InputLength { len: run.frames.len(), what: "a whole number of frames" });
-        }
+        let frames = match run.frames {
+            Frames::Contiguous(b) => {
+                if b.len() % frame != 0 {
+                    return Err(PcmError::InputLength { len: b.len(), what: "a whole number of frames" });
+                }
+                b.len() / frame
+            }
+            Frames::Separate(s) => {
+                if let Some(f) = s.iter().find(|f| f.len() != frame) {
+                    return Err(PcmError::InputLength { len: f.len(), what: "one frame" });
+                }
+                s.len()
+            }
+        };
         for n in [run.before, run.after].into_iter().flatten() {
             if n.len() != frame {
                 return Err(PcmError::InputLength { len: n.len(), what: "one frame" });
             }
         }
-        let frames = run.frames.len() / frame;
         let expected = frames * self.samples_per_frame() * channels;
-        if out.len() != expected {
-            return Err(PcmError::OutputLength { len: out.len(), expected });
+        match &out {
+            PcmOut::I32(o) if o.len() != expected => {
+                return Err(PcmError::OutputLength { len: o.len(), expected });
+            }
+            PcmOut::S24le(o) if o.len() != 3 * expected => {
+                return Err(PcmError::OutputBytes { len: o.len(), expected: 3 * expected });
+            }
+            _ => {}
         }
+        let frame_clipped = match frame_clipped {
+            Some(fc) if fc.len() != frames => {
+                return Err(PcmError::FrameCounts { len: fc.len(), expected: frames });
+            }
+            Some(fc) => {
+                fc.fill(0);
+                Some(fc)
+            }
+            None => None,
+        };
         let mut stats = ConvertStats::default();
         let input = kernel::Input { run, channels, frames };
-        self.plan.convert(&input, self.config.gain.linear, &mut self.scratch, out, &mut stats);
+        self.plan.convert(
+            &input,
+            self.config.gain.linear,
+            &mut self.scratch,
+            &mut out,
+            &mut stats,
+            frame_clipped,
+        );
         Ok(stats)
     }
 }

@@ -11,8 +11,11 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 scarletbook = { path = "../crates/scarletbook" }
-# The `toc` target also reads the TOC through the C interface (`sb_disc_toc`).
+# The `toc` and `demux` targets also go through the C interface (`sb_disc_toc`,
+# `sb_pcm_convert_run`).
 scarletbook-ffi = { path = "../crates/scarletbook-ffi", features = ["fuzzing"] }
+# The `demux` target converts DSD to PCM in its harness.
+scarletbook-pcm = { path = "../crates/scarletbook-pcm" }
 
 [[bin]]
 name = "toc"
