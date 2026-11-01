@@ -414,3 +414,39 @@ proptest! {
         check_chain(&mut disc, channels, n, &bounds, &mut Lcg(seed));
     }
 }
+
+/// A track of duration 0 in the middle of a chain of tracks with pause: its range is empty
+/// and skipped with `track-empty`, and splits the chain although its neighbours meet
+/// (8.2.7 item 3 at sacd-spec fa558a8). The file before it is the last of its chain, and
+/// the next starts a new one at `4704 a`.
+#[test]
+fn an_empty_track_splits_a_chain_of_tracks_with_pause() {
+    let tracks = vec![
+        TrackSpec { start: 0, duration: 3 },
+        TrackSpec { start: 3, duration: 0 },
+        TrackSpec { start: 3, duration: 6 },
+    ];
+    let disc = synthetic(2, &plain(2, 9), tracks, 9);
+    let mut bounds = vec![0];
+    for n in 1..=3 {
+        let (a, b) = disc.track_range_with_pause(Slot::TwoChannel, n).unwrap();
+        assert_eq!(a, *bounds.last().unwrap(), "the tracks with pause meet end to end");
+        bounds.push(b);
+    }
+    assert_eq!(bounds, [0, 3, 3, 9]);
+    let plan = disc.plan_dsf_chain(Slot::TwoChannel, &bounds).unwrap();
+    let before = plan[0].as_ref().unwrap();
+    assert!(before.is_last());
+    assert_eq!((before.chain, before.bytes), ((0, 3), (0, 3 * PER)));
+    assert!(matches!(plan[1], Err(Error::TrackEmpty)));
+    let after = plan[2].as_ref().unwrap();
+    assert_eq!((after.chain, after.bytes), ((3, 9), (3 * PER, 9 * PER)));
+    // The layouts: no carried bytes, and the first file ends with the pad of 8.2.2.
+    for (file, source) in [(before, 1), (after, 3)] {
+        let options = untagged().with_dsf_chain(Some(file.chain));
+        let layout = disc.output_layout(Slot::TwoChannel, file.range.0, file.range.1, Format::Dsf, &options);
+        let layout = layout.unwrap();
+        assert_eq!(layout.byte_range(), Some(file.bytes));
+        assert_eq!(layout.source_track(), Some(source));
+    }
+}

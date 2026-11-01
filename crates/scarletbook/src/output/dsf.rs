@@ -97,16 +97,22 @@ pub(super) fn chain_bytes(a1: u32, end: u32, a: u32, b: u32) -> (u64, u64) {
 }
 
 /// Plans the DSF byte ranges of a chain (specification 8, 8.2.7 item 3; sacd-spec
-/// e069569): `bounds` are `a_1, a_2, ..., a_K, b_K`, so range `i` is
+/// e069569, as clarified at fa558a8): `bounds` are `a_1, a_2, ..., a_K, b_K`, so range `i` is
 /// `[bounds[i - 1], bounds[i])` and each ends where the next starts. The tracks with pause
 /// of consecutive tracks (4.7.1 item 5) give such bounds when they meet end to end.
 ///
-/// The result has one entry per range, in order: the range's file, or the error of the
-/// checks of 8.1 item 2 ([`audio::check_range`]) that skip or refuse it, the same error
-/// [`Layout::new`] gives for it. Each skipped or refused range splits the chain: the
+/// Every range is checked by 8.1 item 2 ([`audio::check_range`]) before any file is
+/// planned, as 8.2.7 item 3 requires, because a file's end depends on whether the range
+/// after it stays in the chain. The result has one entry per range, in order: the range's
+/// file, or the error of the checks that skip or refuse it, the same error
+/// [`Layout::new`] gives for it. Each skipped or refused range splits the chain, an empty
+/// range skipped with [`Error::TrackEmpty`] included even though its neighbours meet: the
 /// ranges before it and after it form separate chains, each with its own
-/// [`DsfChainFile::chain`]. To split elsewhere (a file the caller won't write for another
-/// reason), plan each part separately.
+/// [`DsfChainFile::chain`], and the first file after it starts at `4704 a`.
+///
+/// Which files are written is the caller's choice (8.2.7 item 7): a file not written does
+/// not split the chain, and each file written holds the bytes planned here for the whole
+/// chain. Another chain, one split elsewhere, is another plan, and gives other files.
 ///
 /// Everything here follows from the TOC: no audio is read (8.2.7 item 5).
 ///

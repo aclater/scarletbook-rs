@@ -130,7 +130,9 @@ pub enum SbOutputOption {
     /// DSF file holding its range of positions; otherwise, with
     /// `SB_OUTPUT_OPTION_DSF_CHAIN_END`, the file holds the byte range of its range
     /// `[a_i, b_i)` in a chain whose first range starts at this frame `a_1`.
-    /// `sb_output_dsf_chain_plan` gives both values per file. Both are set or neither,
+    /// `sb_output_dsf_chain_plan` gives both values per file. The byte range is always one
+    /// of 8.2.7 item 3's `[p_i, p_{i+1})` (sacd-spec fa558a8, item 2), that of the chain
+    /// `[a_1, a_i)`, `[a_i, b_i)`, `[b_i, b_K)`. Both are set or neither,
     /// with `a_1 <= a_i < b_i <= b_K` and `[b_i, b_K)` passing the checks of 8.1 item 2
     /// (`sb_range_check`), DSF only; otherwise the layout is `SB_STATUS_INVALID_ARGUMENT`.
     DsfChainFirst = 37,
@@ -1703,12 +1705,15 @@ pub struct SbDsfChainFile {
 /// them, and `*written` their number; with `cap` below that, nothing is written to
 /// `files` and the call gives `SB_STATUS_BUFFER_TOO_SMALL`.
 ///
-/// A range that the checks of 8.1 item 2 skip or refuse has that status in its entry and
-/// splits the chain: the ranges before it and after it form separate chains, each with its
+/// Every range is checked by 8.1 item 2 before any entry is written (8.2.7 item 3 at
+/// sacd-spec fa558a8). A range that the checks skip or refuse has that status in its entry
+/// and splits the chain, an empty range (`SB_STATUS_TRACK_EMPTY`) included even though its
+/// neighbours meet: the ranges before it and after it form separate chains, each with its
 /// own `chain_first` and `chain_end`. Each other range's file is
 /// `sb_output_layout_new(disc, slot, first, end, SB_OUTPUT_FORMAT_DSF, options, ...)`
 /// with the options `SB_OUTPUT_OPTION_DSF_CHAIN_FIRST` and `SB_OUTPUT_OPTION_DSF_CHAIN_END` set to its `chain_first` and
-/// `chain_end`. To split elsewhere, plan each part separately.
+/// `chain_end`. Which files are written is the caller's choice (8.2.7 item 7): one not
+/// written does not split the chain. Another chain is another plan.
 ///
 /// `SB_STATUS_NO_SUCH_AREA`; `SB_STATUS_INVALID_ARGUMENT` for fewer than two bounds.
 ///

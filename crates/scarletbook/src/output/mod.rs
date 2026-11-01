@@ -236,10 +236,13 @@ pub struct OutputOptions {
     /// or left out (8.4.8 at sacd-spec 048aa1a). Both say the file has no edited master
     /// information. Default `true`: written.
     pub dsdiff_empty_info: bool,
-    /// W32, what a DSF file holds (8.2.7, sacd-spec e069569): with this and
+    /// W32, what a DSF file holds (8.2.7, sacd-spec e069569 and fa558a8): with this and
     /// [`OutputOptions::dsf_chain_end`], the byte range of the range `[a_i, b_i)` in a
     /// chain whose first range starts at frame `a_1`, this. Default `None`: the range of
-    /// positions itself. [`plan_dsf_chain`] gives both values per file.
+    /// positions itself. [`plan_dsf_chain`] gives both values per file. The byte range is
+    /// always one of 8.2.7 item 3's `[p_i, p_{i+1})`, that of the chain `[a_1, a_i)`,
+    /// `[a_i, b_i)`, `[b_i, b_K)` (each part present when not empty), which 8.1 item 2
+    /// checks: no other byte range can be made (8.2.7 item 2).
     pub dsf_chain_first: Option<u32>,
     /// W32, the end `b_K` of the chain's last range (8.2.7 item 3); the file is the last of
     /// its chain when its range ends there. Both are set or neither, with
