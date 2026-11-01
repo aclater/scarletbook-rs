@@ -24,6 +24,7 @@ fuzzing = []
 # Decoding pools (sb_pool_new) are in every build.
 rayon = "1.10"
 scarletbook = { path = "../scarletbook", features = ["parallel", "output"] }
+scarletbook-pcm = { path = "../scarletbook-pcm" }
 
 [lints.rust]
 missing_debug_implementations = "warn"

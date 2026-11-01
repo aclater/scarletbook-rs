@@ -390,6 +390,14 @@ fn stats(v: &[f64]) -> String {
     format!("{mean:.2} / {max:.0}")
 }
 
+/// The 50th, 90th, 95th and 99th percentiles and the maximum of `v` (nearest rank).
+fn percentiles(v: &[f64]) -> String {
+    let mut v = v.to_vec();
+    v.sort_by(f64::total_cmp);
+    let at = |q: f64| v.get(((q * v.len() as f64).ceil() as usize).saturating_sub(1)).copied().unwrap_or(0.0);
+    format!("{:.0} / {:.0} / {:.0} / {:.0} / {:.0}", at(0.5), at(0.9), at(0.95), at(0.99), at(1.0))
+}
+
 /// The third table: cold seeks to `args.positions` positions, each on a newly opened disc.
 fn fresh(args: &Args, exact: &mut Image, index: &AreaIndex, p: u32) -> Result<(), String> {
     let slot = args.slot;
@@ -451,6 +459,11 @@ fn fresh(args: &Args, exact: &mut Image, index: &AreaIndex, p: u32) -> Result<()
     println!(
         "Reads to choose a provisional start (mean / max): {} ({provisional} provisional)",
         stats(&probes)
+    );
+    println!(
+        "Provisional starts, to the first frame, p50 / p90 / p95 / p99 / max: read calls {}, KiB {}",
+        percentiles(&costs[0][0]),
+        percentiles(&costs[0][1])
     );
     println!("Equal to exact reads: {equal} of {}", args.positions);
     Ok(())

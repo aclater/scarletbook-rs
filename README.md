@@ -396,6 +396,51 @@ and the sectors it expects to read (an estimate, equal to the count read once do
 track, range and raw frames handles. Neither handle borrows the disc or the handle it came
 from, so polling it never collides with the reading thread; free each with its `_free`.
 
+### DSD to PCM
+
+The library also converts the decoded DSD64 audio to 24-bit PCM (crate
+`scarletbook-pcm`) at 88.2, 176.4 or 352.8 kHz, through a converter handle that belongs
+to no disc:
+
+```c
+SbPcmConverter *conv = NULL;
+sb_pcm_converter_new(176400, SB_PCM_CUTOFF_DEFAULT, channels, 0.0 /* dB */, &conv);
+uint32_t spf;                              /* output samples per channel per frame */
+sb_pcm_samples_per_frame(conv, &spf);      /* 1176, 2352 or 4704 */
+/* prev, cur, next: frames f - 1, f, f + 1 of the area from sb_track_audio_read (prev NULL
+ * at the area's first frame, next NULL at its last); each channels x 4704 bytes. */
+uint64_t clipped[6];
+sb_pcm_convert_run(conv, prev, cur, channels * 4704, next, SB_PCM_S24LE,
+                   pcm, (size_t)spf * channels * 3, clipped);
+sb_pcm_converter_free(conv);
+```
+
+A frame is 4704 bytes per channel, 37 632 one-bit samples (1/75 s). `sb_pcm_convert_run`
+converts a run of whole frames (one frame, or a whole area with both neighbours NULL) into
+`frames x spf x channels` interleaved samples of 4 bytes (`SB_PCM_S32`, an `int32_t`
+sign-extended from 24 bits) or 3 (`SB_PCM_S24LE`, the layout of 24-bit WAV and FLAC); with
+`out` NULL or too short it returns `SB_STATUS_BUFFER_TOO_SMALL` and writes nothing. The
+cutoffs are `SB_PCM_CUTOFF_DEFAULT` (passband to 40 kHz), `SB_PCM_CUTOFF_LOW` (30 kHz) and
+`SB_PCM_CUTOFF_WIDE` (80 kHz, at 176.4 and 352.8 kHz only); the gain is -120 to +24 dB, and
+`clipped` (or NULL) receives the samples of each channel clamped to 24 bits.
+
+The output depends only on the input bits: frame f converted with frames f - 1 and f + 1
+as neighbours is byte for byte frame f of a conversion of the whole area. So frames can be
+converted in any order, on any number of threads (one converter each), and a seek needs
+only the frames around it. The filters, their measured response and the throughput are in
+the crate's [README](crates/scarletbook-pcm/README.md).
+
+From Python, with the bindings of "Using from Python (ctypes)" below:
+
+```python
+conv, spf = H(), C.c_uint32()
+check(lib.sb_pcm_converter_new(176400, 0, 2, 0.0, C.byref(conv)))  # SB_PCM_CUTOFF_DEFAULT
+check(lib.sb_pcm_samples_per_frame(conv, C.byref(spf)))
+pcm, clipped = C.create_string_buffer(spf.value * 2 * 3), (C.c_uint64 * 6)()
+check(lib.sb_pcm_convert_run(conv, prev, cur, len(cur), nxt, 1, pcm, len(pcm), clipped))  # SB_PCM_S24LE
+lib.sb_pcm_converter_free(conv)
+```
+
 ### Release assets
 
 Each release carries the C library as `scarletbook-ffi-<version>-<target>.tar.gz`, with a
@@ -657,6 +702,11 @@ bind("sb_raw_frames_open", S, H, U32, U32, U32, P(H))
 bind("sb_raw_frames_read", S, H, H, C.c_char_p, SIZE, P(SbRawFrameInfo))
 bind("sb_raw_frames_free", None, H)
 bind("sb_dst_decode", S, C.c_char_p, SIZE, U32, C.c_char_p, SIZE, P(U32))
+bind("sb_pcm_converter_new", S, U32, U32, U32, C.c_double, P(H))
+bind("sb_pcm_converter_free", None, H)
+bind("sb_pcm_samples_per_frame", S, H, P(U32))
+bind("sb_pcm_convert_run", S, H, C.c_char_p, C.c_char_p, SIZE, C.c_char_p, U32, C.c_void_p, SIZE,
+     P(C.c_uint64))
 bind("sb_disc_seek_policy_set", S, H, U32, U32, C.c_uint64)
 bind("sb_track_audio_speculation", S, H, P(SbSpeculation))
 bind("sb_raw_frames_speculation", S, H, P(SbSpeculation))
@@ -949,8 +999,9 @@ wherever the range lies, 1.8 to 2.9 ms in its network model (0.5 ms per read cal
 with the same frames as exact reads on that well-formed image. Its third table opens the
 disc afresh for each of 200 positions (`--positions`), as a consumer that seeks cold sees it:
 on an area of uneven bit rate (`scarletbook-synth ... --dst-frames uneven`), a provisional
-start costs 3.4 read calls and 81 KiB on average up to the range's first frame (at most 8 and
-284 KiB), and 4.1 read calls and 126 KiB for the 14-frame range decoded.
+start costs 3.5 read calls and 113 KiB on average up to the range's first frame (at most 6
+and 144 KiB; it also prints the 50th to 99th percentiles), and 3.8 read calls and 131 KiB
+for the 14-frame range decoded.
 
 Through the C interface, `python3 .github/scripts/clib-seekcost.py PACKAGE_DIR IMAGE` opens the
 image with `sb_disc_open_callbacks` (counting read calls and bytes in the callbacks, 64 KiB per

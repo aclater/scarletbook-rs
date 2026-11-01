@@ -212,13 +212,17 @@ pub enum ResumedFrom {
 /// sectors before the range's estimated position chooses a sector `L` instead: it searches
 /// the frame records' timecodes for a sector whose first frame record is numbered below the
 /// range's first frame `u`, close before frame `u` (interpolation between the area's
-/// track starts, then at the density of the frames last read, with a bisection safeguard:
-/// a few reads of [`SpeculativeOptions::probe_sectors`]; at most a constant times
+/// track starts; then from the last probe at its density, the first time corrected toward
+/// the average back to the other track start; then, once probes lie on both sides, regula
+/// falsi with the Illinois weighting; with a bisection safeguard: a few reads of
+/// [`SpeculativeOptions::probe_sectors`], and one larger read when an interval just
+/// past or around frame `u` fits what is left of about 144 KiB; at most a constant times
 /// `log2(n + 1)` sectors for an area of `n` audio sectors, as 7.1 item 3 allows), and
 /// begins at that sector, with no frame under assembly and `u` as the next acceptable frame
-/// number. It reads on from its last probe, and then up to the range's estimated end in
-/// one call (or more, of at most [`MAX_READ_SECTORS`] each): the range the caller asks for
-/// sizes the read.
+/// number. It reads on from its last probe, through frame `u` and on toward the range's
+/// estimated end as far as those 144 KiB allow, in one call sized to that (less than 32
+/// sectors too), and then on to the range's estimated end in calls of at
+/// most [`MAX_READ_SECTORS`]: the range the caller asks for sizes the reads.
 ///
 /// Its positions are exactly the specification's when both (4.2 item 8):
 /// - (a) `a_L <= u`: no frame numbered `u` or more was accepted before `L` by a reader
@@ -693,7 +697,18 @@ const PROBE_SPAN: u64 = 32;
 
 /// The search stops once the sector found is estimated to lie at most this many sectors
 /// before the frame wanted: reading them costs less than another probe.
+///
+/// Regula falsi aims this many sectors (and half a probe) early, so that a guess that is a
+/// little off tends to land just before the frame wanted, which a read from there covers.
+const ILLINOIS_MARGIN: u64 = 4;
 const CLOSE_SECTORS: u64 = 16;
+
+/// The most sectors the search and the read through the range's first frame are meant to
+/// take together (144 KiB): the search reads all of a narrow enough interval at once within
+/// it, and the read after a provisional start goes through the range's first frame and on
+/// toward the range's estimated end only as far as it allows (if the first frame is further
+/// than the budget reaches, the reads after it, toward the range's end, get it).
+pub(crate) const FIRST_FRAME_BUDGET: u64 = 72;
 
 /// Most sectors a cursor reads in one call (1 MiB): after a provisional start, a cursor reads
 /// up to the range's estimated end in calls of up to this many sectors, and after a resume
@@ -722,6 +737,8 @@ pub(crate) struct Located {
     /// Whether the first frame records the probes read decrease from one sector to a later
     /// one (a reason to mark the reading suspect, 4.2 item 8).
     pub(crate) decreasing: bool,
+    /// The sectors the probes read.
+    pub(crate) used: u64,
 }
 
 /// The point to interpolate the frame `first` between, within `[lo, hi)`: the tightest of the
@@ -765,8 +782,12 @@ pub(crate) fn locate<R: Read + Seek>(
     let n = hi.saturating_sub(lo);
     let log = u64::BITS - n.leading_zeros();
     let max = options.max_probes.min(2 * log + 4);
-    let mut buf = vec![0u8; per as usize * SECTOR_SIZE];
+    let mut buf = vec![0u8; per.max(FIRST_FRAME_BUDGET) as usize * SECTOR_SIZE];
     let (mut lo_t, mut hi_t) = (0u32, playtime.max(first.saturating_add(1)));
+    // Whether `hi` comes from a probe (not from the interval's end), and the Illinois halvings
+    // of each bound's weight in regula falsi, with the bound the last step moved.
+    let mut hi_probed = false;
+    let (mut halved_lo, mut halved_hi, mut moved) = (0u32, 0u32, None::<bool>);
     let (mut reads, mut halve, mut found_lo, mut slow) = (0u32, false, false, 0u32);
     let mut chunk: Option<(u64, Vec<u8>)> = None;
     // The records the last two probes found nearest `first` (sector, frame number), and the
@@ -777,32 +798,58 @@ pub(crate) fn locate<R: Read + Seek>(
     // The area's average sectors per frame.
     let average = (n, playtime.max(1));
     // Sectors per frame near the anchor: between the last two anchors when they are at
-    // least 3 frames apart, else the last probe's when it saw 3 frames or more, else the
+    // least 3 frames apart, else the last probe's when it saw 2 records or more, else the
     // area's average.
     let density = |anchor: Option<(u64, u32)>, previous: Option<(u64, u32)>, local: Option<(u64, u32)>| {
         let secant = anchor.zip(previous).and_then(|((m, t), (pm, pt))| {
             let (s, f) = (m.abs_diff(pm), t.abs_diff(pt));
             (f >= 3 && (m > pm) == (t > pt)).then_some((s, f))
         });
-        secant.or(local.filter(|l| l.1 >= 3)).unwrap_or(average)
+        secant.or(local).unwrap_or(average)
     };
     let sectors = |(s, f): (u64, u32), frames: u32| {
         u64::try_from(u128::from(frames) * u128::from(s) / u128::from(f.max(1))).unwrap_or(u64::MAX)
     };
     // Every (sector, first record) the probes read, to see whether they decrease.
     let mut records: Vec<(u64, u32)> = Vec::new();
+    let mut used = 0u64;
+    // The probes aim at the start of the frame before `first`, whose record must be found
+    // below `first`.
+    let want = first.saturating_sub(1);
     while hi - lo > PROBE_SPAN && reads < max {
-        let d = density(anchor, previous, local);
+        let mut d = density(anchor, previous, local);
         if found_lo && sectors(d, first - lo_t) <= CLOSE_SECTORS {
             break;
         }
         let ((a, a_t), (b, b_t)) = bracket((lo, lo_t), (hi, hi_t), knots, first);
-        let guess = if halve {
+        // The first correction after the first probe: the geometric mean of that probe's own
+        // density and the average back to the knot on the other side of `first`. Where the
+        // density changes along the way (a loud passage after a quiet one), the first is too
+        // high and the second too low.
+        if previous.is_none() {
+            if let (Some((m, t)), Some((ls, lf))) = (anchor, local) {
+                let (om, ot) = if t > first { (a, a_t) } else { (b, b_t) };
+                if ot != t && om != m {
+                    let avg = m.abs_diff(om) as f64 / f64::from(t.abs_diff(ot));
+                    let mean = (avg * ls as f64 / f64::from(lf)).sqrt();
+                    d = ((mean * 1024.0) as u64, 1024);
+                }
+            }
+        }
+        let guess = if found_lo && hi_probed {
+            // Regula falsi between the two probed bounds, the Illinois way: a bound kept by
+            // two steps in a row has its weight halved, so that the guesses do not creep up
+            // on `first` from one side. Half a probe and a few sectors early.
+            let fl = u128::from(want - lo_t) << (32 - halved_lo.min(32));
+            let fh = u128::from(hi_t.saturating_sub(want)) << (32 - halved_hi.min(32));
+            let x = lo + (u128::from(hi - lo) * fl / (fl + fh).max(1)) as u64;
+            x.saturating_sub(per / 2 + ILLINOIS_MARGIN)
+        } else if halve {
             a + (b - a) / 2
         } else if let Some((m, t)) = anchor {
             // From the last probe's record at the local density, half a probe early.
-            let dist = sectors(d, first.abs_diff(t));
-            if first >= t { m.saturating_add(dist) } else { m.saturating_sub(dist) }.saturating_sub(per / 2)
+            let dist = sectors(d, want.abs_diff(t));
+            if want >= t { m.saturating_add(dist) } else { m.saturating_sub(dist) }.saturating_sub(per / 2)
         } else {
             let num = u128::from(first.saturating_sub(a_t));
             let den = u128::from(b_t.saturating_sub(a_t).max(1));
@@ -820,9 +867,27 @@ pub(crate) fn locate<R: Read + Seek>(
         // it whose first record is not.
         let (mut below, mut above, mut any) = (None, None, None);
         let mut last: Option<(u64, u32)> = None;
+        let (mut guess, mut size, mut final_read) = (guess, per, false);
+        let left = FIRST_FRAME_BUDGET.saturating_sub(used);
+        if hi_probed {
+            // Frame `first` starts a few frames before `hi`: read back from there, through
+            // `hi`, at the highest density seen, if that fits what is left of the budget.
+            let dense = [d, average, local.unwrap_or(average)]
+                .into_iter()
+                .max_by(|x, y| (u128::from(x.0) * u128::from(y.1)).cmp(&(u128::from(y.0) * u128::from(x.1))))
+                .unwrap_or(average);
+            let back = sectors(dense, hi_t.saturating_sub(first) + 1);
+            let start = hi.saturating_sub(back + back / 8 + 4).max(if found_lo { lo } else { 0 });
+            if hi + 1 - start <= left {
+                (guess, size, final_read) = (start, hi + 1 - start, true);
+            } else if found_lo && hi - lo <= left && left > per {
+                // The whole interval at once: frame `first` starts in it.
+                (guess, size, final_read) = (lo, hi - lo, true);
+            }
+        }
         let mut at = guess;
-        while any.is_none() && at < hi.min(guess + PROBE_SPAN) && reads < max {
-            let count = per.min(hi - at);
+        while any.is_none() && at < hi.min(guess + PROBE_SPAN.max(size)) && reads < max {
+            let count = size.min(hi - at);
             let read = &mut buf[..count as usize * SECTOR_SIZE];
             image.check_cancel()?;
             if image.read_into(at, read)? == crate::image::ReadOutcome::OutOfRange {
@@ -830,6 +895,7 @@ pub(crate) fn locate<R: Read + Seek>(
             }
             on_read(count);
             reads += 1;
+            used += count;
             for i in 0..count {
                 let Some(t) = first_record(&read[i as usize * SECTOR_SIZE..]) else { continue };
                 records.push((at + i, t));
@@ -854,13 +920,22 @@ pub(crate) fn locate<R: Read + Seek>(
         match (below, any.map(|(_, t)| t)) {
             (Some((m, t)), _) => {
                 (lo, lo_t, found_lo) = (m, t, true);
+                (halved_lo, halved_hi) = (0, if moved == Some(false) { halved_hi + 1 } else { 0 });
+                moved = Some(false);
                 if above.is_some() {
                     // Frame `first` starts within this read: done.
                     break;
                 }
             }
-            (None, Some(t)) => (hi, hi_t) = (guess, t.max(lo_t.saturating_add(1))),
+            (None, Some(t)) => {
+                (hi, hi_t, hi_probed) = (guess, t.max(lo_t.saturating_add(1)), true);
+                (halved_hi, halved_lo) = (0, if moved == Some(true) { halved_lo + 1 } else { 0 });
+                moved = Some(true);
+            }
             (None, None) => hi = guess,
+        }
+        if final_read {
+            break;
         }
         // Two steps in a row that did not at least halve the frames between `first` and the
         // nearest bound are followed by a bisection (of the interval between the tightest
@@ -879,7 +954,7 @@ pub(crate) fn locate<R: Read + Seek>(
         .unwrap_or(average);
     records.sort_unstable_by_key(|r| r.0);
     let decreasing = records.windows(2).any(|w| w[1].1 < w[0].1);
-    Ok(Located { lsn: lo, reads, chunk, frame: lo_t, density, decreasing })
+    Ok(Located { lsn: lo, reads, chunk, frame: lo_t, density, decreasing, used })
 }
 
 /// The reading state of the scan at a boundary `c = S0 + jK`, before sector `c`

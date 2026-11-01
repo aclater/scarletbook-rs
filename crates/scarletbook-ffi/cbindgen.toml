@@ -15,8 +15,8 @@ header = """/* SPDX-License-Identifier: MIT OR Apache-2.0 */
  *   failure, sb_last_error_message() describes the error. The message belongs to the
  *   calling thread and stays valid until that thread's next call into this library.
  *
- * - Handles. SbDisc, SbTrackAudio, SbRawFrames, SbPool, SbSeekIndex, SbCancel and
- *   SbProgress are opaque. Each is created by one
+ * - Handles. SbDisc, SbTrackAudio, SbRawFrames, SbPool, SbSeekIndex, SbCancel,
+ *   SbProgress and SbPcmConverter are opaque. Each is created by one
  *   function and released by exactly one call to its _free function; passing NULL to a
  *   _free function does nothing. A function that creates a handle sets *out to NULL when it fails, so
  *   freeing that pointer afterwards is safe.
@@ -64,7 +64,8 @@ header = """/* SPDX-License-Identifier: MIT OR Apache-2.0 */
  *   uint8_t, 1 or 0. No enumeration type is passed by value or stored in a struct:
  *   SbStatus is int32_t, and the other enumerations (SbSlot, SbFrameStatus, ...) only
  *   name the values of uint32_t arguments and fields. In C23 and C++ they are
- *   enumerations with those fixed underlying types. There are no variadic functions.
+ *   enumerations with those fixed underlying types. The one floating-point argument,
+ *   a gain in decibels (sb_pcm_converter_new), is a double. There are no variadic functions.
  *   Callbacks use the C calling convention of the platform.
  *
  * - Layouts. Structs have the platform C compiler's natural alignment, with no packing

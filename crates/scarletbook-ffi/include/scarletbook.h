@@ -10,8 +10,8 @@
  *   failure, sb_last_error_message() describes the error. The message belongs to the
  *   calling thread and stays valid until that thread's next call into this library.
  *
- * - Handles. SbDisc, SbTrackAudio, SbRawFrames, SbPool, SbSeekIndex, SbCancel and
- *   SbProgress are opaque. Each is created by one
+ * - Handles. SbDisc, SbTrackAudio, SbRawFrames, SbPool, SbSeekIndex, SbCancel,
+ *   SbProgress and SbPcmConverter are opaque. Each is created by one
  *   function and released by exactly one call to its _free function; passing NULL to a
  *   _free function does nothing. A function that creates a handle sets *out to NULL when it fails, so
  *   freeing that pointer afterwards is safe.
@@ -59,7 +59,8 @@
  *   uint8_t, 1 or 0. No enumeration type is passed by value or stored in a struct:
  *   SbStatus is int32_t, and the other enumerations (SbSlot, SbFrameStatus, ...) only
  *   name the values of uint32_t arguments and fields. In C23 and C++ they are
- *   enumerations with those fixed underlying types. There are no variadic functions.
+ *   enumerations with those fixed underlying types. The one floating-point argument,
+ *   a gain in decibels (sb_pcm_converter_new), is a double. There are no variadic functions.
  *   Callbacks use the C calling convention of the platform.
  *
  * - Layouts. Structs have the platform C compiler's natural alignment, with no packing
@@ -220,6 +221,34 @@
  this many threads, which would mostly stay idle.
  */
 #define SB_MAX_POOL_THREADS 256
+
+/*
+ `cutoff` of `sb_pcm_converter_new`: passband to 40 kHz, stopband from 48 kHz.
+ */
+#define SB_PCM_CUTOFF_DEFAULT 0
+
+/*
+ `cutoff` of `sb_pcm_converter_new`: passband to 30 kHz, stopband from 38 kHz.
+ */
+#define SB_PCM_CUTOFF_LOW 1
+
+/*
+ `cutoff` of `sb_pcm_converter_new`: passband to 80 kHz, stopband from 96 kHz; 176 400
+ and 352 800 Hz only.
+ */
+#define SB_PCM_CUTOFF_WIDE 2
+
+/*
+ `fmt` of `sb_pcm_convert_run`: each sample an `int32_t` in the platform's byte order,
+ sign-extended from 24 bits (-8 388 608 to 8 388 607).
+ */
+#define SB_PCM_S32 0
+
+/*
+ `fmt` of `sb_pcm_convert_run`: each sample 3 bytes, 24-bit two's complement, least
+ significant byte first (the layout of 24-bit WAV and FLAC samples).
+ */
+#define SB_PCM_S24LE 1
 
 /*
  The default checkpoint interval of a seek index, in sectors (`sb_seek_index_new`).
@@ -1190,6 +1219,13 @@ typedef struct SbOutputLayout SbOutputLayout;
  Output options: the writer's choices of specification 8, 8.6.
  */
 typedef struct SbOutputOptions SbOutputOptions;
+
+/*
+ A DSD64 to 24-bit PCM converter (`sb_pcm_converter_new`): one rate, cutoff, channel
+ count and gain. It belongs to no disc. Converters share nothing: give each thread
+ that converts one of its own.
+ */
+typedef struct SbPcmConverter SbPcmConverter;
 
 /*
  A pool of decoding threads (`sb_pool_new`), shared by the track audio handles given it.
@@ -3187,6 +3223,91 @@ SbStatus sb_dst_decode(const uint8_t *frame,
                        uint8_t *out,
                        size_t out_len,
                        uint32_t *rule);
+
+/*
+ Makes a converter of DSD64 (2 822 400 Hz, 1-bit) audio of `channels` channels (1 to
+ 6) to 24-bit PCM at `rate_hz` (88 200, 176 400 or 352 800), with low-pass `cutoff`
+ (`SB_PCM_CUTOFF_*`; `SB_PCM_CUTOFF_WIDE` not at 88 200 Hz) and a gain of `gain_db`
+ decibels (-120 to +24; 0 for none). On failure `*out` is set to NULL and the call
+ returns `SB_STATUS_INVALID_ARGUMENT`.
+
+ The input is Super Audio CD frames as `sb_track_audio_read` returns them: 4704 bytes,
+ that is 37 632 one-bit samples, per channel per frame (1/75 s), channels interleaved
+ byte by byte, the earliest sample of each byte in its most significant bit. The output
+ is `sb_pcm_samples_per_frame` samples per channel per frame (1176, 2352 or 4704),
+ interleaved, linear-phase, aligned to the DSD timeline (no delay), rounded half to even
+ and not dithered. A constant input of all 1 bits is full scale (it clips); Super Audio
+ CD content stays well below.
+
+ # Safety
+
+ `out` must be NULL or valid for a write.
+ */
+SbStatus sb_pcm_converter_new(uint32_t rate_hz,
+                              uint32_t cutoff,
+                              uint32_t channels,
+                              double gain_db,
+                              struct SbPcmConverter **out);
+
+/*
+ Frees a converter. NULL is ignored.
+
+ # Safety
+
+ `conv` must be NULL or a live handle, freed only once.
+ */
+void sb_pcm_converter_free(struct SbPcmConverter *conv);
+
+/*
+ The output samples per channel of one frame (`*out`): 1176 at 88 200 Hz, 2352 at
+ 176 400 Hz, 4704 at 352 800 Hz. A frame is 37 632 DSD samples per channel.
+
+ # Safety
+
+ `conv` must be NULL or a live handle; `out` NULL or valid for a write.
+ */
+SbStatus sb_pcm_samples_per_frame(const struct SbPcmConverter *conv, uint32_t *out);
+
+/*
+ Converts a run of consecutive frames of one area, `frames_len` bytes at `frames` (a
+ whole number of frames of `channels x 4704` bytes; 0 converts nothing), into `out` in
+ format `fmt` (`SB_PCM_S32` or `SB_PCM_S24LE`): `frames_len / (channels x 4704) x
+ sb_pcm_samples_per_frame x channels` samples, interleaved, of 4 or 3 bytes each
+ (`out` need not be aligned). `before` and `after` are the frames just before and
+ just after the run, each exactly `channels x 4704` bytes, or NULL where the run starts
+ or ends the area (the audio beyond is then taken as silence). `clipped`, if not NULL,
+ receives 6 counts: the samples of each channel clamped to the 24-bit range (0 beyond
+ the converter's channels). A clipped sample means the gain is too high.
+
+ The output depends only on the input bits, not on the platform or on how an area is
+ split into calls: converting frame f with frames f - 1 and f + 1 as `before` and
+ `after` gives exactly the bytes of frame f in a conversion of the whole area in one
+ call, so frames can be converted in any order and on any number of threads (one
+ converter each). Only the few hundred bytes per channel of `before` and `after` nearest
+ the run are read.
+
+ With `out` NULL or `out_len` below the output's size, the call returns
+ `SB_STATUS_BUFFER_TOO_SMALL` and writes nothing; bytes of `out` past the output's size
+ are never written. `SB_STATUS_INVALID_ARGUMENT`: an unknown `fmt`, a `frames_len` that
+ is not a whole number of frames, `frames` NULL with a non-zero `frames_len`, or the
+ handle in use.
+
+ # Safety
+
+ `conv` must be NULL or a live handle; `before` and `after` NULL or valid for
+ `channels x 4704` bytes of reads; `frames` NULL or valid for `frames_len` bytes of
+ reads; `out` NULL or valid for `out_len` bytes of writes and not overlapping the
+ inputs; `clipped` NULL or valid for 6 `uint64_t` writes.
+ */
+SbStatus sb_pcm_convert_run(struct SbPcmConverter *conv,
+                            const uint8_t *before,
+                            const uint8_t *frames,
+                            size_t frames_len,
+                            const uint8_t *after,
+                            uint32_t fmt,
+                            void *out,
+                            size_t out_len,
+                            uint64_t *clipped);
 
 /*
  Makes an empty seek index of the area from `slot` of `disc`, with a checkpoint every
