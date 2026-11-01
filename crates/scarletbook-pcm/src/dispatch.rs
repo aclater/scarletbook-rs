@@ -93,7 +93,7 @@ mod avx2 {
 
     #[target_feature(enable = "avx2,fma")]
     pub(super) unsafe fn fir1(s: &Sym, x: &[f64], n: usize, sink: &mut Sink<'_, '_>) {
-        kernel::fir1::<AVX2_LANES, true>(s, x, n, sink)
+        kernel::fir1_reuse(s, x, n, sink)
     }
 
     #[target_feature(enable = "avx2,fma")]

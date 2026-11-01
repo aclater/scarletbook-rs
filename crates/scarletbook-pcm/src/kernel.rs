@@ -518,6 +518,63 @@ pub(crate) fn fir1<const L: usize, const FMA: bool>(s: &Sym, x: &[f64], n: usize
     blocks(n, s.scale, f, sink);
 }
 
+/// Fir1 as [`fir1`], with fused multiply-adds, in blocks of 16 outputs, reading each input
+/// vector once for 4 taps: taps `j0 + 4u` (u < 4) of one residue mod 4 need overlapping
+/// vectors (tap `j0 + 4u`, lanes `4g..4g + 4`: `up[u + g]` and `dn[g + 3 - u]`).
+#[inline(always)]
+pub(crate) fn fir1_reuse(s: &Sym, x: &[f64], n: usize, sink: &mut Sink<'_, '_>) {
+    const G: usize = 4;
+    const U: usize = 4;
+    let m = s.half_len();
+    let (h0, h) = (s.full[0], &s.full[1..]);
+    let taps = h.len();
+    let full = taps / (4 * U) * (4 * U);
+    let v4 = |i: usize| -> [f64; 4] { x[i..i + 4].try_into().unwrap_or_default() };
+    let f = |i: usize, out: &mut [f64; 4 * G]| {
+        let mut acc = [[0.0f64; 4]; G];
+        for (g, a) in acc.iter_mut().enumerate() {
+            let c = v4(i + m + 4 * g);
+            for l in 0..4 {
+                a[l] = h0 * c[l];
+            }
+        }
+        // Taps 1.. are h[0..]: tap j + 1 at x[i + m + 1 + j + ..] and x[i + m - 1 - j + ..].
+        let (hi, lo) = (i + m + 1, i + m - 1);
+        for t0 in (0..full).step_by(4 * U) {
+            for r in 0..4 {
+                let j0 = t0 + r;
+                let mut up = [[0.0f64; 4]; G + U - 1];
+                let mut dn = [[0.0f64; 4]; G + U - 1];
+                for k in 0..G + U - 1 {
+                    up[k] = v4(hi + j0 + 4 * k);
+                    dn[k] = v4(lo - j0 - 4 * (U - 1) + 4 * k);
+                }
+                for u in 0..U {
+                    let hj = h[j0 + 4 * u];
+                    for (g, a) in acc.iter_mut().enumerate() {
+                        let (p, q) = (up[u + g], dn[g + U - 1 - u]);
+                        for l in 0..4 {
+                            a[l] = hj.mul_add(p[l] + q[l], a[l]);
+                        }
+                    }
+                }
+            }
+        }
+        for (j, &hj) in h.iter().enumerate().skip(full) {
+            for (g, a) in acc.iter_mut().enumerate() {
+                let (p, q) = (v4(hi + j + 4 * g), v4(lo - j + 4 * g));
+                for l in 0..4 {
+                    a[l] = hj.mul_add(p[l] + q[l], a[l]);
+                }
+            }
+        }
+        for (g, a) in acc.iter().enumerate() {
+            out[4 * g..4 * g + 4].copy_from_slice(a);
+        }
+    };
+    blocks::<{ 4 * G }>(n, s.scale, f, sink);
+}
+
 /// Dec2: output `i` centred on `xe[i + e]` (`e` = the even taps after the centre), with the
 /// odd taps on `xo[i + o + j]` and `xo[i + o - 1 - j]`.
 #[inline(always)]
