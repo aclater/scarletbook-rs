@@ -11,6 +11,7 @@ use std::ffi::{CStr, CString, c_char};
 use std::io::Cursor;
 use std::path::PathBuf;
 use std::ptr;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 use scarletbook::output::{
     Comment, CommentKind, DsfBitsPerSample, DstIndexOffset, DstLengths, Format, InvalidDst, Layout,
@@ -517,6 +518,156 @@ fn small_disc_layouts_equal_the_rust_api() {
         assert_eq!(fill(l, &mut disc, Slot::TwoChannel, at, 5_000), want[at as usize..][..5_000]);
         c!(sb_output_layout_free(l));
     }
+    c!(sb_output_options_free(o));
+    c!(sb_disc_free(d));
+}
+
+/// What [`free_during_read`] needs: the image, and the handles its callback frees.
+struct Victim {
+    bytes: Vec<u8>,
+    layout: AtomicPtr<SbOutputLayout>,
+    lengths: AtomicPtr<SbDstLengths>,
+    /// The info the callback read from the layout it tried to free, once per read.
+    sizes: std::sync::Mutex<Vec<u64>>,
+}
+
+/// A positional read that, when armed, frees the layout (in use by the read: a no-op) and
+/// the DST lengths (in use by no call: freed), then checks that the layout is still live.
+unsafe extern "C" fn free_during_read(
+    user: *mut std::ffi::c_void,
+    offset: u64,
+    buf: *mut u8,
+    len: usize,
+) -> i64 {
+    // SAFETY: `user` is the `Victim` given to sb_disc_open_callbacks_at, alive for the disc.
+    let v = unsafe { &*user.cast::<Victim>() };
+    let layout = v.layout.swap(ptr::null_mut(), Ordering::SeqCst);
+    if !layout.is_null() {
+        c!(sb_output_layout_free(layout));
+        c!(sb_dst_lengths_free(v.lengths.swap(ptr::null_mut(), Ordering::SeqCst)));
+        v.sizes.lock().unwrap().push(info(layout).size);
+    }
+    let Some(rest) = usize::try_from(offset).ok().and_then(|o| v.bytes.get(o..)) else { return 0 };
+    let n = len.min(rest.len());
+    // SAFETY: `buf` is valid for `len >= n` bytes of writes, by the callback's contract.
+    unsafe { ptr::copy_nonoverlapping(rest.as_ptr(), buf, n) };
+    n as i64
+}
+
+/// A read or log callback that frees the layout being read is refused (the free does
+/// nothing), the read finishes, and the layout stays usable and freeable; the DST lengths a
+/// layout was made from can be freed at any time. On the plain DSD area of a corpus image,
+/// small enough for Miri.
+#[test]
+#[cfg_attr(miri, ignore = "rayon's crossbeam-epoch fails Stacked Borrows; run with Tree Borrows")]
+fn freeing_handles_during_a_read() {
+    // Built in, as Miri's isolation allows no file reads.
+    let bytes = include_bytes!("../../../corpus/images/album-set-disc-2-of-3.iso").to_vec();
+    let mut disc = Disc::open(Cursor::new(bytes.clone())).unwrap();
+    let end = disc.toc().area(Slot::TwoChannel).unwrap().playtime_frames();
+    let victim = Box::new(Victim {
+        bytes,
+        layout: AtomicPtr::new(ptr::null_mut()),
+        lengths: AtomicPtr::new(ptr::null_mut()),
+        sizes: std::sync::Mutex::new(Vec::new()),
+    });
+    let user = ptr::from_ref::<Victim>(&victim).cast_mut().cast();
+    let mut d = ptr::null_mut();
+    let size = victim.bytes.len() as u64;
+    assert_eq!(c!(sb_disc_open_callbacks_at(Some(free_during_read), size, user, &mut d)), SbStatus::Ok);
+    let o = options();
+    for format in [Format::Dsf, Format::DsdiffDsd, Format::DsdiffDst] {
+        let mut lengths = ptr::null_mut();
+        assert_eq!(c!(sb_dst_lengths_scan(d, 0, 0, end, 0, &mut lengths)), SbStatus::Ok);
+        let mut l = ptr::null_mut();
+        let want = if format == Format::DsdiffDst {
+            assert_eq!(c!(sb_output_layout_new_dst(d, lengths, o, &mut l)), SbStatus::Ok);
+            let rust = DstLengths::scan(&mut disc, Slot::TwoChannel, 0, end, InvalidDst::Stored).unwrap();
+            let layout = disc.output_layout_dst(&rust, &OutputOptions::default()).unwrap();
+            rust_file(&mut disc, &layout)
+        } else {
+            let sb = if format == Format::Dsf { SbOutputFormat::Dsf } else { SbOutputFormat::DsdiffDsd };
+            assert_eq!(c!(sb_output_layout_new(d, 0, 0, end, sb as u32, o, &mut l)), SbStatus::Ok);
+            let layout =
+                disc.output_layout(Slot::TwoChannel, 0, end, format, &OutputOptions::default()).unwrap();
+            rust_file(&mut disc, &layout)
+        };
+        victim.layout.store(l, Ordering::SeqCst);
+        victim.lengths.store(lengths, Ordering::SeqCst);
+        // Armed: the first read callback of the next read frees both handles.
+        assert_eq!(read(l, d, 1 << 20), want);
+        assert!(victim.layout.load(Ordering::SeqCst).is_null(), "{format:?}: the callback ran");
+        assert_eq!(victim.sizes.lock().unwrap().pop(), Some(want.len() as u64));
+        // The layout is still live: it reads again, and frees.
+        assert_eq!(read(l, d, 4_000), want);
+        c!(sb_output_layout_free(l));
+    }
+    c!(sb_output_options_free(o));
+    c!(sb_disc_free(d));
+    drop(victim);
+}
+
+/// `sb_output_layout_fill` refuses a buffer that overlaps the positions array or a
+/// position's content or DST equivalent, and accepts one that only touches them.
+#[test]
+fn overlapping_fill_buffers_are_refused() {
+    let frame = |n: u32| -> Vec<u8> { (0..2 * 4704).map(|i| (i as u32 * 7 + n * 13) as u8).collect() };
+    let frames: Vec<common::PFrame> =
+        (0..3).map(|number| common::PFrame { number, dst: false, data: frame(number) }).collect();
+    let tracks = vec![common::TrackSpec { start: 0, duration: 3 }];
+    let bytes = common::Spec { channels: 2, playtime: 3, tracks, audio: common::pack(&frames) }.build();
+    let d = open(&bytes);
+    let o = options();
+    let mut l = ptr::null_mut();
+    assert_eq!(
+        c!(sb_output_layout_new(d, 0, 0, 3, SbOutputFormat::DsdiffDsd as u32, o, &mut l)),
+        SbStatus::Ok
+    );
+    // 100 bytes of frame 1's sound data.
+    let at = info(l).size - 4704 * 2 - 100;
+    let (mut first, mut end) = (0, 0);
+    assert_eq!(c!(sb_output_layout_positions(l, at, 100, &mut first, &mut end)), SbStatus::Ok);
+    assert_eq!((first, end), (1, 2));
+    // One allocation: the content at [0, n), then room for the buffer.
+    let n = 2 * 4704;
+    let mut arena = frame(1);
+    arena.resize(n + 200, 0);
+    let base = arena.as_mut_ptr();
+    let position = |content: *const u8| SbPositionData {
+        content,
+        content_len: n,
+        dst_equivalent: ptr::null(),
+        dst_equivalent_len: 0,
+        number: 1,
+        reserved: 0,
+    };
+    let mut written = 0;
+    // A buffer over the content's last byte, and one starting inside it: refused.
+    for start in [n - 1, n - 100] {
+        let p = [position(base)];
+        let buf = c!(base.add(start));
+        let s = c!(sb_output_layout_fill(l, at, buf, 100, p.as_ptr(), 1, &mut written));
+        assert_eq!(s, SbStatus::InvalidArgument, "buffer at {start}");
+    }
+    // The DST equivalent is checked too.
+    let p = [SbPositionData { dst_equivalent: base, dst_equivalent_len: n, ..position(c!(base.add(n))) }];
+    assert_eq!(
+        c!(sb_output_layout_fill(l, at, base.add(n - 1), 100, p.as_ptr(), 1, &mut written)),
+        SbStatus::InvalidArgument
+    );
+    // A buffer over the positions array.
+    let mut p = [position(base), position(base)];
+    let over = p.as_mut_ptr().cast::<u8>();
+    assert_eq!(
+        c!(sb_output_layout_fill(l, at, over, 8, p.as_ptr(), 1, &mut written)),
+        SbStatus::InvalidArgument
+    );
+    // Right after the content: accepted, and the bytes are the content's.
+    let p = [position(base)];
+    assert_eq!(c!(sb_output_layout_fill(l, at, base.add(n), 100, p.as_ptr(), 1, &mut written)), SbStatus::Ok);
+    assert_eq!(written, 100);
+    assert_eq!(arena[n..n + 100], frame(1)[n - 100..]);
+    c!(sb_output_layout_free(l));
     c!(sb_output_options_free(o));
     c!(sb_disc_free(d));
 }

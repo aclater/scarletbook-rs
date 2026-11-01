@@ -349,13 +349,16 @@ pub struct SbTags {
 /// The lengths of a range's DST equivalents (specification 8, 8.4.6 "Sizes").
 #[derive(Debug)]
 pub struct SbDstLengths {
-    inner: DstLengths,
+    /// Borrowed for each call, so a callback that frees the handle mid-call is refused.
+    inner: RefCell<DstLengths>,
 }
 
 /// The layout of one output file.
 #[derive(Debug)]
 pub struct SbOutputLayout {
-    inner: Layout,
+    /// Borrowed for each call, so a callback that frees the handle mid-call (a read's
+    /// read or log callback) is refused.
+    inner: RefCell<Layout>,
 }
 
 const _: () = {
@@ -1151,7 +1154,7 @@ pub unsafe extern "C" fn sb_dst_lengths_scan(
             if flag(i64::from(replace_invalid))? { InvalidDst::Replaced } else { InvalidDst::Stored };
         let lengths = DstLengths::scan(&mut d, slot_from(slot)?, first, end, invalid)?;
         // SAFETY: non-NULL and valid for a write by this function's contract.
-        unsafe { give(out, SbDstLengths { inner: lengths }) };
+        unsafe { give(out, SbDstLengths { inner: RefCell::new(lengths) }) };
         Ok(SbStatus::Ok)
     })
 }
@@ -1189,7 +1192,7 @@ pub unsafe extern "C" fn sb_dst_lengths_load(
             if flag(i64::from(replace_invalid))? { InvalidDst::Replaced } else { InvalidDst::Stored };
         let loaded = DstLengths::from_lengths(area, first, end, invalid, lengths.to_vec())?;
         // SAFETY: non-NULL and valid for a write by this function's contract.
-        unsafe { give(out, SbDstLengths { inner: loaded }) };
+        unsafe { give(out, SbDstLengths { inner: RefCell::new(loaded) }) };
         Ok(SbStatus::Ok)
     })
 }
@@ -1211,7 +1214,8 @@ pub unsafe extern "C" fn sb_dst_lengths_get(
     guard(|| {
         // SAFETY: forwarded contract.
         let h = unsafe { handle(lengths, "DST lengths") }?;
-        let l = h.inner.lengths();
+        let held = h.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
+        let l = held.lengths();
         // SAFETY: forwarded contract.
         unsafe { write_out(count, l.len()) }?;
         if out.is_null() || cap < l.len() {
@@ -1223,7 +1227,8 @@ pub unsafe extern "C" fn sb_dst_lengths_get(
     })
 }
 
-/// Frees DST lengths. NULL is ignored.
+/// Frees DST lengths. NULL is ignored, and so are lengths in use by a running call (the
+/// call is then a no-op).
 ///
 /// # Safety
 ///
@@ -1231,7 +1236,7 @@ pub unsafe extern "C" fn sb_dst_lengths_get(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sb_dst_lengths_free(lengths: *mut SbDstLengths) {
     // SAFETY: forwarded contract.
-    unsafe { free(lengths, |_| false) };
+    unsafe { free(lengths, |h| h.inner.try_borrow_mut().is_err()) };
 }
 
 /// The layout of the frame range `[first, end)` of the area from `slot` as a `format`
@@ -1270,7 +1275,7 @@ pub unsafe extern "C" fn sb_output_layout_new(
         let o = options_or_default(options)?;
         let layout = d.output_layout(slot_from(slot)?, first, end, format, &o)?;
         // SAFETY: non-NULL and valid for a write by this function's contract.
-        unsafe { give(out, SbOutputLayout { inner: layout }) };
+        unsafe { give(out, SbOutputLayout { inner: RefCell::new(layout) }) };
         Ok(SbStatus::Ok)
     })
 }
@@ -1299,9 +1304,10 @@ pub unsafe extern "C" fn sb_output_layout_new_dst(
         let l = unsafe { handle(lengths, "DST lengths") }?;
         non_null(out)?;
         let o = options_or_default(options)?;
-        let layout = d.output_layout_dst(&l.inner, &o)?;
+        let held = l.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
+        let layout = d.output_layout_dst(&held, &o)?;
         // SAFETY: non-NULL and valid for a write by this function's contract.
-        unsafe { give(out, SbOutputLayout { inner: layout }) };
+        unsafe { give(out, SbOutputLayout { inner: RefCell::new(layout) }) };
         Ok(SbStatus::Ok)
     })
 }
@@ -1318,7 +1324,10 @@ pub unsafe extern "C" fn sb_output_layout_info(
 ) -> SbStatus {
     guard(|| {
         // SAFETY: forwarded contract.
-        let l = &unsafe { handle(layout, "output layout") }?.inner;
+        let l = unsafe { handle(layout, "output layout") }?
+            .inner
+            .try_borrow()
+            .map_err(|_| Failure::arg(REENTRANT))?;
         let (first, end) = l.range();
         let value = SbOutputLayoutInfo {
             size: l.size(),
@@ -1359,7 +1368,10 @@ pub unsafe extern "C" fn sb_output_layout_region(
 ) -> SbStatus {
     guard(|| {
         // SAFETY: forwarded contract.
-        let l = &unsafe { handle(layout, "output layout") }?.inner;
+        let l = unsafe { handle(layout, "output layout") }?
+            .inner
+            .try_borrow()
+            .map_err(|_| Failure::arg(REENTRANT))?;
         let r = l.regions().get(index as usize).ok_or_else(|| Failure::arg("no such region"))?;
         let kind = match r.kind {
             RegionKind::Header => 0,
@@ -1388,7 +1400,10 @@ pub unsafe extern "C" fn sb_output_layout_positions(
 ) -> SbStatus {
     guard(|| {
         // SAFETY: forwarded contract.
-        let l = &unsafe { handle(layout, "output layout") }?.inner;
+        let l = unsafe { handle(layout, "output layout") }?
+            .inner
+            .try_borrow()
+            .map_err(|_| Failure::arg(REENTRANT))?;
         let p = l.positions_for(offset..offset.saturating_add(len));
         // SAFETY: forwarded contract.
         unsafe { write_out(first, p.start) }?;
@@ -1419,7 +1434,10 @@ pub unsafe extern "C" fn sb_output_layout_read(
 ) -> SbStatus {
     guard(|| {
         // SAFETY: forwarded contract.
-        let l = &unsafe { handle(layout, "output layout") }?.inner;
+        let l = unsafe { handle(layout, "output layout") }?
+            .inner
+            .try_borrow()
+            .map_err(|_| Failure::arg(REENTRANT))?;
         // SAFETY: forwarded contract.
         let mut d = unsafe { disc_handle(disc) }?.get_mut()?;
         if written.is_null() {
@@ -1479,13 +1497,15 @@ impl PositionSource for Held<'_> {
 /// positions the caller gives: those of `sb_output_layout_positions` for the same bytes,
 /// with what `SbOutputLayoutInfo.input` says they need. `*written` receives the bytes
 /// written, fewer than `len` at the end of the file. `SB_STATUS_INVALID_ARGUMENT` if a
-/// needed position, or its content or DST equivalent, is missing or of the wrong size.
+/// needed position, or its content or DST equivalent, is missing or of the wrong size, or
+/// if `buf` overlaps the `positions` array or any position's content or DST equivalent.
 ///
 /// # Safety
 ///
 /// `layout` must be NULL or a live handle; `buf` NULL or valid for `len` bytes of writes;
 /// `positions` NULL or valid for `count` reads, each with its non-NULL pointers valid for
-/// their lengths; `written` NULL or valid for a write.
+/// their lengths; `written` NULL or valid for a write. `buf` must not overlap `positions`
+/// or the bytes they point to (checked).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sb_output_layout_fill(
     layout: *const SbOutputLayout,
@@ -1498,7 +1518,10 @@ pub unsafe extern "C" fn sb_output_layout_fill(
 ) -> SbStatus {
     guard(|| {
         // SAFETY: forwarded contract.
-        let l = &unsafe { handle(layout, "output layout") }?.inner;
+        let l = unsafe { handle(layout, "output layout") }?
+            .inner
+            .try_borrow()
+            .map_err(|_| Failure::arg(REENTRANT))?;
         // SAFETY: forwarded contract.
         let positions = unsafe { slice(positions, count) }?;
         if written.is_null() {
@@ -1507,10 +1530,25 @@ pub unsafe extern "C" fn sb_output_layout_fill(
         if buf.is_null() && len > 0 {
             return Err(Failure::arg("NULL buffer"));
         }
+        // `buf` becomes a `&mut [u8]` while the positions' bytes are borrowed: refuse any
+        // overlap, which address comparison finds without reading through the pointers.
+        let overlaps = |p: *const u8, n: usize| {
+            let (a, b) = (p.addr(), buf.addr());
+            n > 0 && len > 0 && a < b.saturating_add(len) && b < a.saturating_add(n)
+        };
+        let bytes = |p: &SbPositionData| {
+            [(p.content, p.content_len), (p.dst_equivalent, p.dst_equivalent_len)]
+                .into_iter()
+                .any(|(q, n)| !q.is_null() && overlaps(q, n))
+        };
+        if overlaps(positions.as_ptr().cast(), size_of_val(positions)) || positions.iter().any(bytes) {
+            return Err(Failure::arg("the buffer overlaps the positions or their bytes"));
+        }
         let out: &mut [u8] = if len == 0 {
             &mut []
         } else {
-            // SAFETY: non-NULL and valid for len writes by this function's contract.
+            // SAFETY: non-NULL and valid for len writes by this function's contract, and
+            // overlapping none of the positions' bytes (checked above).
             unsafe { std::slice::from_raw_parts_mut(buf, len) }
         };
         let n = l.fill(offset, out, &mut Held { positions })?;
@@ -1520,7 +1558,8 @@ pub unsafe extern "C" fn sb_output_layout_fill(
     })
 }
 
-/// Frees a layout. NULL is ignored.
+/// Frees a layout. NULL is ignored, and so is a layout in use by a running call, such as a
+/// read whose callback frees it (the call is then a no-op).
 ///
 /// # Safety
 ///
@@ -1528,5 +1567,5 @@ pub unsafe extern "C" fn sb_output_layout_fill(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sb_output_layout_free(layout: *mut SbOutputLayout) {
     // SAFETY: forwarded contract.
-    unsafe { free(layout, |_| false) };
+    unsafe { free(layout, |h| h.inner.try_borrow_mut().is_err()) };
 }

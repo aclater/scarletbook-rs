@@ -4073,7 +4073,8 @@ SbStatus sb_dst_lengths_get(const struct SbDstLengths *lengths,
                             size_t *count);
 
 /*
- Frees DST lengths. NULL is ignored.
+ Frees DST lengths. NULL is ignored, and so are lengths in use by a running call (the
+ call is then a no-op).
 
  # Safety
 
@@ -4176,13 +4177,15 @@ SbStatus sb_output_layout_read(const struct SbOutputLayout *layout,
  positions the caller gives: those of `sb_output_layout_positions` for the same bytes,
  with what `SbOutputLayoutInfo.input` says they need. `*written` receives the bytes
  written, fewer than `len` at the end of the file. `SB_STATUS_INVALID_ARGUMENT` if a
- needed position, or its content or DST equivalent, is missing or of the wrong size.
+ needed position, or its content or DST equivalent, is missing or of the wrong size, or
+ if `buf` overlaps the `positions` array or any position's content or DST equivalent.
 
  # Safety
 
  `layout` must be NULL or a live handle; `buf` NULL or valid for `len` bytes of writes;
  `positions` NULL or valid for `count` reads, each with its non-NULL pointers valid for
- their lengths; `written` NULL or valid for a write.
+ their lengths; `written` NULL or valid for a write. `buf` must not overlap `positions`
+ or the bytes they point to (checked).
  */
 SbStatus sb_output_layout_fill(const struct SbOutputLayout *layout,
                                uint64_t offset,
@@ -4193,7 +4196,8 @@ SbStatus sb_output_layout_fill(const struct SbOutputLayout *layout,
                                size_t *written);
 
 /*
- Frees a layout. NULL is ignored.
+ Frees a layout. NULL is ignored, and so is a layout in use by a running call, such as a
+ read whose callback frees it (the call is then a no-op).
 
  # Safety
 

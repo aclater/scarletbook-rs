@@ -716,6 +716,8 @@ impl From<Error> for Failure {
                 SbStatus::OutputLayoutUnspecified
             }
             Error::OutputRefused(scarletbook::OutputRefusal::NotEditedMaster(_)) => SbStatus::NotEditedMaster,
+            // A refusal added later is the caller's request that cannot be met, not a panic.
+            Error::OutputRefused(_) => SbStatus::InvalidArgument,
             _ => SbStatus::Panic,
         };
         Failure(status, e.to_string())
