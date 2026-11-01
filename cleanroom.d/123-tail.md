@@ -1,0 +1,1 @@
+| 2026-11-01 | #123 cold seek tail (#159) | Search and read sizing of provisional starts (no change to what is read from `L`). Specification 4, 4.2 item 8, and 7, 7.1 item 3, at sacd-spec `eafaaba`. No new sources consulted; regula falsi and its Illinois modification are standard numerical methods. |
