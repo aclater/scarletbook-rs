@@ -15,7 +15,8 @@ use std::io::Cursor;
 use common::TrackSpec;
 use output_common::{plain, synthetic};
 use scarletbook::output::{
-    Comment, CommentKind, Format, InfoChunk, LocalChunk, MarkerText, OutputOptions, TagItem, TagSet, Tags,
+    ArtistTitleSource, Comment, CommentKind, Format, InfoChunk, LocalChunk, MarkerText, OutputOptions,
+    SourceTrack, TagItem, TagSet, Tags,
 };
 use scarletbook::{Disc, Error, Slot};
 
@@ -241,4 +242,163 @@ fn comments() {
             Error::InvalidArgument(_)
         ));
     }
+}
+
+/// `DIIN` without `EMID` outside an edited master (8.4.8 and 8.6 row 24 at sacd-spec
+/// `e069569`), and the refusal in an edited master, which requires it (8.4.11 item 1).
+#[test]
+fn diin_without_emid() {
+    let mut disc = disc();
+    let on = OutputOptions::default()
+        .with_dsdiff_edited_master_info(true)
+        .with_dsdiff_artist_title(Some(true))
+        .with_dsdiff_edited_master_id("id".to_owned())
+        .with_tags(Tags::Set(tags()));
+    // The default writes `EMID`.
+    let with = local(&file(&mut disc, 0, 3, &on), b"DIIN").unwrap();
+    assert_eq!(chunks(&with, 0)[0], (b"EMID".to_vec(), b"id".to_vec()));
+    // Without it, `MARK`, `DIAR` and `DITI` remain, in the order of W14, which still names
+    // `EMID`; the file is 14 bytes (`EMID` with 2 text bytes) shorter.
+    let without = on.clone().with_dsdiff_edited_master_id_written(false);
+    let f = file(&mut disc, 0, 3, &without);
+    let diin = local(&f, b"DIIN").unwrap();
+    assert_eq!(diin, with[14..]);
+    let ids: Vec<Vec<u8>> = chunks(&diin, 0).into_iter().map(|(i, _)| i).collect();
+    assert_eq!(ids, [&b"MARK"[..], b"MARK", b"MARK", b"MARK", b"DIAR", b"DITI"]);
+    assert_eq!(f.len(), file(&mut disc, 0, 3, &on).len() - 14);
+    assert_eq!(u64::from_be_bytes(f[4..12].try_into().unwrap()), f.len() as u64 - 12);
+    // The `EMID` text is not checked when it isn't written.
+    let bad_id = without.clone().with_dsdiff_edited_master_id("\u{e9}".to_owned());
+    assert_eq!(file(&mut disc, 0, 3, &bad_id), f);
+    let bad_id = on.clone().with_dsdiff_edited_master_id("\u{e9}".to_owned());
+    assert!(matches!(
+        disc.output_layout(Slot::TwoChannel, 0, 3, Format::DsdiffDsd, &bad_id).unwrap_err(),
+        Error::InvalidArgument(_)
+    ));
+    // A track without markers, artist or title (W34, 8.4.8 at sacd-spec `048aa1a`): by
+    // default `DIIN` with `D = 0`, 12 bytes, or else no `DIIN`, the file 12 bytes shorter
+    // and otherwise the same.
+    let bare = OutputOptions::default()
+        .with_dsdiff_edited_master_info(true)
+        .with_dsdiff_edited_master_id_written(false);
+    let f = file(&mut disc, 1, 3, &bare);
+    let at = f.windows(4).position(|w| w == b"DIIN").unwrap();
+    assert_eq!(f[at..at + 12], [&b"DIIN"[..], &0u64.to_be_bytes()].concat());
+    assert_eq!(local(&f, b"DIIN"), Some(Vec::new()));
+    let left_out = file(&mut disc, 1, 3, &bare.clone().with_dsdiff_empty_info(false));
+    assert!(local(&left_out, b"DIIN").is_none());
+    assert_eq!(left_out.len(), f.len() - 12);
+    assert_eq!(left_out[12..at], f[12..at]);
+    assert_eq!(left_out[at..], f[at + 12..]);
+    assert_eq!(u64::from_be_bytes(left_out[4..12].try_into().unwrap()), left_out.len() as u64 - 12);
+    // As the default without `DIIN` at all.
+    assert_eq!(left_out, file(&mut disc, 1, 3, &OutputOptions::default()));
+    // An empty title left out (W31) leaves `DIIN` empty too; one written with `k = 0` doesn't.
+    let mut empty = TagSet::new();
+    empty.set(TagItem::Album, "");
+    let text_only = bare.clone().with_dsdiff_artist_title(Some(true)).with_tags(Tags::Set(empty));
+    assert!(
+        local(&file(&mut disc, 1, 3, &text_only.clone().with_dsdiff_empty_info(false)), b"DIIN").is_none()
+    );
+    let kept = text_only.with_dsdiff_empty_info(false).with_dsdiff_empty_text(true);
+    assert_eq!(local(&file(&mut disc, 1, 3, &kept), b"DIIN").unwrap()[..4], *b"DITI");
+    // With content, W34 changes nothing.
+    assert_eq!(
+        file(&mut disc, 0, 3, &without.clone().with_dsdiff_empty_info(false)),
+        file(&mut disc, 0, 3, &without)
+    );
+
+    // An edited master requires `EMID`.
+    let big = synthetic(
+        2,
+        &plain(2, 160),
+        vec![TrackSpec { start: 0, duration: 75 }, TrackSpec { start: 75, duration: 75 }],
+        160,
+    );
+    let master = OutputOptions::default().with_dsdiff_edited_master(true);
+    assert!(big.output_layout(Slot::TwoChannel, 0, 160, Format::DsdiffDsd, &master).is_ok());
+    let refused = master.with_dsdiff_edited_master_id_written(false);
+    assert!(matches!(
+        big.output_layout(Slot::TwoChannel, 0, 160, Format::DsdiffDsd, &refused).unwrap_err(),
+        Error::InvalidArgument(_)
+    ));
+}
+
+/// `DIAR` and `DITI` from the source track's performer and title (8.4.8 and 8.6 row 24 at
+/// sacd-spec `e069569`; specification 3, 3.5, types 0x02 and 0x01).
+#[test]
+fn artist_and_title_of_the_source_track() {
+    let mut disc = disc();
+    let mut set = tags();
+    set.set(TagItem::Performer, "Ansermet");
+    set.set(TagItem::TrackTitle, "Bolero");
+    let base = OutputOptions::default()
+        .with_dsdiff_edited_master_info(true)
+        .with_dsdiff_edited_master_id_written(false)
+        .with_dsdiff_artist_title(Some(true))
+        .with_tags(Tags::Set(set.clone()));
+    let diin = |disc: &mut Disc<Cursor<Vec<u8>>>, first, end, o: &OutputOptions| {
+        local(&file(disc, first, end, o), b"DIIN").unwrap()
+    };
+    let want = |artist: &[u8], title: &[u8]| {
+        let mut d = Vec::new();
+        if !artist.is_empty() {
+            chunk(&mut d, b"DIAR", &text(artist));
+        }
+        if !title.is_empty() {
+            chunk(&mut d, b"DITI", &text(title));
+        }
+        d
+    };
+    // Track 2, `[1, 3)`, has a source track and no markers by default.
+    let album = diin(&mut disc, 1, 3, &base);
+    assert_eq!(album, want(b"Orchestre de la Suisse Romande", b"Ravel ? Bol?ro"));
+    let track = base.clone().with_dsdiff_artist_title_source(ArtistTitleSource::Track);
+    assert_eq!(diin(&mut disc, 1, 3, &track), want(b"Ansermet", b"Bolero"));
+    let then = base.clone().with_dsdiff_artist_title_source(ArtistTitleSource::TrackThenAlbum);
+    assert_eq!(diin(&mut disc, 1, 3, &then), want(b"Ansermet", b"Bolero"));
+    // Each absent track item: none, or the album item.
+    let mut no_performer = set.clone();
+    no_performer.remove(TagItem::Performer);
+    let o = |source| {
+        base.clone().with_tags(Tags::Set(no_performer.clone())).with_dsdiff_artist_title_source(source)
+    };
+    assert_eq!(diin(&mut disc, 1, 3, &o(ArtistTitleSource::Track)), want(b"", b"Bolero"));
+    assert_eq!(
+        diin(&mut disc, 1, 3, &o(ArtistTitleSource::TrackThenAlbum)),
+        want(b"Orchestre de la Suisse Romande", b"Bolero")
+    );
+    // A frame range without a source track has no track strings, whatever the set holds.
+    let none = |o: OutputOptions| o.with_source_track(SourceTrack::None);
+    assert_eq!(diin(&mut disc, 1, 3, &none(track.clone())), want(b"", b""));
+    assert_eq!(diin(&mut disc, 1, 3, &none(then.clone())), album);
+    // From the TOC: the synthetic track 2 has the title `T2` and no performer, and the
+    // disc the title `Synthetic` and no artist.
+    let toc = track.clone().with_tags(Tags::FromToc);
+    assert_eq!(diin(&mut disc, 1, 3, &toc), want(b"", b"T2"));
+    assert_eq!(diin(&mut disc, 1, 3, &base.clone().with_tags(Tags::FromToc)), want(b"", b"Synthetic"));
+
+    // An edited master has no source track (8.4.11), so only the album strings.
+    let mut big = synthetic(
+        2,
+        &plain(2, 160),
+        vec![TrackSpec { start: 0, duration: 75 }, TrackSpec { start: 75, duration: 75 }],
+        160,
+    );
+    let master = |source| {
+        OutputOptions::default()
+            .with_dsdiff_edited_master(true)
+            .with_tags(Tags::Set(set.clone()))
+            .with_dsdiff_artist_title_source(source)
+    };
+    let mut tail = |o: &OutputOptions| {
+        let d = diin(&mut big, 0, 160, o);
+        chunks(&d, 0).into_iter().filter(|(i, _)| i == b"DIAR" || i == b"DITI").collect::<Vec<_>>()
+    };
+    assert!(tail(&master(ArtistTitleSource::Track)).is_empty());
+    assert_eq!(tail(&master(ArtistTitleSource::TrackThenAlbum)), tail(&master(ArtistTitleSource::Album)));
+    assert_eq!(
+        tail(&master(ArtistTitleSource::Album))[0],
+        (b"DIAR".to_vec(), text(b"Orchestre de la Suisse Romande"))
+    );
 }
