@@ -85,6 +85,7 @@ fn open(bytes: &[u8]) -> *mut SbDisc {
     // SAFETY: `bytes` is valid for its length; `&mut d` is a valid out-pointer.
     let s = unsafe { sb_disc_open_memory(bytes.as_ptr(), bytes.len(), &mut d) };
     assert_eq!(s, SbStatus::Ok, "{}", last_error());
+    assert!(!d.is_null());
     d
 }
 
@@ -191,8 +192,9 @@ fn every_status_has_a_name() {
 fn a_disc_handle_debug_prints() {
     let bytes = small_image(5);
     let disc = open(&bytes);
-    // SAFETY: NULL or a live handle, only read here.
-    let handle = unsafe { disc.as_ref() }.expect("a live handle");
+    // SAFETY: `open` returned a live handle (or NULL, which `as_ref` turns into `None`); it
+    // is only read here and freed after this reference's last use.
+    let handle = unsafe { disc.as_ref() }.expect("open returned a live handle");
     let text = format!("{handle:?}");
     assert!(text.starts_with("SbDisc") && text.contains("id"), "{text}");
     free(disc);
