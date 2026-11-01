@@ -71,6 +71,32 @@ pub(crate) fn decode_group(
     }
 }
 
+/// Runs `work` (the whole of [`crate::output::Layout::read_at`] or
+/// [`crate::output::Layout::fill`]: reading an area's sectors, demultiplexing, and filling
+/// a DSF or DSDIFF byte range) built with AVX2, BMI1, BMI2, LZCNT and MOVBE when `isa` has
+/// them, so that everything it inlines is compiled with those features; as compiled
+/// otherwise. DST frames decoded on a rayon pool keep [`decode_group`]'s dispatch.
+///
+/// PROTOTYPE for #202 (owner ruling): one top-level dispatch point for the output path.
+#[inline]
+pub(crate) fn output_path<W: Work>(isa: Isa, work: W) -> W::Output {
+    match isa.0 {
+        // SAFETY: `Level::Avx2Bmi` is made only by `Isa::detect`, after
+        // `is_x86_feature_detected!` found AVX2, BMI1, BMI2, LZCNT and MOVBE.
+        #[cfg(target_arch = "x86_64")]
+        Level::Avx2Bmi => unsafe { avx2::output_path(work) },
+        Level::Generic => work.run(),
+    }
+}
+
+/// The work of [`output_path`]. `run` must be `#[inline(always)]`, and so must what it calls
+/// on the hot path, to be compiled with the dispatched features: a closure is not (its body
+/// was outlined from the `#[target_feature]` function and built without them).
+pub(crate) trait Work {
+    type Output;
+    fn run(self) -> Self::Output;
+}
+
 /// The decoder built with AVX2, BMI1, BMI2, LZCNT and MOVBE: the safe decoder, with its
 /// inner loops inlined; callers must have checked that the CPU has every feature.
 #[cfg(target_arch = "x86_64")]
@@ -86,6 +112,12 @@ mod avx2 {
         results: &mut [Result<(), DstError>],
     ) {
         dec.group::<true>(frames, channels, outs, results)
+    }
+
+    /// [`super::output_path`]: `work` and what it inlines, with these features.
+    #[target_feature(enable = "avx2,bmi1,bmi2,lzcnt,movbe")]
+    pub(super) unsafe fn output_path<W: super::Work>(work: W) -> W::Output {
+        work.run()
     }
 }
 

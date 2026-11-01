@@ -1,0 +1,1 @@
+| 2026-11-01 | prototype: output-path run-time dispatch (#202) | the existing `#[target_feature]` dispatch of #146 extended to the output path; the rules for calling `#[target_feature]` functions are those already cited for #180 and #200. Found by profiling this crate's own builds (perf, objdump). No new sources consulted. |

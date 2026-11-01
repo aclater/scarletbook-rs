@@ -847,6 +847,20 @@ impl Layout {
     /// The errors of `source`, and [`Error::InvalidArgument`] if it gives content of the
     /// wrong size. `out` is then partly filled.
     pub fn fill(&self, offset: u64, out: &mut [u8], source: &mut dyn PositionSource) -> Result<usize, Error> {
+        crate::dispatch::output_path(
+            crate::dispatch::Isa::detect(),
+            Fill { layout: self, offset, out, source },
+        )
+    }
+
+    /// [`Layout::fill`], beneath the dispatch point: inlined into it.
+    #[inline(always)]
+    fn fill_inner(
+        &self,
+        offset: u64,
+        out: &mut [u8],
+        source: &mut dyn PositionSource,
+    ) -> Result<usize, Error> {
         let len =
             usize::try_from(self.size.saturating_sub(offset)).map_or(out.len(), |rest| rest.min(out.len()));
         let out = &mut out[..len];
@@ -893,6 +907,20 @@ impl Layout {
         offset: u64,
         out: &mut [u8],
     ) -> Result<usize, Error> {
+        crate::dispatch::output_path(
+            crate::dispatch::Isa::detect(),
+            ReadAt { layout: self, disc, offset, out },
+        )
+    }
+
+    /// [`Layout::read_at`], beneath the dispatch point: inlined into it.
+    #[inline(always)]
+    fn read_at_inner<R: Read + Seek>(
+        &self,
+        disc: &mut Disc<R>,
+        offset: u64,
+        out: &mut [u8],
+    ) -> Result<usize, Error> {
         if self.image.as_ref().is_some_and(|d| d != disc.toc_digests()) {
             return Err(Error::InvalidArgument("the layout is of another image"));
         }
@@ -903,12 +931,12 @@ impl Layout {
         let end = offset.saturating_add(out.len() as u64).min(self.size);
         let positions = self.positions_for(offset..end);
         if positions.is_empty() {
-            return self.fill(offset, out, &mut NoPositions);
+            return self.fill_inner(offset, out, &mut NoPositions);
         }
         match self.invalid {
             None => {
                 let frames = disc.range_audio(self.slot, positions.start, positions.end)?;
-                self.fill(offset, out, &mut Window { frames, window: VecDeque::new() })
+                self.fill_inner(offset, out, &mut Window { frames, window: VecDeque::new() })
             }
             Some(invalid) => {
                 let frames = disc.range_frames(self.slot, positions.start, positions.end)?;
@@ -919,7 +947,7 @@ impl Layout {
                     channels: self.channels,
                     invalid,
                 };
-                self.fill(offset, out, &mut source)
+                self.fill_inner(offset, out, &mut source)
             }
         }
     }
@@ -975,6 +1003,38 @@ impl<R: Read + Seek> Disc<R> {
     }
 }
 
+/// [`Layout::fill`] as work of the dispatch point.
+struct Fill<'a, 'b> {
+    layout: &'a Layout,
+    offset: u64,
+    out: &'a mut [u8],
+    source: &'a mut (dyn PositionSource + 'b),
+}
+
+impl crate::dispatch::Work for Fill<'_, '_> {
+    type Output = Result<usize, Error>;
+    #[inline(always)]
+    fn run(self) -> Self::Output {
+        self.layout.fill_inner(self.offset, self.out, self.source)
+    }
+}
+
+/// [`Layout::read_at`] as work of the dispatch point.
+struct ReadAt<'a, R> {
+    layout: &'a Layout,
+    disc: &'a mut Disc<R>,
+    offset: u64,
+    out: &'a mut [u8],
+}
+
+impl<R: Read + Seek> crate::dispatch::Work for ReadAt<'_, R> {
+    type Output = Result<usize, Error>;
+    #[inline(always)]
+    fn run(self) -> Self::Output {
+        self.layout.read_at_inner(self.disc, self.offset, self.out)
+    }
+}
+
 /// The source track of `[first, end)` of `area` (8.1 item 7, W29).
 fn source_track(area: &Area, first: u32, end: u32, choice: SourceTrack) -> Result<Option<u8>, Error> {
     match choice {
@@ -1007,6 +1067,7 @@ struct Checked<'a> {
 }
 
 impl Checked<'_> {
+    #[inline] // PROTOTYPE #202: beneath the output dispatch point
     fn content(&mut self, t: u32) -> Result<Cow<'_, [u8]>, Error> {
         let len = self.len;
         let c = self.inner.content(t)?;
@@ -1092,6 +1153,7 @@ impl<R: Read + Seek> StoredWindow<'_, R> {
 }
 
 impl<R: Read + Seek> PositionSource for StoredWindow<'_, R> {
+    #[inline] // PROTOTYPE #202: beneath the output dispatch point
     fn content(&mut self, t: u32) -> Result<Cow<'_, [u8]>, Error> {
         let held = self.get(t, true)?;
         Ok(Cow::Borrowed(held.decoded.as_ref().map_or(&[][..], |d| &d.data)))
