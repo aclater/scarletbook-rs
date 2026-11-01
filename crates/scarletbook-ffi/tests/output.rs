@@ -672,23 +672,41 @@ fn overlapping_fill_buffers_are_refused() {
     c!(sb_disc_free(d));
 }
 
-/// DSF byte ranges of a chain (specification 8, 8.2.7; issue #169): the plan through
-/// `sb_output_dsf_chain_plan` is the Rust API's, with the split's status, and each file
-/// made with `SB_OUTPUT_OPTION_DSF_CHAIN_FIRST` and `_END` equals the Rust layout through
-/// `sb_output_layout_read` and `sb_output_layout_fill`.
-#[test]
-fn dsf_chains() {
+/// A disc of 9 stereo positions with position 4 missing, and the chain `[0, 3, 3, 5, 9)`:
+/// its range `[3, 3)` is empty and splits it, and the file of `[5, 9)` carries the fill of
+/// position 4.
+fn chain_disc() -> (Vec<u8>, [u32; 5]) {
     let frame = |n: u32| -> Vec<u8> { (0..2 * 4704).map(|i| (i as u32 * 7 + n * 13) as u8).collect() };
-    // Position 4 is missing: its fill is carried into the file of [5, 9).
     let frames: Vec<common::PFrame> = (0..9)
         .filter(|&n| n != 4)
         .map(|number| common::PFrame { number, dst: false, data: frame(number) })
         .collect();
     let tracks = vec![common::TrackSpec { start: 0, duration: 9 }];
-    let bytes = common::Spec { channels: 2, playtime: 9, tracks, audio: common::pack(&frames) }.build();
+    (common::Spec { channels: 2, playtime: 9, tracks, audio: common::pack(&frames) }.build(), [0, 3, 3, 5, 9])
+}
+
+/// The plan of a chain through `sb_output_dsf_chain_plan` (specification 8, 8.2.7; issue
+/// #169), as `SbDsfChainFile`s.
+fn plan(d: *const SbDisc, bounds: &[u32]) -> Vec<SbDsfChainFile> {
+    let mut files = vec![SbDsfChainFile::default(); bounds.len() - 1];
+    let mut written = 0;
+    let n = bounds.len();
+    assert_eq!(
+        c!(sb_output_dsf_chain_plan(d, 0, bounds.as_ptr(), n, files.as_mut_ptr(), files.len(), &mut written)),
+        SbStatus::Ok
+    );
+    assert_eq!(written, files.len());
+    files
+}
+
+/// `sb_output_dsf_chain_plan` gives the Rust API's plan, with the split's status, and
+/// `SB_OUTPUT_OPTION_DSF_CHAIN_FIRST` and `_END` make layouts of the Rust API's size, or
+/// are refused as the Rust API refuses them (specification 8, 8.2.7, 8.6 row 32).
+#[test]
+fn dsf_chain_plans_and_options() {
+    let (bytes, bounds) = chain_disc();
     let d = open(&bytes);
-    let mut disc = Disc::open(Cursor::new(bytes.clone())).unwrap();
-    let bounds = [0, 3, 3, 5, 9];
+    let disc = Disc::open(Cursor::new(bytes.clone())).unwrap();
     let rust = disc.plan_dsf_chain(Slot::TwoChannel, &bounds).unwrap();
 
     let mut files = [SbDsfChainFile::default(); 4];
@@ -698,12 +716,9 @@ fn dsf_chains() {
         SbStatus::BufferTooSmall
     );
     assert_eq!(written, 4);
-    assert_eq!(
-        c!(sb_output_dsf_chain_plan(d, 0, bounds.as_ptr(), 5, files.as_mut_ptr(), 4, &mut written)),
-        SbStatus::Ok
-    );
+    let files = plan(d, &bounds);
     assert_eq!(files[1].status, SbStatus::TrackEmpty as i32);
-    assert_eq!((files[1].first, files[1].end, files[1].byte_end), (3, 3, 0));
+    assert_eq!((files[1].first, files[1].end, files[1].byte_end, files[1].chain_end), (3, 3, 0, 0));
     for (f, r) in files.iter().zip(&rust) {
         let Ok(r) = r else { continue };
         assert_eq!(f.status, 0);
@@ -719,11 +734,12 @@ fn dsf_chains() {
         assert_eq!(c!(sb_output_layout_new(d, 0, f.first, f.end, 0, o, &mut l)), SbStatus::Ok);
         let options = OutputOptions::default().with_dsf_chain(Some(r.chain));
         let layout = disc.output_layout(Slot::TwoChannel, f.first, f.end, Format::Dsf, &options).unwrap();
-        let want = rust_file(&mut disc, &layout);
-        assert_eq!(read(l, d, 5_000), want);
-        let sound = 92;
-        let got = fill(l, &mut disc, Slot::TwoChannel, sound, 6_000);
-        assert_eq!(got, want[sound as usize..sound as usize + 6_000]);
+        let i = info(l);
+        assert_eq!((i.size, i.first, i.end), (layout.size(), f.first, f.end));
+        // The sound data reads the position before the range when it carries bytes.
+        let (mut first, mut end) = (0, 0);
+        assert_eq!(c!(sb_output_layout_positions(l, 92, 1, &mut first, &mut end)), SbStatus::Ok);
+        assert_eq!(first, (f.byte_first / 4704) as u32);
         c!(sb_output_layout_free(l));
         c!(sb_output_options_free(o));
     }
@@ -749,6 +765,7 @@ fn dsf_chains() {
     c!(sb_output_layout_free(l));
     c!(sb_output_options_free(o));
     // Fewer than two bounds, and no area.
+    let mut files = [SbDsfChainFile::default(); 4];
     assert_eq!(
         c!(sb_output_dsf_chain_plan(d, 0, bounds.as_ptr(), 1, files.as_mut_ptr(), 4, &mut written)),
         SbStatus::InvalidArgument
@@ -757,5 +774,32 @@ fn dsf_chains() {
         c!(sb_output_dsf_chain_plan(d, 1, bounds.as_ptr(), 5, files.as_mut_ptr(), 4, &mut written)),
         SbStatus::NoSuchArea
     );
+    c!(sb_disc_free(d));
+}
+
+/// Each file of a chain made through the C API equals the Rust layout, byte for byte,
+/// through `sb_output_layout_read` and through `sb_output_layout_positions` and
+/// `sb_output_layout_fill` (specification 8, 8.2.7).
+#[test]
+#[cfg_attr(miri, ignore = "rayon's crossbeam-epoch fails Stacked Borrows; run with Tree Borrows")]
+fn dsf_chain_files_equal_the_rust_api() {
+    let (bytes, bounds) = chain_disc();
+    let d = open(&bytes);
+    let mut disc = Disc::open(Cursor::new(bytes.clone())).unwrap();
+    for f in plan(d, &bounds).iter().filter(|f| f.status == 0) {
+        let o = options();
+        assert_eq!(set(o, SbOutputOption::DsfChainFirst, f.chain_first.into()), SbStatus::Ok);
+        assert_eq!(set(o, SbOutputOption::DsfChainEnd, f.chain_end.into()), SbStatus::Ok);
+        let mut l = ptr::null_mut();
+        assert_eq!(c!(sb_output_layout_new(d, 0, f.first, f.end, 0, o, &mut l)), SbStatus::Ok);
+        let options = OutputOptions::default().with_dsf_chain(Some((f.chain_first, f.chain_end)));
+        let layout = disc.output_layout(Slot::TwoChannel, f.first, f.end, Format::Dsf, &options).unwrap();
+        let want = rust_file(&mut disc, &layout);
+        assert_eq!(read(l, d, 5_000), want);
+        let got = fill(l, &mut disc, Slot::TwoChannel, 92, 6_000);
+        assert_eq!(got, want[92..92 + 6_000]);
+        c!(sb_output_layout_free(l));
+        c!(sb_output_options_free(o));
+    }
     c!(sb_disc_free(d));
 }
