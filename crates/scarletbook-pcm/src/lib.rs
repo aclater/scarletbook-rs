@@ -27,8 +27,8 @@
 //! | [`Cutoff`] | Passband | Stopband from | Rates |
 //! |---|---|---|---|
 //! | `Default` | 40 kHz | 48 kHz | all three |
-//! | `Low` | 30 kHz | 38 kHz | all three |
-//! | `Wide` | 80 kHz | 96 kHz | 176.4 and 352.8 kHz |
+//! | `Low` | 30 kHz | 36 kHz | all three |
+//! | `Wide` | 80 kHz | 88.2 kHz at 176.4 kHz, 96 kHz at 352.8 kHz | 176.4 and 352.8 kHz |
 //!
 //! Every filter attenuates everything at and above its stopband edge by at least 105 dB,
 //! aliases included, has a passband ripple within +-0.01 dB, and has linear phase. Output
@@ -37,8 +37,18 @@
 //!
 //! The 88.2 kHz output is the 176.4 kHz output with every other sample dropped, and the
 //! 352.8 kHz output of `Default` and `Low` is the 176.4 kHz output interpolated by 2 (its
-//! even samples are the 176.4 kHz samples); `Wide` at 176.4 kHz is its 352.8 kHz output
-//! with every other sample dropped. So each cutoff has one frequency response at all rates.
+//! even samples are the 176.4 kHz samples). So `Default` and `Low` each have one frequency
+//! response at all rates. `Wide` has its own filter at each rate: at 176.4 kHz its stopband
+//! starts at that rate's Nyquist frequency, so that nothing folds back below it.
+//!
+//! # Silence
+//!
+//! The idle pattern of Super Audio CD (every byte 0x69; sacd-spec, specification 0, 0.6)
+//! converts to samples of exactly 0, at every rate, cutoff and gain, and so do the edges of
+//! an area (a neighbour of `None`). The other idle pattern, 0x55, gives exact zeros within
+//! a run of 0x55. A change between the two patterns, such as 0x55 next to an area's edge
+//! or next to 0x69, is not silent: they are different signals. The first stage has the
+//! factor `(1 + z^-1)^2 (1 + z^-4)` in its integer taps, which cancels each pattern exactly.
 //!
 //! [`Converter::convert`] is the general form: it takes the run's frames in one buffer or
 //! one buffer per frame ([`Frames`]), writes either sample layout ([`PcmOut`]), and can
@@ -70,10 +80,11 @@
 //! gives exactly the bytes of frame `f` in a conversion of the whole area; so does any run
 //! of frames with its two neighbours ([`Converter::convert_run`], [`Converter::convert`]),
 //! whether the frames are in one buffer or not, and so does each frame's clip count. The
-//! two output layouts hold the same samples. A neighbour of `None`
-//! marks the edge of the area: the input beyond it is silence (the value 0, not a bit
-//! pattern). Only the [`Converter::context_bytes`] bytes per channel of each neighbour
-//! nearest the frame are used.
+//! two output layouts hold the same samples. A neighbour of `None` marks the edge of the
+//! area: the input beyond it is the idle pattern, so a neighbour of `None` gives exactly the
+//! output of a neighbour frame of 0x69 bytes, and an area that starts or ends in silence
+//! has no transient at its edges. Only the [`Converter::context_bytes`] bytes per channel
+//! of each neighbour nearest the frame are used.
 //!
 //! # Level
 //!
@@ -159,9 +170,10 @@ pub enum Cutoff {
     /// Passband to 40 kHz, stopband from 48 kHz.
     #[default]
     Default,
-    /// Passband to 30 kHz, stopband from 38 kHz.
+    /// Passband to 30 kHz, stopband from 36 kHz.
     Low,
-    /// Passband to 80 kHz, stopband from 96 kHz; 176.4 and 352.8 kHz only.
+    /// Passband to 80 kHz, stopband from 88.2 kHz at 176.4 kHz and from 96 kHz at
+    /// 352.8 kHz; 176.4 and 352.8 kHz only.
     Wide,
 }
 
@@ -178,12 +190,23 @@ impl Cutoff {
         }
     }
 
-    /// The stopband edge in Hz.
+    /// The stopband edge in Hz at the highest rate (for `Wide`, 352.8 kHz); see
+    /// [`stopband_hz_at`](Cutoff::stopband_hz_at).
     pub fn stopband_hz(self) -> u32 {
         match self {
             Cutoff::Default => 48_000,
-            Cutoff::Low => 38_000,
+            Cutoff::Low => 36_000,
             Cutoff::Wide => 96_000,
+        }
+    }
+
+    /// The stopband edge in Hz at `rate`: [`stopband_hz`](Cutoff::stopband_hz), except for
+    /// `Wide` at 176.4 kHz, whose stopband starts at that rate's Nyquist frequency, 88.2 kHz,
+    /// so that nothing folds back below it.
+    pub fn stopband_hz_at(self, rate: PcmRate) -> u32 {
+        match (self, rate) {
+            (Cutoff::Wide, PcmRate::Hz176400) => 88_200,
+            _ => self.stopband_hz(),
         }
     }
 

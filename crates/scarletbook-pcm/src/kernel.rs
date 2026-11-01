@@ -98,6 +98,12 @@ pub(crate) fn lut(half: &[i32]) -> Lut {
         .collect()
 }
 
+/// The idle pattern (sacd-spec, specification 0): DSD silence, and the input beyond the
+/// edges of an area. S1 has the factor `(1 + z^-1)^2 (1 + z^-4)` (`design::idle_factor`),
+/// whose `1 + z^-4` cancels it exactly, so every output whose window holds only this
+/// pattern is exactly 0.
+pub(crate) const IDLE: u8 = 0x69;
+
 static LUT_S1: OnceLock<Lut> = OnceLock::new();
 static LUT_S1_WIDE: OnceLock<Lut> = OnceLock::new();
 
@@ -257,7 +263,11 @@ impl Plan {
             (Cutoff::Wide, PcmRate::Hz352800) => {
                 (LUT_S1_WIDE.get_or_init(|| lut(&tables::S1_WIDE)), vec![Op::Fir1(f40)])
             }
-            (Cutoff::Wide, _) => (LUT_S1_WIDE.get_or_init(|| lut(&tables::S1_WIDE)), vec![Op::Dec2(f40)]),
+            // 176.4 kHz: its own filter, with the stopband from 88.2 kHz.
+            (Cutoff::Wide, _) => (
+                LUT_S1_WIDE.get_or_init(|| lut(&tables::S1_WIDE)),
+                vec![Op::Dec2(Sym::new(&tables::F80, Q_FIR))],
+            ),
             (_, rate) => {
                 let f = if cutoff == Cutoff::Low { Sym::new(&tables::F30, Q_FIR) } else { f40 };
                 let ops = match rate {
@@ -320,20 +330,20 @@ impl Plan {
             let levels = self.levels((o0, n), true);
             let (p0, plen) = self.byte_range((o0, n), true);
             for c in 0..ch {
-                // The channel's bytes, and the part of them that exists.
+                // The channel's bytes: those that exist, and the idle pattern beyond the edges
+                // of the area.
                 sc.bytes.clear();
-                sc.bytes.resize(plen, 0);
+                sc.bytes.resize(plen, IDLE);
                 let lo = valid.start.max(p0);
                 let hi = valid.end.min(p0 + plen as i64);
                 if lo < hi {
                     input.copy(c, lo, &mut sc.bytes[(lo - p0) as usize..(hi - p0) as usize]);
                 }
-                let ok = (lo - p0).max(0) as usize..(hi - p0).max(0) as usize;
                 // S1 into `a`.
                 let n1 = levels[0].1.div_ceil(LANES) * LANES;
                 sc.a.clear();
                 sc.a.resize(n1, 0.0);
-                s1(self.lut, &sc.bytes, ok, &mut sc.a);
+                s1(self.lut, &sc.bytes, &mut sc.a);
                 // The other stages, `a` to `b` and swap.
                 for (k, op) in self.ops.iter().enumerate() {
                     let (start_out, n_out) = levels[k + 1];
@@ -421,22 +431,11 @@ fn quantise<D>(v: &[f64], gain: f64, dst: impl Iterator<Item = D>, mut put: impl
     clipped
 }
 
-/// S1: `out[i]` = the sum of `lut[j][bytes[i + j]]`; bytes outside `ok` are beyond the area
-/// and contribute nothing.
-fn s1(lut: &[[i32; 256]], bytes: &[u8], ok: Range<usize>, out: &mut [f64]) {
+/// S1: `out[i]` = the sum of `lut[j][bytes[i + j]]`.
+fn s1(lut: &[[i32; 256]], bytes: &[u8], out: &mut [f64]) {
     let b = lut.len();
     for (i, o) in out.iter_mut().enumerate() {
-        let w = &bytes[i..i + b];
-        let sum: i32 = if i >= ok.start && i + b <= ok.end {
-            lut.iter().zip(w).map(|(t, &x)| t[usize::from(x)]).sum()
-        } else {
-            lut.iter()
-                .zip(w)
-                .enumerate()
-                .filter(|&(j, _)| ok.contains(&(i + j)))
-                .map(|(_, (t, &x))| t[usize::from(x)])
-                .sum()
-        };
+        let sum: i32 = lut.iter().zip(&bytes[i..i + b]).map(|(t, &x)| t[usize::from(x)]).sum();
         *o = f64::from(sum);
     }
 }

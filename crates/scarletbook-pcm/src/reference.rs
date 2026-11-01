@@ -15,13 +15,14 @@ pub(crate) fn convert_area(config: PcmConfig, frames: &[u8]) -> Vec<i32> {
     let n_out = samples / FRAME_BYTES_PER_CHANNEL / 8 * spf;
     let mut out = vec![0i32; n_out * ch];
     for c in 0..ch {
-        // +1 / -1 inside the area; 0 outside.
+        // +1 / -1; outside the area, the idle pattern.
         let x = |s: i64| -> i64 {
-            if s < 0 || s >= samples as i64 {
-                return 0;
-            }
-            let byte = frames[(s as usize / 8) * ch + c];
-            if (byte >> (7 - s % 8)) & 1 == 1 { 1 } else { -1 }
+            let byte = if s < 0 || s >= samples as i64 {
+                crate::kernel::IDLE
+            } else {
+                frames[(s as usize / 8) * ch + c]
+            };
+            if (byte >> (7 - s.rem_euclid(8))) & 1 == 1 { 1 } else { -1 }
         };
         // Margin of intermediate samples computed beyond the area on each side.
         let margin = 4000i64;
@@ -34,11 +35,11 @@ pub(crate) fn convert_area(config: PcmConfig, frames: &[u8]) -> Vec<i32> {
             usize::try_from(i - start).ok().and_then(|k| v.get(k).copied()).expect("margin")
         };
         let y: Vec<i64> = if config.cutoff == Cutoff::Wide {
-            // 80 kHz filter at 352.8 kHz; 176.4 kHz takes every other sample.
-            let step = if config.rate == PcmRate::Hz176400 { 2 } else { 1 };
-            (0..n_out as i64)
-                .map(|n| div_round(sym(&tables::F40, |t| at(&s1, m0, step * n + t)), 24))
-                .collect()
+            // 80 kHz filters at 352.8 kHz; for 176.4 kHz, the one to 88.2 kHz at every other
+            // sample.
+            let (step, f): (i64, &[i32]) =
+                if config.rate == PcmRate::Hz176400 { (2, &tables::F80) } else { (1, &tables::F40) };
+            (0..n_out as i64).map(|n| div_round(sym(f, |t| at(&s1, m0, step * n + t)), 24)).collect()
         } else {
             // Halfband to 176.4 kHz, u in [-margin/4, ...).
             let u0 = -margin / 4;

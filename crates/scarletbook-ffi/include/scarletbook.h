@@ -228,13 +228,13 @@
 #define SB_PCM_CUTOFF_DEFAULT 0
 
 /*
- `cutoff` of `sb_pcm_converter_new`: passband to 30 kHz, stopband from 38 kHz.
+ `cutoff` of `sb_pcm_converter_new`: passband to 30 kHz, stopband from 36 kHz.
  */
 #define SB_PCM_CUTOFF_LOW 1
 
 /*
- `cutoff` of `sb_pcm_converter_new`: passband to 80 kHz, stopband from 96 kHz; 176 400
- and 352 800 Hz only.
+ `cutoff` of `sb_pcm_converter_new`: passband to 80 kHz, stopband from 88.2 kHz at
+ 176 400 Hz and from 96 kHz at 352 800 Hz; those two rates only.
  */
 #define SB_PCM_CUTOFF_WIDE 2
 
@@ -3275,7 +3275,8 @@ SbStatus sb_pcm_samples_per_frame(const struct SbPcmConverter *conv, uint32_t *o
  sb_pcm_samples_per_frame x channels` samples, interleaved, of 4 or 3 bytes each
  (`out` need not be aligned). `before` and `after` are the frames just before and
  just after the run, each exactly `channels x 4704` bytes, or NULL where the run starts
- or ends the area (the audio beyond is then taken as silence). `clipped`, if not NULL,
+ or ends the area (the audio beyond is then the idle pattern 0x69, so NULL gives the
+ output of a neighbour frame of 0x69 bytes). `clipped`, if not NULL,
  receives 6 counts: the samples of each channel clamped to the 24-bit range (0 beyond
  the converter's channels). A clipped sample means the gain is too high.
 

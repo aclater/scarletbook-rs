@@ -30,7 +30,7 @@ use sha2::{Digest, Sha256};
 /// 176 400 Hz, `SB_PCM_CUTOFF_DEFAULT`, 0 dB, as `SB_PCM_S24LE` (2352 x 2 samples, 14 112
 /// bytes). Computed by `scarletbook_pcm::Converter` (`corpus_frame_digest` checks it);
 /// `clib-smoke.py` compares the packaged library's output with it.
-const CORPUS_PCM_SHA256: &str = "c0101d3cb79916b45c4b7f8aba1fa50bd2527bea9e0c0888ebe585726eae6e82";
+const CORPUS_PCM_SHA256: &str = "a9bc16264459b568c4ac059dc5165b307b4772531c186971ccad7ee7796d37f6";
 
 fn last_error() -> String {
     // SAFETY: sb_last_error_message returns a valid NUL-terminated string.
