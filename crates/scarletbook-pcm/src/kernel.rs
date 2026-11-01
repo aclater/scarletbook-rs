@@ -27,11 +27,12 @@
 use std::ops::Range;
 use std::sync::OnceLock;
 
+use crate::dispatch::{self, Isa};
 use crate::{ConvertStats, Cutoff, FRAME_BYTES_PER_CHANNEL, FrameRun, PcmRate, tables};
 
-/// Output samples computed together by the kernels (a block of independent sums the
-/// compiler can put in vector lanes).
-const LANES: usize = 16;
+/// Stage outputs are computed in multiples of this: a multiple of every kernel's block of
+/// independent sums, which the compiler puts in vector lanes (`dispatch`).
+const LANES: usize = 32;
 
 /// Output frames converted per pass. Each pass recomputes its stages' margins, so larger
 /// passes waste less; the scratch buffers grow with it (about 0.5 MiB at 4 frames).
@@ -114,7 +115,7 @@ fn pow2(e: i32) -> f64 {
 
 /// A symmetric filter, from its table (taps from the centre out).
 #[derive(Clone, Debug)]
-struct Sym {
+pub(crate) struct Sym {
     /// Taps from the centre out.
     full: Vec<f64>,
     /// Taps at even offsets 0, 2, 4, ... (trailing zeros removed).
@@ -237,6 +238,8 @@ pub(crate) struct Plan {
     ops: Vec<Op>,
     spf: usize,
     context: usize,
+    /// The kernels' instruction set, detected once.
+    isa: Isa,
 }
 
 impl Plan {
@@ -262,11 +265,17 @@ impl Plan {
                 (LUT_S1.get_or_init(|| lut(&tables::S1)), ops)
             }
         };
-        let mut plan = Plan { lut, ops, spf: rate.samples_per_frame(), context: 0 };
+        let mut plan = Plan { lut, ops, spf: rate.samples_per_frame(), context: 0, isa: Isa::detect() };
         let (bytes_lo, bytes_len) = plan.byte_range((0, plan.spf), false);
         let fb = FRAME_BYTES_PER_CHANNEL as i64;
         plan.context = (-bytes_lo).max(bytes_lo + bytes_len as i64 - fb).max(0) as usize;
         plan
+    }
+
+    /// Runs the kernels on `isa` instead of the detected one.
+    #[cfg(test)]
+    pub(crate) fn set_isa(&mut self, isa: Isa) {
+        self.isa = isa;
     }
 
     /// Bytes per channel read from each neighbour (at most; less than a frame).
@@ -347,7 +356,7 @@ impl Plan {
                     match op {
                         Op::Fir1(s) => {
                             debug_assert_eq!(start_out - start_in, s.half_len() as i64);
-                            fir1(s, &sc.a, n_blocks, &mut sink);
+                            dispatch::fir1(self.isa, s, &sc.a, n_blocks * LANES, &mut sink);
                         }
                         Op::Dec2(s) => {
                             let m = s.half_len();
@@ -367,7 +376,7 @@ impl Plan {
                                 sc.even.extend(sc.a.iter().skip(de).step_by(2).take(np + 2 * e));
                                 sc.odd.extend(sc.a.iter().skip(dodd).step_by(2).take(np + 2 * o));
                             }
-                            dec2(s, &sc.even, &sc.odd, n_blocks, &mut sink);
+                            dispatch::dec2(self.isa, s, &sc.even, &sc.odd, n_blocks * LANES, &mut sink);
                         }
                         Op::Interp2(s) => {
                             // Always the last stage: the even outputs are the input samples.
@@ -376,7 +385,7 @@ impl Plan {
                             debug_assert_eq!(start_in, start_out / 2 - o as i64);
                             sc.even.clear();
                             sc.even.resize(half, 0.0);
-                            interp2_odd(s, &sc.a, &mut sc.even);
+                            dispatch::interp2_odd(self.isa, s, &sc.a, &mut sc.even);
                             if let Sink::Pcm(pcm) = sink {
                                 for i in 0..n_out / 2 {
                                     pcm.put(2 * i, sc.a[o + i]);
@@ -409,24 +418,35 @@ fn s1(lut: &[[i32; 256]], bytes: &[u8], start: usize, stride: usize, out: &mut [
     }
 }
 
-/// Adds `h[j] (x[hi + j + l] + x[lo - j + l])` over `j`, for the `LANES` outputs `l`.
+/// Adds `h[j] (x[hi + j + l] + x[lo - j + l])` over `j`, for the `L` outputs `l`; with
+/// `FMA`, by fused multiply-adds, which give the same sums (every one is an exact integer).
 #[inline(always)]
-fn add_pairs(acc: &mut [f64; LANES], h: &[f64], x: &[f64], hi: usize, lo: usize) {
+fn add_pairs<const L: usize, const FMA: bool>(
+    acc: &mut [f64; L],
+    h: &[f64],
+    x: &[f64],
+    hi: usize,
+    lo: usize,
+) {
     let Some(last) = h.len().checked_sub(1) else { return };
     // The windows `x[hi + j..]` upwards and `x[lo - j..]` downwards, sliced once so that the
     // loop has no bounds checks.
-    let up = x[hi..hi + last + LANES].windows(LANES);
-    let down = x[lo - last..lo + LANES].windows(LANES).rev();
+    let up = x[hi..hi + last + L].windows(L);
+    let down = x[lo - last..lo + L].windows(L).rev();
     for ((a, b), &hj) in up.zip(down).zip(h) {
-        for l in 0..LANES {
-            acc[l] += hj * (a[l] + b[l]);
+        for l in 0..L {
+            if FMA {
+                acc[l] = hj.mul_add(a[l] + b[l], acc[l]);
+            } else {
+                acc[l] += hj * (a[l] + b[l]);
+            }
         }
     }
 }
 
 /// Where a stage's outputs go.
-enum Sink<'a, 'o> {
-    /// Samples on the 2^26 grid, for the next stage (whole blocks of `LANES`).
+pub(crate) enum Sink<'a, 'o> {
+    /// Samples on the 2^26 grid, for the next stage.
     Grid(&'a mut [f64]),
     /// The converter's output: the first `n` samples, as 24-bit PCM, into channel `c` of
     /// `out` (`ch` channels interleaved).
@@ -434,7 +454,7 @@ enum Sink<'a, 'o> {
 }
 
 /// The last step: gain, rounding to 24 bits and clamping, into interleaved output.
-struct Pcm<'a> {
+pub(crate) struct Pcm<'a> {
     out: &'a mut [i32],
     c: usize,
     ch: usize,
@@ -461,61 +481,74 @@ impl Pcm<'_> {
     }
 }
 
-/// Runs `f` on each of `blocks` blocks of `LANES` outputs and sends the rounded, rescaled
-/// sums to `sink`.
+/// Runs `f` on each block of `L` outputs, for the first `n` outputs (a multiple of `L`),
+/// and sends the rounded, rescaled sums to `sink`.
 #[inline(always)]
-fn blocks(blocks: usize, scale: f64, f: impl Fn(usize, &mut [f64; LANES]), sink: &mut Sink<'_, '_>) {
-    for bi in 0..blocks {
-        let mut acc = [0.0f64; LANES];
-        f(bi * LANES, &mut acc);
+fn blocks<const L: usize>(n: usize, scale: f64, f: impl Fn(usize, &mut [f64; L]), sink: &mut Sink<'_, '_>) {
+    debug_assert_eq!(n % L, 0);
+    for i in (0..n).step_by(L) {
+        let mut acc = [0.0f64; L];
+        f(i, &mut acc);
         let v = acc.map(|a| round_even(a * scale));
         match sink {
-            Sink::Grid(out) => out[bi * LANES..(bi + 1) * LANES].copy_from_slice(&v),
+            Sink::Grid(out) => out[i..i + L].copy_from_slice(&v),
             Sink::Pcm(pcm) => {
-                for (l, &v) in v.iter().enumerate().take(pcm.n.saturating_sub(bi * LANES)) {
-                    pcm.put(bi * LANES + l, v);
+                for (l, &v) in v.iter().enumerate().take(pcm.n.saturating_sub(i)) {
+                    pcm.put(i + l, v);
                 }
             }
         }
     }
 }
 
+// The kernels, generic over their block of outputs `L` and fused multiply-adds (`FMA`):
+// `dispatch` picks both for the CPU. `n` (a multiple of `LANES`) outputs each.
+
 /// Fir1: output `i` centred on `x[i + m]`.
-fn fir1(s: &Sym, x: &[f64], n_blocks: usize, sink: &mut Sink<'_, '_>) {
+#[inline(always)]
+pub(crate) fn fir1<const L: usize, const FMA: bool>(s: &Sym, x: &[f64], n: usize, sink: &mut Sink<'_, '_>) {
     let m = s.half_len();
     let (h0, h) = (s.full[0], &s.full[1..]);
-    let f = |i, acc: &mut [f64; LANES]| {
+    let f = |i, acc: &mut [f64; L]| {
         for (l, a) in acc.iter_mut().enumerate() {
             *a = h0 * x[i + m + l];
         }
-        add_pairs(acc, h, x, i + m + 1, i + m - 1);
+        add_pairs::<L, FMA>(acc, h, x, i + m + 1, i + m - 1);
     };
-    blocks(n_blocks, s.scale, f, sink);
+    blocks(n, s.scale, f, sink);
 }
 
 /// Dec2: output `i` centred on `xe[i + e]` (`e` = the even taps after the centre), with the
 /// odd taps on `xo[i + o + j]` and `xo[i + o - 1 - j]`.
-fn dec2(s: &Sym, xe: &[f64], xo: &[f64], n_blocks: usize, sink: &mut Sink<'_, '_>) {
+#[inline(always)]
+pub(crate) fn dec2<const L: usize, const FMA: bool>(
+    s: &Sym,
+    xe: &[f64],
+    xo: &[f64],
+    n: usize,
+    sink: &mut Sink<'_, '_>,
+) {
     let (e, o) = (s.even.len() - 1, s.odd.len());
     let (h0, he) = (s.even[0], &s.even[1..]);
-    let f = |i, acc: &mut [f64; LANES]| {
+    let f = |i, acc: &mut [f64; L]| {
         for (l, a) in acc.iter_mut().enumerate() {
             *a = h0 * xe[i + e + l];
         }
         if e > 0 {
-            add_pairs(acc, he, xe, i + e + 1, i + e - 1);
+            add_pairs::<L, FMA>(acc, he, xe, i + e + 1, i + e - 1);
         }
-        add_pairs(acc, &s.odd, xo, i + o, i + o - 1);
+        add_pairs::<L, FMA>(acc, &s.odd, xo, i + o, i + o - 1);
     };
-    blocks(n_blocks, s.scale, f, sink);
+    blocks(n, s.scale, f, sink);
 }
 
-/// The odd outputs of Interp2: `out[i]` between `w[i + o]` and `w[i + o + 1]`. The
-/// interpolation gain of 2 is in the scale (2^-(q - 1)).
-fn interp2_odd(s: &Sym, w: &[f64], out: &mut [f64]) {
+/// The odd outputs of Interp2: `out[i]` between `w[i + o]` and `w[i + o + 1]`, for all of
+/// `out` (a multiple of `LANES`). The interpolation gain of 2 is in the scale (2^-(q - 1)).
+#[inline(always)]
+pub(crate) fn interp2_odd<const L: usize, const FMA: bool>(s: &Sym, w: &[f64], out: &mut [f64]) {
     let o = s.odd.len();
-    let f = |i, acc: &mut [f64; LANES]| add_pairs(acc, &s.odd, w, i + o + 1, i + o);
-    blocks(out.len() / LANES, s.scale * 2.0, f, &mut Sink::Grid(out));
+    let f = |i, acc: &mut [f64; L]| add_pairs::<L, FMA>(acc, &s.odd, w, i + o + 1, i + o);
+    blocks(out.len(), s.scale * 2.0, f, &mut Sink::Grid(out));
 }
 
 #[cfg(test)]
