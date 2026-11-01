@@ -1,0 +1,1 @@
+| 2026-11-01 | DST inner loop: per-channel probability block, 64-entry tables (#203, #PR) | specification 5, 5.5.4 and 5.5.7 at sacd-spec as already cited; the layout was chosen by profiling this crate's own builds (perf, objdump). No new sources consulted. |
