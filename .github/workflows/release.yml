@@ -14,8 +14,11 @@ name: Release
 #
 # The release also carries the C library (scarletbook-ffi) for Linux (glibc and musl,
 # x86_64 and aarch64), macOS (x86_64 and arm64) and Windows (x86_64, MinGW-w64), built and
-# tested by clib.yml: scarletbook-ffi-<version>-<target>.tar.gz, each with a checksum.
-# All assets share one build provenance attestation.
+# tested by clib.yml: scarletbook-ffi-<version>-<target>.tar.gz, each with a checksum, and
+# for x86_64 Linux (glibc and musl) also an x86-64-v3 build,
+# scarletbook-ffi-<version>-<target>-v3.tar.gz (issue #146): 9 C library archives and 3
+# bench archives, 24 assets with their checksums. All archives share one build provenance
+# attestation.
 #
 # The release notes start with the tag's section of CHANGELOG.md (`## [<version>] - <date>`);
 # the release stops if there is none, so the Unreleased section must be renamed for the
@@ -43,7 +46,7 @@ defaults:
 
 jobs:
   # Cheap checks first, so that a tag without a matching version or CHANGELOG.md section
-  # stops the release before the seven C library builds.
+  # stops the release before the nine C library builds.
   preflight:
     runs-on: ubuntu-latest
     steps:
@@ -143,6 +146,13 @@ jobs:
             "Built with -C target-cpu=znver5 for AMD Zen 5 (the measuring machine's CPU); runs only on Zen 5."
           (cd dist && sha256sum -c scarletbook-ffi-*.sha256)
           ls -l dist
+          # 9 C library and 3 bench archives, each with its checksum: clib.yml's matrix
+          # entries, the v3 ones included, all reached the release.
+          archives=$(ls dist/*.tar.gz | wc -l) checksums=$(ls dist/*.tar.gz.sha256 | wc -l)
+          if [[ "$archives" != 12 || "$checksums" != 12 ]]; then
+            echo "::error::$archives archives and $checksums checksums, expected 12 and 12"
+            exit 1
+          fi
       - name: Attest build provenance
         # Artifact attestations work on public repositories (private ones need GitHub
         # Enterprise Cloud); while the repository is private this step is skipped with a
@@ -179,7 +189,7 @@ jobs:
             echo
             echo "Built from $GITHUB_SHA.
 
-          C library (scarletbook-ffi, C ABI version $(sed -n 's/^#define SB_ABI_VERSION //p' crates/scarletbook-ffi/include/scarletbook.h)): \`scarletbook-ffi-$VERSION-<target>.tar.gz\` holds the shared and static library and \`scarletbook.h\`, for x86_64-unknown-linux-gnu and aarch64-unknown-linux-gnu (glibc 2.17 or later), x86_64-unknown-linux-musl and aarch64-unknown-linux-musl (musl 1.2 or later), x86_64-apple-darwin (macOS 10.12 or later), aarch64-apple-darwin (macOS 11.0 or later) and x86_64-pc-windows-gnu (Windows 10 or later; UCRT, for MinGW-w64 GCC). Each has a \`.sha256\` checksum and, for a public repository, the build provenance attestation, and was tested on its platform. Linking, the ABI compatibility policy and verification: README, \"C library\".
+          C library (scarletbook-ffi, C ABI version $(sed -n 's/^#define SB_ABI_VERSION //p' crates/scarletbook-ffi/include/scarletbook.h)): \`scarletbook-ffi-$VERSION-<target>.tar.gz\` holds the shared and static library and \`scarletbook.h\`, for x86_64-unknown-linux-gnu and aarch64-unknown-linux-gnu (glibc 2.17 or later), x86_64-unknown-linux-musl and aarch64-unknown-linux-musl (musl 1.2 or later), x86_64-apple-darwin (macOS 10.12 or later), aarch64-apple-darwin (macOS 11.0 or later) and x86_64-pc-windows-gnu (Windows 10 or later; UCRT, for MinGW-w64 GCC). \`scarletbook-ffi-$VERSION-x86_64-unknown-linux-gnu-v3.tar.gz\` and \`scarletbook-ffi-$VERSION-x86_64-unknown-linux-musl-v3.tar.gz\` are the same two targets built for x86-64-v3 (AVX2, BMI2, FMA and the rest of the level): the same ABI, but they fail on CPUs without those features; check the CPU before loading them (README, \"Release assets\"). Each has a \`.sha256\` checksum and, for a public repository, the build provenance attestation, and was tested on its platform. Linking, the ABI compatibility policy and verification: README, \"C library\".
 
           Benchmark program \`bench\` for sacd-spec benchmarks/README.md:
           - \`bench-$VERSION-x86_64-linux.tar.gz\`: generic x86-64 (the required asset).

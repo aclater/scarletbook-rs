@@ -19,13 +19,18 @@ name: C library
 #   archive and its import library a .dll.a, both of which MinGW-w64 GCC links; the MSVC
 #   target's .lib files are not meant for GCC. The DLL exports the sb_* functions and
 #   loads through ctypes like any DLL. Tested with the runner's MinGW-w64 GCC.
+# - x86-64-v3 (variant v3, issue #146): x86_64-unknown-linux-gnu and -musl are built a
+#   second time with -C target-cpu=x86-64-v3, the x86-64 psABI's microarchitecture level 3,
+#   in the same images, as scarletbook-ffi-<version>-<target>-v3. Same ABI, different ISA:
+#   they run only on a CPU with the level's features, which the hosted runners have; the
+#   build stops if its runner does not. The baseline builds are unchanged.
 #
 # The PyPA images are pinned by digest. To move to a newer image, read the digest of its
 # `latest` tag (`docker buildx imagetools inspect quay.io/pypa/manylinux2014_x86_64`, or
 # `curl -sI -H 'Accept: application/vnd.docker.distribution.manifest.v2+json'
 # https://quay.io/v2/pypa/manylinux2014_x86_64/manifests/latest`, header
-# docker-content-digest), replace it below for each of the four images, and let this
-# workflow run on the pull request.
+# docker-content-digest), replace it below for each of the four images (the two v3 entries
+# reuse the x86_64 ones), and let this workflow run on the pull request.
 #
 # Pull requests run it only when something that goes into the library or its packaging
 # changes; manual runs and the release workflow always run it.
@@ -60,7 +65,7 @@ defaults:
 
 jobs:
   build:
-    name: ${{ matrix.target }}
+    name: ${{ matrix.target }}${{ matrix.variant && format('-{0}', matrix.variant) || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -74,6 +79,16 @@ jobs:
             image: quay.io/pypa/manylinux2014_aarch64@sha256:ec445e2688785976c727d304f421ae8af5489715c19508526a749716e240541a
             platform: Linux aarch64 with glibc 2.17 or later (manylinux2014)
           - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            image: quay.io/pypa/musllinux_1_2_x86_64@sha256:04e877afa939007f6784f9076d2aa797d1156f31281cfe19f203945d7b624970
+            platform: Linux x86_64 with musl 1.2 or later (musllinux_1_2), and libgcc_s.so.1
+          - target: x86_64-unknown-linux-gnu
+            variant: v3
+            os: ubuntu-latest
+            image: quay.io/pypa/manylinux2014_x86_64@sha256:296069bc05d85275248f168f6e3b34ba8aa06181b67e40cd7447c64d56d3a851
+            platform: Linux x86_64 with glibc 2.17 or later (manylinux2014)
+          - target: x86_64-unknown-linux-musl
+            variant: v3
             os: ubuntu-latest
             image: quay.io/pypa/musllinux_1_2_x86_64@sha256:04e877afa939007f6784f9076d2aa797d1156f31281cfe19f203945d7b624970
             platform: Linux x86_64 with musl 1.2 or later (musllinux_1_2), and libgcc_s.so.1
@@ -101,7 +116,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           docker run --rm -v "$PWD:/io" -w /io -e RUST_STABLE -e GITHUB_SHA -e GITHUB_REPOSITORY "${{ matrix.image }}" \
-            bash .github/scripts/clib-linux.sh "${{ matrix.target }}" "${{ matrix.platform }}"
+            bash .github/scripts/clib-linux.sh "${{ matrix.target }}" "${{ matrix.platform }}" "${{ matrix.variant }}"
       - name: Build and package
         if: runner.os != 'Linux'
         env:
@@ -148,7 +163,7 @@ jobs:
         run: bash .github/scripts/clib-test.sh "$(echo dist/*/ | sed 's|/$||')"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: clib-${{ matrix.target }}
+          name: clib-${{ matrix.target }}${{ matrix.variant && format('-{0}', matrix.variant) || '' }}
           path: |
             dist/*.tar.gz
             dist/*.sha256

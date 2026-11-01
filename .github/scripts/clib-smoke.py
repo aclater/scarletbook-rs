@@ -57,15 +57,29 @@ lib.sb_version.restype = C.c_char_p
 lib.sb_last_error_message.restype = C.c_char_p
 abi = int(re.search(r"^#define SB_ABI_VERSION (\d+)$", header, flags=re.M).group(1))
 check("sb_abi_version()", lib.sb_abi_version(), abi)
-# scarletbook-ffi-<version>-<target>; the version may carry a prerelease (0.3.0-rc.1).
-version = re.fullmatch(r"scarletbook-ffi-(.+)-(x86_64|aarch64)-[a-z0-9_]+-[a-z0-9_]+(-[a-z0-9_]+)?", pkg.name).group(1)
+# scarletbook-ffi-<version>-<target>[-v3]; the version may carry a prerelease (0.3.0-rc.1),
+# and -v3 marks the x86-64-v3 build of an x86_64 Linux target (#146).
+name = re.fullmatch(
+    r"scarletbook-ffi-(.+)-((?:x86_64|aarch64)-[a-z0-9_]+-[a-z0-9_]+(?:-(?!v3$)[a-z0-9_]+)?)(-v3)?", pkg.name
+)
+version, target, v3 = name.group(1), name.group(2), name.group(3) is not None
 check("sb_version()", lib.sb_version().decode(), version)
 print(f"sb_version() {lib.sb_version().decode()}, sb_abi_version() {lib.sb_abi_version()}")
 # How the library was built (#108): names the package's target and sb_version()'s version.
 lib.sb_build_info.restype = C.c_char_p
 build = dict(kv.split("=", 1) for kv in lib.sb_build_info().decode().split(" "))
 check("sb_build_info() version", build.get("version"), lib.sb_version().decode())
-check("sb_build_info() target", build.get("target"), pkg.name[len(f"scarletbook-ffi-{version}-"):])
+check("sb_build_info() target", build.get("target"), target)
+# The v3 build is compiled for every feature of x86-64-v3 (as rustc names them: LZCNT is
+# lzcnt, OSXSAVE xsave), the baseline builds for none beyond the target's default, so a
+# consumer can tell from sb_build_info() which of the two it loaded.
+X86_64_V3 = {"avx", "avx2", "bmi1", "bmi2", "cmpxchg16b", "f16c", "fma", "lzcnt", "movbe", "popcnt",
+             "sse3", "sse4.1", "sse4.2", "ssse3", "xsave"}
+cpu = set(build.get("target-features", "").split(","))
+if v3:
+    check("sb_build_info() target-features missing for x86-64-v3", sorted(X86_64_V3 - cpu), [])
+else:
+    check("sb_build_info() target-features of a baseline build", "avx2" in cpu, False)
 print(f"sb_build_info() {lib.sb_build_info().decode()}")
 
 
