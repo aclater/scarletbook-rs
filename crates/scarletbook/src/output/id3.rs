@@ -479,9 +479,13 @@ pub(super) fn tag(set: &TagSet, o: &Id3Options) -> Result<Option<Vec<u8>>, Error
     Ok(Some(out))
 }
 
-/// Checks a caller's tag (W3): an ID3v2.4 header whose synchsafe size, with the footer its
-/// flags announce, is the tag's length, at most [`MAX_TAG_BYTES`] (8.3.1).
+/// Checks a caller's tag (W3), at most [`MAX_TAG_BYTES`]: an ID3v2.3 tag by
+/// [`check_raw_v23`], or an ID3v2.4 header whose synchsafe size, with the footer its flags
+/// announce, is the tag's length (8.3.1).
 pub(super) fn check_raw(tag: &[u8]) -> Result<(), Error> {
+    if tag.starts_with(b"ID3\x03") {
+        return check_raw_v23(tag);
+    }
     let bad = Err(Error::InvalidArgument("not an ID3v2.4 tag of its stated size"));
     if tag.len() < 10
         || tag.len() > MAX_TAG_BYTES
@@ -494,6 +498,24 @@ pub(super) fn check_raw(tag: &[u8]) -> Result<(), Error> {
     let footer = if tag[5] & 0x10 != 0 { 10 } else { 0 };
     if 10 + size + footer != tag.len() {
         return bad;
+    }
+    Ok(())
+}
+
+/// Checks a caller's ID3v2.3 tag `T` of `m` bytes by its header alone (specification 8,
+/// 8.2.6 item 4, sacd-spec e069569; W3): `m >= 10`, `ID3`, version 03 00, the low five
+/// flag bits 0, and four bytes each below 0x80 whose 28-bit size is `m - 10` (no footer).
+/// The frames are not checked; the tag is written unchanged. [`MAX_TAG_BYTES`] bounds it
+/// as it does every tag.
+fn check_raw_v23(tag: &[u8]) -> Result<(), Error> {
+    if tag.len() < 10
+        || tag.len() > MAX_TAG_BYTES
+        || &tag[..5] != b"ID3\x03\x00"
+        || tag[5] & 0x1F != 0
+        || tag[6..10].iter().any(|b| b & 0x80 != 0)
+        || tag[6..10].iter().fold(0usize, |v, &b| v << 7 | usize::from(b)) != tag.len() - 10
+    {
+        return Err(Error::InvalidArgument("not an ID3v2.3 tag of its stated size"));
     }
     Ok(())
 }

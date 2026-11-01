@@ -809,3 +809,51 @@ fn dsf_chain_files_equal_the_rust_api() {
     }
     c!(sb_disc_free(d));
 }
+
+/// A caller-supplied ID3v2.3 tag through `sb_output_options_set_raw_tag` (specification 8,
+/// 8.2.6 item 4 and 8.6 row 3, sacd-spec e069569): the file ends with it unchanged and
+/// equals the Rust API's; a header that fails a check is refused when the layout is made.
+#[test]
+#[cfg_attr(miri, ignore = "rayon's crossbeam-epoch fails Stacked Borrows; run with Tree Borrows")]
+fn caller_id3v23_tag() {
+    let frames: Vec<common::PFrame> = (0..2u32)
+        .map(|number| common::PFrame {
+            number,
+            dst: false,
+            data: (0..2 * 4704).map(|i| (i as u32 * 5 + number) as u8).collect(),
+        })
+        .collect();
+    let tracks = vec![common::TrackSpec { start: 0, duration: 2 }];
+    let bytes = common::Spec { channels: 2, playtime: 2, tracks, audio: common::pack(&frames) }.build();
+    let d = open(&bytes);
+    let mut disc = Disc::open(Cursor::new(bytes.clone())).unwrap();
+    // A 300-byte body (size bytes 00 00 02 2C) that is no valid frame, and flag bit 7.
+    let mut tag = b"ID3\x03\x00\x80\x00\x00\x02\x2C".to_vec();
+    tag.extend((0..300u32).map(|i| (i * 11) as u8));
+    let o = options();
+    assert_eq!(c!(sb_output_options_set_raw_tag(o, tag.as_ptr(), tag.len())), SbStatus::Ok);
+    let rust = OutputOptions::default().with_tags(Tags::Raw(tag.clone()));
+    let layout = disc.output_layout(Slot::TwoChannel, 0, 2, Format::Dsf, &rust).unwrap();
+    let want = rust_file(&mut disc, &layout);
+    assert_eq!(want[want.len() - tag.len()..], tag[..]);
+    let pointer = u64::from_le_bytes(want[20..28].try_into().unwrap());
+    assert_eq!(pointer, (want.len() - tag.len()) as u64);
+    let mut l = ptr::null_mut();
+    assert_eq!(c!(sb_output_layout_new(d, 0, 0, 2, SbOutputFormat::Dsf as u32, o, &mut l)), SbStatus::Ok);
+    assert_eq!(read(l, d, 7_000), want);
+    c!(sb_output_layout_free(l));
+    // A low flag bit, a size one short, version 2.3.1: refused.
+    for (at, b) in [(5, 0x01), (9, 0x2B), (4, 0x01)] {
+        let mut bad = tag.clone();
+        bad[at] = b;
+        assert_eq!(c!(sb_output_options_set_raw_tag(o, bad.as_ptr(), bad.len())), SbStatus::Ok);
+        let mut l = ptr::null_mut();
+        assert_eq!(
+            c!(sb_output_layout_new(d, 0, 0, 2, SbOutputFormat::Dsf as u32, o, &mut l)),
+            SbStatus::InvalidArgument
+        );
+        assert!(l.is_null());
+    }
+    c!(sb_output_options_free(o));
+    c!(sb_disc_free(d));
+}
