@@ -11,7 +11,9 @@
 //! `#[target_feature]` function is `unsafe` unless the caller has the same features (Rust
 //! 1.86; before it, such functions must be `unsafe fn`). Each call is made only with an
 //! [`Isa`] that [`Isa::detect`] built after `is_x86_feature_detected!` found both features.
-//! The wrappers hold no other unsafe operation: no intrinsics, no raw pointers.
+//! The wrappers hold no other unsafe operation: no intrinsics, no raw pointers. The
+//! exception is to be revisited under #199, for a safe alternative such as struct target
+//! features (RFC 3525) or per-CPU builds.
 
 #![allow(unsafe_code)]
 

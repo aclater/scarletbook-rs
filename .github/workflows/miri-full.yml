@@ -2,7 +2,9 @@
 name: Miri (full)
 
 # The long Miri slices: the core crate's integration tests (about 35 minutes; moved off pull
-# requests because the crate forbids unsafe code), the core unit tests (the fast-loop check, split by frame count) and the
+# requests because the core crate's only unsafe code is its run-time dispatch module (#146),
+# which ci.yml's `core-dispatch` slice checks on the pull requests that change it), the core
+# unit tests (the fast-loop check, split by frame count) and the
 # long tests of the parallel path. They take 6 to 9 minutes, longer than merges are apart at
 # busy times, so they run here rather than in ci.yml, whose runs on main a newer push cancels.
 # This workflow never cancels a run in progress: a push while one runs waits, and of several

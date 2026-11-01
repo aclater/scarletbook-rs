@@ -7,6 +7,7 @@
 //! 0x55 bytes (specification 4, 4.6), which [`crate::audio::TrackAudio`] does.
 
 use crate::audio::FRAME_BYTES_PER_CHANNEL;
+use crate::dispatch::{self, Isa};
 
 /// Bits (samples) per channel per frame, `NB` (specification 5, 5.1.2).
 pub const NB: usize = 37_632;
@@ -394,16 +395,30 @@ struct Lane {
 }
 
 /// Decodes DST frames, reusing its buffers between frames.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct DstDecoder {
     /// One per frame decoded at once.
     lanes: Vec<Lane>,
+    /// The instruction set the decoder runs with, detected once (`dispatch`).
+    isa: Isa,
+}
+
+impl Default for DstDecoder {
+    fn default() -> Self {
+        DstDecoder::new()
+    }
 }
 
 impl DstDecoder {
     /// A new decoder.
     pub fn new() -> Self {
-        DstDecoder { lanes: Vec::new() }
+        DstDecoder { lanes: Vec::new(), isa: Isa::detect() }
+    }
+
+    /// A decoder that runs with `isa` instead of the detected instruction set.
+    #[cfg(test)]
+    pub(crate) fn with_isa(isa: Isa) -> Self {
+        DstDecoder { lanes: Vec::new(), isa }
     }
 
     /// Decodes one frame of `channels` channels into `out` (`channels x 4704` bytes, in
@@ -444,11 +459,28 @@ impl DstDecoder {
         results
     }
 
+    /// Decodes at most [`MAX_LANES`] frames in lockstep with the decoder's instruction set
+    /// ([`DstDecoder::group`]).
+    fn decode_group(
+        &mut self,
+        frames: &[&[u8]],
+        channels: u8,
+        outs: &mut [&mut [u8]],
+        results: &mut [Result<(), DstError>],
+    ) {
+        dispatch::decode_group(self.isa, self, frames, channels, outs, results);
+    }
+
     /// Decodes at most [`MAX_LANES`] frames in lockstep: every frame's header first, then
     /// the code byte by byte of every frame in turn. A frame whose header is invalid, or
     /// that is plain, drops out at once; one whose next chunk holds the end of a
     /// half-probability region decodes that chunk alone.
-    fn decode_group(
+    ///
+    /// Always inlined, so that `dispatch` builds it, and with `INLINE_RUN` every [`run`]
+    /// it calls, with the features of its caller. Without `INLINE_RUN` each `run` stays a
+    /// function of its own, as compiled.
+    #[inline(always)]
+    pub(crate) fn group<const INLINE_RUN: bool>(
         &mut self,
         frames: &[&[u8]],
         channels: u8,
@@ -499,10 +531,13 @@ impl DstDecoder {
                 live.iter_mut().zip(&spans).map(|(lv, s)| lv.coded.lane_run(s)).collect();
             macro_rules! by_tables {
                 ($k:literal, $n:literal) => {
-                    match used {
-                        0..=4 => run::<$k, $n, 4>(&mut runs, bytes),
-                        5..=8 => run::<$k, $n, 8>(&mut runs, bytes),
-                        _ => run::<$k, $n, 16>(&mut runs, bytes),
+                    match (used, INLINE_RUN) {
+                        (0..=4, false) => run::<$k, $n, 4>(&mut runs, bytes),
+                        (5..=8, false) => run::<$k, $n, 8>(&mut runs, bytes),
+                        (_, false) => run::<$k, $n, 16>(&mut runs, bytes),
+                        (0..=4, true) => run_inline::<$k, $n, 4>(&mut runs, bytes),
+                        (5..=8, true) => run_inline::<$k, $n, 8>(&mut runs, bytes),
+                        (_, true) => run_inline::<$k, $n, 16>(&mut runs, bytes),
                     }
                 };
             }
@@ -963,9 +998,18 @@ struct LaneRun<'r, 'b> {
 /// the first `U` history bytes (the tables beyond a filter's order are zero). Each
 /// frame's symbols are in the order of 5.5.1; the frames take turns symbol by symbol, so
 /// that their arithmetic decoders, which are independent, overlap.
+///
+/// A function of its own, for the build without run-time features; `dispatch` inlines
+/// [`run_inline`] instead.
 #[inline(never)]
-#[allow(clippy::needless_range_loop)]
 fn run<const K: usize, const NCH: usize, const U: usize>(lanes: &mut [LaneRun<'_, '_>], bytes: usize) {
+    run_inline::<K, NCH, U>(lanes, bytes);
+}
+
+/// [`run`], always inlined.
+#[inline(always)]
+#[allow(clippy::needless_range_loop)]
+fn run_inline<const K: usize, const NCH: usize, const U: usize>(lanes: &mut [LaneRun<'_, '_>], bytes: usize) {
     let Ok(lanes) = <&mut [LaneRun<'_, '_>; K]>::try_from(lanes) else {
         return;
     };
