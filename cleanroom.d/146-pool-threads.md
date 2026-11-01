@@ -1,1 +1,1 @@
-| 2026-11-01 | #146 pool size beside a busy caller | Documentation of `DecodeOn::Pool` and `sb_pool_new` from measurements of the `decode_pool` benchmark; no specification involved. No new sources consulted. |
+| 2026-11-01 | #146 pool size beside a busy caller (#158) | Documentation of `DecodeOn::Pool` and `sb_pool_new` from measurements of the `decode_pool` benchmark; no specification involved. No new sources consulted. |
