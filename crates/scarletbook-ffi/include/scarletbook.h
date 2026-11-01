@@ -942,6 +942,22 @@ enum SbOutputOption
    W11: 0 (the default) the date in `TDRL`, 1 in `TDRC`.
    */
   SB_OUTPUT_OPTION_ID3_DATE = 32,
+  /*
+   W24 (specification 8, 8.6 row 24 and 8.4.8, sacd-spec e069569): 1 (the default)
+   writes `EMID` in `DIIN`; 0 leaves it out of a file that is not an edited master. An
+   edited master requires `EMID` (8.4.11 item 1), so 0 makes one
+   `SB_STATUS_INVALID_ARGUMENT`. A `DIIN` left with none of its chunks is written with
+   `D = 0` (8.6 row 34 at sacd-spec 048aa1a; the C API has no option to leave it out).
+   */
+  SB_OUTPUT_OPTION_DSDIFF_EDITED_MASTER_ID_WRITTEN = 33,
+  /*
+   W24 (specification 8, 8.6 row 24 and 8.4.8, sacd-spec e069569): what fills `DIAR`
+   and `DITI` when they are written: 0 (the default) the album artist and album items;
+   1 the source track's performer and title items (specification 3, 3.5, types 0x02 and
+   0x01), none in a file without a source track; 2 each of those, or else the album
+   item.
+   */
+  SB_OUTPUT_OPTION_DSDIFF_ARTIST_TITLE_SOURCE = 34,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -1022,7 +1038,7 @@ enum SbOutputOrder
   SB_OUTPUT_ORDER_LOCAL = 1,
   /*
    W14, inside `DIIN`: 0 `EMID`, 1 the markers, 2 `DIAR`, 3 `DITI`, each once (the
-   default 0 1 2 3).
+   default 0 1 2 3); chunks that aren't written are skipped.
    */
   SB_OUTPUT_ORDER_INFO = 2,
 };
