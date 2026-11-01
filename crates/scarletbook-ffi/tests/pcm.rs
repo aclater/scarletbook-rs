@@ -459,6 +459,30 @@ fn the_fuzzing_harness() {
     let frames: Vec<u8> = (0..n).flat_map(|k| frame(1, k as u8)).collect();
     let (before, after) = (frame(1, 0xF0), frame(1, 0x0F));
     scarletbook_ffi::fuzz_pcm_convert_run(176_400, SB_PCM_CUTOFF_DEFAULT, 1, 0.0, None, &frames, None);
+    // Neighbours that are not one frame and runs that are not whole frames: refused by the
+    // Rust converter, never given to `sb_pcm_convert_run` (no out-of-bounds read).
+    let short = &before[..1];
+    let long: Vec<u8> = before.iter().chain(&after).copied().collect();
+    type Run<'a> = (Option<&'a [u8]>, &'a [u8], Option<&'a [u8]>);
+    let cases: [Run; 4] = [
+        (Some(short), &frames, None),
+        (None, &frames, Some(&long)),
+        (Some(&[]), &frames, Some(&after)),
+        (None, &frames[..frames.len() - 1], None),
+    ];
+    for (b, f, a) in cases {
+        scarletbook_ffi::fuzz_pcm_convert_run(176_400, SB_PCM_CUTOFF_DEFAULT, 1, 0.0, b, f, a);
+    }
+    // Two channels' converter, frames of one.
+    scarletbook_ffi::fuzz_pcm_convert_run(
+        176_400,
+        SB_PCM_CUTOFF_DEFAULT,
+        2,
+        0.0,
+        Some(&before),
+        &frames,
+        None,
+    );
     if cfg!(miri) {
         return;
     }
