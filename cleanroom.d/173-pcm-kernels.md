@@ -1,1 +1,1 @@
-| 2026-11-01 | #173 `scarletbook-pcm` kernel speed (#PR) | The existing kernels restructured: the same integer stages and tables, output identical to the bit. sacdfs is known only by the black-box figures in issue #173; its code was not read. No new sources consulted. |
+| 2026-11-01 | #173 `scarletbook-pcm` kernel speed (#179) | The existing kernels restructured: the same integer stages and tables, output identical to the bit. sacdfs is known only by the black-box figures in issue #173; its code was not read. No new sources consulted. |
