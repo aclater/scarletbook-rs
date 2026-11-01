@@ -1,1 +1,0 @@
-| 2026-11-01 | #124 seek hints and saved confirmations in the `seek_index` fuzz target | fuzz harness and seeds only: speculative reads, verification and a disc that binds the TOC fingerprint, specification 4, 4.2 items 8 and 9, at sacd-spec `eafaaba`. No new sources consulted. |

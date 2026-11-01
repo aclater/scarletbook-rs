@@ -146,7 +146,7 @@ dependencies = [
 
 [[package]]
 name = "scarletbook"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "rayon",
  "thiserror",
@@ -154,10 +154,11 @@ dependencies = [
 
 [[package]]
 name = "scarletbook-ffi"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "rayon",
  "scarletbook",
+ "scarletbook-pcm",
 ]
 
 [[package]]
@@ -167,6 +168,13 @@ dependencies = [
  "libfuzzer-sys",
  "scarletbook",
  "scarletbook-ffi",
+]
+
+[[package]]
+name = "scarletbook-pcm"
+version = "0.5.2"
+dependencies = [
+ "thiserror",
 ]
 
 [[package]]
