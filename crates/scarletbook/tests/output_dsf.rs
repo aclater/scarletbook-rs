@@ -155,20 +155,21 @@ fn config() -> ProptestConfig {
 proptest! {
     #![proptest_config(config())]
 
-    /// Ranges of plain areas of 1 to 6 channels with missing positions, any range and any
-    /// read: the layout's bytes are the sequential write's.
+    /// Ranges of plain areas of 1 to 6 channels with missing positions, any range, any
+    /// read and either bit order: the layout's bytes are the sequential write's.
     #[test]
-    fn synthetic_ranges(channels in 1u8..=if cfg!(miri) { 2 } else { 6 }, n in 1u32..if cfg!(miri) { 3 } else { 6 }, gaps in proptest::collection::vec(any::<bool>(), 6), a in 0u32..6, len in 1u32..6, seed in any::<u64>()) {
+    fn synthetic_ranges(channels in 1u8..=if cfg!(miri) { 2 } else { 6 }, n in 1u32..if cfg!(miri) { 3 } else { 6 }, gaps in proptest::collection::vec(any::<bool>(), 6), a in 0u32..6, len in 1u32..6, eight in any::<bool>(), seed in any::<u64>()) {
         let frames: Vec<_> = plain(channels, n).into_iter().filter(|f| !gaps[f.number as usize]).collect();
         let playtime = n;
         let first = a % playtime;
         let end = (first + len).min(playtime);
         let mut disc = synthetic(channels, &frames, vec![TrackSpec { start: 0, duration: playtime }], playtime);
         let channel_type = [1, 2, 3, 4, 6, 7][usize::from(channels) - 1];
-        let options = untagged().with_dsf_unspecified_channel_type(Some(channel_type));
+        let bits = if eight { DsfBitsPerSample::Eight } else { DsfBitsPerSample::One };
+        let options = untagged().with_dsf_unspecified_channel_type(Some(channel_type)).with_dsf_bits_per_sample(bits);
         let layout = disc.output_layout(Slot::TwoChannel, first, end, Format::Dsf, &options).unwrap();
         let content = contents(&mut disc, Slot::TwoChannel, first, end);
-        let expected = sequential(&content, usize::from(channels), channel_type, 1);
+        let expected = sequential(&content, usize::from(channels), channel_type, if eight { 8 } else { 1 });
         check(&mut disc, &layout, &expected, &content, &mut Lcg(seed));
     }
 }

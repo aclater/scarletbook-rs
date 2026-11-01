@@ -242,17 +242,6 @@ pub(super) fn build(
     Ok(())
 }
 
-/// Each byte with its bits reversed: bit `i` becomes bit `7 - i` (8.2.3).
-const REVERSED: [u8; 256] = {
-    let mut t = [0u8; 256];
-    let mut i = 0;
-    while i < 256 {
-        t[i] = (i as u8).reverse_bits();
-        i += 1;
-    }
-    t
-};
-
 impl DsfData {
     /// Bytes of one row: block `j` of every channel (8.2.2 item 2).
     fn row(&self) -> u64 {
@@ -278,7 +267,60 @@ impl DsfData {
     /// `k = 4096j + o mod 4096`; it is stream byte `k` of channel `c` as 8.2.3 stores it, or
     /// the pad 0x00 when `k >= S`. Stream byte `k` is byte `p + k` of the byte timeline
     /// (8.2.7 item 2): byte `skip + k` from the start of position `first`.
+    ///
+    /// Whole rows are filled a position at a time, every channel from one pass over its
+    /// content ([`DsfData::fill_row`]); the parts of rows at the ends of `out`, a block at a
+    /// time ([`DsfData::fill_blocks`]).
     pub(super) fn fill(
+        &self,
+        offset: u64,
+        out: &mut [u8],
+        first: u32,
+        source: &mut Checked<'_>,
+    ) -> Result<(), Error> {
+        let row = self.row();
+        let len = out.len() as u64;
+        // The whole rows in `[offset, offset + len)`, as offsets in `out`.
+        let lo = offset.next_multiple_of(row).min(offset + len) - offset;
+        let hi = ((offset + len) / row * row).max(offset + lo) - offset;
+        let (head, rest) = out.split_at_mut(lo as usize);
+        let (whole, tail) = rest.split_at_mut((hi - lo) as usize);
+        self.fill_blocks(offset, head, first, source)?;
+        for (i, r) in whole.chunks_exact_mut(row as usize).enumerate() {
+            self.fill_row((offset + lo) / row + i as u64, r, first, source)?;
+        }
+        self.fill_blocks(offset + hi, tail, first, source)
+    }
+
+    /// Fills row `j` whole (8.2.2 item 2): `out` is its `4096 C` bytes.
+    fn fill_row(&self, j: u64, out: &mut [u8], first: u32, source: &mut Checked<'_>) -> Result<(), Error> {
+        let per = FRAME_BYTES_PER_CHANNEL as u64;
+        let c = usize::from(self.channels);
+        let mut k = j * BLOCK;
+        let end = (k + BLOCK).min(self.stream);
+        let mut at = 0;
+        while k < end {
+            let timeline = k + self.skip;
+            let within = (timeline % per) as usize;
+            // At most 4096.
+            let n = (FRAME_BYTES_PER_CHANNEL - within).min((end - k) as usize);
+            // Below the positions read, so `first + t` is within them.
+            let t = first + (timeline / per) as u32;
+            let content = source.content(t)?;
+            split(&content[within * c..(within + n) * c], out, at, n, c, self.reverse);
+            at += n;
+            k += n as u64;
+        }
+        if at < BLOCK as usize {
+            for block in out.chunks_exact_mut(BLOCK as usize) {
+                block[at..].fill(0);
+            }
+        }
+        Ok(())
+    }
+
+    /// Fills `out` from `offset` a block at a time (see [`DsfData::fill`]).
+    fn fill_blocks(
         &self,
         offset: u64,
         out: &mut [u8],
@@ -313,7 +355,7 @@ impl DsfData {
                 let content = source.content(t)?;
                 let src = content[within * c + channel..].iter().step_by(c);
                 for (dst, &b) in block[at..at + n].iter_mut().zip(src) {
-                    *dst = if self.reverse { REVERSED[usize::from(b)] } else { b };
+                    *dst = if self.reverse { b.reverse_bits() } else { b };
                 }
                 at += n;
                 k += n as u64;
@@ -324,15 +366,102 @@ impl DsfData {
     }
 }
 
+/// Separates `n` interleaved samples of `c` channels, `src`, into the blocks of a row:
+/// channel `i` to bytes `[at, at + n)` of `row`'s block `i`, bits reversed if `reverse`
+/// (8.2.3).
+fn split(src: &[u8], row: &mut [u8], at: usize, n: usize, c: usize, reverse: bool) {
+    let mut blocks = row.chunks_exact_mut(BLOCK as usize).map(|b| &mut b[at..at + n]);
+    let mut next = || blocks.next().unwrap_or_default();
+    // One loop per channel count over all its channels at once, the bit order outside the
+    // loop: the compiler vectorises each in x86-64-v3 builds. Generic x86-64 builds
+    // vectorise none of the formulations tried (this, a pass per channel, u16 or u64
+    // words), and this was the fastest of them there too.
+    macro_rules! split {
+        ($c:literal, $pat:pat, $zip:expr, $($o:ident $i:literal),+) => {{
+            $(let $o = next().iter_mut();)+
+            if reverse {
+                for (f, $pat) in src.chunks_exact($c).zip($zip) {
+                    $(*$o = f[$i].reverse_bits();)+
+                }
+            } else {
+                for (f, $pat) in src.chunks_exact($c).zip($zip) {
+                    $(*$o = f[$i];)+
+                }
+            }
+        }};
+    }
+    match c {
+        1 => split!(1, a, a, a 0),
+        2 => split!(2, (a, b), a.zip(b), a 0, b 1),
+        3 => split!(3, ((a, b), d), a.zip(b).zip(d), a 0, b 1, d 2),
+        4 => split!(4, (((a, b), d), e), a.zip(b).zip(d).zip(e), a 0, b 1, d 2, e 3),
+        5 => split!(5, ((((a, b), d), e), g), a.zip(b).zip(d).zip(e).zip(g), a 0, b 1, d 2, e 3, g 4),
+        6 => {
+            split!(6, (((((a, b), d), e), g), h), a.zip(b).zip(d).zip(e).zip(g).zip(h), a 0, b 1, d 2, e 3, g 4, h 5)
+        }
+        // An area has 1 to 6 channels (specification 4, 4.8).
+        _ => {}
+    }
+}
+
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
-    use super::REVERSED;
+    use std::borrow::Cow;
+
+    use super::super::{Checked, PositionSource};
+    use super::{BLOCK, DsfData};
+    use crate::audio::FRAME_BYTES_PER_CHANNEL;
+    use crate::error::Error;
 
     #[test]
     fn reversal_matches_the_example_of_8_2_3() {
-        assert_eq!(
-            [0x00, 0x01, 0x02, 0x03, 0x04].map(|b: u8| REVERSED[usize::from(b)]),
-            [0x00, 0x80, 0x40, 0xC0, 0x20]
-        );
+        assert_eq!([0x00, 0x01, 0x02, 0x03, 0x04].map(u8::reverse_bits), [0x00, 0x80, 0x40, 0xC0, 0x20]);
+    }
+
+    /// Positions of `C x 4704` bytes made from their number and channel count.
+    struct Made(u8);
+
+    impl PositionSource for Made {
+        fn content(&mut self, t: u32) -> Result<Cow<'_, [u8]>, Error> {
+            let len = usize::from(self.0) * FRAME_BYTES_PER_CHANNEL;
+            Ok(Cow::Owned((0..len).map(|i| (i as u32 * 131 + t * 7919 + i as u32 / 255) as u8).collect()))
+        }
+    }
+
+    /// Whole rows (filled a position at a time) are the bytes that filling a block at a
+    /// time gives, for every channel count, both bit orders, streams that start inside a
+    /// position (8.2.7) and streams that end inside a row.
+    #[test]
+    fn rows_equal_blocks() {
+        let per = FRAME_BYTES_PER_CHANNEL as u64;
+        for channels in 1..=6u8 {
+            for reverse in [false, true] {
+                for (skip, stream) in
+                    [(0, 5 * per), (1000, 4 * per + 17), (4095, 3 * BLOCK), (8, 9 * BLOCK + 8)]
+                {
+                    let data = DsfData { channels, start: skip, stream, skip, reverse };
+                    let size = (BLOCK * stream.div_ceil(BLOCK) * u64::from(channels)) as usize;
+                    let mut source = Made(channels);
+                    let len = usize::from(channels) * FRAME_BYTES_PER_CHANNEL;
+                    let (mut rows, mut blocks) = (vec![0xAA; size], vec![0x55; size]);
+                    data.fill(0, &mut rows, 3, &mut Checked { inner: &mut source, len }).unwrap();
+                    data.fill_blocks(0, &mut blocks, 3, &mut Checked { inner: &mut source, len }).unwrap();
+                    assert!(
+                        rows == blocks,
+                        "{channels} channels, reverse {reverse}, skip {skip}, S {stream}"
+                    );
+                    // Reads that start and end inside rows.
+                    for (at, n) in
+                        [(1, size - 2), (4097, 3 * 4096 * usize::from(channels)), (size - 5000, 5000)]
+                    {
+                        let n = n.min(size - at);
+                        let mut part = vec![0; n];
+                        data.fill(at as u64, &mut part, 3, &mut Checked { inner: &mut source, len }).unwrap();
+                        assert!(part == blocks[at..at + n], "{channels} channels: {at}+{n}");
+                    }
+                }
+            }
+        }
     }
 }
