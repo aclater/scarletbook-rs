@@ -60,13 +60,13 @@ pub use dsdiff_text::{Comment, CommentKind};
 pub use dsf::DsfBitsPerSample;
 pub use id3::{AlbumArtistFrame, ArrangerFrame, DateFrame, Id3Encoding, Id3Options, MAX_TAG_BYTES};
 pub use markers::{InfoChunk, Marker, MarkerKind, MarkerText, Markers};
-pub use tags::{GenreSources, TagItem, TagSet, TextSource};
+pub use tags::{ArtistTitleSource, GenreSources, TagItem, TagSet, TextSource};
 
 /// An output file format (specification 8).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Format {
-    /// DSF (8.2), with the ID3v2.4 tag of [`OutputOptions::tags`] (8.2.6, 8.3).
+    /// DSF (8.2), with the ID3v2 tag of [`OutputOptions::tags`] (8.2.6, 8.3).
     Dsf,
     /// DSDIFF with plain DSD sound data (8.4.5).
     DsdiffDsd,
@@ -99,7 +99,10 @@ pub enum Tags {
     /// These items: for example [`TagSet::from_toc`]'s, changed.
     Set(TagSet),
     /// This tag, written as it is: for DSF an ID3v2.4 tag, checked only for its header,
-    /// its size and [`MAX_TAG_BYTES`].
+    /// its size and [`MAX_TAG_BYTES`]; or an ID3v2.3 tag, checked only for the header of
+    /// 8.2.6 item 4 (version 03 00, the low five flag bits 0, a 28-bit size of `m - 10`)
+    /// and [`MAX_TAG_BYTES`]. Anything else is refused with [`Error::InvalidArgument`]
+    /// when a layout is made.
     Raw(Vec<u8>),
     /// No tag.
     None,
@@ -166,8 +169,9 @@ pub struct OutputOptions {
     /// Default `false`.
     pub dsdiff_edited_master: bool,
     /// W24, whether a DSDIFF file has an edited master information chunk `DIIN` (8.4.8),
-    /// with `EMID` and the markers of [`OutputOptions::dsdiff_markers`]. Default `false`
-    /// (an edited master always has one).
+    /// with `EMID` (unless [`OutputOptions::dsdiff_edited_master_id_written`] says no) and
+    /// the markers of [`OutputOptions::dsdiff_markers`]. Default `false` (an edited master
+    /// always has one).
     pub dsdiff_edited_master_info: bool,
     /// W24, the text of `EMID`: text bytes 0x20 to 0x7E. Default empty. The DSDIFF document recommends
     /// something unique per file.
@@ -194,13 +198,14 @@ pub struct OutputOptions {
     pub genres: GenreSources,
     /// W4 to W12, the ID3 writer's choices.
     pub id3: Id3Options,
-    /// W24, whether `DIIN` has the artist (`DIAR`) and title (`DITI`): the album artist
-    /// and album items of the tag ([`OutputOptions::tags`]; none for raw or no tags).
+    /// W24, whether `DIIN` has the artist (`DIAR`) and title (`DITI`): the items of the
+    /// tag ([`OutputOptions::tags`]; none for raw or no tags) that
+    /// [`OutputOptions::dsdiff_artist_title_source`] names, by default album artist and album.
     /// Default `None`: in an edited master, as the DSDIFF document recommends; otherwise
     /// not.
     pub dsdiff_artist_title: Option<bool>,
-    /// W14, the order of the chunks inside `DIIN` (8.4.8): each [`InfoChunk`] once.
-    /// Default [`InfoChunk::TABLE_ORDER`]: `EMID`, the markers, `DIAR`, `DITI`.
+    /// W14, the order of the chunks inside `DIIN` (8.4.8): each [`InfoChunk`] once; chunks
+    /// that aren't written are skipped. Default [`InfoChunk::TABLE_ORDER`]: `EMID`, the markers, `DIAR`, `DITI`.
     pub dsdiff_info_order: [InfoChunk; 4],
     /// W23, the text of the markers made from the TOC (8.4.7 item 5). Default
     /// [`MarkerText::Empty`].
@@ -215,6 +220,22 @@ pub struct OutputOptions {
     /// W26 (or [`DsdiffDeparture::D2`]), is written with `k = 0` (8.4.8). Default `false`:
     /// it is left out.
     pub dsdiff_empty_text: bool,
+    /// W24, whether `DIIN` has `EMID` in a file that is not an edited master (8.4.8 as of
+    /// sacd-spec e069569: `DIIN` may hold any of its chunks without the others). Default
+    /// `true`. An edited master requires `EMID` (8.4.11 item 1): `false` with
+    /// [`OutputOptions::dsdiff_edited_master`] is an [`Error::InvalidArgument`]. Without
+    /// `EMID`, markers, artist or title, `DIIN` is empty: see
+    /// [`OutputOptions::dsdiff_empty_info`].
+    pub dsdiff_edited_master_id_written: bool,
+    /// W24, which items fill `DIAR` and `DITI` when [`OutputOptions::dsdiff_artist_title`]
+    /// writes them (8.4.8 as of sacd-spec e069569). Default [`ArtistTitleSource::Album`],
+    /// the album artist and album items.
+    pub dsdiff_artist_title_source: ArtistTitleSource,
+    /// W34, whether a `DIIN` that would hold none of its chunks (no `EMID`, markers, `DIAR`
+    /// or `DITI`; possible only outside an edited master) is written with `D = 0`, 12 bytes,
+    /// or left out (8.4.8 at sacd-spec 048aa1a). Both say the file has no edited master
+    /// information. Default `true`: written.
+    pub dsdiff_empty_info: bool,
     /// The departures from the DSDIFF document of specification 8, 8.7, that a DSDIFF file
     /// makes, each named by its number. Default none.
     ///
@@ -257,6 +278,9 @@ impl Default for OutputOptions {
             dsdiff_comments: Vec::new(),
             dsdiff_text_replacement: Some(b'?'),
             dsdiff_empty_text: false,
+            dsdiff_edited_master_id_written: true,
+            dsdiff_artist_title_source: ArtistTitleSource::Album,
+            dsdiff_empty_info: true,
             dsdiff_departures: BTreeSet::new(),
         }
     }
@@ -411,6 +435,21 @@ impl OutputOptions {
     /// These options with `DSTI` offsets pointing at `offset` (W21).
     pub fn with_dsdiff_dst_index_offset(self, offset: DstIndexOffset) -> Self {
         OutputOptions { dsdiff_dst_index_offset: offset, ..self }
+    }
+
+    /// These options with or without `EMID` outside an edited master (W24).
+    pub fn with_dsdiff_edited_master_id_written(self, write: bool) -> Self {
+        OutputOptions { dsdiff_edited_master_id_written: write, ..self }
+    }
+
+    /// These options with `DIAR` and `DITI` from `source` (W24).
+    pub fn with_dsdiff_artist_title_source(self, source: ArtistTitleSource) -> Self {
+        OutputOptions { dsdiff_artist_title_source: source, ..self }
+    }
+
+    /// These options with an empty `DIIN` written, or left out (W34).
+    pub fn with_dsdiff_empty_info(self, write: bool) -> Self {
+        OutputOptions { dsdiff_empty_info: write, ..self }
     }
 
     /// These options with the DSDIFF departures `departures` (8.7) and no others.

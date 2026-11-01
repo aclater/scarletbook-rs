@@ -943,6 +943,22 @@ enum SbOutputOption
    */
   SB_OUTPUT_OPTION_ID3_DATE = 32,
   /*
+   W24 (specification 8, 8.6 row 24 and 8.4.8, sacd-spec e069569): 1 (the default)
+   writes `EMID` in `DIIN`; 0 leaves it out of a file that is not an edited master. An
+   edited master requires `EMID` (8.4.11 item 1), so 0 makes one
+   `SB_STATUS_INVALID_ARGUMENT`. A `DIIN` left with none of its chunks is written with
+   `D = 0` (8.6 row 34 at sacd-spec 048aa1a; the C API has no option to leave it out).
+   */
+  SB_OUTPUT_OPTION_DSDIFF_EDITED_MASTER_ID_WRITTEN = 33,
+  /*
+   W24 (specification 8, 8.6 row 24 and 8.4.8, sacd-spec e069569): what fills `DIAR`
+   and `DITI` when they are written: 0 (the default) the album artist and album items;
+   1 the source track's performer and title items (specification 3, 3.5, types 0x02 and
+   0x01), none in a file without a source track; 2 each of those, or else the album
+   item.
+   */
+  SB_OUTPUT_OPTION_DSDIFF_ARTIST_TITLE_SOURCE = 34,
+  /*
    Departure D1 of specification 8, 8.7 (sacd-spec `e069569`): 1 writes a plain DSD
    file's `CMPR` with `D = 20`, counting its pad byte, instead of 19; 0 (the default)
    does not. The bytes are the same apart from `D`; DST files are unchanged. **A file
@@ -1037,7 +1053,7 @@ enum SbOutputOrder
   SB_OUTPUT_ORDER_LOCAL = 1,
   /*
    W14, inside `DIIN`: 0 `EMID`, 1 the markers, 2 `DIAR`, 3 `DITI`, each once (the
-   default 0 1 2 3).
+   default 0 1 2 3); chunks that aren't written are skipped.
    */
   SB_OUTPUT_ORDER_INFO = 2,
 };
@@ -4053,8 +4069,13 @@ SbStatus sb_output_options_set_tags(const struct SbOutputOptions *options,
                                     const struct SbTags *tags);
 
 /*
- Sets a DSF file's tag to a copy of the `len` bytes of `tag`, an ID3v2.4 tag written as
- it is (W3); checked for its header and size when a layout is made.
+ Sets a DSF file's tag to a copy of the `len` bytes of `tag`, written as it is (W3,
+ specification 8, 8.6 row 3). It is either an ID3v2.4 tag, checked for its header and
+ size, or a caller-supplied ID3v2.3 tag (8.2.6 item 4), checked only for its header:
+ `len >= 10`, "ID3", version 03 00, the low five flag bits 0, and four size bytes each
+ below 0x80 whose 28-bit size is `len - 10`; its frames are not checked. The check runs
+ when a layout is made, which fails with `SB_STATUS_INVALID_ARGUMENT` for any other
+ tag. A `len` above 1 MiB (1 048 576 bytes) is refused here.
 
  # Safety
 

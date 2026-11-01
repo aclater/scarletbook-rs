@@ -5,7 +5,7 @@
 use std::ops::Range;
 
 use super::markers::{self, Markers};
-use super::tags::{TagItem, TagSet};
+use super::tags::{ArtistTitleSource, TagItem, TagSet};
 use super::{Checked, Layout, OutputOptions, Part, RegionKind, SourceTrack};
 use super::{Tags, dsdiff_text};
 use crate::audio::FRAME_BYTES_PER_CHANNEL;
@@ -263,6 +263,10 @@ pub(super) fn assemble(
         if !options.dsdiff_loudspeaker_configuration {
             return Err(Error::InvalidArgument("an edited master has LSCO"));
         }
+        // So is `EMID` (8.4.11 item 1; 8.4.8 and 8.6 row 24 as of sacd-spec e069569).
+        if !options.dsdiff_edited_master_id_written {
+            return Err(Error::InvalidArgument("an edited master has EMID"));
+        }
         edited = OutputOptions {
             dsdiff_absolute_start: Some(options.dsdiff_absolute_start.unwrap_or(0)),
             dsdiff_edited_master_info: true,
@@ -308,7 +312,20 @@ pub(super) fn assemble(
             _ => None,
         };
         let first = |item| set.as_ref().and_then(|s| s.get(item).first().map(String::as_str));
-        Some(markers::diin(layout, &list, first(TagItem::AlbumArtist), first(TagItem::Album), options)?)
+        // W24 (8.4.8 as of sacd-spec e069569): in a file with a source track, the track's
+        // performer and title (3.5, types 0x02 and 0x01) may fill `DIAR` and `DITI`
+        // instead; a file without one has no track strings.
+        let pick = |track: TagItem, album: TagItem| {
+            let track = || source.and_then(|_| first(track));
+            match options.dsdiff_artist_title_source {
+                ArtistTitleSource::Album => first(album),
+                ArtistTitleSource::Track => track(),
+                ArtistTitleSource::TrackThenAlbum => track().or_else(|| first(album)),
+            }
+        };
+        let artist = pick(TagItem::Performer, TagItem::AlbumArtist);
+        let title = pick(TagItem::TrackTitle, TagItem::Album);
+        markers::diin(layout, &list, artist, title, options)?
     } else {
         None
     };

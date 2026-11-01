@@ -516,6 +516,14 @@ audio sectors). The mark does not change the outcome, and a reader MAY read such
 readings exactly instead. Only `PROVENANCE.md` and specification 4 change
 (`git diff --stat 6db1251 eafaaba`).
 
+**Update to `048aa1a`** ("Merge pull request #42", answer to sacd-spec#41, for issue #169;
+spec commit `e07a5c3`). Specification 8, 8.4.8 adds that `DIIN` may hold none of its chunks
+in a file that is not an edited master (no `EMID`, no markers, no `DIAR` or `DITI`), and
+8.6 row 34 makes writing such a `DIIN` with `D = 0` (12 bytes) or leaving it out the
+writer's choice. `PROVENANCE.md` records that the answer comes from the DSDIFF document's
+section 3.7, which this side has not read. Only `PROVENANCE.md` and specification 8 change
+(`git diff --stat e069569 048aa1a`).
+
 ## Specification issues filed
 
 | Issue | Gap | Resolution | scarletbook-rs |
@@ -528,6 +536,7 @@ readings exactly instead. Only `PROVENANCE.md` and specification 4 change
 | [aclater/sacd-spec#18](https://github.com/aclater/sacd-spec/issues/18) | 7.1 item 3 described one pass over an area's sectors; range and out-of-order reads rescan | answered in `34f78a3` (4.2 item 6, 7.1 item 3): one pass per track or range is allowed; restated in `e52a42b` | conformant as written; the code cites 4.2 item 6 (#44) |
 | [aclater/sacd-spec#33](https://github.com/aclater/sacd-spec/issues/33) | DSF and DSDIFF output (#131): no container format in the specifications; the published format documents are outside the clean room | answered in `1517ab7` (specification 8) | implemented as specified, every writer's choice of 8.6 an option (#131) |
 | [aclater/sacd-spec#35](https://github.com/aclater/sacd-spec/issues/35) | specification 8: the edited master's range, markers of a frame range without a source track, post-roll, empty DSDIFF text | answered in `6db1251` (8.4.8, 8.4.10 item 4, 8.4.11; 8.6 rows 30 and 31) | implemented as specified (#131) |
+| [aclater/sacd-spec#41](https://github.com/aclater/sacd-spec/issues/41) | 8.4.8 at `e069569`: whether `DIIN` may hold none of its chunks once `EMID` is optional | answered in `048aa1a` (8.4.8; 8.6 row 34): it may, outside an edited master; written with `D = 0` or left out, the writer's choice | implemented as specified, both choices (#184) |
 
 Stages 1 to 4 met no gap that required a guess. Both issues concern optional warnings
 that the corpus does not compare, found while working through the review follow-ups.

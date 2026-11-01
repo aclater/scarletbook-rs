@@ -9,10 +9,10 @@ use std::ffi::{CStr, c_char};
 
 use scarletbook::Error;
 use scarletbook::output::{
-    AlbumArtistFrame, ArrangerFrame, Comment, CommentKind, DateFrame, DsdiffDeparture, DsfBitsPerSample,
-    DstIndexOffset, DstLengths, Format, GenreSources, Id3Encoding, InfoChunk, Input, InvalidDst, Layout,
-    LocalChunk, Marker, MarkerKind, MarkerText, Markers, OutputOptions, PositionSource, PropertyChunk,
-    RegionKind, SourceTrack, TagItem, TagSet, Tags, TextSource,
+    AlbumArtistFrame, ArrangerFrame, ArtistTitleSource, Comment, CommentKind, DateFrame, DsdiffDeparture,
+    DsfBitsPerSample, DstIndexOffset, DstLengths, Format, GenreSources, Id3Encoding, InfoChunk, Input,
+    InvalidDst, Layout, LocalChunk, Marker, MarkerKind, MarkerText, Markers, OutputOptions, PositionSource,
+    PropertyChunk, RegionKind, SourceTrack, TagItem, TagSet, Tags, TextSource,
 };
 
 use super::{
@@ -114,6 +114,18 @@ pub enum SbOutputOption {
     Id3AlbumSetAlone = 31,
     /// W11: 0 (the default) the date in `TDRL`, 1 in `TDRC`.
     Id3Date = 32,
+    /// W24 (specification 8, 8.6 row 24 and 8.4.8, sacd-spec e069569): 1 (the default)
+    /// writes `EMID` in `DIIN`; 0 leaves it out of a file that is not an edited master. An
+    /// edited master requires `EMID` (8.4.11 item 1), so 0 makes one
+    /// `SB_STATUS_INVALID_ARGUMENT`. A `DIIN` left with none of its chunks is written with
+    /// `D = 0` (8.6 row 34 at sacd-spec 048aa1a; the C API has no option to leave it out).
+    DsdiffEditedMasterIdWritten = 33,
+    /// W24 (specification 8, 8.6 row 24 and 8.4.8, sacd-spec e069569): what fills `DIAR`
+    /// and `DITI` when they are written: 0 (the default) the album artist and album items;
+    /// 1 the source track's performer and title items (specification 3, 3.5, types 0x02 and
+    /// 0x01), none in a file without a source track; 2 each of those, or else the album
+    /// item.
+    DsdiffArtistTitleSource = 34,
     /// Departure D1 of specification 8, 8.7 (sacd-spec `e069569`): 1 writes a plain DSD
     /// file's `CMPR` with `D = 20`, counting its pad byte, instead of 19; 0 (the default)
     /// does not. The bytes are the same apart from `D`; DST files are unchanged. **A file
@@ -162,7 +174,7 @@ pub enum SbOutputOrder {
     /// 3 1 2).
     Local = 1,
     /// W14, inside `DIIN`: 0 `EMID`, 1 the markers, 2 `DIAR`, 3 `DITI`, each once (the
-    /// default 0 1 2 3).
+    /// default 0 1 2 3); chunks that aren't written are skipped.
     Info = 2,
 }
 
@@ -602,6 +614,13 @@ fn set_option(o: &mut OutputOptions, option: u32, value: i64) -> Result<(), Fail
         30 => o.id3.copyright = flag(value)?,
         31 => o.id3.album_set_alone = flag(value)?,
         32 => o.id3.date = choice(value, &[DateFrame::Tdrl, DateFrame::Tdrc])?,
+        33 => o.dsdiff_edited_master_id_written = flag(value)?,
+        34 => {
+            o.dsdiff_artist_title_source = choice(
+                value,
+                &[ArtistTitleSource::Album, ArtistTitleSource::Track, ArtistTitleSource::TrackThenAlbum],
+            )?
+        }
         35 => departure(o, DsdiffDeparture::D1, flag(value)?),
         36 => departure(o, DsdiffDeparture::D2, flag(value)?),
         _ => return Err(Failure::arg("unknown output option")),
@@ -933,8 +952,13 @@ pub unsafe extern "C" fn sb_output_options_set_tags(
     })
 }
 
-/// Sets a DSF file's tag to a copy of the `len` bytes of `tag`, an ID3v2.4 tag written as
-/// it is (W3); checked for its header and size when a layout is made.
+/// Sets a DSF file's tag to a copy of the `len` bytes of `tag`, written as it is (W3,
+/// specification 8, 8.6 row 3). It is either an ID3v2.4 tag, checked for its header and
+/// size, or a caller-supplied ID3v2.3 tag (8.2.6 item 4), checked only for its header:
+/// `len >= 10`, "ID3", version 03 00, the low five flag bits 0, and four size bytes each
+/// below 0x80 whose 28-bit size is `len - 10`; its frames are not checked. The check runs
+/// when a layout is made, which fails with `SB_STATUS_INVALID_ARGUMENT` for any other
+/// tag. A `len` above 1 MiB (1 048 576 bytes) is refused here.
 ///
 /// # Safety
 ///

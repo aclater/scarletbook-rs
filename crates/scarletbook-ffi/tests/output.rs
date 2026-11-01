@@ -14,8 +14,8 @@ use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
 use scarletbook::output::{
-    Comment, CommentKind, DsdiffDeparture, DsfBitsPerSample, DstIndexOffset, DstLengths, Format, InvalidDst,
-    Layout, MarkerText, OutputOptions, TagItem, TagSet, Tags,
+    ArtistTitleSource, Comment, CommentKind, DsdiffDeparture, DsfBitsPerSample, DstIndexOffset, DstLengths,
+    Format, InvalidDst, Layout, MarkerText, OutputOptions, TagItem, TagSet, Tags,
 };
 use scarletbook::{Disc, Slot};
 use scarletbook_ffi::*;
@@ -315,12 +315,14 @@ fn options_are_checked() {
         (SbOutputOption::Id3AlbumArtist, 2, 3),
         (SbOutputOption::Id3Date, 1, 2),
         (SbOutputOption::Tags, 1, 2),
+        (SbOutputOption::DsdiffEditedMasterIdWritten, 0, 2),
+        (SbOutputOption::DsdiffArtistTitleSource, 2, 3),
     ] {
         assert_eq!(set(o, option, ok), SbStatus::Ok, "{option:?}");
         assert_eq!(set(o, option, bad), SbStatus::InvalidArgument, "{option:?}");
     }
     assert_eq!(set(o, SbOutputOption::Id3Date, 0), SbStatus::Ok);
-    assert_eq!(c!(sb_output_options_set(o, 33, 0)), SbStatus::InvalidArgument);
+    assert_eq!(c!(sb_output_options_set(o, 1000, 0)), SbStatus::InvalidArgument);
     let order = [4u32, 3, 2, 1, 0];
     let bad = [0u32, 0, 0, 0, 0];
     let ids = c"TDRLTIT2";
@@ -518,6 +520,75 @@ fn small_disc_layouts_equal_the_rust_api() {
         assert_eq!(fill(l, &mut disc, Slot::TwoChannel, at, 5_000), want[at as usize..][..5_000]);
         c!(sb_output_layout_free(l));
     }
+    c!(sb_output_options_free(o));
+    c!(sb_disc_free(d));
+}
+
+/// `DIIN` without `EMID`, with the source track's title in `DITI` (specification 8, 8.4.8
+/// and 8.6 row 24 at sacd-spec e069569), set through options 33 and 34.
+#[test]
+#[cfg_attr(miri, ignore = "rayon's crossbeam-epoch fails Stacked Borrows; run with Tree Borrows")]
+fn diin_choices_equal_the_rust_api() {
+    let frames: Vec<common::PFrame> = (0..3u32)
+        .map(|number| common::PFrame { number, dst: false, data: vec![number as u8; 2 * 4704] })
+        .collect();
+    let tracks =
+        vec![common::TrackSpec { start: 0, duration: 1 }, common::TrackSpec { start: 1, duration: 2 }];
+    let bytes = common::Spec { channels: 2, playtime: 3, tracks, audio: common::pack(&frames) }.build();
+    let d = open(&bytes);
+    let mut disc = Disc::open(Cursor::new(bytes.clone())).unwrap();
+    let o = options();
+    for (option, value) in [
+        (SbOutputOption::DsdiffEditedMasterInfo, 1),
+        (SbOutputOption::DsdiffArtistTitle, 1),
+        (SbOutputOption::DsdiffEditedMasterIdWritten, 0),
+        (SbOutputOption::DsdiffArtistTitleSource, 1),
+    ] {
+        assert_eq!(set(o, option, value), SbStatus::Ok, "{option:?}");
+    }
+    let rust = OutputOptions::default()
+        .with_dsdiff_edited_master_info(true)
+        .with_dsdiff_artist_title(Some(true))
+        .with_dsdiff_edited_master_id_written(false)
+        .with_dsdiff_artist_title_source(ArtistTitleSource::Track);
+    let layout = disc.output_layout(Slot::TwoChannel, 1, 3, Format::DsdiffDsd, &rust).unwrap();
+    let want = rust_file(&mut disc, &layout);
+    // Track 2's `DIIN`: only `DITI` with its title `T2`, no `EMID`, markers or `DIAR`.
+    let at = want.windows(4).position(|w| w == b"DIIN").unwrap();
+    let diin = [&b"DIIN"[..], &18u64.to_be_bytes(), b"DITI", &6u64.to_be_bytes(), &2u32.to_be_bytes(), b"T2"]
+        .concat();
+    assert_eq!(want[at..at + diin.len()], diin);
+    let mut l = ptr::null_mut();
+    assert_eq!(
+        c!(sb_output_layout_new(d, 0, 1, 3, SbOutputFormat::DsdiffDsd as u32, o, &mut l)),
+        SbStatus::Ok
+    );
+    assert_eq!(read(l, d, 5_000), want);
+    c!(sb_output_layout_free(l));
+    c!(sb_output_options_free(o));
+    c!(sb_disc_free(d));
+}
+
+/// An edited master requires `EMID` (specification 8, 8.4.11 item 1): option 33's 0 makes
+/// one `SB_STATUS_INVALID_ARGUMENT`.
+#[test]
+#[cfg_attr(miri, ignore = "75-frame tracks are too large for Miri")]
+fn edited_master_requires_emid() {
+    let frames: Vec<common::PFrame> =
+        (0..160u32).map(|number| common::PFrame { number, dst: false, data: vec![0x69; 2 * 4704] }).collect();
+    let tracks =
+        vec![common::TrackSpec { start: 0, duration: 75 }, common::TrackSpec { start: 75, duration: 75 }];
+    let bytes = common::Spec { channels: 2, playtime: 160, tracks, audio: common::pack(&frames) }.build();
+    let d = open(&bytes);
+    let o = options();
+    assert_eq!(set(o, SbOutputOption::DsdiffEditedMaster, 1), SbStatus::Ok);
+    let mut l = ptr::null_mut();
+    let dsdiff = SbOutputFormat::DsdiffDsd as u32;
+    assert_eq!(c!(sb_output_layout_new(d, 0, 0, 160, dsdiff, o, &mut l)), SbStatus::Ok);
+    c!(sb_output_layout_free(l));
+    assert_eq!(set(o, SbOutputOption::DsdiffEditedMasterIdWritten, 0), SbStatus::Ok);
+    assert_eq!(c!(sb_output_layout_new(d, 0, 0, 160, dsdiff, o, &mut l)), SbStatus::InvalidArgument);
+    assert!(l.is_null());
     c!(sb_output_options_free(o));
     c!(sb_disc_free(d));
 }
@@ -752,6 +823,54 @@ fn overlapping_fill_buffers_are_refused() {
     assert_eq!(written, 100);
     assert_eq!(arena[n..n + 100], frame(1)[n - 100..]);
     c!(sb_output_layout_free(l));
+    c!(sb_output_options_free(o));
+    c!(sb_disc_free(d));
+}
+
+/// A caller-supplied ID3v2.3 tag through `sb_output_options_set_raw_tag` (specification 8,
+/// 8.2.6 item 4 and 8.6 row 3, sacd-spec e069569): the file ends with it unchanged and
+/// equals the Rust API's; a header that fails a check is refused when the layout is made.
+#[test]
+#[cfg_attr(miri, ignore = "rayon's crossbeam-epoch fails Stacked Borrows; run with Tree Borrows")]
+fn caller_id3v23_tag() {
+    let frames: Vec<common::PFrame> = (0..2u32)
+        .map(|number| common::PFrame {
+            number,
+            dst: false,
+            data: (0..2 * 4704).map(|i| (i as u32 * 5 + number) as u8).collect(),
+        })
+        .collect();
+    let tracks = vec![common::TrackSpec { start: 0, duration: 2 }];
+    let bytes = common::Spec { channels: 2, playtime: 2, tracks, audio: common::pack(&frames) }.build();
+    let d = open(&bytes);
+    let mut disc = Disc::open(Cursor::new(bytes.clone())).unwrap();
+    // A 300-byte body (size bytes 00 00 02 2C) that is no valid frame, and flag bit 7.
+    let mut tag = b"ID3\x03\x00\x80\x00\x00\x02\x2C".to_vec();
+    tag.extend((0..300u32).map(|i| (i * 11) as u8));
+    let o = options();
+    assert_eq!(c!(sb_output_options_set_raw_tag(o, tag.as_ptr(), tag.len())), SbStatus::Ok);
+    let rust = OutputOptions::default().with_tags(Tags::Raw(tag.clone()));
+    let layout = disc.output_layout(Slot::TwoChannel, 0, 2, Format::Dsf, &rust).unwrap();
+    let want = rust_file(&mut disc, &layout);
+    assert_eq!(want[want.len() - tag.len()..], tag[..]);
+    let pointer = u64::from_le_bytes(want[20..28].try_into().unwrap());
+    assert_eq!(pointer, (want.len() - tag.len()) as u64);
+    let mut l = ptr::null_mut();
+    assert_eq!(c!(sb_output_layout_new(d, 0, 0, 2, SbOutputFormat::Dsf as u32, o, &mut l)), SbStatus::Ok);
+    assert_eq!(read(l, d, 7_000), want);
+    c!(sb_output_layout_free(l));
+    // A low flag bit, a size one short, version 2.3.1: refused.
+    for (at, b) in [(5, 0x01), (9, 0x2B), (4, 0x01)] {
+        let mut bad = tag.clone();
+        bad[at] = b;
+        assert_eq!(c!(sb_output_options_set_raw_tag(o, bad.as_ptr(), bad.len())), SbStatus::Ok);
+        let mut l = ptr::null_mut();
+        assert_eq!(
+            c!(sb_output_layout_new(d, 0, 0, 2, SbOutputFormat::Dsf as u32, o, &mut l)),
+            SbStatus::InvalidArgument
+        );
+        assert!(l.is_null());
+    }
     c!(sb_output_options_free(o));
     c!(sb_disc_free(d));
 }
