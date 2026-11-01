@@ -1,0 +1,2 @@
+Added
+- x86-64-v3 C library archives for x86_64 Linux: `scarletbook-ffi-<version>-x86_64-unknown-linux-gnu-v3.tar.gz` and `...-x86_64-unknown-linux-musl-v3.tar.gz`, built with `-C target-cpu=x86-64-v3` next to the unchanged baseline archives. Same ABI, different instruction set: they need an x86-64-v3 CPU (AVX2, BMI2, FMA and the rest of the level); `sb_build_info()` lists their target features. DST decoding is about 14 % faster (#146, #198).
