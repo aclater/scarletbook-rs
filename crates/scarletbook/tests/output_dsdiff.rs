@@ -2,7 +2,8 @@
 
 //! Plain DSD DSDIFF layouts (specification 8, 8.4.1 to 8.4.5; issue #131): the size known
 //! from the TOC equals a sequential write's, the chunks are those of 8.4.2 and 8.4.3, and
-//! byte ranges read at random equal the sequential write's.
+//! byte ranges read at random equal the sequential write's. Caller chunks (8.4.2 item 5 and
+//! 8.6 row 33, at sacd-spec `e069569`; issue #169) follow the local chunks.
 
 #![cfg(feature = "output")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -15,7 +16,9 @@ use std::io::Cursor;
 use common::TrackSpec;
 use output_common::{Lcg, check, contents, corpus, corpus_ranges, enough, plain, synthetic, variants};
 use proptest::prelude::*;
-use scarletbook::output::{Format, OutputOptions, PropertyChunk};
+use scarletbook::output::{
+    CallerChunk, Comment, CommentKind, Format, LocalChunk, OutputOptions, PropertyChunk, RegionKind,
+};
 use scarletbook::{Disc, Error, Slot};
 
 fn chunk(out: &mut Vec<u8>, id: &[u8], data: &[u8]) {
@@ -205,4 +208,104 @@ proptest! {
         let lsco = (channels == 2).then_some(0);
         check(&mut disc, &layout, &sequential(&content, &Props { ids: &ids, lsco, abss: None }), &content, &mut Lcg(seed));
     }
+}
+
+/// Caller chunks of every kind 8.4.2 item 5 allows: odd and even data, empty data, a
+/// repeated ID and an ID of spaces only.
+fn caller_chunks() -> Vec<CallerChunk> {
+    vec![
+        CallerChunk::new(*b"ID3 ", vec![1, 2, 3, 4, 5]).unwrap(),
+        CallerChunk::new(*b"ID3 ", vec![6, 7, 8, 9]).unwrap(),
+        CallerChunk::new(*b"x   ", Vec::new()).unwrap(),
+        CallerChunk::new(*b"    ", vec![0xFF]).unwrap(),
+    ]
+}
+
+/// `file` with `chunks` appended by 8.4.1 item 1 and its `FRM8` size counting them (8.4.2
+/// items 4 and 5).
+fn with_callers(file: &[u8], chunks: &[CallerChunk]) -> Vec<u8> {
+    let mut f = file.to_vec();
+    for c in chunks {
+        chunk(&mut f, &c.id(), c.data());
+    }
+    let frm8 = f.len() as u64 - 12;
+    f[4..12].copy_from_slice(&frm8.to_be_bytes());
+    f
+}
+
+fn whole(disc: &mut Disc<Cursor<Vec<u8>>>, first: u32, end: u32, options: &OutputOptions) -> Vec<u8> {
+    let layout = disc.output_layout(Slot::TwoChannel, first, end, Format::DsdiffDsd, options).unwrap();
+    let mut f = vec![0; layout.size() as usize];
+    layout.read_at(disc, 0, &mut f).unwrap();
+    f
+}
+
+#[test]
+fn caller_chunks_follow_the_local_chunks() {
+    let mut disc = synthetic(2, &plain(2, 3), vec![TrackSpec { start: 0, duration: 3 }], 3);
+    let content = contents(&mut disc, Slot::TwoChannel, 0, 3);
+    let options = OutputOptions::default().with_dsdiff_caller_chunks(caller_chunks());
+    let layout = disc.output_layout(Slot::TwoChannel, 0, 3, Format::DsdiffDsd, &options).unwrap();
+    let ids: &[&[u8; 4]] = &[b"SLFT", b"SRGT"];
+    let plain_file = sequential(&content, &Props { ids, lsco: Some(0), abss: None });
+    let expected = with_callers(&plain_file, &caller_chunks());
+    // The chunks' bytes, written out from 8.4.1 item 1: `D` 5 with a pad byte, 4, 0 and 1
+    // with a pad byte.
+    let mut tail = b"ID3 ".to_vec();
+    tail.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 5, 1, 2, 3, 4, 5, 0]);
+    tail.extend_from_slice(b"ID3 ");
+    tail.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 4, 6, 7, 8, 9]);
+    tail.extend_from_slice(b"x   ");
+    tail.extend_from_slice(&[0; 8]);
+    tail.extend_from_slice(b"    ");
+    tail.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 1, 0xFF, 0]);
+    assert_eq!(expected[plain_file.len()..], tail);
+    assert_eq!(expected.len() % 2, 0);
+    check(&mut disc, &layout, &expected, &content, &mut Lcg(3));
+    // The size and the regions count them: the last region is the trailer that holds them.
+    assert_eq!(layout.size(), plain_file.len() as u64 + 60);
+    let last = layout.regions().last().unwrap();
+    assert_eq!((last.kind, last.offset, last.len), (RegionKind::Trailer, plain_file.len() as u64, 60));
+
+    // After the last local chunk, wherever the order puts the local chunks.
+    let comments = OutputOptions::default()
+        .with_dsdiff_comments(vec![Comment::new(CommentKind::General, "abc")])
+        .with_dsdiff_local_order(vec![LocalChunk::Property, LocalChunk::SoundData, LocalChunk::Comments]);
+    let base = whole(&mut disc, 0, 3, &comments);
+    let options = comments.with_dsdiff_caller_chunks(caller_chunks());
+    let layout = disc.output_layout(Slot::TwoChannel, 0, 3, Format::DsdiffDsd, &options).unwrap();
+    check(&mut disc, &layout, &with_callers(&base, &caller_chunks()), &content, &mut Lcg(4));
+
+    // A DSF file ignores them.
+    let dsf = |o: &OutputOptions| disc.output_layout(Slot::TwoChannel, 0, 3, Format::Dsf, o).unwrap().size();
+    assert_eq!(dsf(&options), dsf(&OutputOptions::default()));
+}
+
+#[test]
+fn caller_chunk_ids_are_checked() {
+    for id in [*b"ID3\x1F", *b"\x7F   ", *b" ID3", *b"A B ", *b"\xC3\xA9  "] {
+        let e = CallerChunk::new(id, Vec::new()).unwrap_err();
+        assert!(matches!(e, Error::InvalidArgument(_)), "{id:?}: {e}");
+    }
+    // The chunks specification 8 defines (8.4.2 item 5).
+    for id in [b"FRM8", b"FVER", b"PROP", b"DSD ", b"DST ", b"DSTI", b"COMT", b"DIIN", b"MANF"] {
+        let e = CallerChunk::new(*id, vec![0]).unwrap_err();
+        assert!(matches!(e, Error::InvalidArgument(_)), "{id:?}: {e}");
+    }
+    // Others are allowed, the chunks inside `PROP` and `DIIN` among them.
+    for id in [b"ID3 ", b"FS  ", b"MARK", b"A~!-", b"    "] {
+        CallerChunk::new(*id, Vec::new()).unwrap();
+    }
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "75-frame tracks are too large for Miri")]
+fn caller_chunks_in_an_edited_master() {
+    let mut disc = synthetic(2, &plain(2, 75), vec![TrackSpec { start: 0, duration: 75 }], 75);
+    let content = contents(&mut disc, Slot::TwoChannel, 0, 75);
+    let master = OutputOptions::default().with_dsdiff_edited_master(true);
+    let base = whole(&mut disc, 0, 75, &master);
+    let options = master.with_dsdiff_caller_chunks(caller_chunks());
+    let layout = disc.output_layout(Slot::TwoChannel, 0, 75, Format::DsdiffDsd, &options).unwrap();
+    check(&mut disc, &layout, &with_callers(&base, &caller_chunks()), &content, &mut Lcg(5));
 }

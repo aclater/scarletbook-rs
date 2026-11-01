@@ -516,6 +516,21 @@ audio sectors). The mark does not change the outcome, and a reader MAY read such
 readings exactly instead. Only `PROVENANCE.md` and specification 4 change
 (`git diff --stat 6db1251 eafaaba`).
 
+**Update to `e069569`** ("Merge pull request #40", answer to sacd-spec#39, for issue #169).
+Specification 8 gains: DSF byte ranges built from chains of position ranges, for gapless
+files (8.2.7); a caller-supplied ID3v2.3 tag in DSF, of which only the header is checked
+(8.2.6 item 4); DSDIFF caller chunks after the local chunks (8.4.2 item 5); the `EMID` and
+source-track clarifications of 8.4.8; writer's choices 32 and 33; and 8.7, departures from
+the DSDIFF document (D1, the `CMPR` size counting its pad byte; D2, DSDIFF text as ISO
+8859-1) that a writer makes only when its caller asks for one by number, and that make the
+file non-conforming. Specification 0 changes in its 2-line table entry for specification 8 ("with
+ID3v2 tags"), and the sacd-spec README in the same way. `PROVENANCE.md` adds the ID3v2.3.0
+document ([ID3v2.3], for the header check of 8.2.6 item 4) and records that issue #39
+restated a consumer's description of another extractor's observable output, with no
+program's code read. This side has read neither that output nor the ID3v2.3 document; the
+features come in only through specification 8. The corpus and the charset tables are
+unchanged (`git diff --stat eafaaba e069569` lists only `PROVENANCE.md`, `README.md`,
+`spec/00-conventions.md` and `spec/08-output-containers.md`).
 **Update to `048aa1a`** ("Merge pull request #42", answer to sacd-spec#41, for issue #169;
 spec commit `e07a5c3`). Specification 8, 8.4.8 adds that `DIIN` may hold none of its chunks
 in a file that is not an edited master (no `EMID`, no markers, no `DIAR` or `DITI`), and
@@ -536,6 +551,7 @@ section 3.7, which this side has not read. Only `PROVENANCE.md` and specificatio
 | [aclater/sacd-spec#18](https://github.com/aclater/sacd-spec/issues/18) | 7.1 item 3 described one pass over an area's sectors; range and out-of-order reads rescan | answered in `34f78a3` (4.2 item 6, 7.1 item 3): one pass per track or range is allowed; restated in `e52a42b` | conformant as written; the code cites 4.2 item 6 (#44) |
 | [aclater/sacd-spec#33](https://github.com/aclater/sacd-spec/issues/33) | DSF and DSDIFF output (#131): no container format in the specifications; the published format documents are outside the clean room | answered in `1517ab7` (specification 8) | implemented as specified, every writer's choice of 8.6 an option (#131) |
 | [aclater/sacd-spec#35](https://github.com/aclater/sacd-spec/issues/35) | specification 8: the edited master's range, markers of a frame range without a source track, post-roll, empty DSDIFF text | answered in `6db1251` (8.4.8, 8.4.10 item 4, 8.4.11; 8.6 rows 30 and 31) | implemented as specified (#131) |
+| [aclater/sacd-spec#39](https://github.com/aclater/sacd-spec/issues/39) | specification 8: the writer's choices #169 needs (DSF byte ranges, a caller's ID3v2.3 tag, DSDIFF caller chunks, `EMID` and source-track text, files of other programs that depart from the DSDIFF document) | answered in `e069569` (8.2.6 item 4, 8.2.7, 8.4.2 item 5, 8.4.8, 8.7; 8.6 rows 3, 24, 32 and 33) | being implemented as specified, one PR per item (#169; caller chunks in #183) |
 | [aclater/sacd-spec#41](https://github.com/aclater/sacd-spec/issues/41) | 8.4.8 at `e069569`: whether `DIIN` may hold none of its chunks once `EMID` is optional | answered in `048aa1a` (8.4.8; 8.6 row 34): it may, outside an edited master; written with `D = 0` or left out, the writer's choice | implemented as specified, both choices (#184) |
 
 Stages 1 to 4 met no gap that required a guess. Both issues concern optional warnings
