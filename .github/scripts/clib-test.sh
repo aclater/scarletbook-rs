@@ -32,6 +32,28 @@ else
   "$cc" "${flags[@]}" crates/scarletbook-ffi/examples/smoke.c -L"$pkg/lib" -lscarletbook_ffi \
     -Wl,-rpath,"$pkg/lib" -o smoke-shared
 fi
+case "$pkg" in
+  *x86_64-unknown-linux-*)
+    # Issue #125: the shared library and every member of the static library are marked
+    # SHSTK and not IBT (clib-package.sh), so code built with -fcf-protection keeps SHSTK
+    # when it links the static library. A relocatable link (-r) merges the property over
+    # the objects it pulls from the archive as a program link does, without the build
+    # image's C runtime start files, which are older than CET and unmarked.
+    lib=$pkg/lib/libscarletbook_ffi
+    "$cc" "${flags[@]}" -fcf-protection=full -nostdlib -r crates/scarletbook-ffi/examples/smoke.c "$lib.a" \
+      -o smoke-cet.o
+    readelf -n "$lib.so" smoke-cet.o | grep 'x86 feature:' || true
+    members=$(ar t "$lib.a" | wc -l)
+    marked=$(readelf -n "$lib.a" | grep -c 'x86 feature: SHSTK$' || true)
+    echo "static library members marked SHSTK: $marked of $members"
+    if [[ "$(readelf -n "$lib.so" | grep 'x86 feature:')" != *'x86 feature: SHSTK' ]] \
+      || [[ "$(readelf -n smoke-cet.o | grep 'x86 feature:')" != *'x86 feature: SHSTK' ]] \
+      || [[ "$marked" != "$members" ]]; then
+      echo "the libraries, or the smoke test linked with the static library, are not marked SHSTK (and only SHSTK)" >&2
+      exit 1
+    fi
+    ;;
+esac
 for id in hostile-base dst-features-2ch-6ch dst-invalid-frames-6ch layout-2054 truncated-in-audio; do
   for kind in static shared; do
     "./smoke-$kind$exe" "corpus/images/$id.iso" > "smoke-$kind.txt"
