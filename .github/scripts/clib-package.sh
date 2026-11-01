@@ -2,21 +2,40 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 #
 # Builds the C library (scarletbook-ffi) for one target and packages it as
-# dist/scarletbook-ffi-VERSION-TARGET.tar.gz with a .sha256 file:
+# dist/scarletbook-ffi-VERSION-TARGET[-VARIANT].tar.gz with a .sha256 file:
 #
-#   scarletbook-ffi-VERSION-TARGET/
+#   scarletbook-ffi-VERSION-TARGET[-VARIANT]/
 #     include/scarletbook.h
 #     lib/        shared library, static library (and the DLL import library on Windows)
 #     native-static-libs.txt   what to link after the static library
 #     README.txt, LICENSE-MIT, LICENSE-APACHE
 #
-# Usage: clib-package.sh TARGET "MINIMUM PLATFORM"   (run from the repository root)
+# Usage: clib-package.sh TARGET "MINIMUM PLATFORM" [VARIANT]   (run from the repository root)
 # RUSTFLAGS and MACOSX_DEPLOYMENT_TARGET are taken from the environment.
+#
+# VARIANT is empty for the baseline build of the target, or `v3` (x86_64 Linux only) for a
+# build with -C target-cpu=x86-64-v3, the x86-64 psABI's microarchitecture level 3, added
+# to RUSTFLAGS so that every crate is compiled for it (issue #146). Its package name ends
+# in -v3; the library inside is the same ABI, and sb_build_info() lists the level's
+# target features.
 set -euo pipefail
 
-target=$1 platform=$2
+target=$1 platform=$2 variant=${3:-}
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
 name="scarletbook-ffi-$version-$target"
+case "$variant" in
+  "") ;;
+  v3)
+    if [[ "$target" != x86_64-unknown-linux-* ]]; then
+      echo "variant v3 is built for x86_64 Linux only, not $target" >&2
+      exit 1
+    fi
+    export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C target-cpu=x86-64-v3"
+    name+=-v3
+    platform+=", on an x86-64-v3 CPU (AVX, AVX2, BMI1, BMI2, F16C, FMA, LZCNT, MOVBE, OSXSAVE and the x86-64-v2 features)"
+    ;;
+  *) echo "unknown variant $variant" >&2; exit 1 ;;
+esac
 pkg="dist/$name"
 
 # The shared library's name as a program records it, instead of the build path (macOS)
@@ -69,7 +88,7 @@ fi
 printf '%s\n' "$native" > "$pkg/native-static-libs.txt"
 cp LICENSE-MIT LICENSE-APACHE "$pkg/"
 cat > "$pkg/README.txt" <<EOF
-scarletbook C library $version for $target, built from ${GITHUB_SHA:-a local checkout}.
+scarletbook C library $version for $target${variant:+ ($variant)}, built from ${GITHUB_SHA:-a local checkout}.
 Runs on: $platform.
 C ABI version (SB_ABI_VERSION, sb_abi_version()): $(sed -n 's/^#define SB_ABI_VERSION //p' crates/scarletbook-ffi/include/scarletbook.h).
 

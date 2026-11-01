@@ -465,6 +465,26 @@ conformance manifest.
 | `x86_64-apple-darwin` | macOS 10.12 or later | `MACOSX_DEPLOYMENT_TARGET=10.12` |
 | `aarch64-apple-darwin` | macOS 11.0 or later | `MACOSX_DEPLOYMENT_TARGET=11.0` |
 | `x86_64-pc-windows-gnu` | Windows 10 or later; links with a UCRT MinGW-w64 GCC (MSYS2 UCRT64 or equivalent) | MinGW-w64 target |
+| `x86_64-unknown-linux-gnu-v3` | as `x86_64-unknown-linux-gnu`, on an x86-64-v3 CPU only | manylinux2014 image, `-C target-cpu=x86-64-v3` |
+| `x86_64-unknown-linux-musl-v3` | as `x86_64-unknown-linux-musl`, on an x86-64-v3 CPU only | musllinux_1_2 image, `-C target-cpu=x86-64-v3` |
+
+The two `-v3` archives are the x86_64 Linux libraries built a second time for
+microarchitecture level x86-64-v3 of the x86-64 psABI. They have the same ABI, header and
+packaging as the baseline archives next to them, which stay built for the baseline x86-64
+level; only the instructions differ. Decoding DST is about 14 % faster with them (#146).
+**They need x86-64-v3: AVX, AVX2, BMI1, BMI2, F16C, FMA, LZCNT, MOVBE and OSXSAVE, on
+top of the x86-64-v2 features (CMPXCHG16B, LAHF/SAHF, POPCNT, SSE3, SSE4.1, SSE4.2,
+SSSE3).** On a CPU without one of them the library fails with an illegal instruction
+(SIGILL), possibly not when it is loaded but on the first call that uses it, so check before
+you load it, never after: a program that picks an archive at run time loads the `-v3` one
+only if the CPU reports every feature of the level and the operating system has enabled
+the AVX state (CPUID's OSXSAVE bit and XGETBV's XMM and YMM bits, or every one of `avx
+avx2 bmi1 bmi2 f16c fma abm movbe xsave cx16 lahf_lm popcnt sse4_1 sse4_2 ssse3` in Linux's
+`/proc/cpuinfo` flags, where LZCNT is `abm`), and the baseline archive otherwise. glibc 2.33
+and later report the level itself: `ld.so --help` lists `x86-64-v3 (supported, searched)`.
+`sb_build_info()` tells which one is loaded: the `-v3` library's `target-features` include
+`avx2`, `bmi2`, `fma`, `lzcnt` and `movbe` and the rest of the level, the baseline one's are
+`fxsr,sse,sse2`. In both, `target` is the triple without `-v3`.
 
 The glibc builds are linked against glibc 2.17 itself, inside the manylinux2014 image, and
 the build fails if the shared library asks for a newer glibc symbol version. The
@@ -481,9 +501,9 @@ well as the C library. glibc systems have it as part of GCC's runtime (manylinux
 it); on Alpine and other musl systems it is the `libgcc` package (`apk add libgcc`). The
 static libraries list it in `native-static-libs.txt` (`-lgcc_s`).
 
-Intel CET on x86-64 Linux: the shared library and every object in the static library carry
-the shadow stack (SHSTK) property (`readelf -n` shows `x86 feature: SHSTK`; checked in CI),
-so a program built with `-fcf-protection` stays SHSTK-marked when it links either one, and
+Intel CET on x86-64 Linux: the shared library and every object in the static library, of
+the `-v3` archives too, carry the shadow stack (SHSTK) property (`readelf -n` shows
+`x86 feature: SHSTK`; checked in CI), so a program built with `-fcf-protection` stays SHSTK-marked when it links either one, and
 glibc with shadow stacks enabled loads it. The libraries carry no unwinder of their own: a
 panic caught at the C boundary unwinds through the system `libgcc_s`, which keeps the shadow
 stack in step on distributions that enable it (for example Fedora 44's libgcc 16.2.1 is
@@ -501,7 +521,7 @@ to newer ones.
 An archive unpacks to:
 
 ```
-scarletbook-ffi-<version>-<target>/
+scarletbook-ffi-<version>-<target>/   (scarletbook-ffi-<version>-<target>-v3/ for a -v3 archive)
   include/scarletbook.h
   lib/libscarletbook_ffi.a           static library (every target)
   lib/libscarletbook_ffi.so          shared library (Linux)
@@ -911,6 +931,11 @@ Releases follow this:
 
 While the version is `0.y.z`, as in Cargo, the `y` step is the major one and the `z` step
 the minor one, so there are no patch releases before 1.0.
+
+The `-v3` archives of a release carry the same ABI as its baseline archives, at the same
+`SB_ABI_VERSION` and `sb_version()`; they differ only in the instruction set (see
+"Release assets"), which the ABI does not cover. A program can switch between the two
+without rebuilding, but must check the CPU before it loads the `-v3` library.
 
 A program checks `sb_abi_version() == SB_ABI_VERSION` before using the library. Since
 additions keep `SB_ABI_VERSION`, a program that needs a function added in a later minor

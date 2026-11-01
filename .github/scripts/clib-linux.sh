@@ -14,10 +14,22 @@
 # Both images carry the C compiler and the Python the tests use, so the libraries are
 # tested on the oldest C library they claim to support.
 #
-# Usage: clib-linux.sh TARGET "MINIMUM PLATFORM"; RUST_STABLE is the toolchain.
+# Usage: clib-linux.sh TARGET "MINIMUM PLATFORM" [VARIANT]; RUST_STABLE is the toolchain.
+# VARIANT `v3` builds for x86-64-v3 (clib-package.sh); it is tested only on a CPU that has
+# the level's features, and stops otherwise rather than skip its tests.
 set -euo pipefail
 
-target=$1 platform=$2
+target=$1 platform=$2 variant=${3:-}
+if [[ "$variant" == v3 ]]; then
+  # The x86-64-v3 features as /proc/cpuinfo names them: LZCNT is "abm", and the kernel
+  # lists XSAVE, not OSXSAVE (the bit it sets once it has enabled XSAVE).
+  for flag in avx avx2 bmi1 bmi2 f16c fma abm movbe xsave cx16 lahf_lm popcnt sse4_1 sse4_2 ssse3; do
+    if ! grep -qw "$flag" /proc/cpuinfo; then
+      echo "this CPU lacks $flag, so it is not x86-64-v3 and cannot test the v3 build" >&2
+      exit 1
+    fi
+  done
+fi
 # rustup-init of a pinned rustup release, checked against its pinned SHA-256
 # (static.rust-lang.org/rustup/archive/<version>/<host>/rustup-init.sha256).
 rustup_version=1.29.2
@@ -41,9 +53,9 @@ case "$target" in
   *-musl) export RUSTFLAGS="-C target-feature=-crt-static" ;;
 esac
 
-bash .github/scripts/clib-package.sh "$target" "$platform"
+bash .github/scripts/clib-package.sh "$target" "$platform" "$variant"
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
-pkg="dist/scarletbook-ffi-$version-$target"
+pkg="dist/scarletbook-ffi-$version-$target${variant:+-$variant}"
 so="$pkg/lib/libscarletbook_ffi.so"
 
 echo "Shared library dependencies:"
