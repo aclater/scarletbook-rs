@@ -16,7 +16,8 @@ MOVBE, the DST decoder now runs a build of the same safe code compiled for those
 chosen at run time; everywhere else it runs as before. The output is identical to the bit.
 The generic C library and Rust builds gain it with no change on the consumer's side: a
 50-minute DST stereo disc, all threads, decodes in 6.21 s instead of 7.45 s (97.7 CPU-s instead
-of 115.6) (#146, #200).
+of 115.6). Multichannel areas gain less: a 6-channel DST synthetic decodes 5 % faster with all
+threads and 7 % faster on one thread (#146, #200).
 
 **New x86-64-v3 archives: match release asset names exactly.** The x86_64 Linux archives now
 come in two builds, the unchanged baseline one and a `-v3` one compiled entirely for
