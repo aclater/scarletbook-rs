@@ -154,7 +154,8 @@ Other tests on the same input:
 ## Throughput
 
 `cargo run --release -p scarletbook-pcm --example throughput`: single-threaded, frame by
-frame with neighbours, on a generic x86-64 build (SSE2 only, no runtime dispatch). Measured
+frame with neighbours, on a generic x86-64 build: the filters run with AVX2 and FMA, chosen at
+run time, on CPUs that have them, and SSE2 otherwise (the output is the same). Measured
 on an AMD Ryzen AI MAX+ 395 (Zen 5), shared with other work, pinned to one core, the best
 of two runs; the figures are indicative. The requirements are at most 10 ms per second of
 stereo audio at 176.4 kHz with `Default`, and at least 100 times real time per stereo stream
@@ -162,30 +163,30 @@ for every filter at 176.4 kHz.
 
 | Rate | Cutoff | Channels | ms CPU per s of audio | × real time |
 |---|---|---|---|---|
-| 88200 | Default | 1 | 2.11 | 474 |
-| 88200 | Default | 2 | 4.25 | 235 |
-| 88200 | Default | 6 | 12.82 | 78 |
-| 88200 | Low | 1 | 2.35 | 426 |
-| 88200 | Low | 2 | 4.70 | 213 |
-| 88200 | Low | 6 | 14.16 | 71 |
-| 176400 | Default | 1 | 2.81 | 356 |
-| **176400** | **Default** | **2** | **5.71** | **175** |
-| 176400 | Default | 6 | 17.36 | 58 |
-| 176400 | Low | 1 | 3.29 | 304 |
-| 176400 | Low | 2 | 6.60 | 152 |
-| 176400 | Low | 6 | 19.77 | 51 |
-| 176400 | Wide | 1 | 4.13 | 242 |
-| 176400 | Wide | 2 | 8.29 | 121 |
-| 176400 | Wide | 6 | 24.85 | 40 |
-| 352800 | Default | 1 | 3.49 | 287 |
-| 352800 | Default | 2 | 7.02 | 142 |
-| 352800 | Default | 6 | 21.04 | 48 |
-| 352800 | Low | 1 | 3.88 | 258 |
-| 352800 | Low | 2 | 7.80 | 128 |
-| 352800 | Low | 6 | 23.50 | 43 |
-| 352800 | Wide | 1 | 4.40 | 227 |
-| 352800 | Wide | 2 | 8.69 | 115 |
-| 352800 | Wide | 6 | 26.32 | 38 |
+| 88200 | Default | 1 | 1.23 | 813 |
+| 88200 | Default | 2 | 2.63 | 380 |
+| 88200 | Default | 6 | 7.91 | 126 |
+| 88200 | Low | 1 | 1.37 | 730 |
+| 88200 | Low | 2 | 2.92 | 342 |
+| 88200 | Low | 6 | 8.72 | 115 |
+| 176400 | Default | 1 | 1.64 | 610 |
+| **176400** | **Default** | **2** | **3.43** | **292** |
+| 176400 | Default | 6 | 10.35 | 97 |
+| 176400 | Low | 1 | 1.91 | 524 |
+| 176400 | Low | 2 | 3.98 | 251 |
+| 176400 | Low | 6 | 11.88 | 84 |
+| 176400 | Wide | 1 | 2.36 | 424 |
+| 176400 | Wide | 2 | 4.88 | 205 |
+| 176400 | Wide | 6 | 14.53 | 69 |
+| 352800 | Default | 1 | 2.09 | 478 |
+| 352800 | Default | 2 | 4.34 | 230 |
+| 352800 | Default | 6 | 13.02 | 77 |
+| 352800 | Low | 1 | 2.36 | 424 |
+| 352800 | Low | 2 | 4.87 | 205 |
+| 352800 | Low | 6 | 14.60 | 68 |
+| 352800 | Wide | 1 | 2.58 | 388 |
+| 352800 | Wide | 2 | 5.30 | 189 |
+| 352800 | Wide | 6 | 15.90 | 63 |
 
 `cargo bench -p scarletbook-pcm --bench convert` measures the same with criterion.
 

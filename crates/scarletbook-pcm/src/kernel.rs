@@ -456,7 +456,8 @@ fn s1(lut: &[[i32; 256]], bytes: &[u8], start: usize, stride: usize, out: &mut [
     for (k, o) in out.iter_mut().enumerate() {
         let i = start + stride * k;
         // No partial sum wraps: the sum of the absolute taps is below `i32::MAX`
-        // (`design::tests`). `wrapping_add` keeps overflow checks out of the loop.
+        // (`design::tests::f64_sums_are_exact`). `wrapping_add` keeps overflow checks out of
+        // the loop, so that test, not an overflow check, is the safety net for new tables.
         let sum =
             lut.iter().zip(&bytes[i..i + b]).fold(0i32, |acc, (t, &x)| acc.wrapping_add(t[usize::from(x)]));
         *o = f64::from(sum);
