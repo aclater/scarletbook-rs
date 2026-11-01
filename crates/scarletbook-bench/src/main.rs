@@ -5,6 +5,7 @@
 //! ```text
 //! bench --version
 //! bench decode IMAGE --area 2ch|mc --threads N --sink hash|null|raw DIR
+//! bench dsf IMAGE --area 2ch|mc --threads N --out FILE [--via stream|read-at] [--chunk BYTES]
 //! ```
 //!
 //! It decodes every track of one area, in track order, in one pass over the area
@@ -12,23 +13,38 @@
 //! runs on a pool of `N` threads (`0`: one per logical CPU); with `N = 1` it runs on a
 //! single thread.
 //!
+//! `dsf` is not part of that interface (issue #202): it writes the area's whole play range
+//! `[0, P)` as one DSF file through `output::Layout`, `--chunk` bytes per call (default
+//! 4 MiB). With `--via stream` (the default) one source reads the area once, in order;
+//! with `--via read-at` every chunk is a `Layout::read_at` call of its own, as a
+//! filesystem serving the file would make, with the area's seek index enabled. `FILE` may
+//! be `/dev/null`, to leave the cost of writing out.
+//!
 //! Errors: the first line on stderr is one error code: a code of specification 7, 7.7.1
 //! for a rejected image, `no-such-area` when the slot yields no area, and `io-error`,
 //! `usage-error` or `internal-error` otherwise. A message follows on the next line.
 
 #![forbid(unsafe_code)]
 
+use std::borrow::Cow;
+use std::collections::VecDeque;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Write};
+use std::io::{BufReader, BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use scarletbook::audio::FRAME_BYTES_PER_CHANNEL;
+use scarletbook::audio::{AudioFrame, FRAME_BYTES_PER_CHANNEL, TrackAudio};
+use scarletbook::output::{Format, OutputOptions, PositionSource};
+use scarletbook::seek::IndexOptions;
 use scarletbook::{Disc, Error, Slot};
 use sha2::{Digest, Sha256};
 
-const USAGE: &str =
-    "usage: bench --version\n       bench decode IMAGE --area 2ch|mc --threads N --sink hash|null|raw DIR";
+const USAGE: &str = "usage: bench --version
+       bench decode IMAGE --area 2ch|mc --threads N --sink hash|null|raw DIR
+       bench dsf IMAGE --area 2ch|mc --threads N --out FILE [--via stream|read-at] [--chunk BYTES]";
+
+/// Bytes per `Layout::fill` or `Layout::read_at` call of `dsf`, by default.
+const DSF_CHUNK: usize = 4 << 20;
 
 /// Bytes buffered per output file of the raw sink.
 const OUT_BUFFER: usize = 1 << 20;
@@ -40,22 +56,37 @@ enum Sink {
     Raw(PathBuf),
 }
 
+/// How `dsf` reads the area.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Via {
+    Stream,
+    ReadAt,
+}
+
+#[derive(Debug)]
+enum Command {
+    Decode(Sink),
+    Dsf { out: PathBuf, via: Via, chunk: usize },
+}
+
 #[derive(Debug)]
 struct Args {
     image: PathBuf,
     slot: Slot,
     threads: usize,
-    sink: Sink,
+    command: Command,
 }
 
 fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Args>, String> {
-    match args.next().as_deref() {
+    let dsf = match args.next().as_deref() {
         Some("--version") => return Ok(None),
-        Some("decode") => {}
+        Some("decode") => false,
+        Some("dsf") => true,
         _ => return Err(USAGE.into()),
-    }
+    };
     let image = PathBuf::from(args.next().ok_or(USAGE)?);
     let (mut slot, mut threads, mut sink) = (None, None, None);
+    let (mut out, mut via, mut chunk) = (None, Via::Stream, DSF_CHUNK);
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{flag} needs a value\n{USAGE}"));
         match flag.as_str() {
@@ -80,12 +111,34 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Args>, String>
                     other => return Err(format!("--sink must be hash, null or raw DIR, not {other}")),
                 })
             }
+            "--out" if dsf => out = Some(PathBuf::from(value()?)),
+            "--via" if dsf => {
+                via = match value()?.as_str() {
+                    "stream" => Via::Stream,
+                    "read-at" => Via::ReadAt,
+                    other => return Err(format!("--via must be stream or read-at, not {other}")),
+                }
+            }
+            "--chunk" if dsf => {
+                let v = value()?;
+                chunk = v
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|&n| n > 0)
+                    .ok_or_else(|| format!("--chunk must be a positive number, not {v}"))?;
+            }
             other => return Err(format!("unknown argument {other}\n{USAGE}")),
         }
     }
-    match (slot, threads, sink) {
-        (Some(slot), Some(threads), Some(sink)) => Ok(Some(Args { image, slot, threads, sink })),
-        _ => Err(format!("--area, --threads and --sink are all required\n{USAGE}")),
+    let command = match (dsf, sink, out) {
+        (false, Some(sink), None) => Command::Decode(sink),
+        (true, None, Some(out)) => Command::Dsf { out, via, chunk },
+        (false, ..) => return Err(format!("--area, --threads and --sink are all required\n{USAGE}")),
+        (true, ..) => return Err(format!("--area, --threads and --out are all required\n{USAGE}")),
+    };
+    match (slot, threads) {
+        (Some(slot), Some(threads)) => Ok(Some(Args { image, slot, threads, command })),
+        _ => Err(format!("--area and --threads are required\n{USAGE}")),
     }
 }
 
@@ -299,6 +352,66 @@ fn decode_area(path: &Path, slot: Slot, out: &mut dyn Output) -> Result<(), Fail
     Ok(())
 }
 
+/// The positions of one range read in order, the last few kept: `Layout::fill` reads a
+/// DSF row's positions again for each channel.
+struct Stream<'a, R> {
+    frames: TrackAudio<'a, R>,
+    window: VecDeque<AudioFrame>,
+}
+
+/// Positions kept behind the latest one asked for.
+const KEPT: u32 = 4;
+
+impl<R: Read + Seek> PositionSource for Stream<'_, R> {
+    fn content(&mut self, t: u32) -> Result<Cow<'_, [u8]>, Error> {
+        while self.window.back().is_none_or(|f| f.number < t) {
+            let frame = self.frames.next().ok_or(Error::InvalidArgument("position past the range"))??;
+            self.window.push_back(frame);
+        }
+        while self.window.front().is_some_and(|f| f.number.saturating_add(KEPT) < t) {
+            self.window.pop_front();
+        }
+        let front = self.window.front().map_or(t, |f| f.number);
+        let i = t.checked_sub(front).ok_or(Error::InvalidArgument("position no longer held"))?;
+        let frame = self.window.get(i as usize).ok_or(Error::InvalidArgument("position not held"))?;
+        Ok(Cow::Borrowed(&frame.data))
+    }
+}
+
+/// Writes the area's play range as one DSF file (see the module documentation).
+fn write_dsf(path: &Path, slot: Slot, out: &Path, via: Via, chunk: usize) -> Result<(), Failure> {
+    let file = File::open(path)
+        .map_err(|e| Failure { class: "io-error", message: format!("{}: {e}", path.display()) })?;
+    let mut disc = Disc::open(BufReader::with_capacity(1 << 20, file))?;
+    let area = disc.toc().area(slot).ok_or(Error::NoSuchArea(slot))?;
+    let end = area.playtime_frames();
+    let layout = disc.output_layout(slot, 0, end, Format::Dsf, &OutputOptions::default())?;
+    let mut file = File::create(out)?;
+    let mut buf = vec![0u8; chunk];
+    let mut offset = 0u64;
+    match via {
+        Via::Stream => {
+            let frames = disc.range_audio(slot, 0, end)?;
+            let mut source = Stream { frames, window: VecDeque::new() };
+            while offset < layout.size() {
+                let n = layout.fill(offset, &mut buf, &mut source)?;
+                file.write_all(&buf[..n])?;
+                offset += n as u64;
+            }
+        }
+        Via::ReadAt => {
+            disc.enable_seek_index(slot, IndexOptions::new())?;
+            while offset < layout.size() {
+                let n = layout.read_at(&mut disc, offset, &mut buf)?;
+                file.write_all(&buf[..n])?;
+                offset += n as u64;
+            }
+        }
+    }
+    file.flush()?;
+    Ok(())
+}
+
 fn run(args: Args) -> Result<(), Failure> {
     // `--threads 0` is one thread per logical CPU, whatever RAYON_NUM_THREADS says.
     let threads = match args.threads {
@@ -309,9 +422,10 @@ fn run(args: Args) -> Result<(), Failure> {
         .num_threads(threads)
         .build()
         .map_err(|e| Failure { class: "internal-error", message: e.to_string() })?;
-    pool.install(|| match &args.sink {
-        Sink::Null => decode_area(&args.image, args.slot, &mut NullOut),
-        Sink::Hash => {
+    pool.install(|| match &args.command {
+        Command::Dsf { out, via, chunk } => write_dsf(&args.image, args.slot, out, *via, *chunk),
+        Command::Decode(Sink::Null) => decode_area(&args.image, args.slot, &mut NullOut),
+        Command::Decode(Sink::Hash) => {
             let stdout = std::io::stdout().lock();
             let mut out =
                 HashOut { out: BufWriter::new(stdout), number: 0, hashers: Vec::new(), chan: Vec::new() };
@@ -319,7 +433,7 @@ fn run(args: Args) -> Result<(), Failure> {
             out.out.flush()?;
             Ok(())
         }
-        Sink::Raw(dir) => {
+        Command::Decode(Sink::Raw(dir)) => {
             std::fs::create_dir_all(dir)?;
             decode_area(
                 &args.image,
@@ -367,7 +481,15 @@ mod tests {
         assert!(args("--version").unwrap().is_none());
         let a = args("decode x.iso --area mc --threads 0 --sink raw out").unwrap().unwrap();
         assert_eq!((a.slot, a.threads), (Slot::Multichannel, 0));
-        assert!(matches!(a.sink, Sink::Raw(ref d) if d == Path::new("out")));
+        assert!(matches!(a.command, Command::Decode(Sink::Raw(ref d))  if d == Path::new("out")));
+        let a =
+            args("dsf x.iso --area 2ch --threads 1 --out f.dsf --via read-at --chunk 4096").unwrap().unwrap();
+        assert!(
+            matches!(a.command, Command::Dsf { ref out, via: Via::ReadAt, chunk: 4096 } if out == Path::new("f.dsf"))
+        );
+        assert!(args("dsf x.iso --area 2ch --threads 1 --sink null").is_err());
+        assert!(args("decode x.iso --area 2ch --threads 1 --out f.dsf").is_err());
+        assert!(args("dsf x.iso --area 2ch --threads 1 --out f.dsf --chunk 0").is_err());
         assert!(args("decode x.iso --area 5ch --threads 1 --sink null").is_err());
         assert!(args("decode x.iso --area 2ch --sink null").is_err());
         assert!(args("decode x.iso --area 2ch --threads x --sink null").is_err());

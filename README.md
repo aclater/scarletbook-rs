@@ -1015,6 +1015,18 @@ cargo build --release -p scarletbook-bench
 target/release/bench decode disc.iso --area 2ch --threads 0 --sink hash   # or null, or raw DIR
 ```
 
+`bench dsf` is outside that interface (#202): it writes an area's whole play range as one
+DSF file through `output::Layout`, to time the output path, read and write included:
+
+```sh
+target/release/bench dsf disc.iso --area 2ch --threads 0 --out out.dsf   # or /dev/null
+target/release/bench dsf disc.iso --area mc --threads 0 --out out.dsf --via read-at --chunk 131072
+```
+
+`--via stream` (the default) reads the area once, in order, and fills `--chunk` bytes
+(default 4 MiB) per `Layout::fill` call; `--via read-at` makes one `Layout::read_at` call
+per chunk, as a filesystem serving the file would, with the area's seek index enabled.
+
 Pushing a version tag (`v0.1.0`, matching the crate version) runs the release workflow:
 it publishes `bench-<version>-x86_64-linux.tar.gz` (generic x86-64, cargo profile `dist`),
 after the correctness gate has passed on that very build, and two labelled builds,

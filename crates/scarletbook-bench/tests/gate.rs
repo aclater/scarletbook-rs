@@ -142,3 +142,36 @@ fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::Digest;
     sha2::Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
+
+/// `bench dsf` (issue #202): the file is the same through one stream and through
+/// `Layout::read_at` calls of any size, and its size is the one its header gives.
+#[test]
+fn dsf_streams_and_read_at_calls_agree() {
+    let dir = std::env::temp_dir().join(format!("scarletbook-bench-dsf-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (id, flag) in
+        [("dsd-stereo-mch-2048", "2ch"), ("dsd-stereo-mch-2048", "mc"), ("dst-features-5ch", "mc")]
+    {
+        let case = cases().into_iter().find(|c| c["id"] == id).unwrap();
+        let img = image(&case);
+        let mut files = Vec::new();
+        for (i, extra) in
+            [&[][..], &["--via", "read-at", "--chunk", "5000"], &["--chunk", "4093"]].iter().enumerate()
+        {
+            let path = dir.join(format!("{id}-{flag}-{i}.dsf"));
+            let mut args =
+                vec!["dsf", &img, "--area", flag, "--threads", "0", "--out", path.to_str().unwrap()];
+            args.extend_from_slice(extra);
+            let out = bench(&args);
+            assert!(out.status.success(), "{id} {flag} {extra:?}: {}", String::from_utf8_lossy(&out.stderr));
+            files.push(std::fs::read(&path).unwrap());
+        }
+        let f = &files[0];
+        assert_eq!(&f[..4], b"DSD ");
+        assert_eq!(u64::from_le_bytes(f[12..20].try_into().unwrap()), f.len() as u64, "{id} {flag}");
+        assert!(files.iter().all(|g| g == f), "{id} {flag}: the files differ");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+    let bad = bench(&["dsf", "x.iso", "--area", "2ch", "--threads", "1"]);
+    assert_eq!(String::from_utf8_lossy(&bad.stderr).lines().next(), Some("usage-error"));
+}
