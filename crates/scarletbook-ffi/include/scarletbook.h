@@ -4035,8 +4035,13 @@ SbStatus sb_output_options_set_tags(const struct SbOutputOptions *options,
                                     const struct SbTags *tags);
 
 /*
- Sets a DSF file's tag to a copy of the `len` bytes of `tag`, an ID3v2.4 tag written as
- it is (W3); checked for its header and size when a layout is made.
+ Sets a DSF file's tag to a copy of the `len` bytes of `tag`, written as it is (W3,
+ specification 8, 8.6 row 3). It is either an ID3v2.4 tag, checked for its header and
+ size, or a caller-supplied ID3v2.3 tag (8.2.6 item 4), checked only for its header:
+ `len >= 10`, "ID3", version 03 00, the low five flag bits 0, and four size bytes each
+ below 0x80 whose 28-bit size is `len - 10`; its frames are not checked. The check runs
+ when a layout is made, which fails with `SB_STATUS_INVALID_ARGUMENT` for any other
+ tag. A `len` above 1 MiB (1 048 576 bytes) is refused here.
 
  # Safety
 
