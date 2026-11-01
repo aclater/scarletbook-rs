@@ -78,6 +78,11 @@ jobs:
             ffi) miri -p scarletbook-ffi ;;
             core) miri -p scarletbook --test '*' ;;
             core-lib) miri -p scarletbook --lib -- --skip fast_loop_matches_general ;;
+            # The run-time dispatch of the DST decoder, the core crate's unsafe code (#146): on
+            # pull requests that change it (ci.yml), about 7 minutes.
+            core-dispatch)
+              miri -p scarletbook --lib -- --exact dispatch::tests::detected_decoder_matches_generic_simple
+              named 1 ;;
             lanes-1-2)
               miri -p scarletbook --lib -- --exact dst::tests::fast_loop_matches_general_1_frame \
                 dst::tests::fast_loop_matches_general_2_frames
