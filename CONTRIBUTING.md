@@ -50,6 +50,42 @@ If the specification is ambiguous or incomplete, do not guess and do not look at
 another reader does it. Open an issue on `aclater/sacd-spec`, mark the affected code with
 a `TODO` that names the issue, and carry on with the rest.
 
+## Issues
+
+Each open issue says what it is planned for, how much it matters, where it stands and who has
+it (#194).
+
+- **Milestone:** the release it is planned for, such as `0.6.0` or `1.0.0`, or `Later`.
+  Umbrella and design issues that track other work have no milestone and carry `tracking`.
+- **Priority**, one of:
+  - `P1`: must be in its milestone's release;
+  - `P2`: planned for it, but may slip one release;
+  - `P3`: nice to have.
+- **Status**, where one applies:
+  - `status: in progress`: claimed and being worked on;
+  - `status: in review`: a pull request is open;
+  - `status: fixed on main`: merged. The issue stays open until the release that contains it
+    is published; the reviewer closes it after verifying the release's tag and assets;
+  - `status: needs decision`: waiting on the owner.
+- **Model**, one of:
+  - `model: opus`: hard work, such as concurrency, performance, design and bugs whose cause
+    is unknown;
+  - `model: sonnet`: routine work, such as well-specified features, tests, documentation and
+    CI.
+- Type labels (`bug`, `enhancement`, `performance`, `documentation`, ...) stay as before.
+
+**Claiming.** Work on an issue only after claiming it, and never start on one that someone
+else has claimed; ask on the issue instead.
+1. Check that it carries no `status: in progress` or `status: in review` label and no
+   unreleased claim in its comments.
+2. Comment `Claimed by <agent> (<model>)` and add `status: in progress`.
+3. If you stop without a pull request, say on the issue that you are releasing it, and
+   remove the label.
+4. When your pull request opens, change the label to `status: in review`. The pull request
+   says `Closes #N` only if it resolves the whole issue, and `Part of #N` otherwise.
+5. After it merges, the label becomes `status: fixed on main`. The reviewer closes the issue
+   once the release that ships it has been verified.
+
 ## Code
 
 - The core crate is `#![forbid(unsafe_code)]`; `unsafe` lives only in `scarletbook-ffi`,
