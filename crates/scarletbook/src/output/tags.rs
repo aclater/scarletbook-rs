@@ -66,6 +66,23 @@ pub enum TextSource {
     DiscThenAlbum,
 }
 
+/// Which tag items fill the DSDIFF artist (`DIAR`) and title (`DITI`) chunks
+/// (specification 8, 8.4.8 as of sacd-spec e069569; W24).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ArtistTitleSource {
+    /// The album artist and album items: the album or disc artist and title (2.5.4), as
+    /// [`OutputOptions::text_source`] chooses.
+    Album,
+    /// The source track's performer and title items (specification 3, 3.5, item types 0x02
+    /// and 0x01). A file without a source track (8.1 item 7), such as an edited master, has
+    /// neither chunk.
+    Track,
+    /// The source track's performer and title, each item that is absent replaced by the
+    /// album artist or album item; in a file without a source track, the album items.
+    TrackThenAlbum,
+}
+
 /// Which genre entries the genre item takes (8.3.5, 8.3.7; W11): in the order track,
 /// album, disc.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

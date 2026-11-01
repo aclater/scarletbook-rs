@@ -219,8 +219,8 @@ impl InfoChunk {
         [InfoChunk::EditedMasterId, InfoChunk::Markers, InfoChunk::Artist, InfoChunk::Title];
 }
 
-/// The `DIIN` chunk (8.4.8): `EMID`, the markers, the artist and the title, in the order of
-/// the options.
+/// The `DIIN` chunk (8.4.8): `EMID` (if written), the markers, the artist and the title, in
+/// the order of the options.
 pub(super) fn diin(
     layout: &Layout,
     markers: &[Marker],
@@ -233,12 +233,18 @@ pub(super) fn diin(
     if sorted != InfoChunk::TABLE_ORDER {
         return Err(Error::InvalidArgument("the DIIN order must name each chunk once"));
     }
-    check_text(options.dsdiff_edited_master_id.as_bytes())?;
+    // W24 (8.4.8 as of sacd-spec e069569): `DIIN` may hold its chunks without `EMID`
+    // outside an edited master, which the caller (`assemble`) enforces.
+    let emid = options.dsdiff_edited_master_id_written;
+    if emid {
+        check_text(options.dsdiff_edited_master_id.as_bytes())?;
+    }
     let a = layout.first;
     let start = u64::from(options.dsdiff_absolute_start.unwrap_or(0));
     let mut data = Vec::new();
     for c in options.dsdiff_info_order {
         match c {
+            InfoChunk::EditedMasterId if !emid => {}
             InfoChunk::EditedMasterId => {
                 chunk(&mut data, b"EMID", options.dsdiff_edited_master_id.as_bytes())
             }
@@ -256,6 +262,8 @@ pub(super) fn diin(
             InfoChunk::Title => diin_text(&mut data, b"DITI", title, options),
         }
     }
+    // TODO(sacd-spec#?): 8.4.8 does not say whether `DIIN` may hold none of its chunks
+    // (no `EMID`, markers, artist or title); this writes it with `D = 0`.
     let mut out = Vec::new();
     chunk(&mut out, b"DIIN", &data);
     Ok(out)
