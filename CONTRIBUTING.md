@@ -88,11 +88,16 @@ else has claimed; ask on the issue instead.
 
 ## Code
 
-- The core crate is `#![forbid(unsafe_code)]`; `unsafe` lives only in `scarletbook-ffi`,
-  where every unsafe operation has its own `SAFETY:` comment. The one exception is
-  `scarletbook-pcm`'s `dispatch` module (the crate denies `unsafe_code` elsewhere): calls to
-  `#[target_feature]` builds of its safe kernels after run-time feature detection, with no
-  intrinsics or raw pointers (#173; `tests/unsafe_policy.rs` checks it).
+- `unsafe` lives only in `scarletbook-ffi`, where every unsafe operation has its own
+  `SAFETY:` comment. There are two exceptions, each one `dispatch` module of a crate that
+  denies `unsafe_code` elsewhere: calls to `#[target_feature]` builds of safe code after
+  run-time feature detection, with no intrinsics or raw pointers, each call with its own
+  `SAFETY:` comment, checked by the crate's `tests/unsafe_policy.rs`:
+  - `scarletbook-pcm`'s `dispatch`, the AVX2 and FMA filter kernels (#173);
+  - the core crate's `dispatch`, the AVX2, BMI and LZCNT build of the DST decoder (#146).
+
+  Both are to be revisited under #199, for a safe alternative such as struct target
+  features (RFC 3525) or per-CPU builds.
 - Images are hostile input: bound every allocation (specification 7), check every position,
   return typed errors, and never panic across the C ABI.
 - Every new source file starts with an SPDX header:

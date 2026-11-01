@@ -17,13 +17,20 @@
 //! # }
 //! ```
 
-#![forbid(unsafe_code)]
+// `unsafe` is denied everywhere except in `dispatch`, which calls the AVX2 build of the
+// DST decoder after checking for its features (CONTRIBUTING).
+#![deny(unsafe_code)]
 #![warn(missing_docs)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
+// The test encoder shared with the integration tests names the crate (`dispatch` tests).
+#[cfg(test)]
+extern crate self as scarletbook;
 
 pub mod audio;
 mod control;
 mod disc;
+mod dispatch;
 pub mod dst;
 mod error;
 mod image;
