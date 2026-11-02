@@ -174,14 +174,16 @@ mod tests {
 
     /// The kernels chosen for this CPU give exactly the output of the generic kernels, in
     /// every configuration, for a whole run and for a frame with neighbours, in both sample
-    /// layouts and with the same clip counts. (On a CPU
-    /// without AVX2 and FMA, and under Miri, both are the generic kernels.)
+    /// layouts and with the same clip counts. (On a CPU without AVX2 and FMA, and under Miri
+    /// unless it is run with `-C target-feature=+avx2,+fma`, both are the generic kernels.
+    /// Under Miri, only `Default` is converted, which still runs every kernel.)
     #[test]
     fn detected_kernels_match_generic() {
         let cases: &[(u8, usize, f64)] =
             if cfg!(miri) { &[(2, 1, 0.0)] } else { &[(1, 3, 0.0), (2, 3, 0.0), (3, 3, 7.5), (6, 3, -3.0)] };
         for rate in PcmRate::ALL {
-            for cutoff in Cutoff::ALL.into_iter().filter(|c| c.supports(rate)) {
+            let cutoffs = if cfg!(miri) { &[Cutoff::Default][..] } else { &Cutoff::ALL[..] };
+            for &cutoff in cutoffs.iter().filter(|c| c.supports(rate)) {
                 for &(channels, frames, gain) in cases {
                     let config =
                         PcmConfig::new(rate, cutoff, channels).with_gain(Gain::from_db(gain).unwrap());
