@@ -105,6 +105,10 @@ jobs:
             fi
           done
           cp benchmarks/runlist.json benchmarks/run.py benchmarks/table.py benchmarks/README.md LICENSE-MIT LICENSE-APACHE "dist/$name/"
+          # The corpus images scarletbook-synth takes DST frames from (CC0, corpus/LICENSE).
+          mkdir -p "dist/$name/corpus/images"
+          cp corpus/LICENSE "dist/$name/corpus/"
+          cp corpus/images/dst-features-2ch-6ch.iso corpus/images/dst-features-5ch.iso "dist/$name/corpus/images/"
           printf '%s\n' "scarletbook benchmark kit $version ($GITHUB_SHA), x86_64 Linux" "$NOTE" \
             "Statically linked (glibc) bench, scarletbook-synth and callpattern; run list and runner: README.md." \
             > "dist/$name/README.txt"

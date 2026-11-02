@@ -7,7 +7,7 @@ One row per case and build, one column group per label (version), in `--labels` 
 the order the labels first appear: the median wall time, the median CPU time (user + system), and, from the
 second label on, the ratio of its median wall time to the first label's. For `callpattern`
 the figures are its own: the median over rounds of its CPU milliseconds per second of audio,
-at 1 and at 256 frames per call. Failed runs are left out and counted under the table.
+at 1, 8 and 256 frames per call. Failed runs are left out and counted under the table.
 """
 import argparse
 import json
@@ -80,13 +80,13 @@ def main():
             for i, label in enumerate(labels):
                 rs = runs.get((case, build, label), [])
                 if case == "pcm-callpattern":
-                    # ms CPU per s of audio at 1 / 256 frames per call, callpattern's own figure.
+                    # ms CPU per s of audio at 1 / 8 / 256 frames per call, callpattern's own
+                    # figure; the ratio column compares the 8-frame figures.
                     per = [callpattern_ms(r.get("stdout")) for r in rs]
-                    one = [x[1] for x in per if 1 in x]
-                    big = [x[256] for x in per if 256 in x]
-                    wall = statistics.median(big) if big else None
-                    cells += [f"{fmt(statistics.median(one), 2) if one else '-'} / {fmt(wall, 2)} ms per s",
-                              "-"]
+                    med = {n: statistics.median([x[n] for x in per if n in x]) if any(n in x for x in per)
+                           else None for n in (1, 8, 256)}
+                    wall = med[8]
+                    cells += [" / ".join(fmt(med[n], 2) for n in (1, 8, 256)) + " ms per s", "-"]
                 else:
                     wall = statistics.median(r["wall_s"] for r in rs) if rs else None
                     cpu = statistics.median(r["cpu_s"] for r in rs) if rs else None

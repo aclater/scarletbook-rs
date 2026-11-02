@@ -1,6 +1,6 @@
 {
   "format_version": 1,
-  "about": "Run list of the published benchmark kits (benchmarks/README.md). Placeholders in commands: {kit} the unpacked kit directory of the build being timed, {image} the image file of the case, {scratch} a writable directory for output. Threads 0 means one thread per logical CPU.",
+  "about": "Run list of the published benchmark kits (benchmarks/README.md). Placeholders in commands and synth arguments: {kit} the unpacked kit directory of the build being timed, {image} the image file of the case, {scratch} a writable directory for output. Threads 0 means one thread per logical CPU.",
   "builds": [
     {
       "id": "generic",
@@ -18,6 +18,11 @@
       "id": "dst-stress-2ch-5m",
       "synth": ["--minutes", "5", "--area", "2ch", "--kind", "dst", "--dst-frames", "stress"],
       "approx_bytes": 81000000
+    },
+    {
+      "id": "dst-corpus-2ch-20m",
+      "synth": ["--minutes", "20", "--area", "2ch", "--kind", "dst", "--corpus", "{kit}/corpus"],
+      "approx_bytes": 390000000
     },
     {
       "id": "dst-stress-2ch-50m",
@@ -61,6 +66,14 @@
       "frames": 22500
     },
     {
+      "id": "dst-decode-2ch-t1-corpus",
+      "path": "DST decode, one thread, 2 channels, corpus frames",
+      "image": "dst-corpus-2ch-20m",
+      "command": ["{kit}/bench", "decode", "{image}", "--area", "2ch", "--threads", "1", "--sink", "null"],
+      "rounds": 3,
+      "frames": 90000
+    },
+    {
       "id": "dst-decode-2ch-tall",
       "path": "DST decode, all threads, 2 channels",
       "image": "dst-stress-2ch-50m",
@@ -85,14 +98,14 @@
       "id": "dsf-plain-2ch",
       "path": "plain-DSD area to DSF, 2 channels",
       "image": "plain-dsd-2ch-78m",
-      "command": ["{kit}/bench", "dsf", "{image}", "--area", "2ch", "--threads", "0", "--out", "/dev/null"],
+      "command": ["{kit}/bench", "dsf", "{image}", "--area", "2ch", "--threads", "1", "--out", "/dev/null"],
       "frames": 351000
     },
     {
       "id": "dsf-plain-5ch",
       "path": "plain-DSD area to DSF, 5 channels",
       "image": "plain-dsd-5ch-30m",
-      "command": ["{kit}/bench", "dsf", "{image}", "--area", "mc", "--threads", "0", "--out", "/dev/null"],
+      "command": ["{kit}/bench", "dsf", "{image}", "--area", "mc", "--threads", "1", "--out", "/dev/null"],
       "frames": 135000
     },
     {
@@ -106,7 +119,7 @@
       "id": "pcm-callpattern",
       "path": "DSD to PCM, stereo DSD64 to 176.4 kHz 24-bit, one thread",
       "image": null,
-      "command": ["{kit}/callpattern", "60", "5", "1,16,256"],
+      "command": ["{kit}/callpattern", "60", "7", "1,8,256"],
       "rounds": 3,
       "warmup_runs": 0,
       "stdout": "keep"

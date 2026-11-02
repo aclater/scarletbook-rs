@@ -49,6 +49,9 @@ case "$cmd" in
           --bin bench --bin scarletbook-synth)
         bin="$out/x86_64-unknown-linux-gnu/dist"
         cp "$bin/bench" "$bin/scarletbook-synth" "$kit/"
+        mkdir -p "$kit/corpus/images"
+        cp "$src/corpus/LICENSE" "$kit/corpus/"
+        cp "$src/corpus/images/dst-features-2ch-6ch.iso" "$src/corpus/images/dst-features-5ch.iso" "$kit/corpus/images/"
         # Older versions have no callpattern example; run.py then skips that case for them.
         if (cd "$src" && RUSTFLAGS="$flags" CARGO_TARGET_DIR="$out" cargo build -q --profile dist --locked \
           --target x86_64-unknown-linux-gnu -p scarletbook-pcm --example callpattern 2> /dev/null); then

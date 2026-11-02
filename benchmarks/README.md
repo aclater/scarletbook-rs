@@ -32,6 +32,7 @@ An archive holds one directory:
 | `scarletbook-synth` | writes the synthetic images of the run list |
 | `callpattern` | the scarletbook-pcm `callpattern` example: DSD64 stereo to 176.4 kHz 24-bit, generated input |
 | `runlist.json` | the cases (below) |
+| `corpus/` | the two corpus images `scarletbook-synth` takes DST frames from (CC0, `corpus/LICENSE`) |
 | `run.py` | the reference runner (below) |
 | `table.py` | prints the Markdown table of `RESULTS.md` from the runner's output |
 | `README.txt`, `README.md`, `LICENSE-*` | version, commit and build; this file; the licences |
@@ -52,8 +53,8 @@ generic one also runs the AVX2 DST decoder and PCM kernels on CPUs that have the
 - `builds`: the build ids (`generic`, `v3`), their archive names, and the `/proc/cpuinfo`
   flags a build needs. A runner skips a build whose flags the CPU lacks and says so.
 - `images`: each image's `scarletbook-synth` arguments after the output path. The images are
-  deterministic (DST frames from the generated stress set, not from the corpus), so any kit
-  writes the same bytes; `approx_bytes` is for disk planning (about 8 GB in all).
+  deterministic (DST frames from the generated stress set, or from the corpus images in the
+  kit), so any kit writes the same bytes; `approx_bytes` is for disk planning (about 8.3 GB in all).
 - `defaults` and `cases`. Each case has an `id`, the `path` of #224 it measures, an `image`
   (or `null`), a `command` with placeholders, and, unless the default applies:
   - `rounds` (default 5): timed runs per build;
@@ -73,11 +74,12 @@ image file, `{scratch}` a writable directory. Threads `0` mean one per logical C
 | Case | #224 path | Image |
 |---|---|---|
 | `dst-decode-2ch-t1` | DST decode, one thread, 2 ch | 5 min 2 ch DST |
+| `dst-decode-2ch-t1-corpus` | DST decode, one thread, 2 ch, corpus frames | 20 min 2 ch DST (frames of the corpus images in the kit) |
 | `dst-decode-2ch-tall` | DST decode, all threads, 2 ch | 50 min 2 ch DST |
 | `dst-decode-6ch-t1` | DST decode, one thread, 6 ch | 2 min 6 ch DST |
 | `dst-decode-6ch-tall` | DST decode, all threads, 6 ch | 10 min 6 ch DST |
-| `dsf-plain-2ch` | plain-DSD area to DSF, 2 ch (to `/dev/null`) | 78 min 2 ch plain DSD |
-| `dsf-plain-5ch` | plain-DSD area to DSF, 5 ch (to `/dev/null`) | 30 min 5 ch plain DSD |
+| `dsf-plain-2ch` | plain-DSD area to DSF, 2 ch, one thread (to `/dev/null`) | 78 min 2 ch plain DSD |
+| `dsf-plain-5ch` | plain-DSD area to DSF, 5 ch, one thread (to `/dev/null`) | 30 min 5 ch plain DSD |
 | `dsf-dst-2ch-tall` | DST area to DSF, all threads (to `/dev/null`) | 50 min 2 ch DST |
 | `pcm-callpattern` | DSD to PCM, one thread | none (generated in memory) |
 
@@ -87,7 +89,7 @@ an image.
 
 ## The sandboxed-runner contract
 
-**Inputs:** one or both kit archives of one version, unpacked; about 8 GB of free disk for the
+**Inputs:** one or both kit archives of one version, unpacked; about 8.3 GB of free disk for the
 images; nothing else. **Network:** none. **Privileges:** none.
 
 **What the runner executes**, in this order:
@@ -143,8 +145,8 @@ python3 -I $g/run.py --kit generic=$g --kit v3=$g-v3 --work work > results.jsonl
 ```
 
 `--case ID` (repeatable) selects cases; `--smoke` runs every case once on tiny images, which
-is what `benchkit.yml` does to check each kit. A full run of two builds takes about 12 minutes
-on a 16-core Zen 2 machine and writes about 8 GB of images. `--kit BUILD@LABEL=DIR` times kits
+is what `benchkit.yml` does to check each kit. A full run of two builds takes about 10 minutes
+on a 16-core Zen 2 machine and writes about 8.3 GB of images. `--kit BUILD@LABEL=DIR` times kits
 of several versions in one alternation; `python3 -I table.py results.jsonl` prints the medians
 as a Markdown table.
 

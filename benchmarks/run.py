@@ -157,7 +157,7 @@ def main():
         if not os.path.exists(path):
             recipe = images[image_id]["synth"]
             argv = [os.path.join(kits[0][2], "scarletbook-synth"), path + ".part"]
-            argv += smoke_synth(recipe) if a.smoke else recipe
+            argv += expand(smoke_synth(recipe) if a.smoke else recipe, kits[0][2], None, scratch)
             print("+ " + shlex.join(argv), file=sys.stderr)
             subprocess.run(argv, check=True)
             os.replace(path + ".part", path)
