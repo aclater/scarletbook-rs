@@ -1025,7 +1025,10 @@ target/release/bench dsf disc.iso --area mc --threads 0 --out out.dsf --via read
 
 `--via stream` (the default) reads the area once, in order, and fills `--chunk` bytes
 (default 4 MiB) per `Layout::fill` call; `--via read-at` makes one `Layout::read_at` call
-per chunk, as a filesystem serving the file would, with the area's seek index enabled.
+per chunk, as a filesystem serving the file would, with the area's seek index enabled;
+`--via parallel` (Unix) reads the area on the calling thread and has `--threads` workers
+fill whole DSF rows, about `--chunk` bytes at a time, and write each piece at its offset
+with `write_at`: a prototype of a parallel writer built on the public `Layout` API (#224).
 
 Pushing a version tag (`v0.1.0`, matching the crate version) runs the release workflow:
 it publishes `bench-<version>-x86_64-linux.tar.gz` (generic x86-64, cargo profile `dist`),

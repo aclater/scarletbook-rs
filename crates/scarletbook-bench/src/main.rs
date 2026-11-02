@@ -5,7 +5,7 @@
 //! ```text
 //! bench --version
 //! bench decode IMAGE --area 2ch|mc --threads N --sink hash|null|raw DIR
-//! bench dsf IMAGE --area 2ch|mc --threads N --out FILE [--via stream|read-at] [--chunk BYTES]
+//! bench dsf IMAGE --area 2ch|mc --threads N --out FILE [--via stream|read-at|parallel] [--chunk BYTES]
 //! ```
 //!
 //! It decodes every track of one area, in track order, in one pass over the area
@@ -17,8 +17,12 @@
 //! `[0, P)` as one DSF file through `output::Layout`, `--chunk` bytes per call (default
 //! 4 MiB). With `--via stream` (the default) one source reads the area once, in order;
 //! with `--via read-at` every chunk is a `Layout::read_at` call of its own, as a
-//! filesystem serving the file would make, with the area's seek index enabled. `FILE` may
-//! be `/dev/null`, to leave the cost of writing out.
+//! filesystem serving the file would make, with the area's seek index enabled. With `--via
+//! parallel` (Unix) the calling thread reads and demultiplexes the area, and `N` worker
+//! threads (`--threads`, as for the pool) each fill whole DSF rows, about `--chunk` bytes
+//! at a time, and write them at their offset (`write_at`): a prototype of a parallel
+//! writer, from the public `Layout` API only (#202, #224). `FILE` may be `/dev/null`, to
+//! leave the cost of writing out.
 //!
 //! Errors: the first line on stderr is one error code: a code of specification 7, 7.7.1
 //! for a rejected image, `no-such-area` when the slot yields no area, and `io-error`,
@@ -32,16 +36,17 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use scarletbook::audio::{AudioFrame, FRAME_BYTES_PER_CHANNEL, TrackAudio};
-use scarletbook::output::{Format, OutputOptions, PositionSource};
+use scarletbook::output::{Format, OutputOptions, PositionSource, RegionKind};
 use scarletbook::seek::IndexOptions;
 use scarletbook::{Disc, Error, Slot};
 use sha2::{Digest, Sha256};
 
 const USAGE: &str = "usage: bench --version
        bench decode IMAGE --area 2ch|mc --threads N --sink hash|null|raw DIR
-       bench dsf IMAGE --area 2ch|mc --threads N --out FILE [--via stream|read-at] [--chunk BYTES]";
+       bench dsf IMAGE --area 2ch|mc --threads N --out FILE [--via stream|read-at|parallel] [--chunk BYTES]";
 
 /// Bytes per `Layout::fill` or `Layout::read_at` call of `dsf`, by default.
 const DSF_CHUNK: usize = 4 << 20;
@@ -61,6 +66,7 @@ enum Sink {
 enum Via {
     Stream,
     ReadAt,
+    Parallel,
 }
 
 #[derive(Debug)]
@@ -116,7 +122,8 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Args>, String>
                 via = match value()?.as_str() {
                     "stream" => Via::Stream,
                     "read-at" => Via::ReadAt,
-                    other => return Err(format!("--via must be stream or read-at, not {other}")),
+                    "parallel" => Via::Parallel,
+                    other => return Err(format!("--via must be stream, read-at or parallel, not {other}")),
                 }
             }
             "--chunk" if dsf => {
@@ -399,6 +406,12 @@ fn write_dsf(path: &Path, slot: Slot, out: &Path, via: Via, chunk: usize) -> Res
                 offset += n as u64;
             }
         }
+        Via::Parallel => {
+            return Err(Failure {
+                class: "internal-error",
+                message: "--via parallel is write_dsf_parallel".into(),
+            });
+        }
         Via::ReadAt => {
             disc.enable_seek_index(slot, IndexOptions::new())?;
             while offset < layout.size() {
@@ -412,6 +425,115 @@ fn write_dsf(path: &Path, slot: Slot, out: &Path, via: Via, chunk: usize) -> Res
     Ok(())
 }
 
+/// Positions of one piece of the file, in memory: shared with the next piece where a DSF
+/// row reads a position on both sides of their boundary.
+struct Piece {
+    first: u32,
+    frames: Vec<Arc<AudioFrame>>,
+}
+
+impl PositionSource for Piece {
+    fn content(&mut self, t: u32) -> Result<Cow<'_, [u8]>, Error> {
+        let i = t.checked_sub(self.first).ok_or(Error::InvalidArgument("position before the piece"))?;
+        let f = self.frames.get(i as usize).ok_or(Error::InvalidArgument("position past the piece"))?;
+        Ok(Cow::Borrowed(&f.data))
+    }
+}
+
+/// `--via parallel`: the file in pieces of whole DSF rows (the first with the header, the
+/// last with the tag), each filled and written at its offset by one of `workers` threads,
+/// while this thread reads the area and hands each piece the positions it needs.
+#[cfg(unix)]
+fn write_dsf_parallel(
+    path: &Path,
+    slot: Slot,
+    out: &Path,
+    workers: usize,
+    chunk: usize,
+) -> Result<(), Failure> {
+    use std::os::unix::fs::FileExt;
+    use std::sync::{Mutex, mpsc};
+
+    let file = File::open(path)
+        .map_err(|e| Failure { class: "io-error", message: format!("{}: {e}", path.display()) })?;
+    let mut disc = Disc::open(BufReader::with_capacity(1 << 20, file))?;
+    let area = disc.toc().area(slot).ok_or(Error::NoSuchArea(slot))?;
+    let end = area.playtime_frames();
+    let layout = disc.output_layout(slot, 0, end, Format::Dsf, &OutputOptions::default())?;
+    let size = layout.size();
+    let sound = layout
+        .regions()
+        .iter()
+        .find(|r| r.kind == RegionKind::SoundData)
+        .copied()
+        .ok_or(Failure { class: "internal-error", message: "a DSF file without sound data".into() })?;
+    // Piece boundaries: the start of the sound data plus whole rows, and the file's end.
+    let row = 4096 * u64::from(layout.channels());
+    let step = (chunk as u64 / row).max(1) * row;
+    let mut bounds: Vec<u64> = vec![0];
+    bounds.extend((1..).map(|k| sound.offset + k * step).take_while(|&b| b < sound.offset + sound.len));
+    bounds.push(size);
+
+    let file = File::create(out)?;
+    let (send, receive) = mpsc::sync_channel::<(u64, u64, Piece)>(2 * workers);
+    let receive = Mutex::new(receive);
+    let failed: Mutex<Option<Failure>> = Mutex::new(None);
+    std::thread::scope(|scope| -> Result<(), Failure> {
+        // Dropped when the reader returns, early or not, so that the workers stop.
+        let send = send;
+        for _ in 0..workers {
+            scope.spawn(|| {
+                let mut buf = Vec::new();
+                loop {
+                    let job = receive.lock().map(|r| r.recv());
+                    let Ok(Ok((at, to, mut piece))) = job else { return };
+                    // After a failure, the pieces still sent are taken and dropped, so that
+                    // the reader never waits on a full channel.
+                    if failed.lock().map_or(true, |f| f.is_some()) {
+                        continue;
+                    }
+                    buf.resize((to - at) as usize, 0);
+                    let result = layout
+                        .fill(at, &mut buf, &mut piece)
+                        .map_err(Failure::from)
+                        .and_then(|n| file.write_all_at(&buf[..n], at).map_err(Failure::from));
+                    if let (Err(e), Ok(mut f)) = (result, failed.lock()) {
+                        f.get_or_insert(e);
+                    }
+                }
+            });
+        }
+        // The reader: positions in order, each piece taking those of `positions_for`.
+        let mut frames = disc.range_audio(slot, 0, end)?;
+        let mut held: VecDeque<Arc<AudioFrame>> = VecDeque::new();
+        for w in bounds.windows(2) {
+            let need = layout.positions_for(w[0]..w[1]);
+            while held.front().is_some_and(|f| f.number < need.start) {
+                held.pop_front();
+            }
+            while held.back().is_none_or(|f| f.number + 1 < need.end) && !need.is_empty() {
+                let f = frames.next().ok_or(Error::InvalidArgument("position past the range"))??;
+                held.push_back(Arc::new(f));
+            }
+            let first = held.front().map_or(need.start, |f| f.number);
+            let piece = Piece { first, frames: held.iter().cloned().collect() };
+            if failed.lock().map_or(true, |f| f.is_some()) || send.send((w[0], w[1], piece)).is_err() {
+                break;
+            }
+        }
+        Ok(())
+    })?;
+    if let Some(e) = failed.into_inner().ok().flatten() {
+        return Err(e);
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_dsf_parallel(_: &Path, _: Slot, _: &Path, _: usize, _: usize) -> Result<(), Failure> {
+    Err(Failure { class: "usage-error", message: "--via parallel needs a Unix write_at".into() })
+}
+
 fn run(args: Args) -> Result<(), Failure> {
     // `--threads 0` is one thread per logical CPU, whatever RAYON_NUM_THREADS says.
     let threads = match args.threads {
@@ -423,6 +545,9 @@ fn run(args: Args) -> Result<(), Failure> {
         .build()
         .map_err(|e| Failure { class: "internal-error", message: e.to_string() })?;
     pool.install(|| match &args.command {
+        Command::Dsf { out, via: Via::Parallel, chunk } => {
+            write_dsf_parallel(&args.image, args.slot, out, threads, *chunk)
+        }
         Command::Dsf { out, via, chunk } => write_dsf(&args.image, args.slot, out, *via, *chunk),
         Command::Decode(Sink::Null) => decode_area(&args.image, args.slot, &mut NullOut),
         Command::Decode(Sink::Hash) => {

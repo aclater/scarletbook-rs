@@ -143,8 +143,9 @@ fn sha256_hex(bytes: &[u8]) -> String {
     sha2::Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// `bench dsf` (issue #202): the file is the same through one stream and through
-/// `Layout::read_at` calls of any size, and its size is the one its header gives.
+/// `bench dsf` (issue #202): the file is the same through one stream, through
+/// `Layout::read_at` calls of any size and through the parallel writer, and its size is the
+/// one its header gives.
 #[test]
 fn dsf_streams_and_read_at_calls_agree() {
     let dir = std::env::temp_dir().join(format!("scarletbook-bench-dsf-{}", std::process::id()));
@@ -155,9 +156,13 @@ fn dsf_streams_and_read_at_calls_agree() {
         let case = cases().into_iter().find(|c| c["id"] == id).unwrap();
         let img = image(&case);
         let mut files = Vec::new();
-        for (i, extra) in
-            [&[][..], &["--via", "read-at", "--chunk", "5000"], &["--chunk", "4093"]].iter().enumerate()
-        {
+        let mut extras: Vec<&[&str]> =
+            vec![&[], &["--via", "read-at", "--chunk", "5000"], &["--chunk", "4093"]];
+        // The parallel writer needs `write_at`, which is Unix only.
+        if cfg!(unix) {
+            extras.push(&["--via", "parallel", "--chunk", "5000"]);
+        }
+        for (i, extra) in extras.iter().enumerate() {
             let path = dir.join(format!("{id}-{flag}-{i}.dsf"));
             let mut args =
                 vec!["dsf", &img, "--area", flag, "--threads", "0", "--out", path.to_str().unwrap()];
