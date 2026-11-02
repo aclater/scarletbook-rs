@@ -503,6 +503,12 @@ struct Replay {
 /// Sectors read per call to the reader.
 const READ_CHUNK: u64 = 32;
 
+/// The sector at offset `at` of a cursor's buffer, which holds it ([`AreaCursor::load`]).
+fn held(buf: &[u8], at: usize) -> &[u8; SECTOR_SIZE] {
+    static ZERO: [u8; SECTOR_SIZE] = [0; SECTOR_SIZE];
+    buf.get(at..).and_then(<[u8]>::first_chunk).unwrap_or(&ZERO)
+}
+
 impl AreaCursor {
     /// A cursor at the start of `area`'s audio, in an image of `image_sectors` sectors.
     pub fn new(area: &Area, image_sectors: u64) -> Self {
@@ -1101,6 +1107,14 @@ impl AreaCursor {
     }
 
     fn sector<R: Read + Seek>(&mut self, image: &mut Image<R>, lsn: u64) -> Result<[u8; SECTOR_SIZE], Error> {
+        let at = self.load(image, lsn)?;
+        Ok(*held(&self.buf, at))
+    }
+
+    /// Reads sector `lsn` into the buffer, with the sectors after it that the read takes,
+    /// unless it is there already, and gives its offset in the buffer: the scan reads the
+    /// sector there ([`held`]), without a copy.
+    fn load<R: Read + Seek>(&mut self, image: &mut Image<R>, lsn: u64) -> Result<usize, Error> {
         if !(self.buf_lsn..self.buf_lsn + self.buf_sectors).contains(&lsn) {
             // A read sized to the range reads what it was sized to, less than a chunk too.
             let sized = self.read_to.saturating_sub(lsn);
@@ -1125,12 +1139,7 @@ impl AreaCursor {
             self.buf_lsn = lsn;
             self.buf_sectors = n;
         }
-        let at = (lsn - self.buf_lsn) as usize * SECTOR_SIZE;
-        let mut out = [0u8; SECTOR_SIZE];
-        if let Some(src) = self.buf.get(at..at + SECTOR_SIZE) {
-            out.copy_from_slice(src);
-        }
-        Ok(out)
+        Ok((lsn - self.buf_lsn) as usize * SECTOR_SIZE)
     }
 
     /// The next accepted frame, `None` at the end of the area.
@@ -1220,8 +1229,9 @@ impl AreaCursor {
             if self.next_lsn < self.end_lsn {
                 let lsn = self.next_lsn;
                 self.next_lsn += 1;
-                match self.sector(image, lsn) {
-                    Ok(s) => {
+                match self.load(image, lsn) {
+                    Ok(at) => {
+                        let s = held(&self.buf, at);
                         if let Some(r) = self.replay {
                             if lsn < r.until {
                                 // Rebuilds the frame under assembly only: no log lines, no
@@ -1229,7 +1239,7 @@ impl AreaCursor {
                                 // the checkpoint's, which counts these sectors already, also
                                 // if a read fails before the replay ends (4.4.5 item 2).
                                 let malformed = self.demux.malformed;
-                                self.demux.push_sector_at(&s, self.demux.at(&Log::none(), lsn));
+                                self.demux.push_sector_at(s, self.demux.at(&Log::none(), lsn));
                                 self.demux.malformed = malformed;
                                 self.demux.ready.clear();
                                 continue;
@@ -1237,17 +1247,17 @@ impl AreaCursor {
                         }
                         if let Some((at, want)) = self.verify.filter(|&(at, _)| at == lsn) {
                             self.verify = None;
-                            if digest(&s) != want {
+                            if digest(s) != want {
                                 self.discard_index(image.log(), at);
                                 continue;
                             }
                         }
                         if let Some(h) = self.hints.as_deref_mut() {
-                            h.see(lsn, &s);
+                            h.see(lsn, s);
                         }
                         if let Some(pr) = self.provisional.as_deref_mut().filter(|p| p.due(lsn)) {
                             let under = self.demux.assembling.as_ref().map(|a| (lsn - a.start_lsn, a.number));
-                            pr.record(lsn, under, self.demux.seen, &s);
+                            pr.record(lsn, under, self.demux.seen, s);
                         }
                         if let Some(rec) = self.recorder.as_deref_mut().filter(|r| r.due(lsn)) {
                             let d = &self.demux;
@@ -1258,10 +1268,10 @@ impl AreaCursor {
                                 remaining: a.remaining,
                                 data: &a.data,
                             });
-                            rec.record(lsn, d.next_acceptable, d.malformed, assembling, &s);
+                            rec.record(lsn, d.next_acceptable, d.malformed, assembling, s);
                         }
                         let at = self.demux.at(image.log(), lsn);
-                        let malformed = self.demux.push_sector_at(&s, at);
+                        let malformed = self.demux.push_sector_at(s, at);
                         if let Some(reason) = self.demux.reason.filter(|_| malformed) {
                             let code = WarningCode::AudioSectorMalformed.code();
                             let log = image.log();
