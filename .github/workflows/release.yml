@@ -20,9 +20,8 @@ name: Release
 #
 # It also carries the benchmark kit that consumers run on their own machines
 # (benchmarks/README.md, issue #226), built and checked by benchkit.yml: statically linked
-# `bench`, `scarletbook-synth` and `callpattern` with the run list, for
-# x86_64-unknown-linux-musl, generic and x86-64-v3:
-# scarletbook-benchkit-<version>-x86_64-unknown-linux-musl[-v3].tar.gz.
+# `bench`, `scarletbook-synth` and `callpattern` with the run list, for x86_64 Linux,
+# generic and x86-64-v3: scarletbook-benchkit-<version>-x86_64-linux[-v3].tar.gz.
 #
 # Assets: (9 C library + 3 bench + 2 benchmark kit archives) x 2 (each with its .sha256)
 # = 28. All archives share one build provenance attestation.
@@ -215,7 +214,7 @@ jobs:
           - \`bench-$VERSION-x86-64-v3-linux.tar.gz\`: built for x86-64-v3 (AVX2 and later CPUs), labelled; an extra build for users, not one of the benchmark assets.
           Each has a \`.sha256\` checksum and, for a public repository, a signed build provenance attestation: \`gh attestation verify <asset> -R $GITHUB_REPOSITORY\`. The correctness gate (every corpus case, 1 and all threads) passed on the generic and x86-64-v3 builds.
 
-          Benchmark kit for running the benchmarks on your own machines (benchmarks/README.md): \`scarletbook-benchkit-$VERSION-x86_64-unknown-linux-musl.tar.gz\` (generic x86-64) and \`scarletbook-benchkit-$VERSION-x86_64-unknown-linux-musl-v3.tar.gz\` (x86-64-v3 CPUs only) hold statically linked \`bench\`, \`scarletbook-synth\` and \`callpattern\`, the run list \`runlist.json\` and its reference runner \`run.py\`. Match the names exactly: a prefix of the generic name also matches the v3 one."
+          Benchmark kit for running the benchmarks on your own machines (benchmarks/README.md): \`scarletbook-benchkit-$VERSION-x86_64-linux.tar.gz\` (generic x86-64) and \`scarletbook-benchkit-$VERSION-x86_64-linux-v3.tar.gz\` (x86-64-v3 CPUs only) hold statically linked \`bench\`, \`scarletbook-synth\` and \`callpattern\`, the run list \`runlist.json\` and its reference runner \`run.py\`. Match the names exactly: a prefix of the generic name also matches the v3 one."
           } > release-notes.md
           gh release create "$GITHUB_REF_NAME" --title "scarletbook $VERSION" --verify-tag \
             --notes-file release-notes.md dist/*.tar.gz dist/*.sha256

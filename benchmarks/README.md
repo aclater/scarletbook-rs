@@ -13,15 +13,15 @@ Every release publishes two archives, built by `.github/workflows/benchkit.yml`:
 
 | Asset | Build | Runs on |
 |---|---|---|
-| `scarletbook-benchkit-<version>-x86_64-unknown-linux-musl.tar.gz` | generic x86-64 | any x86_64 Linux |
-| `scarletbook-benchkit-<version>-x86_64-unknown-linux-musl-v3.tar.gz` | `-C target-cpu=x86-64-v3` | x86-64-v3 CPUs only (AVX2, BMI1/2, FMA, MOVBE, ...) |
+| `scarletbook-benchkit-<version>-x86_64-linux.tar.gz` | generic x86-64 | any x86_64 Linux |
+| `scarletbook-benchkit-<version>-x86_64-linux-v3.tar.gz` | `-C target-cpu=x86-64-v3` | x86-64-v3 CPUs only (AVX2, BMI1/2, FMA, MOVBE, ...) |
 
 Each has a `.sha256` checksum and, for a public repository, the release's build provenance
 attestation. Match the names **exactly**: a prefix or glob of the generic name also matches the
 `-v3` one, which stops with SIGILL on older CPUs. The names share no prefix with the
 `bench-<version>-...` benchmark assets of sacd-spec or the `scarletbook-ffi-<version>-...` C
 library archives. Every push to main uploads the same two archives as workflow artifacts
-(`benchkit-x86_64-unknown-linux-musl[-v3]`), named with the last released version; their
+(`benchkit-x86_64-linux[-v3]`), named with the last released version; their
 `README.txt` names the commit.
 
 An archive holds one directory:
@@ -35,12 +35,14 @@ An archive holds one directory:
 | `run.py` | the reference runner (below) |
 | `README.txt`, `README.md`, `LICENSE-*` | version, commit and build; this file; the licences |
 
-The programs are static (musl, Rust's bundled copy, `profile dist`): they need no shared
-library, no network and no privileges. Both builds pick the same run-time paths as any other
-build of their level: the generic one also runs the AVX2 decoders on CPUs that have them.
-The musl C library's allocator is not glibc's; the programs allocate their buffers up front,
-so it does not change the decode and DSF figures beyond noise (measured on lennon, see the PR
-of #226), but compare kit figures with kit figures.
+The programs are statically linked against glibc (`x86_64-unknown-linux-gnu` with
+`-C target-feature=+crt-static`, `profile dist`): they need no shared library, no network and
+no privileges, and run on any x86_64 Linux kernel 3.2 or later. They are not musl builds: on
+lennon (3950X) musl builds of `bench` took 11 % longer than glibc ones, from musl's allocator
+(all-thread DST decoding: 4.46 s against 4.02 s) and memcpy (plain DSD to DSF: 2.03 s
+against 1.81 s), while the static glibc build timed the same as the dynamic one (4.02 s and
+1.81 s). Both builds pick the same run-time paths as any other build of their level: the
+generic one also runs the AVX2 DST decoder and PCM kernels on CPUs that have them.
 
 ## The run list
 
@@ -119,9 +121,9 @@ Extra fields are welcome (for example the machine's name, the date or the storag
 `run.py` implements the contract with the Python 3.8+ standard library:
 
 ```sh
-tar -xzf scarletbook-benchkit-<version>-x86_64-unknown-linux-musl.tar.gz
-tar -xzf scarletbook-benchkit-<version>-x86_64-unknown-linux-musl-v3.tar.gz
-g=scarletbook-benchkit-<version>-x86_64-unknown-linux-musl
+tar -xzf scarletbook-benchkit-<version>-x86_64-linux.tar.gz
+tar -xzf scarletbook-benchkit-<version>-x86_64-linux-v3.tar.gz
+g=scarletbook-benchkit-<version>-x86_64-linux
 python3 -I $g/run.py --kit generic=$g --kit v3=$g-v3 --work work > results.jsonl
 ```
 

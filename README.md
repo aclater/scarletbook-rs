@@ -1039,8 +1039,8 @@ gh attestation verify bench-<version>-x86_64-linux.tar.gz -R aclater/scarletbook
 ```
 
 The release also publishes a benchmark kit for consumers who time scarletbook on their own
-machines (#224, #226): `scarletbook-benchkit-<version>-x86_64-unknown-linux-musl.tar.gz` and
-its `-v3` twin, with statically linked `bench`, `scarletbook-synth` and the scarletbook-pcm
+machines (#224, #226): `scarletbook-benchkit-<version>-x86_64-linux.tar.gz` and its
+`-v3` twin, with statically linked `bench`, `scarletbook-synth` and the scarletbook-pcm
 `callpattern` example, a run list of the cases and a reference runner. What a runner
 executes and what it sends back: [`benchmarks/README.md`](benchmarks/README.md).
 

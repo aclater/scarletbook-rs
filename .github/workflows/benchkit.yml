@@ -3,8 +3,15 @@ name: Benchmark kit
 
 # Builds the benchmark kit that consumers run on their own machines (benchmarks/README.md,
 # issue #226): statically linked `bench`, `scarletbook-synth` and the scarletbook-pcm
-# `callpattern` example for x86_64-unknown-linux-musl, generic and x86-64-v3, with the run
-# list and its reference runner, as scarletbook-benchkit-<version>-<target>[-v3].tar.gz.
+# `callpattern` example for x86_64 Linux, generic and x86-64-v3, with the run list and its
+# reference runner, as scarletbook-benchkit-<version>-x86_64-linux[-v3].tar.gz.
+#
+# They link glibc statically (x86_64-unknown-linux-gnu, `-C target-feature=+crt-static`), not
+# musl: on lennon (Zen 2, 32 threads) musl builds took 11 % longer, from its allocator (all-
+# thread DST decoding: 4.46 s against 4.02 s, 6.4 s of system time against 0.25 s) and its
+# memcpy (plain DSD to DSF: 2.03 s against 1.81 s), while the static glibc builds timed the
+# same as the dynamic ones. The programs use no NSS or dlopen, the parts of glibc that a static
+# link cannot carry.
 # The archive names share no prefix with the bench-<version>-... benchmark assets or the
 # scarletbook-ffi-<version>-... C library archives.
 #
@@ -32,7 +39,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_STABLE: 1.99.1
-  TARGET: x86_64-unknown-linux-musl
+  TARGET: x86_64-unknown-linux-gnu
 
 defaults:
   run:
@@ -46,11 +53,11 @@ jobs:
       matrix:
         include:
           - build: generic
-            rustflags: ""
+            rustflags: -C target-feature=+crt-static
             note: Generic x86-64 (no target-cpu); runs on any x86_64 Linux.
           - build: v3
             variant: v3
-            rustflags: -C target-cpu=x86-64-v3
+            rustflags: -C target-feature=+crt-static -C target-cpu=x86-64-v3
             note: Built with -C target-cpu=x86-64-v3 (AVX2, BMI1/2, FMA, MOVBE); runs on x86-64-v3 CPUs only.
     runs-on: ubuntu-latest
     steps:
@@ -69,8 +76,8 @@ jobs:
               exit 1
             fi
           done
-      # Profile dist (release with one codegen unit) for both builds; the musl target links
-      # statically by default (crt-static), with Rust's bundled musl.
+      # Profile dist (release with one codegen unit) for both builds. With --target, RUSTFLAGS
+      # reach only the target's crates, not build scripts or proc macros.
       - name: Build
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
@@ -85,7 +92,7 @@ jobs:
         run: |
           version=$(cargo metadata --no-deps --format-version 1 --locked \
             | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "scarletbook-bench"))')
-          name="scarletbook-benchkit-$version-$TARGET${VARIANT:+-$VARIANT}"
+          name="scarletbook-benchkit-$version-x86_64-linux${VARIANT:+-$VARIANT}"
           out="target/$TARGET/dist"
           mkdir -p "dist/$name"
           cp "$out/bench" "$out/scarletbook-synth" "$out/examples/callpattern" "dist/$name/"
@@ -98,8 +105,8 @@ jobs:
             fi
           done
           cp benchmarks/runlist.json benchmarks/run.py benchmarks/README.md LICENSE-MIT LICENSE-APACHE "dist/$name/"
-          printf '%s\n' "scarletbook benchmark kit $version ($GITHUB_SHA), $TARGET" "$NOTE" \
-            "Statically linked bench, scarletbook-synth and callpattern; run list and runner: README.md." \
+          printf '%s\n' "scarletbook benchmark kit $version ($GITHUB_SHA), x86_64 Linux" "$NOTE" \
+            "Statically linked (glibc) bench, scarletbook-synth and callpattern; run list and runner: README.md." \
             > "dist/$name/README.txt"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
@@ -117,7 +124,7 @@ jobs:
         run: python3 -I "$KIT/run.py" --kit "$BUILD=$KIT" --work target/benchkit-smoke --smoke
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: benchkit-${{ env.TARGET }}${{ matrix.variant && format('-{0}', matrix.variant) || '' }}
+          name: benchkit-x86_64-linux${{ matrix.variant && format('-{0}', matrix.variant) || '' }}
           path: |
             dist/*.tar.gz
             dist/*.sha256
