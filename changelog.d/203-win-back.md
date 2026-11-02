@@ -1,0 +1,2 @@
+Fixed
+- Stereo DST decoding on one thread is no longer 2.9 % slower than in 0.5.5 on Zen 2: the decoder again uses byte probability tables and the 0.5.5 arithmetic-decoder step for 1, 2, 5 and 6 channels, and keeps the 0.5.6 ones for 3 and 4 channels, chosen per channel count at compile time. 6-channel DST keeps its 0.5.6 gain and is a little faster still. The output is the same to the bit (#203, #241).

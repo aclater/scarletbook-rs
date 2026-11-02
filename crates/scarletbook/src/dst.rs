@@ -385,7 +385,7 @@ struct Lane {
     /// Per filter, the share of the bits already decoded in the current byte, indexed by
     /// `2^r | bits` for `r` bits.
     partial: Vec<[i16; 256]>,
-    /// Per ptable, its probability for each value of `min(|Spred| / 8, 63)` ([`Lut`]).
+    /// Per ptable, its probability for each value of |Spred| / 8 ([`Lut`]).
     luts: Vec<Lut>,
     /// Per channel, the partial shares and probabilities [`run`] decodes it with.
     probes: Vec<Probe>,
@@ -624,10 +624,12 @@ impl Lane {
     fn build_luts(&mut self, ptables: &[Vec<u32>]) {
         self.luts.resize(ptables.len(), [0; LUT_LEN]);
         for (lut, p) in self.luts.iter_mut().zip(ptables) {
+            // In place; entries past 4096 are never read and keep whatever they hold.
             // Entries are 1 to 128 (5.3.6); a ptable has 1 to 64, and the last one repeats.
-            lut.fill(u64::from(p.last().copied().unwrap_or(128)) << 52);
-            for (slot, &v) in lut.iter_mut().zip(p) {
-                *slot = u64::from(v) << 52;
+            let used = &mut lut[..LUT_USED];
+            used.fill(p.last().copied().unwrap_or(128) as u8);
+            for (slot, &v) in used.iter_mut().zip(p) {
+                *slot = v as u8;
             }
         }
     }
@@ -765,7 +767,7 @@ impl<'b> Coded<'b> {
         let a0 = filters.first().map_or(0, |f| f.coefs[0]);
         let px = u32::from(((a0 & 0x7F) as u8).reverse_bits() >> 1) + 1;
         arith.refill();
-        let _ = arith.decode(u64::from(px) << 52);
+        let _ = arith.decode(px);
 
         // Half-probability lengths (5.4).
         let mut nh = [0usize; MAX_CHANNELS];
@@ -857,7 +859,7 @@ impl<'b> Coded<'b> {
         for ch in 0..self.nch {
             if self.keys[ch] != span.keys[ch] {
                 if let Some(p) = self.probes.get_mut(ch) {
-                    p.fill(span.partial[ch], span.luts[ch]);
+                    p.fill(span.partial[ch], span.luts[ch], byte_lut(self.nch));
                 }
                 self.keys[ch] = span.keys[ch];
             }
@@ -907,14 +909,35 @@ impl Arith<'_> {
         self.x |= self.code.peek() >> 12;
     }
 
-    /// Decodes one symbol with probability `p` (1 to 128, given x 2^52) and renormalises by the whole
+    /// Decodes one symbol with probability `p` (1 to 128) and renormalises by the whole
     /// shift count at once (A < 2048 doubles until bit 11 is set). At most 6 calls per
     /// [`Arith::refill`].
     #[inline(always)]
-    fn decode(&mut self, p: u64) -> u32 {
+    fn decode(&mut self, p: u32) -> u32 {
         // A is 2048 to 4095 here (4095 at the start, then renormalised), so Q is 8 to 15
         // and Q x p is at most A / 2 + 128 < A: nothing below wraps, and the wrapping
         // forms only spare the hot loop the overflow checks. Everything is x 2^52, like C.
+        // Q (x 2^52) is floor(A / 256) with bit 0 ORed with bit 7 of A.
+        let a = self.a;
+        let q = ((a >> 8) & (0xF << 52)) | ((a >> 7) & (1 << 52));
+        let w0 = q.wrapping_mul(u64::from(p));
+        let w1 = a.wrapping_sub(w0);
+        let zero = self.x >= w1;
+        let x = if zero { self.x - w1 } else { self.x };
+        let a = if zero { w0 } else { w1 };
+        // A is 8 to 4095 here (w0 >= 8, w1 >= 128), so the shift is 0 to 8; C stays
+        // below A, so nothing leaves the top of x.
+        let k = a.leading_zeros();
+        self.a = a.wrapping_shl(k);
+        self.x = x.wrapping_shl(k);
+        self.code.skip(k);
+        u32::from(!zero)
+    }
+
+    /// [`Arith::decode`] with `p` given x 2^52 (a [`ScaledLut`] entry), the same to the
+    /// bit: Q x p is one multiply from the top 5 bits of A.
+    #[inline(always)]
+    fn decode_scaled(&mut self, p: u64) -> u32 {
         // Q is floor(A / 256) with bit 0 ORed with bit 7 of A: from t = floor(A / 128).
         let t = (self.a >> 59) as u32;
         let q = u64::from((t >> 1) | (t & 1));
@@ -924,8 +947,6 @@ impl Arith<'_> {
         // C - W1 if that does not wrap, else C: the smaller of the two.
         let x = self.x.wrapping_sub(w1).min(self.x);
         let a = if zero { w0 } else { w1 };
-        // A is 8 to 4095 here (w0 >= 8, w1 >= 128), so the shift is 0 to 8; C stays
-        // below A, so nothing leaves the top of x.
         let k = a.leading_zeros();
         self.a = a.wrapping_shl(k);
         self.x = x.wrapping_shl(k);
@@ -944,16 +965,23 @@ fn symbol(ar: &mut Arith<'_>, base: i16, partial: &[i16; 256], idx: u32, lut: &L
     let spred = base.wrapping_add(partial[(idx & 0xFF) as usize]);
     let sign = u32::from(spred < 0);
     // Probability (5.5.4).
-    let p = if half { 128 << 52 } else { probability(spred, lut).0 };
+    let p = if half { 128 } else { probability(spred, lut).0 };
     sign ^ ar.decode(p)
 }
 
 /// The probability (5.5.4) and sign indicator (5.5.3) of a prediction outside the
 /// half-probability region.
 #[inline(always)]
-fn probability(spred: i16, lut: &Lut) -> (u64, u32) {
+fn probability(spred: i16, lut: &Lut) -> (u32, u32) {
+    // |Spred| / 8 is at most 4096, and the table needs no clamp to `M_q - 1` (5.5.4).
+    (u32::from(lut[usize::from(spred.unsigned_abs() >> 3)]), u32::from(spred < 0))
+}
+
+/// [`probability`] from a [`ScaledLut`], p x 2^52.
+#[inline(always)]
+fn probability_scaled(spred: i16, lut: &ScaledLut) -> (u64, u32) {
     // 5.5.4's `min(|Spred| / 8, M_q - 1)`, with the last entry repeated up to 64.
-    let j = usize::from(spred.unsigned_abs() >> 3).min(LUT_LEN - 1);
+    let j = usize::from(spred.unsigned_abs() >> 3).min(MAX_PTABLE_LEN - 1);
     (lut[j], u32::from(spred < 0))
 }
 
@@ -1061,8 +1089,13 @@ fn run_inline<const K: usize, const NCH: usize, const U: usize>(lanes: &mut [Lan
                     let idx = ((1 << $r) | cur[$l][$ch]) as usize & 0xFF;
                     let probe = &probes[$l][$ch];
                     let spred = base[$l][$ch].0[$r].wrapping_add(probe.partial[idx]);
-                    let (p, sign) = probability(spred, &probe.lut);
-                    let y = sign ^ ar[$l].decode(p);
+                    let y = if const { byte_lut(NCH) } {
+                        let (p, sign) = probability(spred, &probe.lut);
+                        sign ^ ar[$l].decode(p)
+                    } else {
+                        let (p, sign) = probability_scaled(spred, &probe.scaled);
+                        sign ^ ar[$l].decode_scaled(p)
+                    };
                     cur[$l][$ch] = (cur[$l][$ch] << 1) | y;
                 }
             };
@@ -1097,8 +1130,13 @@ fn run_inline<const K: usize, const NCH: usize, const U: usize>(lanes: &mut [Lan
                     let idx = ((1 << $r) | cur[$l][$ch]) as usize & 0xFF;
                     let probe = &probes[$l][$ch];
                     let spred = base[$l][$ch].0[$r].wrapping_add(probe.partial[idx]);
-                    let (p, sign) = probability(spred, &probe.lut);
-                    let y = sign ^ ar[$l].decode(p);
+                    let y = if const { byte_lut(NCH) } {
+                        let (p, sign) = probability(spred, &probe.lut);
+                        sign ^ ar[$l].decode(p)
+                    } else {
+                        let (p, sign) = probability_scaled(spred, &probe.scaled);
+                        sign ^ ar[$l].decode_scaled(p)
+                    };
                     cur[$l][$ch] = (cur[$l][$ch] << 1) | y;
                 }
             };
@@ -1191,37 +1229,65 @@ fn run_general(
     }
 }
 
-/// Probability lookup tables have one entry per value of `min(|Spred| / 8, 63)`: a ptable
-/// has at most 64 entries (5.3.6), and its last entry is repeated up to 64.
-const LUT_LEN: usize = MAX_PTABLE_LEN;
+/// Probability lookup tables have one entry per value of |Spred| / 8 (0 to 4096): a
+/// ptable's entries (at most 64, 5.3.6), then its last one repeated. They are padded to
+/// 8192 so that any `u16 >> 3` indexes them without a check.
+const LUT_LEN: usize = 8192;
 
-/// A probability lookup table: each entry is p x 2^52, the scale of [`Arith`].
-type Lut = [u64; LUT_LEN];
+/// The entries of a [`Lut`] that can be read: |Spred| / 8 is at most 4096.
+const LUT_USED: usize = 4097;
+
+/// A probability lookup table: each entry is p, 1 to 128.
+type Lut = [u8; LUT_LEN];
+
+/// The first 64 entries of a [`Lut`] x 2^52, the scale of [`Arith`], indexed by
+/// `min(|Spred| / 8, 63)` ([`probability_scaled`]).
+type ScaledLut = [u64; MAX_PTABLE_LEN];
+
+/// Whether [`run`] decodes `nch` channels with [`Lut`]s and [`Arith::decode`] (true) or with
+/// [`ScaledLut`]s and [`Arith::decode_scaled`]. The output is the same; the speed is not, and
+/// not monotonically in `nch`. The scaled form has the shorter multiply but adds the clamp
+/// to the serial chain of every symbol.
+///
+/// Chosen by measurement on Zen 2 (Ryzen 9 3950X, generic build, decoding generated frames
+/// of each channel count, #203); see the commit that changed it.
+const fn byte_lut(nch: usize) -> bool {
+    !matches!(nch, 3 | 4)
+}
 
 /// The partial shares (see [`Lane::partial`]) and probability table of one channel of a
-/// chunk, copied together (1 KiB) so that [`run`] reaches both from one address per frame,
-/// with the channel's offset a constant, and holds fewer addresses in registers.
+/// chunk, copied together so that [`run`] reaches both from one address per frame, with
+/// the channel's offset a constant, and holds fewer addresses in registers. Only the table
+/// [`byte_lut`] chooses for the frame's channel count is filled.
 #[derive(Clone, Debug)]
 #[repr(C, align(64))]
 struct Probe {
     partial: [i16; 256],
+    scaled: ScaledLut,
     lut: Lut,
 }
 
 impl Probe {
-    fn fill(&mut self, partial: &[i16; 256], lut: &Lut) {
+    fn fill(&mut self, partial: &[i16; 256], lut: &Lut, byte: bool) {
         self.partial = *partial;
-        self.lut = *lut;
+        if byte {
+            // Only the entries that can be read (see [`Lane::build_luts`]).
+            self.lut[..LUT_USED].copy_from_slice(&lut[..LUT_USED]);
+        } else {
+            for (s, &p) in self.scaled.iter_mut().zip(lut) {
+                *s = u64::from(p) << 52;
+            }
+        }
     }
 }
 
-const NO_PROBE: Probe = Probe { partial: [0; 256], lut: [128 << 52; LUT_LEN] };
+const NO_PROBE: Probe = Probe { partial: [0; 256], scaled: [128 << 52; MAX_PTABLE_LEN], lut: [128; LUT_LEN] };
 
 /// The probes of the channels that are not decoded.
 static NO_PROBES: [Probe; MAX_CHANNELS] = [NO_PROBE; MAX_CHANNELS];
 
 /// The probability table of the channels that are not decoded.
-static NO_LUT: Lut = [128 << 52; LUT_LEN];
+static NO_LUT: Lut = [128; LUT_LEN];
 
 /// The code bits cb[1], cb[2], ... of a frame, read MSB first; bits at or after the end
 /// of the code read as 0 (5.3.7 item 3). Each read is one unaligned 8-byte load from a
@@ -1463,8 +1529,10 @@ mod tests {
             .collect();
         let partials: Vec<[i16; 256]> =
             (0..2).map(|_| core::array::from_fn(|_| (rnd() % 3585) as i16 - 1792)).collect();
-        let luts: Vec<Lut> =
-            (0..2).map(|k| core::array::from_fn(|j| (((j * (k + 1) + k) % 128 + 1) as u64) << 52)).collect();
+        // As `build_luts` makes them: 64 entries, then the last one repeated.
+        let luts: Vec<Lut> = (0..2)
+            .map(|k| core::array::from_fn(|j| ((j.min(MAX_PTABLE_LEN - 1) * (k + 1) + k) % 128 + 1) as u8))
+            .collect();
         let chunks: &[(usize, usize)] =
             if cfg!(miri) { &[(0, 0), (8, 24)] } else { &[(0, 0), (8, 16), (24, 96)] };
         for nch in 1..=MAX_CHANNELS {
@@ -1523,9 +1591,10 @@ mod tests {
                             let probes: Vec<[Probe; MAX_CHANNELS]> = spans
                                 .iter()
                                 .map(|s| {
-                                    core::array::from_fn(|c| Probe {
-                                        partial: *s.partial[c],
-                                        lut: *s.luts[c],
+                                    core::array::from_fn(|c| {
+                                        let mut p = NO_PROBE;
+                                        p.fill(s.partial[c], s.luts[c], byte_lut(nch));
+                                        p
                                     })
                                 })
                                 .collect();
