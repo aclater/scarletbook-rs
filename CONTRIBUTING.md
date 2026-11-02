@@ -142,6 +142,24 @@ If you changed `scarletbook` or `scarletbook-ffi`, also run Miri
 (`cargo +nightly miri test -p scarletbook -p scarletbook-ffi`), and if you changed
 dependencies, `cargo deny check`. The minimum supported Rust version is 1.85.
 
+If you changed `scarletbook-ffi`, CI's `lsan` job checks it for memory leaks with
+LeakSanitizer (#238): every handle and buffer the C interface hands out must be released by
+its documented call, on success and on every error path. On x86-64 Linux, run the same
+checks with:
+
+```sh
+RUSTFLAGS=-Zsanitizer=leak cargo +nightly test -p scarletbook-ffi --all-features \
+  --target x86_64-unknown-linux-gnu --tests
+cargo build -p scarletbook-ffi --release
+cc -std=c99 -fsanitize=leak -Icrates/scarletbook-ffi/include crates/scarletbook-ffi/examples/smoke.c \
+  target/release/libscarletbook_ffi.a -lpthread -ldl -lm -o smoke-lsan
+./smoke-lsan corpus/images/dst-features-2ch-6ch.iso
+```
+
+A leak prints `SUMMARY: LeakSanitizer: ...` with the allocating stack and fails the run. The
+`--target` keeps the sanitizer off build scripts and procedural macros. With GCC, `-fsanitize=leak`
+needs its `liblsan` package (Fedora: `liblsan`); `clang -fsanitize=leak` needs none.
+
 GitHub Actions are pinned by full commit SHA with the version in a comment, and checkouts
 use `persist-credentials: false`; zizmor checks the workflows.
 
