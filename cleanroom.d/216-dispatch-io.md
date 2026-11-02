@@ -1,1 +1,0 @@
-| 2026-11-02 | AVX2 builds of the scarletbook-pcm input and output loops (#216, #223) | no SACD or DSP source: `#[target_feature]` builds of existing safe loops in the existing dispatch module, chosen by profiling this crate's own builds (perf). No new sources consulted. |

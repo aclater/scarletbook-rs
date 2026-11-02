@@ -1,1 +1,0 @@
-| 2026-11-01 | plain DSD frames reserved at their size (#202, #215) | specification 4, 4.4.2 (a plain frame is `C x 4704` bytes) at sacd-spec as already cited; found by profiling this crate's own builds (perf). No new sources consulted. |
