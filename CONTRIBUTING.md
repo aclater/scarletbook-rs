@@ -94,7 +94,9 @@ else has claimed; ask on the issue instead.
   run-time feature detection, with no intrinsics or raw pointers, each call with its own
   `SAFETY:` comment, checked by the crate's `tests/unsafe_policy.rs`:
   - `scarletbook-pcm`'s `dispatch`, the AVX2 and FMA filter kernels (#173);
-  - the core crate's `dispatch`, the AVX2, BMI and LZCNT build of the DST decoder (#146).
+  - the core crate's `dispatch`: one `#[target_feature]` wrapper (AVX2, BMI, LZCNT and
+    MOVBE) with two call sites, the DST decoder (#146) and the output path, `Layout::fill`
+    and `Layout::read_at` with the DSF and DSDIFF fill beneath them (#202).
 
   Both are to be revisited under #199, for a safe alternative such as struct target
   features (RFC 3525) or per-CPU builds.

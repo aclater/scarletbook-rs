@@ -1,0 +1,2 @@
+Changed
+- `output::Layout::fill` and `Layout::read_at` run through the core crate's run-time dispatch (#146) on x86-64 CPUs with AVX2, BMI1, BMI2, LZCNT and MOVBE: the DSF channel separation beneath them is built with those features, so generic builds write a plain-DSD stereo area to DSF as fast as x86-64-v3 builds; the bytes are unchanged. The DST decoder and the output path share the one `#[target_feature]` wrapper (#202, #PR).

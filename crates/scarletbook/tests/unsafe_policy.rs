@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! The core crate's exception to "`unsafe` lives only in scarletbook-ffi" (CONTRIBUTING) stays
-//! one module: `src/dispatch.rs`, which only calls the `#[target_feature]` build of the safe
-//! DST decoder. The crate denies `unsafe_code`, no other source file has `unsafe` or allows
+//! one module: `src/dispatch.rs`, which only calls one `#[target_feature]` wrapper around safe
+//! code: the DST decoder and the output path. The crate denies `unsafe_code`, no other source file has `unsafe` or allows
 //! it, and the module has no intrinsics or raw pointers. Checked on the source.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

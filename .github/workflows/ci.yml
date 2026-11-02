@@ -63,14 +63,14 @@ jobs:
           # (#146, #173), so their full tests run under Miri only in miri-full.yml (main and
           # nightly). `ffi` and `ffi-slow` (scarletbook-ffi's tests, split in two, #205) run
           # when any crate it calls changes; `parallel` (rayon under Tree Borrows) when the core
-          # crate does; `core-dispatch` (the core dispatch module's bit-identity test) when that
-          # module or the decoder it builds does; all of them when the dependencies, the
-          # toolchain or these workflows do.
+          # crate does; `core-dispatch` (the core dispatch module's bit-identity tests) when that
+          # module, the decoder or the output path it builds does; all of them when the
+          # dependencies, the toolchain or these workflows do.
           shared='^(Cargo\.lock$|rust-toolchain|\.github/workflows/(ci|miri)\.yml$)'
           slices=()
           if grep -qE "^crates/|$shared" <<< "$changed"; then slices+=('"ffi"' '"ffi-slow"'); fi
           if grep -qE "^crates/scarletbook/|$shared" <<< "$changed"; then slices+=('"parallel"'); fi
-          if grep -qE "^crates/scarletbook/src/(dispatch|dst)\.rs$|$shared" <<< "$changed"; then slices+=('"core-dispatch"'); fi
+          if grep -qE "^crates/scarletbook/src/(dispatch|dst|output/(mod|dsf|dsdiff|dsdiff_dst))\.rs$|$shared" <<< "$changed"; then slices+=('"core-dispatch"'); fi
           echo "miri=[$(IFS=,; echo "${slices[*]}")]" >> "$GITHUB_OUTPUT"
 
   test:
@@ -261,6 +261,11 @@ jobs:
             exit 1
           fi
       - run: cargo build -p scarletbook-ffi --release --locked
+      # The core crate's run-time dispatch still builds its hot loops with the dispatched
+      # features (#202): checked on the library just built, in about 2 seconds.
+      - name: The dispatched functions keep their hot loops
+        if: runner.os == 'Linux'
+        run: BINARY=target/release/libscarletbook_ffi.so perf/dispatch-inlining.sh
       - name: Build and run the C smoke test
         run: |
           cc -std=c99 -Wall -Wextra -Werror -pedantic -Icrates/scarletbook-ffi/include \

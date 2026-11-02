@@ -501,6 +501,7 @@ impl DsdData {
 
     /// Fills `out` with sound data bytes from `offset`: byte `o mod 4704C` of the content of
     /// position `o / 4704C`.
+    #[inline(always)]
     pub(super) fn fill(
         &self,
         offset: u64,

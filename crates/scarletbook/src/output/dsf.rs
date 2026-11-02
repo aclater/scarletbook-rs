@@ -271,6 +271,7 @@ impl DsfData {
     /// Whole rows are filled a position at a time, every channel from one pass over its
     /// content ([`DsfData::fill_row`]); the parts of rows at the ends of `out`, a block at a
     /// time ([`DsfData::fill_blocks`]).
+    #[inline(always)]
     pub(super) fn fill(
         &self,
         offset: u64,
@@ -293,6 +294,7 @@ impl DsfData {
     }
 
     /// Fills row `j` whole (8.2.2 item 2): `out` is its `4096 C` bytes.
+    #[inline(always)]
     fn fill_row(&self, j: u64, out: &mut [u8], first: u32, source: &mut Checked<'_>) -> Result<(), Error> {
         let per = FRAME_BYTES_PER_CHANNEL as u64;
         let c = usize::from(self.channels);
@@ -369,6 +371,7 @@ impl DsfData {
 /// Separates `n` interleaved samples of `c` channels, `src`, into the blocks of a row:
 /// channel `i` to bytes `[at, at + n)` of `row`'s block `i`, bits reversed if `reverse`
 /// (8.2.3).
+#[inline(always)]
 fn split(src: &[u8], row: &mut [u8], at: usize, n: usize, c: usize, reverse: bool) {
     let mut blocks = row.chunks_exact_mut(BLOCK as usize).map(|b| &mut b[at..at + n]);
     let mut next = || blocks.next().unwrap_or_default();
