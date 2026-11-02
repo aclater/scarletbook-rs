@@ -160,6 +160,23 @@ A leak prints `SUMMARY: LeakSanitizer: ...` with the allocating stack and fails 
 `--target` keeps the sanitizer off build scripts and procedural macros. With GCC, `-fsanitize=leak`
 needs its `liblsan` package (Fedora: `liblsan`); `clang -fsanitize=leak` needs none.
 
+Two more memory checks (#238). `crates/scarletbook-ffi/tests/no_growth.rs`, part of the
+tests, checks that the heap comes back to the same size after each of a run of short
+open → seek → decode → close cycles. The memory soak (`.github/workflows/soak.yml`, weekly)
+repeats a fuller cycle for an hour: corpus discs opened, seeked, decoded (DST and plain
+DSD), converted to PCM and laid out as DSF and DSDIFF files, through the Rust API and the C
+interface. It samples resident memory and the heap every minute, and passes when both
+plateau after warm-up. To run it locally (on Linux, which gives the resident memory):
+
+```sh
+cargo run --release -p scarletbook-ffi --example soak -- --minutes 60 --csv soak.csv
+```
+
+It prints one row per minute and ends with `verdict: plateau` (exit 0) or `verdict: growth`
+(exit 1). `--sample-secs` sets the sampling interval. Images given as arguments replace the
+default corpus discs. `--leak N` leaks N bytes per cycle on purpose, to show that the verdict
+catches it. The module documentation of `examples/soak.rs` explains the verdict.
+
 GitHub Actions are pinned by full commit SHA with the version in a comment, and checkouts
 use `persist-credentials: false`; zizmor checks the workflows.
 
