@@ -95,7 +95,9 @@ images; nothing else. **Network:** none. **Privileges:** none.
    while their arguments are unchanged.
 2. For each case: if `cache` is `warm`, read the image once; run each build's `warmup_runs`;
    then `rounds` rounds, alternating the builds as `alternation` says. Each run is the case's
-   `command` with the placeholders filled in, started directly (no shell), from any directory.
+   `command` with the placeholders filled in, started directly (no shell), from any directory,
+   with the program (`command[0]`) copied to a new file first and that copy started (see
+   "Fresh copies"). Copies are deleted after the case, not between runs.
 3. Nothing runs in the background meanwhile; an otherwise idle machine gives the most useful
    figures.
 
@@ -115,6 +117,16 @@ images; nothing else. **Network:** none. **Privileges:** none.
 | `host` | `cpu` (model name), `logical_cpus`, `usable_cpus` (affinity), `smt`, `governor`, `mem_bytes`, `kernel` |
 
 Extra fields are welcome (for example the machine's name, the date or the storage).
+
+## Fresh copies
+
+On lennon (3950X), one file of `bench` decoded a DST area 42 % slower than byte-identical
+copies of it: 1.77 s of CPU against 1.24 s, with the same instruction count, on every run, until
+that file's page cache was dropped (`posix_fadvise(POSIX_FADV_DONTNEED)`), after which it ran at
+1.24 s too. Eight further copies all ran at 1.23-1.25 s. The physical pages that happen to hold
+a program's code can cost that much, and the cost sticks to the file while it stays cached. A
+run list that started the same file for every round would carry such an offset through all of
+them; a fresh copy per run makes it a rare outlier, which the median of the rounds absorbs.
 
 ## The reference runner
 

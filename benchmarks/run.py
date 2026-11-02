@@ -10,12 +10,17 @@ into WORK with the first kit's scarletbook-synth (the images do not depend on th
 runs every case's rounds, alternating the builds, and prints one JSON line per timed run on
 stdout. Progress goes to stderr. It needs Python 3.8 or later and nothing else: no network,
 no privileges. `--smoke` runs every case once on tiny images, to check the run list itself.
+
+Every timed run starts a fresh copy of its program: on a Zen 2 machine one file of `bench`
+decoded DST 42 % slower than byte-identical copies of it, every time, until its page cache was
+dropped (benchmarks/README.md, "Fresh copies").
 """
 import argparse
 import json
 import os
 import platform
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -165,11 +170,16 @@ def main():
         for build, kit in kits:
             for _ in range(warmups):
                 run_child(expand(c["command"], kit, image, scratch), False)
+        copies = os.path.join(scratch, "copies")
+        os.makedirs(copies, exist_ok=True)
         for r in range(rounds):
             # abba: the builds in order on even rounds, reversed on odd ones.
             order = kits if c["alternation"] != "abba" or r % 2 == 0 else kits[::-1]
             for build, kit in order:
                 argv = expand(c["command"], kit, image, scratch)
+                copy = os.path.join(copies, f"{c['id']}-{build}-{r}-{os.path.basename(argv[0])}")
+                shutil.copy2(argv[0], copy)
+                argv[0] = copy
                 print(f"+ [{c['id']} {build} round {r}] " + shlex.join(argv), file=sys.stderr)
                 wall, code, ru, stdout, stderr = run_child(argv, keep)
                 line = {
@@ -191,6 +201,8 @@ def main():
                     line["stderr"] = stderr.decode("utf-8", "replace")[:4000]
                     failed = True
                 print(json.dumps(line, sort_keys=True), flush=True)
+        # Removed only after the case, so that no copy gets the pages another just freed.
+        shutil.rmtree(copies)
     sys.exit(1 if failed else 0)
 
 
