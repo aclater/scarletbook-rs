@@ -1,1 +1,0 @@
-| 2026-11-02 | `bench` reads images through `BufReader::new` (#202, #239) | found by profiling this crate's own builds (perf); benchmark program only, `std::io::BufReader` from the Rust standard library documentation. No new sources consulted. |
