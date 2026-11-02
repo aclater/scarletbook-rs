@@ -1,0 +1,113 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+name: Benchmark regression
+
+# The CI benchmark subset (issue #226): DST decoding, plain DSD to DSF and DSD to PCM
+# (callpattern), each single-threaded on a small synthetic image, built twice, from the base
+# and from the head, and timed alternately on the same runner. Hosted runners differ from one
+# another by far more than a regression, so only the ratio head / base on one runner counts;
+# .github/scripts/bench-regress.py has the cases and the tolerance, and the job summary the
+# table.
+#
+# - pull requests that touch the library sources or the build settings: head = the merge
+#   commit, base = its first parent, the base branch's commit it merges into;
+# - pushes to main: base = the previous main (the first parent if GitHub gives none, as for a
+#   new branch);
+# - nightly and manual runs: base = the latest release tag (or the `base` input), so that
+#   several small slowdowns, each within the tolerance, still show up together.
+#
+# It is informational, not a required check: two release builds take longer than a pull
+# request's median CI time, and it runs beside the CI jobs, so it does not lengthen it. A run in
+# which every case was skipped compared nothing: an error on main and nightly, a warning on a
+# pull request.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "crates/*/src/**"
+      - crates/scarletbook-pcm/examples/callpattern.rs
+      # Profiles, features and dependencies change the speed too.
+      - Cargo.toml
+      - "crates/*/Cargo.toml"
+      - Cargo.lock
+      - .github/workflows/bench-regress.yml
+      - .github/scripts/bench-regress.py
+  schedule:
+    - cron: "47 2 * * *"
+  workflow_dispatch:
+    inputs:
+      base:
+        description: Base revision (default the latest release tag)
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+# A newer push cancels the older run of the same ref; nightly runs have a group of their own,
+# so that a push to main does not cancel the comparison against the release.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_STABLE: 1.99.1
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - run: rustup toolchain install "$RUST_STABLE" --profile minimal && rustup default "$RUST_STABLE"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Only main writes the cache; pull requests read it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: The base revision
+        env:
+          PUSH_BEFORE: ${{ github.event.before }}
+          INPUT_BASE: ${{ inputs.base }}
+        run: |
+          case "$GITHUB_EVENT_NAME" in
+            # The merge commit's first parent: exactly what the change is merged into.
+            pull_request) base=HEAD^1 ;;
+            push)
+              base=$PUSH_BEFORE
+              if [[ -z "$base" || "$base" =~ ^0+$ ]]; then base=HEAD^1; fi ;;
+            *) base=${INPUT_BASE:-$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD)} ;;
+          esac
+          base=$(git rev-parse --verify "$base^{commit}")
+          echo "base $base, head $(git rev-parse HEAD)"
+          echo "BASE=$base" >> "$GITHUB_ENV"
+      # One target directory for both builds, so the dependencies are compiled once.
+      - name: Build the head and the base
+        run: |
+          build() {
+            mkdir -p "$2"
+            (cd "$1" && cargo build --release --locked -q -p scarletbook-bench -p scarletbook-conformance \
+              --bin bench --bin scarletbook-synth)
+            cp target/release/bench target/release/scarletbook-synth "$2/"
+            # An older base may not have the example; the script then skips its case.
+            if (cd "$1" && cargo build --release --locked -q -p scarletbook-pcm --example callpattern); then
+              cp target/release/examples/callpattern "$2/"
+            fi
+          }
+          export CARGO_TARGET_DIR=$PWD/target
+          build . bin/head
+          git worktree add -q --detach base-src "$BASE"
+          build base-src bin/base
+      - name: Compare
+        run: |
+          require=()
+          [[ "$GITHUB_EVENT_NAME" != pull_request ]] && require=(--require-some)
+          python3 -I .github/scripts/bench-regress.py bin/base bin/head target/bench-regress "${require[@]}"

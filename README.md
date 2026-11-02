@@ -1120,7 +1120,13 @@ per cent between sessions, so compare only figures taken in one session, alterna
 Which figures count: these benchmarks are for development and catch regressions; the corpus
 frames are small test streams and the stress frames are synthetic. The figures against the
 targets come only from the benchmark rounds on real discs recorded in sacd-spec
-`benchmarks/README.md`. CI only compiles the benchmarks; it never times them.
+`benchmarks/README.md`. CI compiles the benchmarks and times one small subset, to catch
+regressions: `.github/workflows/bench-regress.yml` builds `bench` and `callpattern` from the
+base and from the head, times single-threaded DST decoding, plain DSD to DSF and DSD to PCM
+alternately on one runner, and fails when the median of the per-round ratios head / base of
+CPU time exceeds 1.15 (`.github/scripts/bench-regress.py`, #226). It runs on pull requests that
+touch the library sources or build settings, on main (against the previous main) and nightly
+(against the latest release), and is informational, not a required check.
 
 Minimum supported Rust version: 1.85.
 
