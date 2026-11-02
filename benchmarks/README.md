@@ -171,7 +171,13 @@ the image, and exits with status 1 if the median of the per-round ratios is off 
 `--selftest-tolerance` percent (default 5). That catches anything the runner adds to a timed
 run, which is what a kit's figures rely on. 5 % is above the run-to-run noise of this short case
 (on lennon the rounds varied by up to 4 % and the median ratio was 0.99) and well below the 10-18 %
-of #248. `--no-selftest` skips it.
+of #248. `--no-selftest` skips it; `--selftest-only` runs only it.
+
+In `benchkit.yml` the self-check does not gate the build: the smoke step runs `--smoke
+--no-selftest`, and a separate step with `continue-on-error: true` runs `--selftest-only` and
+writes its ratio to the job summary. That workflow also runs on the release tag, and a shared
+CI runner is too noisy for a 5 % check on runs of 0.1-0.3 s to fail a release. On a consumer's
+machine the check stays on by default, with the strict 5 %.
 
 **The run list is code.** It names the programs the runner starts, so a consumer uses the
 `runlist.json` inside the verified kit, never one from elsewhere. `run.py` also checks it: every
@@ -191,8 +197,8 @@ g=scarletbook-benchkit-<version>-x86_64-linux
 python3 -I $g/run.py --kit generic=$g --kit v3=$g-v3 --work work > results.jsonl
 ```
 
-`--case ID` (repeatable) selects cases; `--smoke` runs every case once on tiny images, after
-the self-check, which is what `benchkit.yml` does to check each kit. A full run of two builds takes about 10 minutes
+`--case ID` (repeatable) selects cases; `--smoke` runs every case once on tiny images, which
+is what `benchkit.yml` does to check each kit (with the self-check in a non-blocking step). A full run of two builds takes about 10 minutes
 on a 16-core Zen 2 machine and writes about 8.3 GB of images. `--kit BUILD@LABEL=DIR` times kits
 of several versions in one alternation; `python3 -I table.py results.jsonl` prints the medians
 as a Markdown table.

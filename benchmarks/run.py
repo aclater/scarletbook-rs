@@ -234,6 +234,7 @@ def main():
     p.add_argument("--case", action="append", default=[])
     p.add_argument("--smoke", action="store_true")
     p.add_argument("--no-selftest", action="store_true", help="skip the self-check")
+    p.add_argument("--selftest-only", action="store_true", help="run only the self-check")
     p.add_argument("--selftest-tolerance", type=float, default=5.0, metavar="PERCENT")
     a = p.parse_args()
 
@@ -273,6 +274,8 @@ def main():
     if not a.no_selftest and not selftest(runlist, kits[0][2], os.path.abspath(a.work), scratch,
                                           a.selftest_tolerance):
         sys.exit(1)
+    if a.selftest_only:
+        sys.exit(0)
 
     paths = {}
     for image_id in sorted({c["image"] for c in cases if c["image"]}):
