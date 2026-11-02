@@ -11,6 +11,55 @@ is shared by every crate of the workspace; releases carry the `bench` program an
 
 ## [0.5.7] - 2026-11-02
 
+**Faster plain-DSD output, and the 0.5.6 one-thread stereo DST regression won back.** Reading an
+area no longer copies each audio sector before demultiplexing it (#230), 5-channel DSF rows are
+separated in 32-bit words (#237), and stereo DST decoding on one thread is back to 0.5.5's speed
+(#241). A raw-image disc no longer keeps its TOC read buffer once opened (#228). Leak checks now
+run in CI: LeakSanitizer over the C interface's tests and the C smoke test, a test that the heap
+does not grow over open/seek/decode/close cycles, and a weekly memory soak (#238). Each release
+also publishes a benchmark kit for timing scarletbook on other machines, and pull requests that
+touch the library run a benchmark regression check (#226). Output is identical to the bit in
+every case.
+
+Measured on lennon, an AMD Ryzen 9 3950X (Zen 2, 16 cores / 32 threads), generic x86-64 build,
+0.5.6 against 0.5.7, with `benchmarks/compare.sh` (statically linked kits, synthetic images of
+`benchmarks/runlist.json` in the page cache, output to `/dev/null`, a fresh copy of each program
+per run, alternating ABBA rounds: 5 per case, 3 for the 20-minute DST case and PCM). Times are
+the medians of the wall times; changes are the medians of the per-round ratios. Other CPUs may
+differ.
+
+| Path | 0.5.6 | 0.5.7 | Change | `bench` change (#239)¹ | Library change¹ |
+|---|---|---|---|---|---|
+| 78-min plain-DSD stereo area to DSF, one thread | 0.861 s | 0.579 s | 33 % faster | 19 % faster | 17 % faster |
+| 30-min plain-DSD 5-channel area to DSF, one thread | 1.092 s | 0.607 s | 44 % faster | 12 % faster | 36 % faster |
+| 25-min plain-DSD 6-channel area to DSF, one thread² | 0.757 s | 0.538 s | 29 % faster | 14 % faster | 17 % faster |
+| DST stereo, 20-min area (corpus frames), one thread | 20.62 s | 20.18 s | 2.1 % faster | ±0 | 2.1 % faster |
+| DST stereo, 5-min area (stress frames), one thread | 6.23 s | 6.10 s | 2.0 % faster | 0.5 % faster | 1.5 % faster |
+| DST 6-channel, 2-min area, one thread | 7.68 s | 7.62 s | 0.6 % faster | 0.1 % faster | 0.7 % faster |
+| **DST stereo, 50-min area, all 32 threads** | **3.99 s** | **4.03 s** | **0.5 % slower** | 0.5 % slower | 0.1 % slower |
+| DST 6-channel, 10-min area, all 32 threads | 2.61 s | 2.59 s | 1.0 % faster | 1.0 % faster | 0.3 % faster |
+| DSD64 stereo to 176.4 kHz 24-bit PCM, 8 frames per call (CPU per second of audio) | 4.08 ms | 4.09 ms | ±0 (unchanged code) | – | – |
+
+¹ **The measuring tool changed in this release.** #239 made `bench` open images with
+`BufReader::new` instead of a 1 MiB `BufReader`, as consumers' code does; the 1 MiB buffer copied
+every byte twice. So the 0.5.6 → 0.5.7 DSF and DST rows include a tool effect that is not a
+library gain. To separate them, the 0.5.6 library was also timed with 0.5.7's `bench` in the same
+rounds: "`bench` change" is that build against 0.5.6, "Library change" is 0.5.7 against it. The
+library gains are #230 (all DSF rows) and #237 (5 channels): in #237's own same-tool measurement,
+the 30-minute 5-channel area went from 0.875 s to 0.637 s.
+² Not in the run list: the command of `dsf-plain-5ch` on a 25-minute 6-channel image
+(`scarletbook-synth IMAGE --minutes 25 --area mc --mc-channels 6 --kind dsd`).
+
+The stereo all-threads row was slower in every round (0.3-1.2 %), and 1.3 % slower in a second,
+separate run; the split puts it on the tool change, not the library.
+
+**#241 wins back the 0.5.6 regression.** 0.5.6 decoded stereo DST on one thread 2.9 % slower
+than 0.5.5. In #241's fresh-copy measurements on lennon, stereo on one thread is ±0 % against
+0.5.5 and 2.67 % faster than 0.5.6, and 6 channels on one thread 5.9 % faster than 0.5.5.
+
+**Not yet at target:** the DSF output targets of #202 and the DST decoding targets of #203 are
+not met in 0.5.7; the work continues in 0.5.8.
+
 ### Added
 
 - `bench dsf --via parallel`: one thread reads the area while `--threads` workers fill whole DSF rows and write them at their offsets, a prototype of a parallel DSF writer on the public `Layout` API (#202, #224, #232).
