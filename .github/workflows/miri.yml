@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     # About twice each slice's measured time, so that a stuck run fails within the hour instead
     # of GitHub's 6-hour default (#205). Slices not listed get 20 minutes.
-    timeout-minutes: ${{ fromJSON('{"core-tags":60,"core-chain":55,"core":45,"core-dispatch":25,"lanes-1-2":20,"lanes-3":20,"lanes-4":20}')[matrix.slice] || 20 }}
+    timeout-minutes: ${{ fromJSON('{"core-tags":60,"core-chain":55,"core":45,"core-lib":25,"core-dispatch":25,"lanes-1-2":20,"lanes-3":20,"lanes-4":20}')[matrix.slice] || 20 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
