@@ -26,6 +26,13 @@ name: Release
 # Assets: (9 C library + 3 bench + 2 benchmark kit archives) x 2 (each with its .sha256)
 # = 28. All archives share one build provenance attestation.
 #
+# After the GitHub release, the `publish` job publishes scarletbook-pcm, scarletbook and
+# scarletbook-ffi to crates.io (issue #249) with trusted publishing (a 30-minute token from
+# GitHub OIDC, no stored token), skipping any crate whose version is already there. It runs
+# only on tag pushes (the only trigger of this workflow) and only after every other job
+# here succeeded. RELEASING.md has the first publish of a crate, which trusted publishing
+# cannot do.
+#
 # The release notes start with the tag's section of CHANGELOG.md (`## [<version>] - <date>`);
 # the release stops if there is none, so the Unreleased section must be renamed for the
 # version in the commit that is tagged.
@@ -218,3 +225,68 @@ jobs:
           } > release-notes.md
           gh release create "$GITHUB_REF_NAME" --title "scarletbook $VERSION" --verify-tag \
             --notes-file release-notes.md dist/*.tar.gz dist/*.sha256
+
+  # crates.io, after everything above passed (issue #249). Dependency order: scarletbook-ffi
+  # depends on the other two at their exact versions. Idempotent: a version already on
+  # crates.io (a re-run, or a first publish done by hand per RELEASING.md) is skipped.
+  publish:
+    name: Publish to crates.io
+    needs: release
+    runs-on: ubuntu-latest
+    # The trusted publisher of each crate on crates.io names this workflow (release.yml)
+    # and this environment; protection rules can be added to it in the repository settings.
+    environment: crates-io
+    permissions:
+      contents: read # checking out the tagged sources
+      id-token: write # the OIDC token crates-io-auth-action exchanges for a crates.io token
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install "$RUST_STABLE" --profile minimal && rustup default "$RUST_STABLE"
+      - name: Crates whose version is not on crates.io yet
+        id: pending
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          pending=()
+          for crate in scarletbook-pcm scarletbook scarletbook-ffi; do
+            # The sparse index file of a crate name of 4 or more characters: first two / next two.
+            url="https://index.crates.io/${crate:0:2}/${crate:2:2}/$crate"
+            code=$(curl -sS -o index.json -w '%{http_code}' "$url")
+            if [[ "$code" == 200 ]] && python3 -I -c 'import json,sys; sys.exit(0 if any(json.loads(l)["vers"] == sys.argv[2] for l in open(sys.argv[1]) if l.strip()) else 1)' index.json "$version"; then
+              echo "$crate $version is already on crates.io; skipped"
+            elif [[ "$code" == 200 || "$code" == 404 ]]; then
+              pending+=("$crate")
+            else
+              echo "::error::crates.io index returned HTTP $code for $crate"
+              exit 1
+            fi
+          done
+          echo "crates=${pending[*]}" >> "$GITHUB_OUTPUT"
+      # Bootstrap only (RELEASING.md): a crate's first version cannot use trusted publishing.
+      # If the environment secret CRATES_IO_BOOTSTRAP_TOKEN is set, it is used instead; the
+      # owner deletes it, and revokes the token, right after that release.
+      - name: Bootstrap token present?
+        if: steps.pending.outputs.crates != ''
+        id: bootstrap
+        env:
+          BOOTSTRAP_TOKEN: ${{ secrets.CRATES_IO_BOOTSTRAP_TOKEN }}
+        run: |
+          if [[ -n "$BOOTSTRAP_TOKEN" ]]; then
+            echo "::warning::publishing with the bootstrap token CRATES_IO_BOOTSTRAP_TOKEN; delete the secret and revoke the token after this release"
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Authenticate with crates.io (trusted publishing)
+        if: steps.pending.outputs.crates != '' && steps.bootstrap.outputs.present != 'true'
+        id: auth
+        uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
+      - name: Publish
+        if: steps.pending.outputs.crates != ''
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.bootstrap.outputs.present == 'true' && secrets.CRATES_IO_BOOTSTRAP_TOKEN || steps.auth.outputs.token }}
+          CRATES: ${{ steps.pending.outputs.crates }}
+        run: |
+          # cargo publish waits until each version is in the index, so the next crate resolves it.
+          for crate in $CRATES; do
+            cargo publish --locked -p "$crate"
+          done
