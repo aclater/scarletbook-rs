@@ -274,6 +274,44 @@ jobs:
             ./smoke "corpus/images/$id.iso"
           done
 
+  # LeakSanitizer (#238): every handle and buffer the C interface hands out is freed by its
+  # documented call, on success and on every error path. scarletbook-ffi's tests (the fuzz
+  # harnesses of the `fuzzing` feature included) run with LSan's runtime linked in, and the
+  # C smoke test runs linked with -fsanitize=leak; a leak fails the step. LSan needs no
+  # instrumentation, only its allocator, so the C test links the ordinary release library.
+  # Miri's `ffi` slices also report leaks, on reduced cases; the fuzz jobs run under
+  # AddressSanitizer, whose leak check is on by default.
+  lsan:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install "$RUST_STABLE" --profile minimal && rustup toolchain install "$RUST_NIGHTLY" --profile minimal
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Only main writes the cache; pull requests read it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: The C interface tests under LeakSanitizer
+        env:
+          RUSTFLAGS: -Zsanitizer=leak
+          LSAN_OPTIONS: exitcode=23
+        run: |
+          cargo +"$RUST_NIGHTLY" test -p scarletbook-ffi --all-features --locked \
+            --target x86_64-unknown-linux-gnu --tests
+      - name: The C smoke test under LeakSanitizer
+        env:
+          LSAN_OPTIONS: exitcode=23
+        run: |
+          cargo +"$RUST_STABLE" build -p scarletbook-ffi --release --locked
+          cc -std=c99 -Wall -Wextra -Werror -pedantic -fsanitize=leak -Icrates/scarletbook-ffi/include \
+            crates/scarletbook-ffi/examples/smoke.c target/release/libscarletbook_ffi.a -lpthread -ldl -lm -o smoke-lsan
+          for id in hostile-base dst-features-2ch-6ch dst-invalid-frames-6ch layout-2054 master-version-99 truncated-in-audio; do
+            ./smoke-lsan "corpus/images/$id.iso"
+          done
+
   deny:
     runs-on: ubuntu-latest
     steps:
