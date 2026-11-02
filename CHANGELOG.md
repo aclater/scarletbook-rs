@@ -15,17 +15,27 @@ is shared by every crate of the workspace; releases carry the `bench` program an
 AVX2, the DSF and DSDIFF fill now runs a build of the same safe code compiled for AVX2, chosen at
 run time; elsewhere it runs as before. Together with whole-row DSF filling (#214), frames reserved
 at full size (#215), faster `scarletbook-pcm` input and output loops (#216: #217, #219, #223) and
-a smaller DST probability block (#218), this release is faster on every path it touches. Output is
-identical to the bit in every case (#202, #225).
+a smaller DST probability block (#218), plain-DSD output and DSD-to-PCM conversion are much faster,
+multichannel and all-threads DST decoding slightly faster, and **stereo DST decoding on one thread
+2.9 % slower** on the Zen 2 machine below (being won back under #203). Output is identical to the
+bit in every case (#202, #225).
 
 Measured on an AMD Ryzen 9 3950X (Zen 2, 16 cores / 32 threads), generic x86-64 build, 0.5.5
-against 0.5.6, synthetic images, medians of alternating runs:
+against 0.5.6, synthetic images (`scarletbook-synth`), medians of alternating runs (5 rounds for
+DSF, 3 for DST and PCM; rounds agree within 1 %). Plain DSD: `bench dsf --threads 1 --out
+/dev/null`; DST: `bench decode --sink null` on stress frames; PCM: `scarletbook-pcm`'s
+`callpattern` example (a filesystem's call pattern, #216). Other CPUs may differ; the stereo DST
+change in particular was −0.3 % on the development machine (Raptor Lake).
 
 | Path | 0.5.5 | 0.5.6 | Change |
 |---|---|---|---|
 | 78-min plain-DSD stereo area to DSF (3.3 GB, one thread) | 2.61 s | 0.70 s | 3.7× faster |
 | 30-min plain-DSD 5-channel area to DSF (3.2 GB, one thread) | 2.45 s | 0.97 s | 2.5× faster |
-<!-- DST and PCM rows follow -->
+| DST stereo, 50-min area, all 32 threads (wall) | 4.05 s | 3.98 s | 1.7 % faster |
+| DST 6-channel, 10-min area, all 32 threads (wall) | 2.84 s | 2.75 s | 3.2 % faster |
+| **DST stereo, 20-min area, one thread (wall)** | **20.26 s** | **20.83 s** | **2.9 % slower** |
+| DSD64 stereo to 176.4 kHz 24-bit PCM, 8 frames per call, one thread (CPU per second of audio) | 5.09 ms | 4.08 ms | 20 % less CPU |
+| the same, as CPU time for a 78-min stereo area | 23.8 s | 19.1 s | 20 % less CPU |
 
 Since the generic build now selects the AVX2 code at run time, the `x86-64-v3` archives are no
 faster on these paths: in #225's measurements they were within 1 % of the generic build.
@@ -36,8 +46,8 @@ faster on these paths: in #225's measurements they were within 1 % of the generi
 
 ### Changed
 
-- DSF output fills whole rows a position at a time, separating every channel in one pass with a loop per channel count: a plain-DSD stereo area to DSF takes 1.10 s instead of 2.86 s in x86-64-v3 builds and 1.93 s in generic ones (to `/dev/null`); the bytes are unchanged (#202, #214).
-- A plain DSD frame is assembled in a buffer of its final size, `C x 4704` bytes, reserved when it starts, instead of one grown sector by sector: reading a plain-DSD area takes 0.71 s instead of 0.85 s for 78 minutes of stereo (#202, #215).
+- DSF output fills whole rows a position at a time, separating every channel in one pass with a loop per channel count: a plain-DSD stereo area to DSF takes 1.10 s instead of 2.86 s in x86-64-v3 builds and 1.93 s in generic ones (to `/dev/null`, on the development machine, a Raptor Lake VM; see the table above for the Zen 2 figures); the bytes are unchanged (#202, #214).
+- A plain DSD frame is assembled in a buffer of its final size, `C x 4704` bytes, reserved when it starts, instead of one grown sector by sector: reading a plain-DSD area takes 0.71 s instead of 0.85 s for 78 minutes of stereo on the development machine (#202, #215).
 - `output::Layout::fill` and `Layout::read_at` run through the core crate's run-time dispatch (#146) on x86-64 CPUs with AVX2, BMI1, BMI2, LZCNT and MOVBE: the DSF channel separation beneath them is built with those features, so generic builds write a plain-DSD stereo area to DSF as fast as x86-64-v3 builds; the bytes are unchanged. The DST decoder and the output path share the one `#[target_feature]` wrapper (#202, #225).
 - The DST decoder's inner loop reads each channel's partial prediction shares and probabilities from one 1 KiB block per channel, with 64-entry probability tables (5.5.4's `min(|Spred| / 8, M_q - 1)`) instead of 8 KiB ones and a shorter arithmetic-decoder step: 6-channel DST decodes about 5 % faster on one thread in the default build, 2-channel is unchanged, and the output is the same to the bit (#203, #218).
 - DSD-to-PCM conversion de-interleaves its input, rounds to 24 bits and interleaves its output with AVX2 when the CPU has it, chosen at run time like its filters: 3-8 % less CPU per second of audio; the output is unchanged (#216, #223).
