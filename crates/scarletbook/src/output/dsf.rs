@@ -398,12 +398,75 @@ fn split(src: &[u8], row: &mut [u8], at: usize, n: usize, c: usize, reverse: boo
         2 => split!(2, (a, b), a.zip(b), a 0, b 1),
         3 => split!(3, ((a, b), d), a.zip(b).zip(d), a 0, b 1, d 2),
         4 => split!(4, (((a, b), d), e), a.zip(b).zip(d).zip(e), a 0, b 1, d 2, e 3),
-        5 => split!(5, ((((a, b), d), e), g), a.zip(b).zip(d).zip(e).zip(g), a 0, b 1, d 2, e 3, g 4),
+        5 => split5(src, [next(), next(), next(), next(), next()], reverse),
         6 => {
             split!(6, (((((a, b), d), e), g), h), a.zip(b).zip(d).zip(e).zip(g).zip(h), a 0, b 1, d 2, e 3, g 4, h 5)
         }
         // An area has 1 to 6 channels (specification 4, 4.8).
         _ => {}
+    }
+}
+
+/// [`split`] for 5 channels: four frames at a time, as five little-endian `u32` words
+/// in and one word per channel out. The compiler turns a loop over 5-byte frames into
+/// one byte insert per byte (in x86-64-v3 builds too), but it vectorises loads of
+/// 5-word groups and the masks and shifts below (#202).
+#[inline(always)]
+fn split5(src: &[u8], out: [&mut [u8]; 5], reverse: bool) {
+    /// Byte `i` of a word.
+    const B: [u32; 4] = [0xFF, 0xFF00, 0xFF_0000, 0xFF00_0000];
+    let [a, b, d, e, g] = out;
+    let whole = a.len() / 4 * 4;
+    let (src, src_rest) = src.split_at(whole * 5);
+    let (a, a_rest) = a.split_at_mut(whole);
+    let (b, b_rest) = b.split_at_mut(whole);
+    let (d, d_rest) = d.split_at_mut(whole);
+    let (e, e_rest) = e.split_at_mut(whole);
+    let (g, g_rest) = g.split_at_mut(whole);
+    // Whole-word loads, which the vectoriser sees as such (not four byte loads).
+    let word = |s: &[u8], k: usize| {
+        s.get(4 * k..4 * k + 4).and_then(|w| w.try_into().ok()).map_or(0, u32::from_le_bytes)
+    };
+    let words = a
+        .chunks_exact_mut(4)
+        .zip(b.chunks_exact_mut(4))
+        .zip(d.chunks_exact_mut(4))
+        .zip(e.chunks_exact_mut(4))
+        .zip(g.chunks_exact_mut(4));
+    // Byte `t` of channel `c`'s word is byte `5t + c` of the 20, which is byte
+    // `(5t + c) mod 4` of word `(5t + c) / 4`.
+    macro_rules! words {
+        ($f:expr) => {
+            for (s, ((((a, b), d), e), g)) in src.chunks_exact(20).zip(words) {
+                let [w0, w1, w2, w3, w4] = [word(s, 0), word(s, 1), word(s, 2), word(s, 3), word(s, 4)];
+                let f = $f;
+                a.copy_from_slice(&f((w0 & B[0]) | (w1 & B[1]) | (w2 & B[2]) | (w3 & B[3])).to_le_bytes());
+                b.copy_from_slice(
+                    &f(((w0 & B[1]) | (w1 & B[2]) | (w2 & B[3])) >> 8 | w4 << 24).to_le_bytes(),
+                );
+                d.copy_from_slice(
+                    &f(((w0 & B[2]) | (w1 & B[3])) >> 16 | ((w3 & B[0]) | (w4 & B[1])) << 16).to_le_bytes(),
+                );
+                e.copy_from_slice(
+                    &f(w0 >> 24 | ((w2 & B[0]) | (w3 & B[1]) | (w4 & B[2])) << 8).to_le_bytes(),
+                );
+                g.copy_from_slice(&f((w1 & B[0]) | (w2 & B[1]) | (w3 & B[2]) | (w4 & B[3])).to_le_bytes());
+            }
+        };
+    }
+    if reverse {
+        // The bits of each byte reversed (8.2.3), not those of the word.
+        words!(|w: u32| w.reverse_bits().swap_bytes());
+    } else {
+        words!(|w: u32| w);
+    }
+    // The last 0 to 3 frames.
+    let rest =
+        a_rest.iter_mut().zip(b_rest.iter_mut()).zip(d_rest.iter_mut()).zip(e_rest.iter_mut()).zip(g_rest);
+    for (f, ((((a, b), d), e), g)) in src_rest.chunks_exact(5).zip(rest) {
+        for (o, &v) in [a, b, d, e, g].into_iter().zip(f) {
+            *o = if reverse { v.reverse_bits() } else { v };
+        }
     }
 }
 

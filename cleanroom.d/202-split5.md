@@ -1,0 +1,1 @@
+| 2026-11-02 | 5-channel DSF rows in 32-bit words (#202, #PR) | found by profiling and disassembling this crate's own builds (perf, objdump); integer masks and shifts on this crate's own code; no specification change. No new sources consulted. |
