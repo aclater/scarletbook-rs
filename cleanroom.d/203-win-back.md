@@ -1,0 +1,1 @@
+| 2026-11-02 | DST probability-table layout per channel count (#203, #PR) | specification 5.5.4 and 5.5.7 at sacd-spec as already cited; the choice was made by timing this crate's own builds on lennon (Ryzen 9 3950X). No new sources consulted. |

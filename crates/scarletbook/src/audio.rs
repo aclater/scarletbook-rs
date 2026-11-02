@@ -130,8 +130,8 @@ impl std::fmt::Display for Malformed {
 ///
 /// Besides the window, each decoder holds its tables: per lane of
 /// [`DstDecoder::decode_many`], at most 12 filters' byte tables (64 KiB each) and 12
-/// ptables' probability tables (512 bytes each), and a 1 KiB copy of each channel's, about
-/// 0.78 MB. A cursor's own decoder, and each pool thread's, holds up to
+/// ptables' probability tables (8 KiB each), and a 9 KiB copy of each channel's, about
+/// 0.9 MB. A cursor's own decoder, and each pool thread's, holds up to
 /// [`crate::dst::lanes`] lanes of them.
 pub const MAX_PARALLEL_BATCH: usize = 512;
 
