@@ -373,11 +373,13 @@ impl Plan {
                 if lo < hi {
                     input.copy(self.isa, c, lo, &mut sc.bytes[(lo - p0) as usize..(hi - p0) as usize]);
                 }
+                // The buffers that `s1` and the kernels write are resized, not cleared: those
+                // write every element (whole blocks of `LANES`), so zeroing them first is
+                // wasted (issue #216).
                 // S1 into `a`, unless the first stage is a Dec2: that takes its even and odd
                 // inputs straight from S1.
                 if !matches!(self.ops.first(), Some(Op::Dec2(_))) {
                     let n1 = levels[0].1.div_ceil(LANES) * LANES;
-                    sc.a.clear();
                     sc.a.resize(n1, 0.0);
                     s1(self.lut, &sc.bytes, 0, 1, &mut sc.a);
                 }
@@ -387,7 +389,6 @@ impl Plan {
                     let start_in = levels[k].0;
                     match op {
                         Op::Fir1(s) => {
-                            sc.b.clear();
                             sc.b.resize(n_out.div_ceil(LANES) * LANES, 0.0);
                             debug_assert_eq!(start_out - start_in, s.half_len() as i64);
                             dispatch::fir1(self.isa, s, &sc.a, &mut sc.b);
@@ -399,18 +400,17 @@ impl Plan {
                             debug_assert_eq!(start_in, 2 * start_out - m as i64);
                             // xe[i] = x[2(a - e + i)], xo[i] = x[2(a - o + i) + 1].
                             let (de, dodd) = (m - 2 * e, m + 1 - 2 * o);
-                            sc.even.clear();
-                            sc.odd.clear();
                             if k == 0 {
                                 sc.even.resize(np + 2 * e, 0.0);
                                 sc.odd.resize(np + 2 * o, 0.0);
                                 s1(self.lut, &sc.bytes, de, 2, &mut sc.even);
                                 s1(self.lut, &sc.bytes, dodd, 2, &mut sc.odd);
                             } else {
+                                sc.even.clear();
+                                sc.odd.clear();
                                 sc.even.extend(sc.a.iter().skip(de).step_by(2).take(np + 2 * e));
                                 sc.odd.extend(sc.a.iter().skip(dodd).step_by(2).take(np + 2 * o));
                             }
-                            sc.b.clear();
                             sc.b.resize(np, 0.0);
                             dispatch::dec2(self.isa, s, &sc.even, &sc.odd, &mut sc.b);
                         }
@@ -418,7 +418,6 @@ impl Plan {
                             let o = s.odd.len();
                             let half = (n_out / 2).div_ceil(LANES) * LANES;
                             debug_assert_eq!(start_in, start_out / 2 - o as i64);
-                            sc.even.clear();
                             sc.even.resize(half, 0.0);
                             dispatch::interp2_odd(self.isa, s, &sc.a, &mut sc.even);
                             sc.b.clear();
@@ -509,6 +508,34 @@ fn by_channels<T>(q: &[i32], ch: usize, out: &mut [T], w: usize, put: impl Fn(&m
 
 /// S1: `out[k]` = the sum of `lut[j][bytes[start + stride k + j]]`.
 fn s1(lut: &[[i32; 256]], bytes: &[u8], start: usize, stride: usize, out: &mut [f64]) {
+    // S1's 8 tables, and `Wide`'s 12, as arrays: the sum over a window is unrolled, with no
+    // bounds checks (issue #216).
+    if let Ok(lut) = <&[[i32; 256]; 8]>::try_from(lut) {
+        s1_n(lut, bytes, start, stride, out);
+    } else if let Ok(lut) = <&[[i32; 256]; 12]>::try_from(lut) {
+        s1_n(lut, bytes, start, stride, out);
+    } else {
+        s1_any(lut, bytes, start, stride, out);
+    }
+}
+
+/// [`s1`] with `B` tables.
+#[inline(always)]
+fn s1_n<const B: usize>(lut: &[[i32; 256]; B], bytes: &[u8], start: usize, stride: usize, out: &mut [f64]) {
+    let Some(last) = out.len().checked_sub(1) else { return };
+    let windows = bytes[start..start + stride * last + B].windows(B).step_by(stride);
+    for (o, w) in out.iter_mut().zip(windows) {
+        // As in `s1_any`: no partial sum wraps.
+        let mut sum = 0i32;
+        for j in 0..B {
+            sum = sum.wrapping_add(lut[j][usize::from(w[j])]);
+        }
+        *o = f64::from(sum);
+    }
+}
+
+/// [`s1`] with any number of tables.
+fn s1_any(lut: &[[i32; 256]], bytes: &[u8], start: usize, stride: usize, out: &mut [f64]) {
     let b = lut.len();
     for (k, o) in out.iter_mut().enumerate() {
         let i = start + stride * k;

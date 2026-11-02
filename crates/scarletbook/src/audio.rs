@@ -130,8 +130,9 @@ impl std::fmt::Display for Malformed {
 ///
 /// Besides the window, each decoder holds its tables: per lane of
 /// [`DstDecoder::decode_many`], at most 12 filters' byte tables (64 KiB each) and 12
-/// ptables' probability tables (8 KiB each), about 0.85 MB. A cursor's own decoder, and
-/// each pool thread's, holds up to [`crate::dst::lanes`] lanes of them.
+/// ptables' probability tables (512 bytes each), and a 1 KiB copy of each channel's, about
+/// 0.78 MB. A cursor's own decoder, and each pool thread's, holds up to
+/// [`crate::dst::lanes`] lanes of them.
 pub const MAX_PARALLEL_BATCH: usize = 512;
 
 /// Positions held ahead per pool thread with the `parallel` feature (see
@@ -308,8 +309,15 @@ impl Demuxer {
                             (u32::from(byte(r)) * 60 + u32::from(byte(r + 1))) * 75 + u32::from(byte(r + 2));
                         let remaining = if dst { i32::from((byte(r + 3) >> 2) & 0x1F) } else { 0 };
                         let kind = if dst { FrameKind::Dst } else { FrameKind::Dsd };
-                        self.assembling =
-                            Some(Assembly { number, kind, data: Vec::new(), remaining, start_lsn: at.lsn });
+                        // A plain frame is complete at C x 4704 bytes (4.4.2): reserved at
+                        // once, it is never reallocated as its sectors arrive.
+                        let data = match kind {
+                            FrameKind::Dsd => Vec::with_capacity(
+                                (usize::from(self.channels) * FRAME_BYTES_PER_CHANNEL).min(MAX_FRAME_BYTES),
+                            ),
+                            FrameKind::Dst => Vec::new(),
+                        };
+                        self.assembling = Some(Assembly { number, kind, data, remaining, start_lsn: at.lsn });
                         x += 1;
                     } else {
                         self.reason.get_or_insert(Malformed::NoRecord { p, f });
