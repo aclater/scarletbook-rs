@@ -332,10 +332,20 @@ impl Output for RawOut {
 }
 
 /// Decodes every track of the area in one pass, feeding `out`.
-fn decode_area(path: &Path, slot: Slot, out: &mut dyn Output) -> Result<(), Failure> {
+/// Opens the image at `path` as the library's documentation does, with
+/// `BufReader::new`: its 8 KiB buffer is smaller than the area reads (32 sectors, 64 KiB),
+/// which therefore go straight into the cursor's buffer, one copy from the kernel, as with
+/// `sb_disc_open` (#202). A buffer larger than those reads, such as 1 MiB, copies every
+/// byte twice: on lennon (3950X) it made a 78-minute plain-DSD stereo area 0.10 s slower to
+/// read.
+fn open(path: &Path) -> Result<Disc<BufReader<File>>, Failure> {
     let file = File::open(path)
         .map_err(|e| Failure { class: "io-error", message: format!("{}: {e}", path.display()) })?;
-    let mut disc = Disc::open(BufReader::with_capacity(1 << 20, file))?;
+    Ok(Disc::open(BufReader::new(file))?)
+}
+
+fn decode_area(path: &Path, slot: Slot, out: &mut dyn Output) -> Result<(), Failure> {
+    let mut disc = open(path)?;
     let area = disc.toc().area(slot).ok_or(Error::NoSuchArea(slot))?;
     let numbers: Vec<u32> = area.tracks.iter().map(|t| u32::from(t.number)).collect();
     let mut cursor = None;
@@ -387,9 +397,7 @@ impl<R: Read + Seek> PositionSource for Stream<'_, R> {
 
 /// Writes the area's play range as one DSF file (see the module documentation).
 fn write_dsf(path: &Path, slot: Slot, out: &Path, via: Via, chunk: usize) -> Result<(), Failure> {
-    let file = File::open(path)
-        .map_err(|e| Failure { class: "io-error", message: format!("{}: {e}", path.display()) })?;
-    let mut disc = Disc::open(BufReader::with_capacity(1 << 20, file))?;
+    let mut disc = open(path)?;
     let area = disc.toc().area(slot).ok_or(Error::NoSuchArea(slot))?;
     let end = area.playtime_frames();
     let layout = disc.output_layout(slot, 0, end, Format::Dsf, &OutputOptions::default())?;
@@ -454,9 +462,7 @@ fn write_dsf_parallel(
     use std::os::unix::fs::FileExt;
     use std::sync::{Mutex, mpsc};
 
-    let file = File::open(path)
-        .map_err(|e| Failure { class: "io-error", message: format!("{}: {e}", path.display()) })?;
-    let mut disc = Disc::open(BufReader::with_capacity(1 << 20, file))?;
+    let mut disc = open(path)?;
     let area = disc.toc().area(slot).ok_or(Error::NoSuchArea(slot))?;
     let end = area.playtime_frames();
     let layout = disc.output_layout(slot, 0, end, Format::Dsf, &OutputOptions::default())?;

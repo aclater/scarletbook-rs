@@ -1,0 +1,2 @@
+Changed
+- `bench` opens images with `BufReader::new`, as the documentation does, instead of a 1 MiB `BufReader`: area reads (64 KiB) then go straight into the cursor's buffer, one copy from the kernel, as with `sb_disc_open`. The 1 MiB buffer copied every byte twice. A 78-minute plain-DSD stereo area writes to DSF in 0.50 s instead of 0.61 s on one thread on lennon (3950X). The library is unchanged; compare figures across this change with that in mind (#202, #PR).
