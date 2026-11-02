@@ -1104,6 +1104,7 @@ The scripts in `perf/` need Linux and `perf`:
 |---|---|
 | `perf/cycles-per-symbol.sh [NAME...]` | cycles, instructions, IPC per decoded symbol and ms per frame for `dst_frames` benchmarks, from `perf stat` |
 | `perf/flamegraph.sh NAME [OUT.svg]` | `perf record` and inferno (`cargo install --locked inferno --version 0.12.8`) flame graph of `DstDecoder::decode` |
+| `perf/dispatch-inlining.sh` | disassembles the core crate's run-time dispatch (`dispatch.rs`) in a generic x86-64 build and fails if a dispatched function lost its AVX2 or BMI hot loop (or a generic one gained it); CI runs it on the release `libscarletbook_ffi.so` |
 | `perf/compare.sh REV_A REV_B [FILTER]` | builds two revisions (`.` is the working tree) into separate target directories, runs `dst_frames` alternately, pinned, and prints per-benchmark and per-group changes |
 | `perf/build-configs.sh` | builds `bench` in several release configurations (LTO, codegen units, PGO) for generic x86-64, x86-64-v3 and znver5, and times single-thread decoding on synthetic images, alternately, pinned, best of several rounds |
 | `perf/pgo.sh TARGET_DIR` | a deterministic profile-guided build of `bench` (needs `rustup component add llvm-tools-preview`) |

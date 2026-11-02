@@ -239,6 +239,7 @@ impl DstData {
     /// Fills `out` with sound data bytes from `offset`: for each position, a `DSTF` chunk
     /// of its DST equivalent with its pad byte, then, with CRCs, a `DSTC` chunk of its
     /// content's CRC (8.4.6, 8.4.6.1).
+    #[inline(always)]
     pub(super) fn fill(
         &self,
         offset: u64,

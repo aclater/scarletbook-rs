@@ -50,6 +50,7 @@ use crate::audio::{
     self, AudioFrame, FRAME_BYTES_PER_CHANNEL, FrameContent, TrackAudio, TrackFrame, TrackFrames,
 };
 use crate::disc::Disc;
+use crate::dispatch::{self, Isa};
 use crate::dst::DstDecoder;
 use crate::error::{Error, Slot};
 use crate::toc::{Area, Toc, TocDigests, Track};
@@ -847,6 +848,29 @@ impl Layout {
     /// The errors of `source`, and [`Error::InvalidArgument`] if it gives content of the
     /// wrong size. `out` is then partly filled.
     pub fn fill(&self, offset: u64, out: &mut [u8], source: &mut dyn PositionSource) -> Result<usize, Error> {
+        self.fill_with(Isa::detect(), offset, out, source)
+    }
+
+    /// [`Layout::fill`] with the instruction set `isa` (see [`crate::dispatch`]).
+    pub(crate) fn fill_with(
+        &self,
+        isa: Isa,
+        offset: u64,
+        out: &mut [u8],
+        source: &mut dyn PositionSource,
+    ) -> Result<usize, Error> {
+        dispatch::output_path(isa, Fill { layout: self, offset, out, source })
+    }
+
+    /// [`Layout::fill`], inlined into the dispatch point with everything it calls on the
+    /// hot path.
+    #[inline(always)]
+    fn fill_inner(
+        &self,
+        offset: u64,
+        out: &mut [u8],
+        source: &mut dyn PositionSource,
+    ) -> Result<usize, Error> {
         let len =
             usize::try_from(self.size.saturating_sub(offset)).map_or(out.len(), |rest| rest.min(out.len()));
         let out = &mut out[..len];
@@ -893,6 +917,28 @@ impl Layout {
         offset: u64,
         out: &mut [u8],
     ) -> Result<usize, Error> {
+        self.read_at_with(Isa::detect(), disc, offset, out)
+    }
+
+    /// [`Layout::read_at`] with the instruction set `isa` (see [`crate::dispatch`]).
+    pub(crate) fn read_at_with<R: Read + Seek>(
+        &self,
+        isa: Isa,
+        disc: &mut Disc<R>,
+        offset: u64,
+        out: &mut [u8],
+    ) -> Result<usize, Error> {
+        dispatch::output_path(isa, ReadAt { layout: self, disc, offset, out })
+    }
+
+    /// [`Layout::read_at`], inlined into the dispatch point.
+    #[inline(always)]
+    fn read_at_inner<R: Read + Seek>(
+        &self,
+        disc: &mut Disc<R>,
+        offset: u64,
+        out: &mut [u8],
+    ) -> Result<usize, Error> {
         if self.image.as_ref().is_some_and(|d| d != disc.toc_digests()) {
             return Err(Error::InvalidArgument("the layout is of another image"));
         }
@@ -903,12 +949,12 @@ impl Layout {
         let end = offset.saturating_add(out.len() as u64).min(self.size);
         let positions = self.positions_for(offset..end);
         if positions.is_empty() {
-            return self.fill(offset, out, &mut NoPositions);
+            return self.fill_inner(offset, out, &mut NoPositions);
         }
         match self.invalid {
             None => {
                 let frames = disc.range_audio(self.slot, positions.start, positions.end)?;
-                self.fill(offset, out, &mut Window { frames, window: VecDeque::new() })
+                self.fill_inner(offset, out, &mut Window { frames, window: VecDeque::new() })
             }
             Some(invalid) => {
                 let frames = disc.range_frames(self.slot, positions.start, positions.end)?;
@@ -919,7 +965,7 @@ impl Layout {
                     channels: self.channels,
                     invalid,
                 };
-                self.fill(offset, out, &mut source)
+                self.fill_inner(offset, out, &mut source)
             }
         }
     }
@@ -972,6 +1018,38 @@ impl<R: Read + Seek> Disc<R> {
         let mut layout = Layout::new_dst(self.toc(), lengths, options)?;
         layout.image = Some(self.toc_digests().clone());
         Ok(layout)
+    }
+}
+
+/// [`Layout::fill`] as work of the dispatch point ([`dispatch::output_path`]).
+struct Fill<'a, 'b> {
+    layout: &'a Layout,
+    offset: u64,
+    out: &'a mut [u8],
+    source: &'a mut (dyn PositionSource + 'b),
+}
+
+impl dispatch::Work for Fill<'_, '_> {
+    type Output = Result<usize, Error>;
+    #[inline(always)]
+    fn run(self) -> Self::Output {
+        self.layout.fill_inner(self.offset, self.out, self.source)
+    }
+}
+
+/// [`Layout::read_at`] as work of the dispatch point ([`dispatch::output_path`]).
+struct ReadAt<'a, R> {
+    layout: &'a Layout,
+    disc: &'a mut Disc<R>,
+    offset: u64,
+    out: &'a mut [u8],
+}
+
+impl<R: Read + Seek> crate::dispatch::Work for ReadAt<'_, R> {
+    type Output = Result<usize, Error>;
+    #[inline(always)]
+    fn run(self) -> Self::Output {
+        self.layout.read_at_inner(self.disc, self.offset, self.out)
     }
 }
 
