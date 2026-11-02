@@ -3,15 +3,21 @@
 on the same machine, compared as ratios.
 
 Usage: bench-regress.py BASE_BIN_DIR HEAD_BIN_DIR WORK_DIR [--rounds N] [--tolerance T]
+                        [--require-some]
 
 Each BIN_DIR holds `bench` and `callpattern` (the scarletbook-pcm example) of one build; HEAD_BIN_DIR
 also holds `scarletbook-synth`, which writes the small images into WORK_DIR. Every case runs
 `--rounds` times per build, in ABBA order (base, head; head, base; ...), after one untimed run
 of each. Every timed run starts a fresh copy of its program (below). The figure per run is the
-child's CPU time (user + system, from wait4), which a
-descheduled process does not accumulate; every case is single-threaded. A case regresses when
-median(head) / median(base) exceeds 1 + tolerance. A case the base build cannot run (a
-command it does not have yet) is skipped with a notice.
+child's CPU time (user + system, from wait4), which a descheduled process does not accumulate;
+every case is single-threaded. Each round gives one pair, a base and a head run back to back,
+and so one ratio head / base; a case regresses when the median of those per-pair ratios exceeds
+1 + tolerance. A ratio per pair cancels drift that spans the rounds (a runner slowing down as
+it heats or as its neighbours change), which a ratio of the two medians would not.
+
+A case the base build cannot run (a command it does not have yet) is skipped with a notice. If
+every case is skipped nothing was checked: that is an error with `--require-some` (pushes to
+main and nightly runs) and a warning otherwise (pull requests).
 
 Fresh copies: on lennon (3950X), one file of `bench` decoded DST 42 % slower than byte-identical
 copies of it (1.77 s against 1.24 s of CPU, the same instruction count), every time, until its
@@ -70,6 +76,7 @@ def main():
     p.add_argument("work")
     p.add_argument("--rounds", type=int, default=7)
     p.add_argument("--tolerance", type=float, default=0.15)
+    p.add_argument("--require-some", action="store_true")
     a = p.parse_args()
     builds = [("base", os.path.abspath(a.base)), ("head", os.path.abspath(a.head))]
     os.makedirs(a.work, exist_ok=True)
@@ -84,18 +91,18 @@ def main():
                 pass
         images[name] = path
 
-    rows, failed = [], False
+    rows, failed, checked = [], False, 0
     start = time.monotonic()
     for case, image, command in CASES:
         argv = {b: [s.replace("{bin}", d).replace("{image}", images.get(image, "")) for s in command]
                 for b, d in builds}
         if run(argv["base"]) is None:
             print(f"::notice::{case}: the base build cannot run it; skipped")
-            rows.append((case, "-", "-", "-", "skipped (base)"))
+            rows.append((case, "-", "-", "-", "-", "skipped (base)"))
             continue
         if run(argv["head"]) is None:
             print(f"::error::{case}: the head build fails")
-            rows.append((case, "-", "-", "-", "head fails"))
+            rows.append((case, "-", "-", "-", "-", "head fails"))
             failed = True
             continue
         times = {"base": [], "head": []}
@@ -113,20 +120,29 @@ def main():
             print(f"::error::{case}: a timed run failed")
             failed = True
             continue
+        checked += 1
         base, head = statistics.median(times["base"]), statistics.median(times["head"])
-        ratio = head / base
+        pairs = [h / b for b, h in zip(times["base"], times["head"])]
+        ratio = statistics.median(pairs)
         verdict = "ok"
         if ratio > 1 + a.tolerance:
             verdict = "REGRESSION"
             failed = True
             print(f"::error::{case}: head takes {ratio:.3f} x the base's CPU time "
                   f"(tolerance {1 + a.tolerance:.2f})")
-        # Slowest over fastest run of each build: the noise on this runner.
+        # The noise on this runner: slowest over fastest run of each build, and the range of
+        # the per-pair ratios.
         spread = "/".join(f"{max(t) / min(t) - 1:.1%}" for t in times.values())
-        rows.append((case, f"{base:.3f}", f"{head:.3f}", f"{ratio:.3f}", f"{verdict} (spread {spread})"))
+        rows.append((case, f"{base:.3f}", f"{head:.3f}", f"{ratio:.3f}",
+                     f"{min(pairs):.3f}-{max(pairs):.3f}", f"{verdict} (spread {spread})"))
+    if not checked:
+        kind = "error" if a.require_some else "warning"
+        print(f"::{kind}::every case was skipped: nothing was compared")
+        failed = failed or a.require_some
 
-    table = ["| Case | Base CPU s (median) | Head CPU s (median) | Head / base | Verdict |",
-             "|---|---|---|---|---|"] + ["| " + " | ".join(r) + " |" for r in rows]
+    table = ["| Case | Base CPU s (median) | Head CPU s (median) | Head / base (median of pairs) "
+             "| Pair ratios | Verdict |",
+             "|---|---|---|---|---|---|"] + ["| " + " | ".join(r) + " |" for r in rows]
     table.append(f"\n{a.rounds} rounds per build, ABBA order, tolerance {a.tolerance:.0%}; "
                  f"{time.monotonic() - start:.0f} s of timing.")
     print("\n".join(table))

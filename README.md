@@ -1120,10 +1120,10 @@ targets come only from the benchmark rounds on real discs recorded in sacd-spec
 `benchmarks/README.md`. CI compiles the benchmarks and times one small subset, to catch
 regressions: `.github/workflows/bench-regress.yml` builds `bench` and `callpattern` from the
 base and from the head, times single-threaded DST decoding, plain DSD to DSF and DSD to PCM
-alternately on one runner, and fails when the head needs more than 1.15 x the base's CPU
-time (`.github/scripts/bench-regress.py`, #226). It runs on pull requests that touch the
-library sources, on main (against the previous main) and nightly (against the latest
-release), and is not a required check.
+alternately on one runner, and fails when the median of the per-round ratios head / base of
+CPU time exceeds 1.15 (`.github/scripts/bench-regress.py`, #226). It runs on pull requests that
+touch the library sources or build settings, on main (against the previous main) and nightly
+(against the latest release), and is informational, not a required check.
 
 Minimum supported Rust version: 1.85.
 
