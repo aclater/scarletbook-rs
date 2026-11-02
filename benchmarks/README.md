@@ -16,13 +16,15 @@ Every release publishes two archives, built by `.github/workflows/benchkit.yml`:
 | `scarletbook-benchkit-<version>-x86_64-linux.tar.gz` | generic x86-64 | any x86_64 Linux |
 | `scarletbook-benchkit-<version>-x86_64-linux-v3.tar.gz` | `-C target-cpu=x86-64-v3` | x86-64-v3 CPUs only (AVX2, BMI1/2, FMA, MOVBE, ...) |
 
-Each has a `.sha256` checksum and, for a public repository, the release's build provenance
-attestation. Match the names **exactly**: a prefix or glob of the generic name also matches the
+Each has a `.sha256` checksum and the release's build provenance attestation; verify both
+before extracting (see "The sandboxed-runner contract", step 0). Match the names **exactly**: a prefix or glob of the generic name also matches the
 `-v3` one, which stops with SIGILL on older CPUs. The names share no prefix with the
 `bench-<version>-...` benchmark assets of sacd-spec or the `scarletbook-ffi-<version>-...` C
-library archives. Every push to main uploads the same two archives as workflow artifacts
-(`benchkit-x86_64-linux[-v3]`), named with the last released version; their
-`README.txt` names the commit.
+library archives. Every push to main uploads the same two archives as workflow artifacts,
+`benchkit-x86_64-linux[-v3]-<commit>`, with archives named
+`scarletbook-benchkit-<version>-<commit>-x86_64-linux[-v3].tar.gz` (the short commit after
+the last released version), so they cannot be taken for release kits. They carry no
+attestation; use them for development only.
 
 An archive holds one directory:
 
@@ -89,10 +91,22 @@ an image.
 
 ## The sandboxed-runner contract
 
-**Inputs:** one or both kit archives of one version, unpacked; about 8.3 GB of free disk for the
-images; nothing else. **Network:** none. **Privileges:** none.
+**Inputs:** one or both kit archives of one release, verified and unpacked; about 8.3 GB of free
+disk for the images; nothing else. **Network:** none, after the download and verification.
+**Privileges:** none.
 
 **What the runner executes**, in this order:
+
+0. **Verify each archive before extracting it** (required). The checksum proves the bytes are
+   intact; the attestation proves this repository's release workflow built them:
+
+   ```sh
+   sha256sum -c scarletbook-benchkit-<version>-x86_64-linux.tar.gz.sha256
+   gh attestation verify scarletbook-benchkit-<version>-x86_64-linux.tar.gz -R aclater/scarletbook-rs \
+     --signer-workflow aclater/scarletbook-rs/.github/workflows/release.yml
+   ```
+
+   and the same for the `-v3` archive. Stop if either fails.
 
 1. For each image a selected case needs: `<kit>/scarletbook-synth <work>/<image id>.iso <synth
    arguments>`, with either kit (the bytes are the same). Images can be kept between versions
@@ -132,6 +146,13 @@ that file's page cache was dropped (`posix_fadvise(POSIX_FADV_DONTNEED)`), after
 a program's code can cost that much, and the cost sticks to the file while it stays cached. A
 run list that started the same file for every round would carry such an offset through all of
 them; a fresh copy per run makes it a rare outlier, which the median of the rounds absorbs.
+
+**The run list is code.** It names the programs the runner starts, so a consumer uses the
+`runlist.json` inside the verified kit, never one from elsewhere. `run.py` also checks it: every
+command must start a program of the kit (`{kit}/NAME`, NAME of letters, digits, `_` and `-`), and
+image and case ids must match `^[a-z0-9-]+$`, as they become file names; anything else is
+rejected with an error before anything runs. `run.py --runlist FILE` is a developer override,
+for trying a changed run list from a checkout.
 
 ## The reference runner
 

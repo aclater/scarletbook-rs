@@ -22,6 +22,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import shlex
 import shutil
 import subprocess
@@ -105,6 +106,28 @@ def smoke_synth(args):
     return args + ["--track-minutes", "0.1"]
 
 
+# The run list is code: it names the programs the runner starts and the files it writes.
+PROGRAM = re.compile(r"\{kit\}/[A-Za-z0-9_-]+")
+ID = re.compile(r"[a-z0-9-]+")
+
+
+def check(runlist):
+    """Rejects a run list whose commands start anything but a program of the kit, or whose
+    image or case ids are not plain names (they become file names in the work directory)."""
+    errors = []
+    for i in runlist["images"]:
+        if not ID.fullmatch(str(i["id"])):
+            errors.append(f"image id {i['id']!r} is not of the form [a-z0-9-]+")
+    for c in runlist["cases"]:
+        if not ID.fullmatch(str(c["id"])):
+            errors.append(f"case id {c['id']!r} is not of the form [a-z0-9-]+")
+        command = c.get("command") or [""]
+        if not PROGRAM.fullmatch(command[0]):
+            errors.append(f"case {c['id']!r}: the program {command[0]!r} is not {{kit}}/NAME")
+    if errors:
+        sys.exit("run list rejected:\n  " + "\n  ".join(errors))
+
+
 def warm(path):
     with open(path, "rb") as f:
         while f.read(1 << 24):
@@ -113,6 +136,7 @@ def warm(path):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    # A developer override: consumers use the run list inside the verified kit.
     p.add_argument("--runlist", default=os.path.join(HERE, "runlist.json"))
     p.add_argument("--kit", action="append", required=True, metavar="BUILD[@LABEL]=DIR")
     p.add_argument("--work", required=True)
@@ -123,6 +147,7 @@ def main():
     runlist = json.load(open(a.runlist))
     if runlist.get("format_version") != 1:
         sys.exit("unsupported run list format_version")
+    check(runlist)
     flags = cpu_flags()
     known = {b["id"]: b for b in runlist["builds"]}
     kits = []
@@ -131,6 +156,8 @@ def main():
         build, _, label = name.partition("@")
         if build not in known or not path:
             sys.exit(f"--kit {spec}: expected BUILD[@LABEL]=DIR with BUILD one of {sorted(known)}")
+        if label and not re.fullmatch(r"[A-Za-z0-9._-]+", label):
+            sys.exit(f"--kit {spec}: LABEL must be letters, digits, '.', '_' or '-'")
         missing = [f for f in known[build]["cpu_flags"] if f not in flags]
         if missing:
             print(f"skipping build {build}: the CPU lacks {' '.join(missing)}", file=sys.stderr)

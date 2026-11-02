@@ -29,8 +29,13 @@ case "$cmd" in
     mkdir -p "$work"
     work=$(cd "$work" && pwd)
     : > "$work/kits"
+    declare -A used=()
     for ref in "$@"; do
-      label=$(basename "$ref")
+      label=$(basename "$ref" | tr -c 'A-Za-z0-9._\n-' '_')
+      # Two refs with the same name (e.g. two directories called src) get distinct labels.
+      n=2 base=$label
+      while [ -n "${used[$label]:-}" ]; do label="$base-$n"; n=$((n + 1)); done
+      used[$label]=1
       if [ -d "$ref" ]; then
         src=$(cd "$ref" && pwd)
       else
@@ -53,8 +58,12 @@ case "$cmd" in
         cp "$src/corpus/LICENSE" "$kit/corpus/"
         cp "$src/corpus/images/dst-features-2ch-6ch.iso" "$src/corpus/images/dst-features-5ch.iso" "$kit/corpus/images/"
         # Older versions have no callpattern example; run.py then skips that case for them.
-        if (cd "$src" && RUSTFLAGS="$flags" CARGO_TARGET_DIR="$out" cargo build -q --profile dist --locked \
-          --target x86_64-unknown-linux-gnu -p scarletbook-pcm --example callpattern 2> /dev/null); then
+        # Any other failure to build it is reported, not hidden.
+        if [ ! -f "$src/crates/scarletbook-pcm/examples/callpattern.rs" ]; then
+          echo "$label: no callpattern example; its DSD-to-PCM case will be skipped" >&2
+        else
+          (cd "$src" && RUSTFLAGS="$flags" CARGO_TARGET_DIR="$out" cargo build -q --profile dist --locked \
+            --target x86_64-unknown-linux-gnu -p scarletbook-pcm --example callpattern)
           cp "$bin/examples/callpattern" "$kit/"
         fi
         echo "$build@$label=$kit" >> "$work/kits"

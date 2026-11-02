@@ -19,8 +19,9 @@ name: Benchmark kit
 # `bench decode`, and every case of the run list once on tiny images (`run.py --smoke`). The
 # v3 build stops if its runner is not x86-64-v3, as clib.yml's does.
 #
-# Pushes to main upload the kits as workflow artifacts; the release workflow calls this and
-# publishes them. Pull requests run it only when the kit itself changes; it is not a required
+# Pushes to main upload the kits as workflow artifacts, named with the short commit after the
+# version (scarletbook-benchkit-<version>-<commit>-x86_64-linux...), so that they cannot be
+# taken for release kits; the release workflow calls this on the tag and publishes them. Pull requests run it only when the kit itself changes; it is not a required
 # check.
 
 on:
@@ -35,6 +36,13 @@ on:
 
 permissions:
   contents: read
+
+# A newer push to the same pull request cancels the older run; runs on main and release runs
+# (called from release.yml, on a tag) are never cancelled. The group's prefix differs from the
+# caller's, so a release run does not wait on itself.
+concurrency:
+  group: benchkit-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -92,7 +100,15 @@ jobs:
         run: |
           version=$(cargo metadata --no-deps --format-version 1 --locked \
             | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "scarletbook-bench"))')
-          name="scarletbook-benchkit-$version-x86_64-linux${VARIANT:+-$VARIANT}"
+          # Outside a release (a tag), the short commit follows the version, so that a kit built
+          # from main cannot be taken for the release kit of that version.
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            name="scarletbook-benchkit-$version-x86_64-linux${VARIANT:+-$VARIANT}"
+          else
+            short=$(git rev-parse --short=10 HEAD)
+            name="scarletbook-benchkit-$version-$short-x86_64-linux${VARIANT:+-$VARIANT}"
+            echo "SUFFIX=-$short" >> "$GITHUB_ENV"
+          fi
           out="target/$TARGET/dist"
           mkdir -p "dist/$name"
           cp "$out/bench" "$out/scarletbook-synth" "$out/examples/callpattern" "dist/$name/"
@@ -128,7 +144,7 @@ jobs:
         run: python3 -I "$KIT/run.py" --kit "$BUILD=$KIT" --work target/benchkit-smoke --smoke
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: benchkit-x86_64-linux${{ matrix.variant && format('-{0}', matrix.variant) || '' }}
+          name: benchkit-x86_64-linux${{ matrix.variant && format('-{0}', matrix.variant) || '' }}${{ env.SUFFIX }}
           path: |
             dist/*.tar.gz
             dist/*.sha256
