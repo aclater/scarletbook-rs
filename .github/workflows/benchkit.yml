@@ -16,7 +16,10 @@ name: Benchmark kit
 # scarletbook-ffi-<version>-... C library archives.
 #
 # Each build is checked where it is built: no dynamic dependency, the corpus hashes through
-# `bench decode`, and every case of the run list once on tiny images (`run.py --smoke`). The
+# `bench decode`, and every case of the run list once on tiny images (`run.py --smoke
+# --no-selftest`). run.py's timing self-check (#248) runs in a separate, non-blocking step that
+# writes its ratio to the job summary: shared runners are too noisy for a timing check to gate a
+# release (this workflow runs on the release tag). Consumers keep the strict default. The
 # v3 build stops if its runner is not x86-64-v3, as clib.yml's does.
 #
 # Pushes to main upload the kits as workflow artifacts, named with the short commit after the
@@ -141,7 +144,19 @@ jobs:
       - name: Every run list case once, on tiny images
         env:
           BUILD: ${{ matrix.build }}
-        run: python3 -I "$KIT/run.py" --kit "$BUILD=$KIT" --work target/benchkit-smoke --smoke
+        run: python3 -I "$KIT/run.py" --kit "$BUILD=$KIT" --work target/benchkit-smoke --smoke --no-selftest
+      # Informational: shared runners are too noisy for a timing check to gate a release.
+      - name: The runner's timing self-check (non-blocking)
+        continue-on-error: true
+        env:
+          BUILD: ${{ matrix.build }}
+        run: |
+          set -o pipefail
+          status=0
+          python3 -I "$KIT/run.py" --kit "$BUILD=$KIT" --work target/benchkit-smoke --smoke --selftest-only 2>&1 \
+            | tee selftest.log || status=$?
+          { echo "### run.py self-check ($BUILD)"; grep '^selftest: ' selftest.log || echo "no result"; } >> "$GITHUB_STEP_SUMMARY"
+          exit $status
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: benchkit-x86_64-linux${{ matrix.variant && format('-{0}', matrix.variant) || '' }}${{ env.SUFFIX }}
