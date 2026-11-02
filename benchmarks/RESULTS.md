@@ -49,6 +49,50 @@ Not in the run list yet, so not in these tables:
   DSF and DSD to PCM are blank, unless an equivalent revision is compared instead (0.5.6
   below uses `3eb96dc` for 0.5.5).
 
+## 0.5.7
+
+Measured on lennon (3950X), 2026-11-02, with `compare.sh` (generic kits, statically linked,
+profile `dist`): the **generic** build of each version, medians of alternating runs (5 rounds; 3
+for `dst-decode-2ch-t1-corpus` and `callpattern`), a fresh copy of each program per run, images in
+the page cache. The library revisions are 0.5.6 = `v0.5.6` (`61aecd0`) and 0.5.7 = `da90c24`
+(its library and `bench` sources are those of the release commit). A third kit, **0.5.6 with
+0.5.7's `bench`** (the v0.5.6 tree with `crates/scarletbook-bench` of `da90c24`), ran in the same
+rounds to separate the tool change below from the library change. Ratios are the medians of the
+per-round ratios of wall times.
+
+| Path | Run-list case | 0.5.6 | 0.5.6, new `bench` | 0.5.7 | 0.5.7 / 0.5.6 | tool¹ | library¹ |
+|---|---|---|---|---|---|---|---|
+| plain-DSD stereo area (78 min) to DSF, one thread | `dsf-plain-2ch` | 0.861 s | 0.695 s | 0.579 s | 0.674 | 0.805 | 0.834 |
+| plain-DSD 5-channel area (30 min) to DSF, one thread | `dsf-plain-5ch` | 1.092 s | 0.957 s | 0.607 s | 0.558 | 0.877 | 0.636 |
+| plain-DSD 6-channel area (25 min) to DSF, one thread | (not in the run list)² | 0.757 s | 0.652 s | 0.538 s | 0.711 | 0.862 | 0.827 |
+| DST decode, stereo (20 min, corpus frames), one thread | `dst-decode-2ch-t1-corpus` | 20.62 s | 20.62 s | 20.18 s | 0.979 | 1.001 | 0.979 |
+| DST decode, stereo (5 min, stress frames), one thread | `dst-decode-2ch-t1` | 6.23 s | 6.21 s | 6.10 s | 0.981 | 0.996 | 0.985 |
+| DST decode, 6 channels (2 min, stress frames), one thread | `dst-decode-6ch-t1` | 7.68 s | 7.66 s | 7.62 s | 0.994 | 0.999 | 0.993 |
+| DST decode, stereo (50 min, stress frames), all threads | `dst-decode-2ch-tall` | 3.99 s | 4.02 s | 4.03 s | 1.005 | 1.005 | 1.001 |
+| DST decode, 6 channels (10 min, stress frames), all threads | `dst-decode-6ch-tall` | 2.61 s | 2.59 s | 2.59 s | 0.990 | 0.990 | 0.997 |
+| DSD to PCM, stereo DSD64 to 176.4 kHz 24-bit, 8 frames per call | `pcm-callpattern` | 4.08 ms per s | 4.12 ms per s | 4.09 ms per s | 1.002 | – | – |
+
+¹ **The measuring tool changed between these versions.** #239 made `bench` open images with
+`BufReader::new` instead of a 1 MiB `BufReader`, as consumers' code does (the 1 MiB buffer copied
+every byte twice). The 0.5.7 / 0.5.6 column therefore includes a tool effect that is not a library
+gain: "tool" is 0.5.6 with the new `bench` over 0.5.6, "library" is 0.5.7 over 0.5.6 with the new
+`bench`. The library gains are #230 (every DSF row) and #237 (5 channels; 0.875 s to 0.637 s in
+#237's own same-tool measurement), and #241 (stereo DST on one thread).
+² `dsf-plain-5ch`'s command on an image written by `scarletbook-synth IMAGE --minutes 25 --area mc
+--mc-channels 6 --kind dsd`, through a run-list override (`run.py --runlist`).
+
+The stereo all-threads case was slower in every round (by 0.3-1.2 %), and by 1.3 % (median of
+per-round ratios) in an earlier separate run of 0.5.6 against 0.5.7 only; the third kit puts it on
+the tool change. An earlier run of the one-thread cases in a `lennon.sh bench1` slot (one core
+complex) gave the same ratios within 1 %.
+
+The 0.5.6 DSF cells here (0.86 s and 1.09 s) are higher than the 0.5.6 section's (0.70 s and
+0.97 s) for the same library; the cause is not
+established. Compare figures within one section only.
+
+Not measured for 0.5.7: the x86-64-v3 build; DST to DSF; TOC open, first 128 KiB, cold runs and
+the C interface (see "Not measured").
+
 ## 0.5.6
 
 Measured on lennon (3950X) by the owner, 2026-11-02: the **generic** build of each version,

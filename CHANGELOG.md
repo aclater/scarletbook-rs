@@ -9,6 +9,77 @@ is shared by every crate of the workspace; releases carry the `bench` program an
 
 ## [Unreleased]
 
+## [0.5.7] - 2026-11-02
+
+**Faster plain-DSD output, and the 0.5.6 one-thread stereo DST regression won back.** Reading an
+area no longer copies each audio sector before demultiplexing it (#230), 5-channel DSF rows are
+separated in 32-bit words (#237), and stereo DST decoding on one thread is back to 0.5.5's speed
+(#241). A raw-image disc no longer keeps its TOC read buffer once opened (#228). Leak checks now
+run in CI: LeakSanitizer over the C interface's tests and the C smoke test, a test that the heap
+does not grow over open/seek/decode/close cycles, and a weekly memory soak (#238). Each release
+also publishes a benchmark kit for timing scarletbook on other machines, and pull requests that
+touch the library run a benchmark regression check (#226). Output is identical to the bit in
+every case.
+
+Measured on lennon, an AMD Ryzen 9 3950X (Zen 2, 16 cores / 32 threads), generic x86-64 build,
+0.5.6 against 0.5.7, with `benchmarks/compare.sh` (statically linked kits, synthetic images of
+`benchmarks/runlist.json` in the page cache, output to `/dev/null`, a fresh copy of each program
+per run, alternating ABBA rounds: 5 per case, 3 for the 20-minute DST case and PCM). Times are
+the medians of the wall times; changes are the medians of the per-round ratios. Other CPUs may
+differ.
+
+| Path | 0.5.6 | 0.5.7 | Change | `bench` change (#239)¹ | Library change¹ |
+|---|---|---|---|---|---|
+| 78-min plain-DSD stereo area to DSF, one thread | 0.861 s | 0.579 s | 33 % faster | 19 % faster | 17 % faster |
+| 30-min plain-DSD 5-channel area to DSF, one thread | 1.092 s | 0.607 s | 44 % faster | 12 % faster | 36 % faster |
+| 25-min plain-DSD 6-channel area to DSF, one thread² | 0.757 s | 0.538 s | 29 % faster | 14 % faster | 17 % faster |
+| DST stereo, 20-min area (corpus frames), one thread | 20.62 s | 20.18 s | 2.1 % faster | ±0 | 2.1 % faster |
+| DST stereo, 5-min area (stress frames), one thread | 6.23 s | 6.10 s | 2.0 % faster | 0.5 % faster | 1.5 % faster |
+| DST 6-channel, 2-min area, one thread | 7.68 s | 7.62 s | 0.6 % faster | 0.1 % faster | 0.7 % faster |
+| **DST stereo, 50-min area, all 32 threads** | **3.99 s** | **4.03 s** | **0.5 % slower** | 0.5 % slower | 0.1 % slower |
+| DST 6-channel, 10-min area, all 32 threads | 2.61 s | 2.59 s | 1.0 % faster | 1.0 % faster | 0.3 % faster |
+| DSD64 stereo to 176.4 kHz 24-bit PCM, 8 frames per call (CPU per second of audio) | 4.08 ms | 4.09 ms | ±0 (unchanged code) | – | – |
+
+¹ **The measuring tool changed in this release.** #239 made `bench` open images with
+`BufReader::new` instead of a 1 MiB `BufReader`, as consumers' code does; the 1 MiB buffer copied
+every byte twice. So the 0.5.6 → 0.5.7 DSF and DST rows include a tool effect that is not a
+library gain. To separate them, the 0.5.6 library was also timed with 0.5.7's `bench` in the same
+rounds: "`bench` change" is that build against 0.5.6, "Library change" is 0.5.7 against it. The
+library gains are #230 (all DSF rows) and #237 (5 channels): in #237's own same-tool measurement,
+the 30-minute 5-channel area went from 0.875 s to 0.637 s.
+² Not in the run list: the command of `dsf-plain-5ch` on a 25-minute 6-channel image
+(`scarletbook-synth IMAGE --minutes 25 --area mc --mc-channels 6 --kind dsd`).
+
+The stereo all-threads row was slower in every round (0.3-1.2 %), and 1.3 % slower in a second,
+separate run; the split puts it on the tool change, not the library.
+
+**#241 wins back the 0.5.6 regression.** 0.5.6 decoded stereo DST on one thread 2.9 % slower
+than 0.5.5. In #241's fresh-copy measurements on lennon, stereo on one thread is ±0 % against
+0.5.5 and 2.67 % faster than 0.5.6, and 6 channels on one thread 5.9 % faster than 0.5.5.
+
+**Not yet at target:** the DSF output targets of #202 and the DST decoding targets of #203 are
+not met in 0.5.7; the work continues in 0.5.8.
+
+### Added
+
+- `bench dsf --via parallel`: one thread reads the area while `--threads` workers fill whole DSF rows and write them at their offsets, a prototype of a parallel DSF writer on the public `Layout` API (#202, #224, #232).
+- A CI benchmark regression check: `.github/workflows/bench-regress.yml` builds `bench` and the scarletbook-pcm `callpattern` example from the base and the head, times single-threaded DST decoding, plain DSD to DSF and DSD to PCM alternately on one runner (a fresh copy of each program per run), and fails when the median of the per-round ratios head / base of CPU time exceeds 1.15. It runs beside CI on pull requests that touch library sources, on main and nightly, and is not a required check (#226, #233).
+- A benchmark kit for timing scarletbook on consumers' machines: each release publishes `scarletbook-benchkit-<version>-x86_64-linux.tar.gz` and its `-v3` (x86-64-v3) twin, with statically linked `bench`, `scarletbook-synth` and the scarletbook-pcm `callpattern` example, a machine-readable run list of the #224 cases (`benchmarks/runlist.json`) and a reference runner that prints one JSON line per timed run; pushes to main upload the same archives as workflow artifacts. A release now has 28 assets instead of 24 (`benchmarks/README.md`; #226, #231).
+- `benchmarks/RESULTS.md`: measured figures per release on a Zen 2 machine (3950X), generic and x86-64-v3 builds, with the method and the paths not measured; `benchmarks/compare.sh` reproduces them by timing two revisions against each other with the run list (#226, #231).
+
+### Changed
+
+- `bench` opens images with `BufReader::new`, as the documentation does, instead of a 1 MiB `BufReader`: area reads (64 KiB) then go straight into the cursor's buffer, one copy from the kernel, as with `sb_disc_open`. The 1 MiB buffer copied every byte twice. A 78-minute plain-DSD stereo area writes to DSF in 0.50 s instead of 0.61 s on one thread on lennon (3950X). The library is unchanged; compare figures across this change with that in mind (#202, #239).
+- Reading an area no longer copies each 2048-byte audio sector out of the read buffer before demultiplexing it: a 78-minute plain-DSD stereo area reads in 0.47 s instead of 0.58 s, and writes to DSF in 1.66 s instead of 1.79 s, in generic builds on lennon (3950X) (#202, #230).
+- 5-channel DSF output is faster: the channels of a 5-channel row are separated four frames at a time in 32-bit words, which the compiler vectorises, where it had been inserting one byte at a time. A 30-minute plain-DSD 5-channel area writes to DSF in 0.64 s instead of 0.88 s on one thread in generic builds on lennon (3950X). The output is unchanged (#202, #237).
+- A disc of a raw image (2064 or 2054 bytes per stored sector) no longer keeps the read buffer of its TOC reads once opened or shared: it held the largest TOC read, 20 KiB or more per disc (about 80 KiB on the discs of #228), for as long as the disc was kept. The first audio read allocates it again; the output is unchanged (#228, #234).
+
+### Fixed
+
+- The `core-dispatch` Miri slice has room under its 25-minute limit again: under Miri, the output-path dispatch test compares one 2-channel area and three of its layouts (DSF, DSDIFF and a chain file starting inside a DSF row) instead of two areas and five layouts each (#202, #236).
+- Stereo DST decoding on one thread is no longer 2.9 % slower than in 0.5.5 on Zen 2: the decoder again uses byte probability tables and the 0.5.5 arithmetic-decoder step for 1, 2, 5 and 6 channels, and keeps the 0.5.6 ones for 3 and 4 channels, chosen per channel count at compile time. 6-channel DST keeps its 0.5.6 gain and is a little faster still. The output is the same to the bit (#203, #241).
+- The `core-lib` Miri slice fits its 25-minute limit again: under Miri, the #228 read-buffer unit test checks one raw format and reads only the first frame (#228, #235).
+
 ## [0.5.6] - 2026-11-02
 
 **Faster plain-DSD output and DSD-to-PCM conversion in the generic build.** On x86-64 CPUs with
@@ -689,7 +760,8 @@ First release: a clean-room reader for SACD images, written from sacd-spec, pass
 - DST decoding about 3.8 times faster on one thread, and parallel decoding that overlaps
   demultiplexing with decoding within a bounded memory (#16, #17, #19).
 
-[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v0.5.6...HEAD
+[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v0.5.7...HEAD
+[0.5.7]: https://github.com/aclater/scarletbook-rs/compare/v0.5.6...v0.5.7
 [0.5.6]: https://github.com/aclater/scarletbook-rs/compare/v0.5.5...v0.5.6
 [0.5.5]: https://github.com/aclater/scarletbook-rs/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/aclater/scarletbook-rs/compare/v0.5.3...v0.5.4
