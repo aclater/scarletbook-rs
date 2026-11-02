@@ -1,0 +1,1 @@
+| 2026-11-02 | `bench dsf --via parallel` prototype (#202, #224) | benchmark program only, on this crate's public `output::Layout` API; `std::os::unix::fs::FileExt::write_all_at` from the Rust standard library documentation. No new sources consulted. |
