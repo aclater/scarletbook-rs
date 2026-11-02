@@ -8,7 +8,9 @@
 # the release libscarletbook_ffi.so, as CI does) and disassembles the wrapper's instances, matched by demangled path, never by hash:
 #
 # - `avx2::run::<..output::Fill>` and `avx2::run::<..output::ReadAt<..>>`, the output path:
-#   the DSF channel separation must be there, as AVX2 shuffles (`vpshufb` on `ymm`);
+#   the DSF channel separation must be there, as AVX2 shuffles (`vpshufb` on `ymm`), and
+#   no byte inserts (`vpinsrb`): the compiler's form of a loop it could not vectorise,
+#   such as one over 5-byte frames (#202);
 # - `avx2::run::<..dispatch::Group>`, the DST decoder (also on rayon pool threads, which
 #   call `decode_group` themselves): LZCNT or the BMI shifts must be there;
 # - the generic instances, `Layout::fill` and `dispatch::decode_group`: neither, since
@@ -74,6 +76,8 @@ lacks() {
 }
 has 'dispatched Layout::fill' '<scarletbook::dispatch::avx2::run::<scarletbook::output::Fill>>:' "$AVX"
 has 'dispatched Layout::read_at' '<scarletbook::dispatch::avx2::run::<scarletbook::output::ReadAt<' "$AVX"
+lacks 'dispatched Layout::fill' '<scarletbook::dispatch::avx2::run::<scarletbook::output::Fill>>:' 'vpinsrb'
+lacks 'dispatched Layout::read_at' '<scarletbook::dispatch::avx2::run::<scarletbook::output::ReadAt<' 'vpinsrb'
 has 'dispatched DST group' '<scarletbook::dispatch::avx2::run::<scarletbook::dispatch::Group>>:' "$BMI"
 lacks 'generic Layout::fill' '<<scarletbook::output::Layout>::fill>:' "$AVX"
 lacks 'generic DST group' '<scarletbook::dispatch::decode_group>:' "$BMI"
