@@ -53,6 +53,11 @@ defaults:
 
 jobs:
   compare:
+    # TEMPORARY (calibration for #226): three runners at once; removed before merge.
+    strategy:
+      fail-fast: false
+      matrix:
+        calibration: [1, 2, 3]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
