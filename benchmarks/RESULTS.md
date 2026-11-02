@@ -62,9 +62,9 @@ per-round ratios of wall times.
 
 | Path | Run-list case | 0.5.6 | 0.5.6, new `bench` | 0.5.7 | 0.5.7 / 0.5.6 | tool¹ | library¹ |
 |---|---|---|---|---|---|---|---|
-| plain-DSD stereo area (78 min) to DSF, one thread | `dsf-plain-2ch` | 0.861 s | 0.695 s | 0.579 s | 0.674 | 0.805 | 0.834 |
-| plain-DSD 5-channel area (30 min) to DSF, one thread | `dsf-plain-5ch` | 1.092 s | 0.957 s | 0.607 s | 0.558 | 0.877 | 0.636 |
-| plain-DSD 6-channel area (25 min) to DSF, one thread | (not in the run list)² | 0.757 s | 0.652 s | 0.538 s | 0.711 | 0.862 | 0.827 |
+| plain-DSD stereo area (78 min) to DSF, one thread | `dsf-plain-2ch` | 0.704 s | 0.600 s | 0.483 s | 0.693 | 0.857 | 0.805 |
+| plain-DSD 5-channel area (30 min) to DSF, one thread | `dsf-plain-5ch` | 0.977 s | 0.894 s | 0.540 s | 0.553 | 0.913 | 0.605 |
+| plain-DSD 6-channel area (25 min) to DSF, one thread | (not in the run list)² | 0.712 s | 0.624 s | 0.510 s | 0.719 | 0.874 | 0.816 |
 | DST decode, stereo (20 min, corpus frames), one thread | `dst-decode-2ch-t1-corpus` | 20.62 s | 20.62 s | 20.18 s | 0.979 | 1.001 | 0.979 |
 | DST decode, stereo (5 min, stress frames), one thread | `dst-decode-2ch-t1` | 6.23 s | 6.21 s | 6.10 s | 0.981 | 0.996 | 0.985 |
 | DST decode, 6 channels (2 min, stress frames), one thread | `dst-decode-6ch-t1` | 7.68 s | 7.66 s | 7.62 s | 0.994 | 0.999 | 0.993 |
@@ -86,9 +86,17 @@ per-round ratios) in an earlier separate run of 0.5.6 against 0.5.7 only; the th
 the tool change. An earlier run of the one-thread cases in a `lennon.sh bench1` slot (one core
 complex) gave the same ratios within 1 %.
 
-The 0.5.6 DSF cells here (0.86 s and 1.09 s) are higher than the 0.5.6 section's (0.70 s and
-0.97 s) for the same library; the cause is not
-established. Compare figures within one section only.
+**Correction (#248).** The seconds of the three plain-DSD rows in the first version of this
+section were inflated by `run.py` (0.861 / 0.695 / 0.579 s stereo, 1.092 / 0.957 / 0.607 s 5
+channels, 0.757 / 0.652 / 0.538 s 6 channels), and the 0.5.6 DSF cells did not match the 0.5.6
+section. The images it timed were byte-identical files whose page-cache pages made every read of
+them slower: `dd bs=8k` read the stereo image in 0.50 s against 0.41 s for a copy of it, and once
+the same file was re-read into other pages it timed like the copy. `run.py` now times a fresh
+copy of the image in each round (`README.md`, "Fresh copies"). The rows above are a re-run of the
+same three kits with the fixed runner, on lennon, 2026-11-02, and agree within 1.5 % with direct
+`bench dsf` runs. The 0.5.7 / 0.5.6 changes moved by at most 2 points; the split between tool and
+library moved by up to 5 points (stereo: tool 0.805 to 0.857, library 0.834 to 0.805). The DST
+rows did not move (two re-run within 0.8 %), and the DSD-to-PCM row reads no image.
 
 Not measured for 0.5.7: the x86-64-v3 build; DST to DSF; TOC open, first 128 KiB, cold runs and
 the C interface (see "Not measured").

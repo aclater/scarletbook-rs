@@ -16,7 +16,9 @@ name: Benchmark kit
 # scarletbook-ffi-<version>-... C library archives.
 #
 # Each build is checked where it is built: no dynamic dependency, the corpus hashes through
-# `bench decode`, and every case of the run list once on tiny images (`run.py --smoke`). The
+# `bench decode`, run.py's self-check (its timing of a 10-minute plain-DSD case agrees with a
+# plain shell run within 5 %, #248), and every case of the run list once on tiny images
+# (`run.py --smoke`). The
 # v3 build stops if its runner is not x86-64-v3, as clib.yml's does.
 #
 # Pushes to main upload the kits as workflow artifacts, named with the short commit after the
@@ -138,7 +140,7 @@ jobs:
             "$KIT/bench" decode corpus/images/dst-features-2ch-6ch.iso --area "$area" --threads 0 --sink hash > "got-$area.txt"
             python3 -I .github/scripts/compare-hashes.py dst-features-2ch-6ch "$area" "got-$area.txt"
           done
-      - name: Every run list case once, on tiny images
+      - name: The runner's self-check, then every run list case once on tiny images
         env:
           BUILD: ${{ matrix.build }}
         run: python3 -I "$KIT/run.py" --kit "$BUILD=$KIT" --work target/benchkit-smoke --smoke

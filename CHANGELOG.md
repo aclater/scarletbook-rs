@@ -30,9 +30,9 @@ differ.
 
 | Path | 0.5.6 | 0.5.7 | Change | `bench` change (#239)¹ | Library change¹ |
 |---|---|---|---|---|---|
-| 78-min plain-DSD stereo area to DSF, one thread | 0.861 s | 0.579 s | 33 % faster | 19 % faster | 17 % faster |
-| 30-min plain-DSD 5-channel area to DSF, one thread | 1.092 s | 0.607 s | 44 % faster | 12 % faster | 36 % faster |
-| 25-min plain-DSD 6-channel area to DSF, one thread² | 0.757 s | 0.538 s | 29 % faster | 14 % faster | 17 % faster |
+| 78-min plain-DSD stereo area to DSF, one thread | 0.704 s | 0.483 s | 31 % faster | 14 % faster | 20 % faster |
+| 30-min plain-DSD 5-channel area to DSF, one thread | 0.977 s | 0.540 s | 45 % faster | 9 % faster | 40 % faster |
+| 25-min plain-DSD 6-channel area to DSF, one thread² | 0.712 s | 0.510 s | 28 % faster | 13 % faster | 18 % faster |
 | DST stereo, 20-min area (corpus frames), one thread | 20.62 s | 20.18 s | 2.1 % faster | ±0 | 2.1 % faster |
 | DST stereo, 5-min area (stress frames), one thread | 6.23 s | 6.10 s | 2.0 % faster | 0.5 % faster | 1.5 % faster |
 | DST 6-channel, 2-min area, one thread | 7.68 s | 7.62 s | 0.6 % faster | 0.1 % faster | 0.7 % faster |
@@ -49,6 +49,13 @@ library gains are #230 (all DSF rows) and #237 (5 channels): in #237's own same-
 the 30-minute 5-channel area went from 0.875 s to 0.637 s.
 ² Not in the run list: the command of `dsf-plain-5ch` on a 25-minute 6-channel image
 (`scarletbook-synth IMAGE --minutes 25 --area mc --mc-channels 6 --kind dsd`).
+
+**Correction (#248):** the seconds of the three plain-DSD rows in the first version of this table
+were inflated by the benchmark runner `run.py` (0.861 / 0.579 s stereo, 1.092 / 0.607 s 5
+channels, 0.757 / 0.538 s 6 channels): the image files it timed sat in page-cache pages that made
+every read slower. The rows above are a re-run with the fixed runner. The "Change" column moved by
+at most 2 points; the `bench` / library split moved by up to 5 points. The DST and PCM rows are
+unchanged.
 
 The stereo all-threads row was slower in every round (0.3-1.2 %), and 1.3 % slower in a second,
 separate run; the split puts it on the tool change, not the library.

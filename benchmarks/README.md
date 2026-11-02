@@ -91,8 +91,9 @@ an image.
 
 ## The sandboxed-runner contract
 
-**Inputs:** one or both kit archives of one release, verified and unpacked; about 8.3 GB of free
-disk for the images; nothing else. **Network:** none, after the download and verification.
+**Inputs:** one or both kit archives of one release, verified and unpacked; about 26 GB of free
+disk: 8.3 GB for the images, 0.85 GB for the self-check, and the per-round copies of one case's
+image (up to 5 × 3.3 GB); nothing else. **Network:** none, after the download and verification.
 **Privileges:** none.
 
 **What the runner executes**, in this order:
@@ -111,11 +112,13 @@ disk for the images; nothing else. **Network:** none, after the download and ver
 1. For each image a selected case needs: `<kit>/scarletbook-synth <work>/<image id>.iso <synth
    arguments>`, with either kit (the bytes are the same). Images can be kept between versions
    while their arguments are unchanged.
-2. For each case: if `cache` is `warm`, read the image once; run each build's `warmup_runs`;
-   then `rounds` rounds, alternating the builds as `alternation` says. Each run is the case's
-   `command` with the placeholders filled in, started directly (no shell), from any directory,
-   with the program (`command[0]`) copied to a new file first and that copy started (see
-   "Fresh copies"). Copies are deleted after the case, not between runs.
+2. For each case: `rounds` rounds, alternating the builds as `alternation` says. Each round
+   first writes a fresh copy of the case's image (a plain read/write copy, flushed to disk) and,
+   if `cache` is `warm`, reads it once; every build of that round times that copy, and the
+   first round also runs each build's `warmup_runs` on it. Each run is the case's `command` with
+   the placeholders filled in, started directly (no shell), from any directory, with the program
+   (`command[0]`) copied to a new file first and that copy started (see "Fresh copies"). Copies
+   of programs and images are deleted after the case, not between runs or rounds.
 3. Nothing runs in the background meanwhile; an otherwise idle machine gives the most useful
    figures.
 
@@ -147,6 +150,29 @@ a program's code can cost that much, and the cost sticks to the file while it st
 run list that started the same file for every round would carry such an offset through all of
 them; a fresh copy per run makes it a rare outlier, which the median of the rounds absorbs.
 
+**Images too (#248).** The first 0.5.7 table timed plain-DSD-to-DSF 10-18 % slower through
+`run.py` than direct runs of the same binaries, and the runner was not the cause: on the same
+image file, `run.py` and a direct shell run agreed within 1 %. The two methods had read different,
+byte-identical image files. One of them cost about 90 ms more system time per 3.3 GB pass in
+every run (`dd bs=8k` from the page cache: 0.50 s against 0.41 s for a copy); evicting it and
+reading it back left it as slow (the freed pages were taken again), but reading it back while
+8 GB of other memory was held put it on other pages, and it then timed like the copy. Copies
+written right after other large files were deleted were slower in the same way, for the first
+round or two. Which physical pages hold an image matters for the cases that stream gigabytes
+from the page cache. So the runner writes a fresh copy of the image in each round and keeps the
+copies until the case ends, so that no copy takes pages another just freed; the median of the
+rounds absorbs a slow first round. On lennon the plain-DSD rows then agree with direct runs on
+images in the fast state within 1.5 %.
+
+**The self-check.** Before the cases, `run.py` times plain-DSD-to-DSF on a 10-minute stereo
+image eight times through its own path (a fresh program copy, `wait4`) and eight times as a
+plain shell command (`sh -c 'exec bench ... >/dev/null 2>&1'`), ABBA, both on one staged copy of
+the image, and exits with status 1 if the median of the per-round ratios is off 1 by more than
+`--selftest-tolerance` percent (default 5). That catches anything the runner adds to a timed
+run, which is what a kit's figures rely on. 5 % is above the run-to-run noise of this short case
+(on lennon the rounds varied by up to 4 % and the median ratio was 0.99) and well below the 10-18 %
+of #248. `--no-selftest` skips it.
+
 **The run list is code.** It names the programs the runner starts, so a consumer uses the
 `runlist.json` inside the verified kit, never one from elsewhere. `run.py` also checks it: every
 command must start a program of the kit (`{kit}/NAME`, NAME of letters, digits, `_` and `-`), and
@@ -165,8 +191,8 @@ g=scarletbook-benchkit-<version>-x86_64-linux
 python3 -I $g/run.py --kit generic=$g --kit v3=$g-v3 --work work > results.jsonl
 ```
 
-`--case ID` (repeatable) selects cases; `--smoke` runs every case once on tiny images, which
-is what `benchkit.yml` does to check each kit. A full run of two builds takes about 10 minutes
+`--case ID` (repeatable) selects cases; `--smoke` runs every case once on tiny images, after
+the self-check, which is what `benchkit.yml` does to check each kit. A full run of two builds takes about 10 minutes
 on a 16-core Zen 2 machine and writes about 8.3 GB of images. `--kit BUILD@LABEL=DIR` times kits
 of several versions in one alternation; `python3 -I table.py results.jsonl` prints the medians
 as a Markdown table.
