@@ -16,9 +16,15 @@ name: Release
 # x86_64 and aarch64), macOS (x86_64 and arm64) and Windows (x86_64, MinGW-w64), built and
 # tested by clib.yml: scarletbook-ffi-<version>-<target>.tar.gz, each with a checksum, and
 # for x86_64 Linux (glibc and musl) also an x86-64-v3 build,
-# scarletbook-ffi-<version>-<target>-v3.tar.gz (issue #146): 9 C library archives and 3
-# bench archives, 24 assets with their checksums. All archives share one build provenance
-# attestation.
+# scarletbook-ffi-<version>-<target>-v3.tar.gz (issue #146).
+#
+# It also carries the benchmark kit that consumers run on their own machines
+# (benchmarks/README.md, issue #226), built and checked by benchkit.yml: statically linked
+# `bench`, `scarletbook-synth` and `callpattern` with the run list, for x86_64 Linux,
+# generic and x86-64-v3: scarletbook-benchkit-<version>-x86_64-linux[-v3].tar.gz.
+#
+# Assets: (9 C library + 3 bench + 2 benchmark kit archives) x 2 (each with its .sha256)
+# = 28. All archives share one build provenance attestation.
 #
 # The release notes start with the tag's section of CHANGELOG.md (`## [<version>] - <date>`);
 # the release stops if there is none, so the Unreleased section must be renamed for the
@@ -66,8 +72,12 @@ jobs:
     needs: preflight
     uses: ./.github/workflows/clib.yml
 
+  benchkit:
+    needs: preflight
+    uses: ./.github/workflows/benchkit.yml
+
   release:
-    needs: clib
+    needs: [clib, benchkit]
     runs-on: ubuntu-latest
     permissions:
       # Creating the GitHub release and uploading its assets (`gh release create`).
@@ -95,6 +105,12 @@ jobs:
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: clib-*
+          path: dist
+          merge-multiple: true
+      - name: Fetch the benchmark kits
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: benchkit-*
           path: dist
           merge-multiple: true
       - name: Build (generic x86-64)
@@ -144,13 +160,14 @@ jobs:
           package "bench-$VERSION-x86_64-linux-znver5" \
             target-znver5/x86_64-unknown-linux-gnu/release/bench \
             "Built with -C target-cpu=znver5 for AMD Zen 5 (the measuring machine's CPU); runs only on Zen 5."
-          (cd dist && sha256sum -c scarletbook-ffi-*.sha256)
+          (cd dist && sha256sum -c scarletbook-ffi-*.sha256 scarletbook-benchkit-*.sha256)
           ls -l dist
-          # 9 C library and 3 bench archives, each with its checksum: clib.yml's matrix
-          # entries, the v3 ones included, all reached the release.
+          # 9 C library, 3 bench and 2 benchmark kit archives, each with its checksum:
+          # clib.yml's and benchkit.yml's matrix entries, the v3 ones included, all reached
+          # the release (28 assets).
           archives=$(ls dist/*.tar.gz | wc -l) checksums=$(ls dist/*.tar.gz.sha256 | wc -l)
-          if [[ "$archives" != 12 || "$checksums" != 12 ]]; then
-            echo "::error::$archives archives and $checksums checksums, expected 12 and 12"
+          if [[ "$archives" != 14 || "$checksums" != 14 ]]; then
+            echo "::error::$archives archives and $checksums checksums, expected 14 and 14"
             exit 1
           fi
       - name: Attest build provenance
@@ -195,7 +212,9 @@ jobs:
           - \`bench-$VERSION-x86_64-linux.tar.gz\`: generic x86-64 (the required asset).
           - \`bench-$VERSION-x86_64-linux-znver5.tar.gz\`: built for AMD Zen 5, the measuring machine's CPU (the optional labelled asset of benchmarks/README.md).
           - \`bench-$VERSION-x86-64-v3-linux.tar.gz\`: built for x86-64-v3 (AVX2 and later CPUs), labelled; an extra build for users, not one of the benchmark assets.
-          Each has a \`.sha256\` checksum and, for a public repository, a signed build provenance attestation: \`gh attestation verify <asset> -R $GITHUB_REPOSITORY\`. The correctness gate (every corpus case, 1 and all threads) passed on the generic and x86-64-v3 builds."
+          Each has a \`.sha256\` checksum and, for a public repository, a signed build provenance attestation: \`gh attestation verify <asset> -R $GITHUB_REPOSITORY\`. The correctness gate (every corpus case, 1 and all threads) passed on the generic and x86-64-v3 builds.
+
+          Benchmark kit for running the benchmarks on your own machines (benchmarks/README.md): \`scarletbook-benchkit-$VERSION-x86_64-linux.tar.gz\` (generic x86-64) and \`scarletbook-benchkit-$VERSION-x86_64-linux-v3.tar.gz\` (x86-64-v3 CPUs only) hold statically linked \`bench\`, \`scarletbook-synth\` and \`callpattern\`, the run list \`runlist.json\` and its reference runner \`run.py\`. Match the names exactly: a prefix of the generic name also matches the v3 one."
           } > release-notes.md
           gh release create "$GITHUB_REF_NAME" --title "scarletbook $VERSION" --verify-tag \
             --notes-file release-notes.md dist/*.tar.gz dist/*.sha256

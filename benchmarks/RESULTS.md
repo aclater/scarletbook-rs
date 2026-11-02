@@ -1,0 +1,76 @@
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+# Measured performance, per release
+
+Numbers for consumers deciding which version and which build to use. Each release adds a
+section, newest first, measured on **lennon**: AMD Ryzen 9 3950X (Zen 2, 16 cores / 32
+threads, SMT on), 125 GB RAM, NVMe, `performance` governor, Linux. That is the consumers' Zen 2
+class; other CPUs differ (#224 also measures Zen 5 and Raptor Lake, through the kit).
+
+## Method
+
+- **Builds:** the release's benchmark kits (`scarletbook-benchkit-<version>-x86_64-linux.tar.gz`,
+  generic, and `...-v3.tar.gz`, x86-64-v3), or kits built the same way from the release tag
+  (`benchmarks/compare.sh build`): statically linked, profile `dist`. The generic build also
+  picks the AVX2 DST decoder and PCM kernels at run time on CPUs that have them.
+- **Cases and images:** `benchmarks/runlist.json`, unchanged unless the section says so:
+  synthetic images from `scarletbook-synth` (DST from the generated stress frames, so every
+  machine writes the same bytes), in the page cache (warm), output to `/dev/null`.
+- **Runs:** each case runs every build of both versions in turn, alternating (ABBA), after one
+  untimed run of each; 5 rounds (3 for `callpattern` and the 20-minute one-thread DST case); each run starts a fresh copy of its
+  program (`benchmarks/README.md`, "Fresh copies"). Figures are medians over the rounds: wall
+  time, and CPU time (user + system) of the process. For DSD to PCM, `callpattern`'s own
+  figure: CPU milliseconds per second of stereo DSD64 converted to 176.4 kHz 24-bit, at 1, 8
+  and 256 frames per call (the sacdfs call pattern is a few frames per call).
+- **Ratio:** the newer version's median wall time over the older one's, per build; below 1
+  is faster.
+
+To reproduce, from a checkout of the newer version (on lennon, build under `lennon.sh run`
+and time under `lennon.sh bench`):
+
+```sh
+benchmarks/compare.sh build ../cmp 3eb96dc v0.5.6   # git revisions or source directories
+benchmarks/compare.sh run ../cmp > table.md         # about 20 minutes on lennon, about 8.3 GB of images
+```
+
+`compare.sh run` passes extra options to `run.py`, for example `--case dst-decode-2ch-t1`.
+
+## Not measured
+
+Not in the run list yet, so not in these tables:
+
+- **TOC open** (open to parsed TOC, page cache and evicted): `bench` has no command for it.
+  The criterion benchmark `toc_read` measures it in development builds.
+- **First 128 KiB** of a track (seek), page cache and evicted: no `bench` command.
+- **Cold runs** (image evicted from the page cache) of any case.
+- **The C interface:** `bench` calls the Rust API.
+- **DSD to PCM from an image** (`callpattern` converts generated DSD in memory) and DST areas
+  to PCM.
+- Released versions before 0.5.6 have no `bench dsf` and no `callpattern`, so their cells for
+  DSF and DSD to PCM are blank, unless an equivalent revision is compared instead (0.5.6
+  below uses `3eb96dc` for 0.5.5).
+
+## 0.5.6
+
+Measured on lennon (3950X) by the owner, 2026-11-02: the **generic** build of each version,
+medians of alternating runs (5 rounds for DSF, 3 for DST and DSD to PCM; the rounds of each
+cell within 1 % of each other), images in the page cache. The library revisions are 0.5.5 =
+`3eb96dc` (the merge of #212: the library is identical to v0.5.5, and it is the first revision
+with `bench dsf`) and 0.5.6 = `6765ff2`. The images are those of the run list, written by
+`scarletbook-synth`; each is byte-identical to the run list's recipe (checked with `cmp`).
+
+| Path | Run-list case | Command | 0.5.5 | 0.5.6 | 0.5.6 / 0.5.5 |
+|---|---|---|---|---|---|
+| plain-DSD stereo area (78 min) to DSF | `dsf-plain-2ch` | `bench dsf IMAGE --area 2ch --threads 1 --out /dev/null` | 2.61 s | 0.70 s | 0.27 |
+| plain-DSD 5-channel area (30 min) to DSF | `dsf-plain-5ch` | `bench dsf IMAGE --area mc --threads 1 --out /dev/null` | 2.45 s | 0.97 s | 0.40 |
+| DST decode, stereo (50 min, stress frames), all threads | `dst-decode-2ch-tall` | `bench decode IMAGE --area 2ch --threads 32 --sink null` | 4.05 s | 3.98 s | 0.98 |
+| DST decode, 6 channels (10 min, stress frames), all threads | `dst-decode-6ch-tall` | `bench decode IMAGE --area mc --threads 32 --sink null` | 2.84 s | 2.75 s | 0.97 |
+| DST decode, stereo (20 min, corpus frames), one thread | `dst-decode-2ch-t1-corpus` | `bench decode IMAGE --area 2ch --threads 1 --sink null` | 20.26 s | 20.83 s | 1.03 |
+| DSD to PCM, stereo DSD64 to 176.4 kHz 24-bit, 8 frames per call | `pcm-callpattern` | `callpattern 60 7 8` | 5.09 ms per s | 4.08 ms per s | 0.80 |
+
+Times are wall clock; DSD to PCM is CPU milliseconds per second of audio. `--threads 32` is
+`--threads 0` on this machine. The one-thread stereo DST figure is 3 % slower in 0.5.6, a
+regression tracked on #203.
+
+Not measured for 0.5.6: the x86-64-v3 build; DST decode on one thread for the stress images
+and for 6 channels; DST to DSF; TOC open, first 128 KiB, cold runs and the C interface (see
+"Not measured").

@@ -1,0 +1,151 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+name: Benchmark kit
+
+# Builds the benchmark kit that consumers run on their own machines (benchmarks/README.md,
+# issue #226): statically linked `bench`, `scarletbook-synth` and the scarletbook-pcm
+# `callpattern` example for x86_64 Linux, generic and x86-64-v3, with the run list and its
+# reference runner, as scarletbook-benchkit-<version>-x86_64-linux[-v3].tar.gz.
+#
+# They link glibc statically (x86_64-unknown-linux-gnu, `-C target-feature=+crt-static`), not
+# musl: on lennon (Zen 2, 32 threads) musl builds took 11 % longer, from its allocator (all-
+# thread DST decoding: 4.46 s against 4.02 s, 6.4 s of system time against 0.25 s) and its
+# memcpy (plain DSD to DSF: 2.03 s against 1.81 s), while the static glibc builds timed the
+# same as the dynamic ones. The programs use no NSS or dlopen, the parts of glibc that a static
+# link cannot carry.
+# The archive names share no prefix with the bench-<version>-... benchmark assets or the
+# scarletbook-ffi-<version>-... C library archives.
+#
+# Each build is checked where it is built: no dynamic dependency, the corpus hashes through
+# `bench decode`, and every case of the run list once on tiny images (`run.py --smoke`). The
+# v3 build stops if its runner is not x86-64-v3, as clib.yml's does.
+#
+# Pushes to main upload the kits as workflow artifacts, named with the short commit after the
+# version (scarletbook-benchkit-<version>-<commit>-x86_64-linux...), so that they cannot be
+# taken for release kits; the release workflow calls this on the tag and publishes them. Pull requests run it only when the kit itself changes; it is not a required
+# check.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "benchmarks/**"
+      - .github/workflows/benchkit.yml
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+# A newer push to the same pull request cancels the older run; runs on main and release runs
+# (called from release.yml, on a tag) are never cancelled. The group's prefix differs from the
+# caller's, so a release run does not wait on itself.
+concurrency:
+  group: benchkit-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_STABLE: 1.99.1
+  TARGET: x86_64-unknown-linux-gnu
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: benchkit${{ matrix.variant && format('-{0}', matrix.variant) || '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - build: generic
+            rustflags: -C target-feature=+crt-static
+            note: Generic x86-64 (no target-cpu); runs on any x86_64 Linux.
+          - build: v3
+            variant: v3
+            rustflags: -C target-feature=+crt-static -C target-cpu=x86-64-v3
+            note: Built with -C target-cpu=x86-64-v3 (AVX2, BMI1/2, FMA, MOVBE); runs on x86-64-v3 CPUs only.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: |
+          rustup toolchain install "$RUST_STABLE" --profile minimal --target "$TARGET"
+          rustup default "$RUST_STABLE"
+      - name: The runner can run an x86-64-v3 build
+        if: matrix.variant == 'v3'
+        run: |
+          for f in avx2 bmi1 bmi2 fma movbe abm f16c; do
+            if ! grep -qw "$f" /proc/cpuinfo; then
+              echo "::error::runner CPU lacks $f; the v3 kit cannot be checked, so the build stops"
+              exit 1
+            fi
+          done
+      # Profile dist (release with one codegen unit) for both builds. With --target, RUSTFLAGS
+      # reach only the target's crates, not build scripts or proc macros.
+      - name: Build
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
+        run: |
+          cargo build --profile dist --locked --target "$TARGET" \
+            -p scarletbook-bench -p scarletbook-conformance --bin bench --bin scarletbook-synth
+          cargo build --profile dist --locked --target "$TARGET" -p scarletbook-pcm --example callpattern
+      - name: Package
+        env:
+          VARIANT: ${{ matrix.variant }}
+          NOTE: ${{ matrix.note }}
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 --locked \
+            | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "scarletbook-bench"))')
+          # Outside a release (a tag), the short commit follows the version, so that a kit built
+          # from main cannot be taken for the release kit of that version.
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            name="scarletbook-benchkit-$version-x86_64-linux${VARIANT:+-$VARIANT}"
+          else
+            short=$(git rev-parse --short=10 HEAD)
+            name="scarletbook-benchkit-$version-$short-x86_64-linux${VARIANT:+-$VARIANT}"
+            echo "SUFFIX=-$short" >> "$GITHUB_ENV"
+          fi
+          out="target/$TARGET/dist"
+          mkdir -p "dist/$name"
+          cp "$out/bench" "$out/scarletbook-synth" "$out/examples/callpattern" "dist/$name/"
+          for bin in bench scarletbook-synth callpattern; do
+            # Statically linked: no shared library to find on the consumer's machine.
+            if readelf -d "dist/$name/$bin" | grep -q NEEDED; then
+              echo "::error::$bin is dynamically linked"
+              readelf -d "dist/$name/$bin"
+              exit 1
+            fi
+          done
+          cp benchmarks/runlist.json benchmarks/run.py benchmarks/table.py benchmarks/README.md LICENSE-MIT LICENSE-APACHE "dist/$name/"
+          # The corpus images scarletbook-synth takes DST frames from (CC0, corpus/LICENSE).
+          mkdir -p "dist/$name/corpus/images"
+          cp corpus/LICENSE "dist/$name/corpus/"
+          cp corpus/images/dst-features-2ch-6ch.iso corpus/images/dst-features-5ch.iso "dist/$name/corpus/images/"
+          printf '%s\n' "scarletbook benchmark kit $version ($GITHUB_SHA), x86_64 Linux" "$NOTE" \
+            "Statically linked (glibc) bench, scarletbook-synth and callpattern; run list and runner: README.md." \
+            > "dist/$name/README.txt"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+          echo "KIT=dist/$name" >> "$GITHUB_ENV"
+          ls -l "dist/$name" dist
+      - name: Corpus hashes through the packaged bench
+        run: |
+          for area in 2ch mc; do
+            "$KIT/bench" decode corpus/images/dst-features-2ch-6ch.iso --area "$area" --threads 0 --sink hash > "got-$area.txt"
+            python3 -I .github/scripts/compare-hashes.py dst-features-2ch-6ch "$area" "got-$area.txt"
+          done
+      - name: Every run list case once, on tiny images
+        env:
+          BUILD: ${{ matrix.build }}
+        run: python3 -I "$KIT/run.py" --kit "$BUILD=$KIT" --work target/benchkit-smoke --smoke
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: benchkit-x86_64-linux${{ matrix.variant && format('-{0}', matrix.variant) || '' }}${{ env.SUFFIX }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error

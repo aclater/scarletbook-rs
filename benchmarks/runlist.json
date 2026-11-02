@@ -1,0 +1,135 @@
+{
+  "format_version": 1,
+  "about": "Run list of the published benchmark kits (benchmarks/README.md). Placeholders in commands and synth arguments: {kit} the unpacked kit directory of the build being timed, {image} the image file of the case, {scratch} a writable directory for output. Threads 0 means one thread per logical CPU.",
+  "builds": [
+    {
+      "id": "generic",
+      "archive": "scarletbook-benchkit-{version}-x86_64-linux.tar.gz",
+      "cpu_flags": []
+    },
+    {
+      "id": "v3",
+      "archive": "scarletbook-benchkit-{version}-x86_64-linux-v3.tar.gz",
+      "cpu_flags": ["avx", "avx2", "bmi1", "bmi2", "f16c", "fma", "abm", "movbe", "xsave"]
+    }
+  ],
+  "images": [
+    {
+      "id": "dst-stress-2ch-5m",
+      "synth": ["--minutes", "5", "--area", "2ch", "--kind", "dst", "--dst-frames", "stress"],
+      "approx_bytes": 81000000
+    },
+    {
+      "id": "dst-corpus-2ch-20m",
+      "synth": ["--minutes", "20", "--area", "2ch", "--kind", "dst", "--corpus", "{kit}/corpus"],
+      "approx_bytes": 390000000
+    },
+    {
+      "id": "dst-stress-2ch-50m",
+      "synth": ["--minutes", "50", "--area", "2ch", "--kind", "dst", "--dst-frames", "stress"],
+      "approx_bytes": 807000000
+    },
+    {
+      "id": "dst-stress-6ch-2m",
+      "synth": ["--minutes", "2", "--area", "mc", "--mc-channels", "6", "--kind", "dst", "--dst-frames", "stress"],
+      "approx_bytes": 92000000
+    },
+    {
+      "id": "dst-stress-6ch-10m",
+      "synth": ["--minutes", "10", "--area", "mc", "--mc-channels", "6", "--kind", "dst", "--dst-frames", "stress"],
+      "approx_bytes": 458000000
+    },
+    {
+      "id": "plain-dsd-2ch-78m",
+      "synth": ["--minutes", "78", "--area", "2ch", "--kind", "dsd"],
+      "approx_bytes": 3310000000
+    },
+    {
+      "id": "plain-dsd-5ch-30m",
+      "synth": ["--minutes", "30", "--area", "mc", "--mc-channels", "5", "--kind", "dsd"],
+      "approx_bytes": 3182000000
+    }
+  ],
+  "defaults": {
+    "rounds": 5,
+    "alternation": "abba",
+    "cache": "warm",
+    "warmup_runs": 1,
+    "stdout": "discard"
+  },
+  "cases": [
+    {
+      "id": "dst-decode-2ch-t1",
+      "path": "DST decode, one thread, 2 channels",
+      "image": "dst-stress-2ch-5m",
+      "command": ["{kit}/bench", "decode", "{image}", "--area", "2ch", "--threads", "1", "--sink", "null"],
+      "frames": 22500
+    },
+    {
+      "id": "dst-decode-2ch-t1-corpus",
+      "path": "DST decode, one thread, 2 channels, corpus frames",
+      "image": "dst-corpus-2ch-20m",
+      "command": ["{kit}/bench", "decode", "{image}", "--area", "2ch", "--threads", "1", "--sink", "null"],
+      "rounds": 3,
+      "frames": 90000
+    },
+    {
+      "id": "dst-decode-2ch-tall",
+      "path": "DST decode, all threads, 2 channels",
+      "image": "dst-stress-2ch-50m",
+      "command": ["{kit}/bench", "decode", "{image}", "--area", "2ch", "--threads", "0", "--sink", "null"],
+      "frames": 225000
+    },
+    {
+      "id": "dst-decode-6ch-t1",
+      "path": "DST decode, one thread, 6 channels",
+      "image": "dst-stress-6ch-2m",
+      "command": ["{kit}/bench", "decode", "{image}", "--area", "mc", "--threads", "1", "--sink", "null"],
+      "frames": 9000
+    },
+    {
+      "id": "dst-decode-6ch-tall",
+      "path": "DST decode, all threads, 6 channels",
+      "image": "dst-stress-6ch-10m",
+      "command": ["{kit}/bench", "decode", "{image}", "--area", "mc", "--threads", "0", "--sink", "null"],
+      "frames": 45000
+    },
+    {
+      "id": "dsf-plain-2ch",
+      "path": "plain-DSD area to DSF, 2 channels",
+      "image": "plain-dsd-2ch-78m",
+      "command": ["{kit}/bench", "dsf", "{image}", "--area", "2ch", "--threads", "1", "--out", "/dev/null"],
+      "frames": 351000
+    },
+    {
+      "id": "dsf-plain-5ch",
+      "path": "plain-DSD area to DSF, 5 channels",
+      "image": "plain-dsd-5ch-30m",
+      "command": ["{kit}/bench", "dsf", "{image}", "--area", "mc", "--threads", "1", "--out", "/dev/null"],
+      "frames": 135000
+    },
+    {
+      "id": "dsf-dst-2ch-tall",
+      "path": "DST area to DSF, all threads",
+      "image": "dst-stress-2ch-50m",
+      "command": ["{kit}/bench", "dsf", "{image}", "--area", "2ch", "--threads", "0", "--out", "/dev/null"],
+      "frames": 225000
+    },
+    {
+      "id": "pcm-callpattern",
+      "path": "DSD to PCM, stereo DSD64 to 176.4 kHz 24-bit, one thread",
+      "image": null,
+      "command": ["{kit}/callpattern", "60", "7", "1,8,256"],
+      "rounds": 3,
+      "warmup_runs": 0,
+      "stdout": "keep"
+    }
+  ],
+  "missing": [
+    {"path": "TOC open (page cache and evicted)", "reason": "bench has no TOC-open command; today only the criterion benchmark toc_read measures it"},
+    {"path": "first 128 KiB (seek), page cache and evicted", "reason": "bench has no first-bytes command"},
+    {"path": "cold (evicted) runs of any case", "reason": "the run list has no eviction step yet; every case is warm"},
+    {"path": "the C interface", "reason": "bench calls the Rust API only; the C interface's decode_pool benchmark is not a published binary"},
+    {"path": "DSD to PCM over a disc image", "reason": "callpattern converts generated DSD in memory, not an area of an image"}
+  ]
+}
