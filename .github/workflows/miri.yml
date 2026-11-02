@@ -126,7 +126,8 @@ jobs:
                   done ;;
               esac
               miri -p scarletbook "${args[@]}" ;;
-            core-lib) miri -p scarletbook --lib -- --skip fast_loop_matches_general ;;
+            # The dispatch tests run in their own slice, core-dispatch, on main and nightly too.
+            core-lib) miri -p scarletbook --lib -- --skip fast_loop_matches_general --skip dispatch:: ;;
             # The run-time dispatch of the DST decoder and of the output path, the core crate's
             # unsafe code (#146, #202): on pull requests that change them (ci.yml), about 12 minutes.
             core-dispatch)
