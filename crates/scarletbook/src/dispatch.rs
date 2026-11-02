@@ -203,6 +203,8 @@ mod output_tests {
 
     /// The layouts of `[first, end)` of the area from `slot`: DSF with both bit orders and
     /// DSDIFF; and the DSF files of a chain of the range split in two, when it can be.
+    /// Under Miri: DSF with bits reversed (the default), DSDIFF, and the chain's second
+    /// file, which starts inside a position and a DSF row (8.2.7).
     fn layouts<R: Read + Seek>(disc: &Disc<R>, slot: Slot, first: u32, end: u32) -> Vec<Layout> {
         let area = disc.toc().area(slot).unwrap();
         let channel_type = [1, 2, 3, 4, 6, 7][usize::from(area.channel_count) - 1];
@@ -210,14 +212,20 @@ mod output_tests {
             .with_tags(Tags::None)
             .with_dsf_unspecified_channel_type(Some(channel_type));
         let mut out = Vec::new();
-        for bits in [DsfBitsPerSample::One, DsfBitsPerSample::Eight] {
+        let bits: &[_] = if cfg!(miri) {
+            &[DsfBitsPerSample::One]
+        } else {
+            &[DsfBitsPerSample::One, DsfBitsPerSample::Eight]
+        };
+        for &bits in bits {
             let o = options.clone().with_dsf_bits_per_sample(bits);
             out.extend(disc.output_layout(slot, first, end, Format::Dsf, &o));
         }
         out.extend(disc.output_layout(slot, first, end, Format::DsdiffDsd, &options));
         if end - first >= 2 {
             let mid = first + (end - first) / 2;
-            for file in disc.plan_dsf_chain(slot, &[first, mid, end]).unwrap().into_iter().flatten() {
+            let files = disc.plan_dsf_chain(slot, &[first, mid, end]).unwrap().into_iter().flatten();
+            for file in files.skip(usize::from(cfg!(miri))) {
                 let o = options.clone().with_dsf_chain(Some(file.chain));
                 out.extend(disc.output_layout(slot, file.range.0, file.range.1, Format::Dsf, &o));
             }
@@ -308,18 +316,20 @@ mod output_tests {
         assert!(n > 200, "only {n} layouts compared");
     }
 
-    /// The same on small synthetic areas of 2 and 5 channels (1 and 6 too outside Miri),
-    /// short enough for Miri: a range and its chain of two files.
+    /// The same on small synthetic areas of 1, 2, 5 and 6 channels: a range and its chain
+    /// of two files. Under Miri (the `core-dispatch` slice), 2 channels and three of the
+    /// layouts ([`layouts`]).
     #[test]
     fn detected_output_matches_generic_simple() {
-        let channels: &[u8] = if cfg!(miri) { &[2, 5] } else { &[1, 2, 5, 6] };
+        let channels: &[u8] = if cfg!(miri) { &[2] } else { &[1, 2, 5, 6] };
         let mut n = 0;
         for &c in channels {
             let n_frames = if cfg!(miri) { 2 } else { 3 };
             let mut disc = synthetic(c, n_frames);
             n += compare(&mut disc, Slot::TwoChannel, &[(0, n_frames)], 5000);
         }
-        assert!(n >= 5 * channels.len(), "only {n} layouts compared");
+        let per_area = if cfg!(miri) { 3 } else { 5 };
+        assert!(n >= per_area * channels.len(), "only {n} layouts compared");
     }
 }
 
