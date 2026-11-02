@@ -419,30 +419,48 @@ mod tests {
         assert_eq!([0x00, 0x01, 0x02, 0x03, 0x04].map(u8::reverse_bits), [0x00, 0x80, 0x40, 0xC0, 0x20]);
     }
 
-    /// Positions of `C x 4704` bytes made from their number and channel count.
-    struct Made(u8);
+    /// Positions of `C x 4704` bytes made from their number and channel count, each made
+    /// once (the fills ask for a position again for every block).
+    struct Made(u8, Vec<(u32, Vec<u8>)>);
 
     impl PositionSource for Made {
         fn content(&mut self, t: u32) -> Result<Cow<'_, [u8]>, Error> {
-            let len = usize::from(self.0) * FRAME_BYTES_PER_CHANNEL;
-            Ok(Cow::Owned((0..len).map(|i| (i as u32 * 131 + t * 7919 + i as u32 / 255) as u8).collect()))
+            let i = match self.1.iter().position(|(u, _)| *u == t) {
+                Some(i) => i,
+                None => {
+                    let len = usize::from(self.0) * FRAME_BYTES_PER_CHANNEL;
+                    let content =
+                        (0..len).map(|i| (i as u32 * 131 + t * 7919 + i as u32 / 255) as u8).collect();
+                    self.1.push((t, content));
+                    self.1.len() - 1
+                }
+            };
+            Ok(Cow::Borrowed(&self.1[i].1))
         }
     }
 
     /// Whole rows (filled a position at a time) are the bytes that filling a block at a
     /// time gives, for every channel count, both bit orders, streams that start inside a
-    /// position (8.2.7) and streams that end inside a row.
+    /// position (8.2.7) and streams that end inside a row. Under Miri: 1, 2 and 6 channels
+    /// and two short streams, one starting inside a position and ending inside a row, one
+    /// starting a byte before a block ends and ending at a row's end.
     #[test]
     fn rows_equal_blocks() {
         let per = FRAME_BYTES_PER_CHANNEL as u64;
-        for channels in 1..=6u8 {
+        let (channels, streams): (&[u8], &[(u64, u64)]) = if cfg!(miri) {
+            (&[1, 2, 6], &[(1000, per + 17), (4095, 2 * BLOCK)])
+        } else {
+            (
+                &[1, 2, 3, 4, 5, 6],
+                &[(0, 5 * per), (1000, 4 * per + 17), (4095, 3 * BLOCK), (8, 9 * BLOCK + 8)],
+            )
+        };
+        for &channels in channels {
             for reverse in [false, true] {
-                for (skip, stream) in
-                    [(0, 5 * per), (1000, 4 * per + 17), (4095, 3 * BLOCK), (8, 9 * BLOCK + 8)]
-                {
+                for &(skip, stream) in streams {
                     let data = DsfData { channels, start: skip, stream, skip, reverse };
                     let size = (BLOCK * stream.div_ceil(BLOCK) * u64::from(channels)) as usize;
-                    let mut source = Made(channels);
+                    let mut source = Made(channels, Vec::new());
                     let len = usize::from(channels) * FRAME_BYTES_PER_CHANNEL;
                     let (mut rows, mut blocks) = (vec![0xAA; size], vec![0x55; size]);
                     data.fill(0, &mut rows, 3, &mut Checked { inner: &mut source, len }).unwrap();
