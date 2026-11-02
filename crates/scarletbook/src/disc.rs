@@ -905,8 +905,8 @@ mod tests {
     use crate::ReadAtReader;
     use crate::audio::FRAME_BYTES_PER_CHANNEL;
 
-    /// A synthetic image of 9 plain positions, stored with `format`'s sector size.
-    fn image(format: SectorFormat) -> Vec<u8> {
+    /// A synthetic plain image of 9 positions.
+    fn plain_image() -> Vec<u8> {
         let frames: Vec<PFrame> = (0..9)
             .map(|number| PFrame {
                 number,
@@ -915,7 +915,11 @@ mod tests {
             })
             .collect();
         let tracks = vec![TrackSpec { start: 0, duration: 4 }, TrackSpec { start: 4, duration: 5 }];
-        let plain = Spec { channels: 2, playtime: 9, tracks, audio: pack(&frames) }.build();
+        Spec { channels: 2, playtime: 9, tracks, audio: pack(&frames) }.build()
+    }
+
+    /// `plain` stored with `format`'s sector size.
+    fn stored(plain: &[u8], format: SectorFormat) -> Vec<u8> {
         let (p, d) = (format.stored_size() as usize, format.data_offset() as usize);
         let mut out = vec![0u8; plain.len() / S * p];
         for (i, sector) in plain.chunks_exact(S).enumerate() {
@@ -924,19 +928,27 @@ mod tests {
         out
     }
 
-    fn frames<R: Read + Seek>(disc: &mut Disc<R>) -> Vec<String> {
-        disc.area_frames(Slot::TwoChannel).unwrap().map(|f| format!("{f:?}")).collect()
+    /// The area's frames; under Miri, which is slow, its first only.
+    fn frames<R: Read + Seek>(disc: &mut Disc<R>) -> Vec<crate::AreaFrame> {
+        let count = if cfg!(miri) { 1 } else { usize::MAX };
+        disc.area_frames(Slot::TwoChannel).unwrap().take(count).map(Result::unwrap).collect()
     }
 
     /// A raw image's discs keep no read buffer once the TOC is read (#228): opened,
     /// shared or cloned. The first audio read allocates one, and reads what a plain image
-    /// gives.
+    /// gives. Under Miri, which is slow, one raw format and one read of one frame: the
+    /// buffer checks without the comparison of the frames.
     #[test]
     fn raw_disc_keeps_no_read_buffer_after_toc() {
-        let want = frames(&mut Disc::open(Cursor::new(image(SectorFormat::Plain))).unwrap());
-        assert!(!want.is_empty());
-        for format in [SectorFormat::Raw2064, SectorFormat::Raw2054] {
-            let bytes = image(format);
+        let plain = plain_image();
+        let want = (!cfg!(miri)).then(|| frames(&mut Disc::open(Cursor::new(plain.as_slice())).unwrap()));
+        let formats: &[SectorFormat] = if cfg!(miri) {
+            &[SectorFormat::Raw2064]
+        } else {
+            &[SectorFormat::Raw2064, SectorFormat::Raw2054]
+        };
+        for &format in formats {
+            let bytes = stored(&plain, format);
             let mut disc = Disc::open(Cursor::new(bytes.as_slice())).unwrap();
             assert_eq!(disc.image.format(), format);
             assert_eq!(disc.image.buffer_capacity(), 0);
@@ -945,12 +957,16 @@ mod tests {
             let mut source = Disc::open(ReadAtReader::new(bytes.as_slice())).unwrap();
             let mut cloned = source.clone();
             assert_eq!((source.image.buffer_capacity(), cloned.image.buffer_capacity()), (0, 0));
-            assert_eq!(frames(&mut disc), want);
+            let first = frames(&mut disc);
+            assert!(!first.is_empty());
             assert!(disc.image.buffer_capacity() > 0);
-            assert_eq!(frames(&mut disc), want);
-            assert_eq!(frames(&mut shared), want);
-            assert_eq!(frames(&mut source), want);
-            assert_eq!(frames(&mut cloned), want);
+            if let Some(want) = &want {
+                assert_eq!(&first, want);
+                assert_eq!(&frames(&mut disc), want);
+                assert_eq!(&frames(&mut shared), want);
+                assert_eq!(&frames(&mut source), want);
+                assert_eq!(&frames(&mut cloned), want);
+            }
         }
     }
 }
