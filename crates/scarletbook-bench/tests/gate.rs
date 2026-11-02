@@ -156,15 +156,13 @@ fn dsf_streams_and_read_at_calls_agree() {
         let case = cases().into_iter().find(|c| c["id"] == id).unwrap();
         let img = image(&case);
         let mut files = Vec::new();
-        for (i, extra) in [
-            &[][..],
-            &["--via", "read-at", "--chunk", "5000"],
-            &["--chunk", "4093"],
-            &["--via", "parallel", "--chunk", "5000"],
-        ]
-        .iter()
-        .enumerate()
-        {
+        let mut extras: Vec<&[&str]> =
+            vec![&[], &["--via", "read-at", "--chunk", "5000"], &["--chunk", "4093"]];
+        // The parallel writer needs `write_at`, which is Unix only.
+        if cfg!(unix) {
+            extras.push(&["--via", "parallel", "--chunk", "5000"]);
+        }
+        for (i, extra) in extras.iter().enumerate() {
             let path = dir.join(format!("{id}-{flag}-{i}.dsf"));
             let mut args =
                 vec!["dsf", &img, "--area", flag, "--threads", "0", "--out", path.to_str().unwrap()];
