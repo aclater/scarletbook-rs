@@ -137,7 +137,7 @@ jobs:
       # the repository's.
       - name: The published packages carry the licences and README
         run: |
-          for pkg in scarletbook scarletbook-pcm; do
+          for pkg in scarletbook scarletbook-pcm scarletbook-ffi; do
             cmp LICENSE-MIT "crates/$pkg/LICENSE-MIT"
             cmp LICENSE-APACHE "crates/$pkg/LICENSE-APACHE"
             files=$(cargo package -p "$pkg" --list --locked)

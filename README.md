@@ -20,6 +20,43 @@ audio sector multiplexing, DST decoding, C FFI. The clean-room record is in
 in [CHANGELOG.md](CHANGELOG.md), and vulnerabilities are reported as described in
 [SECURITY.md](SECURITY.md).
 
+## Installing
+
+The crates are on crates.io: [`scarletbook`](https://crates.io/crates/scarletbook) (the
+reader), [`scarletbook-pcm`](https://crates.io/crates/scarletbook-pcm) (DSD to PCM) and
+[`scarletbook-ffi`](https://crates.io/crates/scarletbook-ffi) (the C ABI, from 0.5.8, for Rust programs
+that build the C library themselves; C users take the [release assets](#release-assets)).
+
+```sh
+cargo add scarletbook
+cargo add scarletbook-pcm   # only for PCM output
+```
+
+```rust
+use std::{fs::File, io::BufReader};
+use scarletbook::{Disc, Slot};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut disc = Disc::open(BufReader::new(File::open("disc.iso")?))?;
+    let mut bytes = 0;
+    for frame in disc.track_audio(Slot::TwoChannel, 1)? {
+        bytes += frame?.data.len(); // interleaved DSD, DST already decoded
+    }
+    println!("track 1: {bytes} bytes of DSD");
+    Ok(())
+}
+```
+
+**Byte stability.** While the version is 0.x, a new 0.5.y release may change the PCM bytes
+that `scarletbook-pcm` (and the C library's `sb_pcm_*`) produce; the decoded DSD bytes are
+fixed by the specification. Cargo treats `0.5.y` as compatible with `0.5.x`, so a plain
+`scarletbook-pcm = "0.5"` picks up such changes on `cargo update`. A consumer that needs the
+same PCM bytes across builds (stored hashes, reproducible files) pins the exact version:
+
+```toml
+scarletbook-pcm = "=0.5.7"
+```
+
 ## Layout
 
 | Path | Content |

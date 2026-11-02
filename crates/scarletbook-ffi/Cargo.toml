@@ -7,7 +7,11 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
-publish = false
+keywords = ["sacd", "dsd", "dst", "ffi", "audio"]
+categories = ["multimedia::audio", "parser-implementations"]
+# Only what builds the library and the header consumers link against; tests, benches,
+# examples, ABI records and cbindgen's configuration stay in the repository.
+include = ["/src/**", "/build.rs", "/build/**", "/include/**", "/Cargo.toml", "/LICENSE-MIT", "/LICENSE-APACHE"]
 
 [lib]
 name = "scarletbook_ffi"
@@ -23,8 +27,10 @@ fuzzing = []
 [dependencies]
 # Decoding pools (sb_pool_new) are in every build.
 rayon = "1.10"
-scarletbook = { path = "../scarletbook", features = ["parallel", "output"] }
-scarletbook-pcm = { path = "../scarletbook-pcm" }
+# The exact versions of this release (crates.io needs a version beside the path); the
+# release that bumps the workspace version bumps these too, or nothing builds.
+scarletbook = { path = "../scarletbook", version = "=0.5.7", features = ["parallel", "output"] }
+scarletbook-pcm = { path = "../scarletbook-pcm", version = "=0.5.7" }
 
 [lints.rust]
 missing_debug_implementations = "warn"
