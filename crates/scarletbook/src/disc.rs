@@ -162,6 +162,8 @@ impl<R: Read + Seek> Disc<R> {
     /// As [`Disc::open`].
     pub fn from_image(mut image: Image<R>) -> Result<Self, Error> {
         let (toc, warnings, digests, stored) = toc::read_toc(&mut image)?;
+        // Audio reads allocate their own: a disc kept only for its TOC keeps no buffer.
+        image.release_buffer();
         Ok(Disc {
             image,
             shared: Arc::new(DiscShared { toc, warnings, digests, stored, seek: SeekIndexes::default() }),
@@ -200,6 +202,7 @@ impl<R: Read + Seek> Disc<R> {
             return Err(Error::InvalidArgument("shared reader of another image"));
         }
         sb_log!(image.log(), Debug, "shared reader checked: same length and TOC sectors");
+        image.release_buffer();
         Ok(Disc { image, shared: Arc::clone(&self.shared), policy: self.policy })
     }
 
@@ -884,5 +887,70 @@ fn slot_index(slot: Slot) -> usize {
     match slot {
         Slot::TwoChannel => 0,
         Slot::Multichannel => 1,
+    }
+}
+
+// Also loaded by `dispatch`'s tests, which only build with the `output` feature.
+#[cfg(test)]
+#[allow(clippy::duplicate_mod)]
+#[path = "../tests/common/mod.rs"]
+mod common;
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use super::common::{PFrame, S, Spec, TrackSpec, pack};
+    use super::*;
+    use crate::ReadAtReader;
+    use crate::audio::FRAME_BYTES_PER_CHANNEL;
+
+    /// A synthetic image of 9 plain positions, stored with `format`'s sector size.
+    fn image(format: SectorFormat) -> Vec<u8> {
+        let frames: Vec<PFrame> = (0..9)
+            .map(|number| PFrame {
+                number,
+                dst: false,
+                data: (0..2 * FRAME_BYTES_PER_CHANNEL).map(|i| (i as u32 * 7 + number * 13) as u8).collect(),
+            })
+            .collect();
+        let tracks = vec![TrackSpec { start: 0, duration: 4 }, TrackSpec { start: 4, duration: 5 }];
+        let plain = Spec { channels: 2, playtime: 9, tracks, audio: pack(&frames) }.build();
+        let (p, d) = (format.stored_size() as usize, format.data_offset() as usize);
+        let mut out = vec![0u8; plain.len() / S * p];
+        for (i, sector) in plain.chunks_exact(S).enumerate() {
+            out[i * p + d..i * p + d + S].copy_from_slice(sector);
+        }
+        out
+    }
+
+    fn frames<R: Read + Seek>(disc: &mut Disc<R>) -> Vec<String> {
+        disc.area_frames(Slot::TwoChannel).unwrap().map(|f| format!("{f:?}")).collect()
+    }
+
+    /// A raw image's discs keep no read buffer once the TOC is read (#228): opened,
+    /// shared or cloned. The first audio read allocates one, and reads what a plain image
+    /// gives.
+    #[test]
+    fn raw_disc_keeps_no_read_buffer_after_toc() {
+        let want = frames(&mut Disc::open(Cursor::new(image(SectorFormat::Plain))).unwrap());
+        assert!(!want.is_empty());
+        for format in [SectorFormat::Raw2064, SectorFormat::Raw2054] {
+            let bytes = image(format);
+            let mut disc = Disc::open(Cursor::new(bytes.as_slice())).unwrap();
+            assert_eq!(disc.image.format(), format);
+            assert_eq!(disc.image.buffer_capacity(), 0);
+            let mut shared = disc.share(Cursor::new(bytes.as_slice())).unwrap();
+            assert_eq!(shared.image.buffer_capacity(), 0);
+            let mut source = Disc::open(ReadAtReader::new(bytes.as_slice())).unwrap();
+            let mut cloned = source.clone();
+            assert_eq!((source.image.buffer_capacity(), cloned.image.buffer_capacity()), (0, 0));
+            assert_eq!(frames(&mut disc), want);
+            assert!(disc.image.buffer_capacity() > 0);
+            assert_eq!(frames(&mut disc), want);
+            assert_eq!(frames(&mut shared), want);
+            assert_eq!(frames(&mut source), want);
+            assert_eq!(frames(&mut cloned), want);
+        }
     }
 }

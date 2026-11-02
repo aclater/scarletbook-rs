@@ -64,6 +64,9 @@ pub struct Image<R> {
     sectors: u64,
     /// Where the reader is positioned, if known, to avoid redundant seeks.
     pos: Option<u64>,
+    /// The stored sectors of a raw read, before their user data is copied out: allocated
+    /// by the first raw read and reused by the next, released once a disc has read its TOC
+    /// ([`Image::release_buffer`]).
     scratch: Vec<u8>,
     log: Log,
     /// Shared with the images of the same source made from this one.
@@ -273,6 +276,18 @@ impl<R: Read + Seek> Image<R> {
             log,
             cancel: self.cancel.clone(),
         }
+    }
+
+    /// Frees the read buffer of raw sector formats, which the next raw read allocates
+    /// again: a disc opened only for its TOC keeps none (#228).
+    pub(crate) fn release_buffer(&mut self) {
+        self.scratch = Vec::new();
+    }
+
+    /// The capacity of the read buffer of raw sector formats.
+    #[cfg(test)]
+    pub(crate) fn buffer_capacity(&self) -> usize {
+        self.scratch.capacity()
     }
 
     /// Consumes the image and returns the reader.

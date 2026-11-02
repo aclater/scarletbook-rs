@@ -1,0 +1,1 @@
+| 2026-11-02 | raw-image read buffer released after the TOC (#228, #234) | memory use of this crate's own reader, measured with `/proc/self/statm` (proc(5)); no specification change. No new sources consulted. |
