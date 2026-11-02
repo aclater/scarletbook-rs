@@ -29,6 +29,33 @@ column below and with `MANIFEST.tsv`. If the store is lost, obtain the text agai
 URL or Wayback capture listed, or from the publisher by its DOI, and compare the hash. A
 publisher may re-issue a PDF with a new cover page, which changes the hash but not the text.
 
+## Maintenance
+
+**Owner decision of 2026-11-02 on #40:** *"keep the patent-hygiene record current."* There is
+still no counsel review (as decided on 2026-11-01); this record is maintained continuously
+instead. The rule from that day:
+
+- **Every pull request that introduces or changes a technique in a codec or format path**
+  (DST decoding, DSD-to-PCM filters, output layout, run-time dispatch, bit packing, table
+  layouts and the like) **adds or updates its entry here in the same pull request**: the
+  technique, where it lives (file and function), and its basis. The basis is a dated
+  **non-patent** source (preserved as "Scope and method" describes: the URL and Wayback
+  capture, the retrieval date, the SHA-256, and the copy in the evidence store, never in the
+  repository), or "own derivation from the specification" (with the section) or "from
+  profiling this crate", with the reasoning. For a generic programming technique that
+  changes no computed result (status GENERIC, see "Scope and method"), the basis is the
+  cited language or tool documentation, or the stated reasoning.
+- A pull request that changes no technique says so in its body.
+- Patents are not read, and no SACD or DST implementation is consulted, for any entry.
+
+Updates:
+
+| Date | Pull request | What |
+|---|---|---|
+| 2026-11-01 | #174 (`21846aa`) | The record, from the 2026-11-01 inventory on #40. |
+| 2026-11-02 | catch-up (Part of #40) | Every technique merged from #175 to #241 (2026-11-01 13:46Z to 2026-11-02 11:58Z): rows D13 (updated), D15-D18, M4, P3 (type II form now confirmed), P9-P13, O4-O6, R1-R4, and "Changes with no new technique". No new source and no new stored file (`MANIFEST.tsv` unchanged); one stored copy (`rabiner1975`) re-read on 2026-11-02 and its SHA-256 re-checked against the register. |
+| 2026-11-02 | generic scope (Part of #40) | Owner instruction of 2026-11-02 ("apply logical reasoning"): the pre-2006 preference is for codec techniques; new status GENERIC for generic programming techniques that change no computed result. Reclassified, each with its basis: D13, D14, D16, D17, D18, M4, P5 (the rounding trick), P11 (the mechanical part), P12, P13, O4 (loop order), O5, R1-R4, X2. P9 stays OWN. "Still open" now lists codec techniques only. No new source; no stored file changed. |
+
 ## Scope and method
 
 - **Inventory:** the 2026-11-01 "Technique inventory for the pre-1.0 legal review" comment on
@@ -57,6 +84,18 @@ publisher may re-issue a PDF with a new cover page, which changes the hash but n
   sacd-spec specification 8, and any SACD or DST implementation. Only their citations and
   Wayback capture dates (CDX index lookups of the exact URLs in sacd-spec `PROVENANCE.md`) are
   recorded; the documents were not opened.
+- **Two purposes, and what the pre-2006 preference covers** (owner instruction of
+  2026-11-02, "apply logical reasoning"). The record serves **provenance** (where this
+  project learned a technique; current documentation, such as Rust's, is a fine source for
+  that, whatever its date) and **prior art** (that an idea was public before any patent of
+  the SACD/DST era, which is why it prefers sources from before 2006). The pre-2006
+  preference applies to **codec techniques**: what is decoded or computed (DST decoding
+  algorithms, PCM filter design, format layouts). **Generic programming techniques that
+  change no computed result** (instruction selection, data layout, specialisation, buffer
+  handling, arithmetic identities) are outside it: their basis is the language or tool
+  documentation, or plain reasoning, and they carry the status GENERIC. Each such row states
+  why the computed result is unchanged (usually also checked: hash gates, forced-generic
+  comparison tests). Older sources already recorded for them are kept as historical notes.
 
 ### Status legend
 
@@ -65,6 +104,14 @@ publisher may re-issue a PDF with a new cover page, which changes the hash but n
 - **BIBLIO**: a pre-2006 source exists, but only its metadata was obtained.
 - **SPEC**: mandated by the sacd-spec specification (no design-around); see #40.
 - **OPEN**: no source, or only sources from 2006 or later.
+- **OWN**: a codec technique that is this project's own derivation, from the specification
+  or from profiling this crate, with the reasoning given in the row. No outside source is
+  on record, so for a future review an OWN row counts as OPEN; it is kept apart only
+  because the reasoning is recorded.
+- **GENERIC**: a generic programming technique that changes no computed result
+  (instruction selection, data layout, specialisation, buffer handling, arithmetic
+  identities); its basis is the cited language/tool documentation or the stated reasoning;
+  outside the pre-2006 preference, which applies to codec techniques.
 
 ## Techniques and their sources
 
@@ -88,8 +135,12 @@ fact that it does not.
 | D10 | Branch-free selection (conditional moves) | `mahlke1992` p. 45 (verified): if-conversion; "control dependences are converted to data dependences". `alpha_arm2002` (verified): "Conditional move instructions for avoiding branch instructions" (architecture overview, PDF page 37) and "CMOVxx may be used to avoid branching" (PDF page 81). | CLEARED |
 | D11 | Bit buffer refilled by 8-byte loads from a realigned, zero-padded copy | `moffat_turpin1997` p. 1203 (verified): a value "maintained as a w-bit window into the compressed bit stream"; p. 1204: w "chosen either as the next multiple of eight ... or as the machine word size"; p. 1206, footnote 1: "a 32-bit input token ... rather than an 8-bit input token". `moffat_turpin1996` (metadata only); `moffat_turpin2002` (front matter only, does not state it). | CLEARED |
 | D12 | Interleaving 2-4 independent frames in lockstep on one thread | `lam1988` pp. 318-319 (verified): iterations "are continuously initiated at constant intervals"; p. 320: "four times the speed of the original program". `rau_glaeser1981` p. 185 (verified 2026-11-01): successive iterations "are initiated at regular intervals" (the initiation interval). `giesen2014` p. 1 (after 2006, secondary): interleaving independent entropy coders. Applied here to independent decoders rather than loop iterations. | CLEARED |
-| D13 | Probability lookup tables expanded per ptable over every \|Spred\|/8 value, clamped to the last entry | none found (a trivial lookup table). | OPEN (low) |
-| D14 | Loop specialisation by const generics and whole-byte unrolling | `dongarra_hinds1979` p. 219 (verified): "The technique of 'unrolling' to improve the performance of short program loops". Specialisation (procedure cloning): `cooper1993` (metadata only). | PARTIAL (unrolling cleared; specialisation BIBLIO) |
+| D13 | Probability lookup tables expanded per ptable over every \|Spred\|/8 value, clamped to the last entry. Since #218 and #241 one of two forms per channel count (D18): this byte form (`Lut`, 8192 entries, the first 4097 readable, `probability`) for 1, 2, 5 and 6 channels, or the scaled form of D15 for 3 and 4. `crates/scarletbook/src/dst.rs` (`Lane::build_luts`, `Probe::fill`, `probability`) | Data layout (a precomputed lookup table), not a codec technique: the values equal 5.5.4's `P_q[min(floor(\|Spred\| / 8), M_q - 1)]` by construction (the ptable's last entry repeated), so each lookup returns the probability 5.5.4 defines and decoding is unchanged; the table replaces the `min` and the index computation by one load. No outside source is needed for that reasoning. | GENERIC |
+| D14 | Loop specialisation by const generics and whole-byte unrolling | Compile-time specialisation, a generic programming technique: the loop is written once with the channel count (and similar values) as a Rust const generic parameter, and each instance the compiler builds performs the same operations as the general loop with that constant substituted, so the decoded output is unchanged; whole-byte unrolling repeats the same per-bit step eight times in program order. Basis: the Rust language's const generics, and that reasoning. Historical notes: `dongarra_hinds1979` p. 219 (verified): "The technique of 'unrolling' to improve the performance of short program loops"; procedure cloning, `cooper1993` (metadata only; optional, nothing depends on it). | GENERIC |
+| D15 | Scaled probability tables (#218; since #241 for 3 and 4 channels only): 64 entries of `p x 2^52` (a ptable has at most 64 entries, 5.3.6), the last entry repeated, indexed by `min(\|Spred\| / 8, 63)`; `Q` taken from the top 5 bits of A (`t = floor(A / 128)`, `Q = (t >> 1) \| (t & 1)`), so that `Q x p` is one multiply at the decoder's 2^52 scale. `dst.rs` (`ScaledLut`, `probability_scaled`, `Arith::decode_scaled`) | Own derivation from the specification: the index is 5.5.4's `j = min(floor(\|Spred\| / 8), M_q - 1)`, with the table padded to 64 by its last entry so that the clamp to 63 gives the same `P_q[j]`; `Q` is the second form 5.5.7 step 1 itself gives, `floor(A / 256) OR (floor(A / 128) AND 1)`. The 2^52 scale is D8's. Chosen by profiling this crate (#218: fewer stack reloads and instructions per byte; #241: kept only where it measured faster). Output identical to the bit (hash gate in both PRs). | SPEC (index and Q); scale as D8 (PARTIAL) |
+| D16 | The code-value update `C = C - w1` when `C >= w1`, else `C`, computed without a select as `min(C - w1 (wrapping), C)` (#218) | An unsigned-integer identity, so the computed `C` is unchanged. Reasoning: on unsigned 64-bit integers, `C - w1` wraps exactly when `w1 > C`, and the wrapped value `C - w1 + 2^64` is then larger than `C` (because `w1 < 2^64`); when `w1 <= C`, `C - w1` is at most `C`. So the smaller of the two is in both cases the 5.5.7 step 4 result. Basis: that reasoning (the subtraction is Rust's `wrapping_sub`, modulo 2^64). Historical note: replacing a branch by data operations is D10's (`mahlke1992`, `alpha_arm2002`). Kept only in `Arith::decode_scaled` since #241. `dst.rs` (`Arith::decode_scaled`) | GENERIC |
+| D17 | One 64-byte-aligned block per channel (`Probe`) holding that channel's partial-share table (D7) and probability table, copied together when a chunk's filter or ptable for the channel changes (keys `(filter, ptable)`, reset each frame), so that the inner loop reaches both from one address per frame with a constant offset per channel (#218; since #241 only the table form in use is filled). `dst.rs` (`Probe`, `Coded::lane_run`, `run_inline`) | From profiling this crate (#218: in the 2-channel loop, stack reloads per byte iteration 239 to 192, instructions 1652 to 1590; 6-channel decoding 4.8 % faster on one thread). Memory layout only: a copy of read-only tables into one contiguous block for locality; the tables' contents, and so the decoding, are unchanged (hash gate). Basis: that reasoning. | GENERIC |
+| D18 | The probability-table form (D13 or D15) and the matching decoder step chosen per channel count at compile time: `const fn byte_lut(nch)` (byte form for 1, 2, 5 and 6 channels, scaled for 3 and 4) and `if const { byte_lut(NCH) }` inside the const-generic `run_inline`, so the inner loop has no run-time branch (#241). `dst.rs` (`byte_lut`, `run_inline`) | From profiling this crate on lennon (Ryzen 9 3950X, Zen 2): #218's scaled form made stereo one-thread decoding about 3 % slower and 3- and 4-channel decoding faster, so the choice is per channel count (#241, measured per count on generated frames). Compile-time specialisation, as D14: the choice is a constant per instance, so the compiler keeps one form's code and drops the other's; both forms give the same output (hash gate, unit test). Basis: the Rust language's const generics and inline `const` blocks, and that reasoning (`cooper1993` remains an optional historical note only). | GENERIC |
 
 ### Demultiplexing and timeline
 
@@ -98,6 +149,7 @@ fact that it does not.
 | M1 | Audio sector demultiplexing, frame reassembly, timeline, track and range mapping (spec 4.2-4.8) | sacd-spec spec 4 (2026). | SPEC |
 | M2 | Stored content and DST equivalents (4.6.1) | sacd-spec 4.6.1 (2026). | SPEC |
 | M3 | TOC parsing, text and charsets, master TOC comparison (specs 1-3) | sacd-spec specs 1-3 (2026). | SPEC |
+| M4 | Audio sectors scanned in place in the cursor's read buffer, borrowed rather than copied out to a 2048-byte array first (#230); the occasional reads of the provisional search and the seek-index checks keep the copy. `crates/scarletbook/src/audio.rs` (`AreaCursor::load`, the scan's use of it; `AreaCursor::sector` for the others) | From profiling this crate (the copy was one more pass over the whole area). Buffer handling, not a format technique: the bytes read are the same, only where they are read from changes; the demultiplexing is M1's, unchanged (same frames, same DSF bytes). Basis: that reasoning. | GENERIC |
 
 ### Seeking and provisional reading
 
@@ -118,12 +170,17 @@ fact that it does not.
 |---|---|---|---|
 | P1 | Byte-table FIR (distributed arithmetic) on the 1-bit input | as D7: `white1989` pp. 5, 7. | CLEARED |
 | P2 | Multistage decimation, each stage's stopband from F - fst; polyphase decimating FIRs; halfband interpolation by 2 | `crochiere_rabiner1981` (verified 2026-11-01): p. 300 (abstract) and §V, multistage implementations; §III-C, p. 308, "Polyphase FIR structures for integer decimators and interpolators"; p. 324, eq. (124b): the stage-1 transition band is "F_p <= f <= F_1 - F_s". Halfband: `vaidyanathan_nguyen1987` p. 297 (verified): about half of the coefficients are zero (eq. (3)). `mintzer1982`, `crochiere_rabiner1983` (metadata only). | CLEARED |
-| P3 | Equiripple design by the Remez exchange (Parks-McClellan), barycentric form | `rabiner1975` (verified 2026-11-01): weighted Chebyshev approximation and the Remez exchange (pp. 595-596); p. 602: "the Lagrange interpolation formula in the barycentric form is used"; pp. 597-598: the four cases of linear-phase filters, including Case 2 (N even, symmetric). The factorisation of a type II response as a cosine polynomial times cos(w/2) was not found by text search of the scan. `parks_mcclellan1972` (metadata only). `herrmann1973` (obtained; length estimates only). `kaiser1974` (citation only). | CLEARED (method); type II form not confirmed |
+| P3 | Equiripple design by the Remez exchange (Parks-McClellan), barycentric form | `rabiner1975` (verified 2026-11-01): weighted Chebyshev approximation and the Remez exchange (pp. 595-596); p. 602: "the Lagrange interpolation formula in the barycentric form is used"; pp. 597-598: the four cases of linear-phase filters, including Case 2 (N even, symmetric). The factorisation of a type II response as a cosine polynomial times cos(w/2) was not found by text search of the scan on 2026-11-01; it was found on 2026-11-02 (below). `parks_mcclellan1972` (metadata only). `herrmann1973` (obtained; length estimates only). `kaiser1974` (citation only). Type II form: p. 598 (verified 2026-11-02, by reading the page rather than by text search): "each of the expressions for G(e^jw) in Table II can be written as a product of a fixed function of w (call this Q(e^jw)), and a term which is a sum of cosines (call this P(e^jw))"; Table III gives `Q = cos(w/2)` for Case 2 (N even, symmetric), eq. (9). | CLEARED |
 | P4 | Halfband from a one-band type II prototype, `H(z) = (z^-(2K-1) + G(z^2))/2` | `vaidyanathan_nguyen1987` §II, p. 297 (verified): design "a one-band prototype linear-phase filter G(z) of order (N-1)/2"; eq. (4), H(z) = (G(z^2) + z^-(N-1)/2)/2 "is a half-band filter". | CLEARED |
-| P5 | Exact integer arithmetic in binary64 (below 2^53); rounding half to even by adding and subtracting 1.5 x 2^52 | `goldberg1991` §1.5, p. 13 (verified): exactly rounded operations and round to even. **Does not state** the add-and-subtract rounding trick (searched for "2^52", "1.5", "magic"). `ieee754_1985` (metadata only). | PARTIAL (trick OPEN) |
+| P5 | Exact integer arithmetic in binary64 (below 2^53); rounding half to even by adding and subtracting 1.5 x 2^52 | `goldberg1991` §1.5, p. 13 (verified): exactly rounded operations and round to even. **Does not state** the add-and-subtract rounding trick (searched for "2^52", "1.5", "magic"). `ieee754_1985` (metadata only). The trick is an arithmetic identity that computes the same value as any other round-half-to-even, so it changes no result: for `\|v\| < 2^51`, `v + 1.5 x 2^52` lies in [2^52, 2^53), where binary64 values are exactly the integers, so the exactly rounded addition (round to nearest, ties to even, as cited from `goldberg1991`) rounds `v` half to even (1.5 x 2^52 is an even integer, so a tie goes to the same integer either way), and the subtraction of `1.5 x 2^52` is then exact. Basis: that reasoning. | CLEARED (exact rounding, round to even); trick GENERIC |
 | P6 | Exactness per frame: a frame converted with its neighbours' context bytes equals a whole-area conversion (sectioned FIR with input overlap) | `stockham1966` p. 230 (verified): sectioning the long input, each section convolved and "additively overlapped with its neighbors", "each overlap margin has width N". | CLEARED |
 | P7 | Symmetric FIR evaluated by folding pairs of samples | `crochiere_rabiner1981` p. 308 (verified): "An alternate form of this structure which can exploit symmetry in h(n) (for linear phase designs)". `oppenheim_schafer1999` (citation only). | CLEARED |
 | P8 | Fifth-order sigma-delta modulator (test only) | `chao1990`, `schreier_temes2005` (metadata only). | BIBLIO (test only) |
+| P9 | Exact digital silence (#176, for #171): the first stage (S1, S1_WIDE) carries the integer factor `F(z) = (1 + z^-1)^2 (1 + z^-4)` (taps `1 2 1 0 1 2 1`), formed in integers with the quantised cofactor, so that both idle patterns give exactly 0 at any bit phase; input beyond an area's edges is the idle pattern 0x69, not the value 0. `crates/scarletbook-pcm/src/design.rs` (`idle_factor`, `shortest_lowpass`); `kernel.rs` (`IDLE`, the edge padding in `Plan::convert`); the generated `tables.rs` | Own derivation from the specification: sacd-spec specification 0, 0.6 item 3 names 0x69 and 0x55 as idle patterns that represent silence. As +-1 samples, 0x69 is `-1 +1 +1 -1 +1 -1 -1 +1` repeated, so `x[n-4] = -x[n]` and `1 + z^-4` sums each pair to 0 (lines only at the odd multiples of 352.8 kHz, the zeros of `1 + z^-4`); 0x55 alternates, `x[n-1] = -x[n]`, cancelled by `1 + z^-1` (doubled to keep the filter symmetric and of odd length). With integer taps the cancellation is exact whatever the rounding of the cofactor (checked in i64 by `design::tests::s1_cancels_the_idle_patterns_exactly`). FIR zeros and the DFT of periodic sequences: `oppenheim_schafer1999` (citation only). Issue #171 described the consumer's own approach (nulls at every multiple of 352.8 kHz, "all eight polyphase sums equal"); it was not adopted, and the consumer's code was not read (CLEANROOM.md Log, #176). The edge rule is #171's requirement. | OWN |
+| P10 | The cofactor `G` of P9 designed by the Remez exchange with the fixed factor moved into the approximation problem: `G` approximates `D / Q` with weight `W \|Q\|`, `Q(w) = (2 + 2 cos w) 2 cos 2w` the factor's amplitude, and grid points where `Q` vanishes left out (#176). `design.rs` (`lowpass_idle`) | `rabiner1975` p. 598 (verified 2026-11-02), eqs. (12)-(17): with `G = P Q`, the weighted error `W [D - P Q]` becomes `W Q [D / Q - P]`, "Since Q(e^jw) is a fixed function of frequency, it can be factored out", with `W^ = W Q` (15) and `D^ = D / Q` (16); "Equation (14) is valid everywhere except possibly at w = 0 and/or w = pi", where Q is zero. The paper applies it to the fixed factors of its Cases 2-4 (Table III); applying it to this project's own fixed factor is this project's step. `parks_mcclellan1972` (metadata only). | CLEARED (method) |
+| P11 | S1 computed straight into the halfband's even and odd (polyphase) inputs, by a start and a stride of 2, instead of a full S1 buffer split afterwards (#179); S1's integer sum with wrapping adds (no overflow checks), its bound proved by `design::tests`. `kernel.rs` (`s1`, `Plan::convert`) | Polyphase decimation: as P2, `crochiere_rabiner1981` §III-C, p. 308 (verified). The rest is generic: writing S1's outputs straight into two buffers by a start and a stride of 2 is buffer handling (the same values as splitting a full buffer afterwards), and the wrapping adds are an arithmetic identity here: no sum can wrap, because the sum of the absolute taps is below `i32::MAX` (tested), so wrapping and checked adds give the same sums. From profiling this crate (#179). Output identical to the bit. | CLEARED (polyphase); rest GENERIC |
+| P12 | Kernels specialised by compile-time constants: FIR blocks of `L` outputs (16 generic, 32 with AVX2) with the pair folding of P7 sliced once per block (#179, #180); S1 with its table count as a constant, `s1_n::<8>` and `s1_n::<12>` over `windows(B)`, unrolled and without bounds checks (#217); de-interleaving with the channel count a constant per arm (`pick_n::<CH>`, #223). `kernel.rs` (`add_pairs`, `fir1`, `dec2`, `interp2_odd`, `s1`, `s1_n`, `s1_any`, `pick`) | Compile-time specialisation, as D14: each instance performs the same per-sample operations as the general kernel with the constant substituted, and the integer sums are unchanged, so the output is the same. Basis: the Rust language's const generics, and that reasoning. Block sizes and the S1 split chosen by profiling this crate (#179: 4 outputs 5.66, 8 4.96, 16 4.71 ms per s of audio; #217: S1 was about 60 % of `Plan::convert`). Historical notes: unrolling, `dongarra_hinds1979` p. 219 (verified); procedure cloning, `cooper1993` (metadata only; optional). | GENERIC |
+| P13 | Fused multiply-add in the FIR kernels of the AVX2 build (`mul_add`, `FMA = true`), with output identical to the separate multiply and add (#180) | Instruction selection with identical output, reasoned as in P5: every product and partial sum is an integer below 2^53 in magnitude (`design::tests::f64_sums_are_exact`), so it is exactly representable, and an exactly rounded operation returns it exactly whether the multiply and add are rounded once (fused) or twice. Basis: that reasoning; exact rounding as cited for P5 (`goldberg1991` §1.5, p. 13, verified). The run-time choice is R1. | GENERIC |
 
 ### Output: DSF, DSDIFF, ID3 and the CRC
 
@@ -132,13 +189,45 @@ fact that it does not.
 | O1 | DSF, DSDIFF and ID3v2.4 layouts | sacd-spec spec 8 only. Per sacd-spec `PROVENANCE.md`: Sony DSF 1.01 (date not on record), Philips DSDIFF 1.5 (2004-04-27), ID3v2.4.0 (2000-11-01). Not read on this side. Wayback capture dates in "Specification 8 documents" below. | SPEC |
 | O2 | DSDIFF frame CRC evaluated byte-wise from a 256-entry table | `sarwate1988` p. 1009 (verified): "this method uses table look-ups to handle eight bits (one byte) at a time"; for degree-32 polynomials the tables can be organised "as one table of 256 32-bit double words". `peterson_brown1961` (metadata only). | CLEARED |
 | O3 | Output files never written: byte ranges produced on demand from the TOC | none found. | OPEN |
+| O4 | DSF sound data filled whole rows at a time: each position's content is read once and split into every channel's block by one loop per channel count (1 to 6), the bit order hoisted out of the loop, the bit reversal by `u8::reverse_bits` instead of a 256-entry table; the parts of rows at either end of a call keep the block-at-a-time path (#214). `crates/scarletbook/src/output/dsf.rs` (`DsfData::fill`, `fill_row`, `split`) | The layout is the specification's: 8.2.2 (blocks of 4096 bytes per channel, one block of each channel in turn) and 8.2.3 (bit order), as O1. The order of the loops (by position rather than by block) is from profiling this crate (#214: the block-at-a-time fill was about 70 % of a plain-DSD area to DSF); it is a generic change (loop order and instruction selection, `u8::reverse_bits` giving the same byte as the table): every output byte is computed from the same input byte by the same 8.2.2/8.2.3 mapping, only in a different order. The output is the same file (whole-file SHA-256, and `rows_equal_blocks` against the old path). | SPEC (layout); loop order GENERIC |
+| O5 | 5-channel DSF rows split in 32-bit words: four 5-byte frames are loaded as five little-endian `u32` words and each channel's four bytes are gathered into one `u32` with masks and shifts; the 8.2.3 reversal per word as `reverse_bits().swap_bytes()`; the last 0 to 3 frames byte by byte (#237). `output/dsf.rs` (`split5`) | From profiling and disassembling this crate (#237: the compiler built every 5-channel output vector one byte at a time, `vpinsrb`, with no stride-5 byte shuffle in its cost model). A data-layout and instruction-selection change: several narrow values handled inside one machine word ("SIMD within a register"); each output byte is still the 8.2.2/8.2.3 mapping of the same input byte, and `reverse_bits().swap_bytes()` on a word reverses the bits of each of its four bytes in place. Basis: that reasoning. Layout and bit order as O4 (SPEC). Output identical to the bit (whole-file SHA-256; `rows_equal_blocks`). | GENERIC |
+| O6 | Specification 8 options added under #169: DSDIFF caller chunks (#183); `DIIN` without `EMID` and the source track's text in `DIAR` and `DITI` (#184); a caller-supplied ID3v2.3 DSF tag (#185); DSF byte ranges built from a chain of files (#186); DSDIFF departures D1 and D2 (#187); the C option for the empty `DIIN` (#192). `output/dsdiff.rs`, `dsdiff_text.rs`, `markers.rs`, `tags.rs`, `id3.rs`, `dsf.rs`, `mod.rs`; `crates/scarletbook-ffi/src/output.rs` | sacd-spec specification 8 only, as O1: 8.4.1, 8.4.2, 8.4.8, 8.4.11, 8.6 rows 24, 32-34 (#183, #184, #192); 8.2.6 and 8.6 row 3 (#185); 8.1 items 2 and 7, 8.2.1-8.2.5, 8.2.7 at `e069569` as clarified at `fa558a8` (#186); 8.7 D1 and D2 (#187). Each PR's CLEANROOM.md Log row records "implemented from the specification text only". | SPEC |
+
+### Run-time CPU dispatch
+
+One pattern in both crates: the same safe Rust functions are also built with
+`#[target_feature(enable = ...)]`, and `Isa::detect()`, the only constructor of the fast
+`Isa`, tests every feature with `is_x86_feature_detected!` once; each call of a
+`#[target_feature]` function from undetected code is one `unsafe` block with a `SAFETY:`
+comment. No intrinsics, raw pointers or `transmute`. The output is identical to the bit (a
+forced-generic comparison test in each crate). The rules for calling `#[target_feature]`
+functions are Rust's own, cited for #180 and #200 in CLEANROOM.md: RFC 2396, target_feature 1.1
+(S21 in "Other web sources" below; the RFC pull request merged 2020-02-12), its stabilisation
+in rust-lang/rust#134090, and the Rust 1.86.0 release notes (S20, 2025-04-03).
+
+**Basis (GENERIC).** Run-time dispatch is instruction selection: the same Rust source is
+compiled twice, once allowed to use the named CPU features, and one of the two builds is
+called, so it changes which instructions compute a result and not the result (the
+forced-generic comparison tests check this). It is therefore outside the pre-2006
+preference, which covers codec techniques. Its basis is the Rust documentation of the
+mechanism cited above (S20, S21, rust-lang/rust#134090), whatever its date, which is also
+where this project learned it; the feature sets in each row are from profiling this crate.
+The kernels the dispatch selects between keep their own rows (P12, P13, D12, O4, O5 and so
+on).
+
+| # | Technique | Sources and supporting passage | Status |
+|---|---|---|---|
+| R1 | `scarletbook-pcm` FIR kernels (`fir1`, `dec2`, `interp2_odd`) built with `avx2,fma`, `L = 32` and fused multiply-add (P12, P13), chosen at run time (#180). S1 stays scalar: the AVX2 build used gathers and measured slower. `crates/scarletbook-pcm/src/dispatch.rs` (`Isa::detect`, `fir1`, `dec2`, `interp2_odd`, `mod avx2`) | The pattern above; basis: S20, S21, rust-lang/rust#134090 (instruction selection, output unchanged). Feature set and S1's exclusion from profiling this crate (#180). | GENERIC |
+| R2 | The DST decoder's group decode (1 to 4 frames, D12) built with `avx2,bmi1,bmi2,lzcnt,movbe` and chosen at run time; the hot loop `run_inline` is `#[inline(always)]` so that it is compiled with the features (#200). `crates/scarletbook/src/dispatch.rs` (`Isa::detect`, `decode_group`); `dst.rs` (`DstDecoder::group`) | The pattern above; basis: S20, S21, rust-lang/rust#134090 (instruction selection, output unchanged). Feature set from profiling this crate's own decoder (#200: perf, and builds with single features): LZCNT for D9's shift count, BMI2 for flag-free shifts on the serial chain, MOVBE for the big-endian code-bit load of D11, AVX2 for the prediction-row sums; FMA left out (the decoder is integer-only). | GENERIC |
+| R3 | `scarletbook-pcm` input and output loops built with `avx2,fma` and chosen at run time (#223): de-interleaving (`pick`), rounding to 24 bits with clamping and clip counting (`quantise`, the same `round_even((v x gain) x 0.125)` per sample in the same order, the counter a wrapping add), and interleaving the output (`interleave`). `dispatch.rs` (`pick`, `quantise`, `interleave`); `kernel.rs` (the same names) | The pattern above; basis: S20, S21, rust-lang/rust#134090 (instruction selection, output unchanged), extending R1. From profiling this crate (#216, #217: these loops were about 35 % of `Plan::convert`'s self time). Rounding and clamping are P5's; the per-sample operations are unchanged. | GENERIC |
+| R4 | One `#[target_feature]` wrapper for the core crate, `avx2::run::<W: Work>`, with two call sites: the DST group decode (R2, folded in as `Group` work) and the output path, `Layout::fill` and `Layout::read_at` through `output_path` (`Fill`, `ReadAt`), everything beneath `#[inline(always)]` down to O4's `split` and O5's `split5` (#225). A CI step (`perf/dispatch-inlining.sh`) disassembles the release library and checks instruction classes in the dispatched and generic instances (vector byte shuffles, LZCNT or BMI shifts; since #237, no `vpinsrb`). `dispatch.rs` (`Work`, `run`, `decode_group`, `output_path`, `mod avx2`); `output/mod.rs` (`fill_with`, `read_at_with`, `fill_inner`, `read_at_inner`) | The pattern above; basis: S20, S21, rust-lang/rust#134090 (instruction selection, output unchanged). From profiling and disassembling this crate's own builds (#225: perf, objdump; a closure was outlined from the wrapper and built without the features, so `Work` types are used instead). The inlining check is tooling. | GENERIC |
 
 ### Parallel decoding pipeline
 
 | # | Technique | Sources and supporting passage | Status |
 |---|---|---|---|
 | X1 | Bounded look-ahead window on a pool, results in order, waiter woken only when waiting | `halstead1985` p. 502 (verified): "(future X) immediately returns a future for the value of the expression X and concurrently begins evaluating X". `hoare1974` p. 550 (verified): the condition "wait" and "signal" operations; pp. 552-553: "Example: Bounded Buffer". `blumofe_leiserson1999` p. 720 (verified): "work stealing" (as in the rayon dependency). | CLEARED |
-| X2 | Abandoned jobs skip decoding when the owner dropped its handles (reference count) | `collins1960` p. 655 (verified): reference counts, "a tally of the number of arrows pointing" to a list. Reference counting itself only; using it to cancel work is not stated. | PARTIAL (low) |
+| X2 | Abandoned jobs skip decoding when the owner dropped its handles (reference count) | `collins1960` p. 655 (verified): reference counts, "a tally of the number of arrows pointing" to a list. Reference counting itself only; using it to cancel work is not stated there. Not a codec technique: a job is skipped only when no handle remains that could receive its result, so every frame that is delivered is decoded exactly as before; this is buffer and work handling. Basis: that reasoning (`collins1960` kept as a historical note). | GENERIC |
 
 ### TOC digests
 
@@ -153,6 +242,22 @@ fact that it does not.
 | B1 | Profile-guided and link-time optimisation (measured, not adopted) | `wall1986` WRL 86/3 abstract and p. 12 (verified): "previously collected profile information to guide the allocation" at link time. | CLEARED |
 | Z1 | Test DST encoder (informative annex 5.A) | sacd-spec annex 5.A (2026). Test only. | test only |
 | Z2 | Synthetic image generator | sacd-spec specs 1-4. Tooling only. | tooling only |
+
+### Changes with no new technique
+
+Merged since the record was first prepared; each changes code but introduces no technique.
+
+| Pull request | Change | Why no entry |
+|---|---|---|
+| #175 | `scarletbook-pcm` `Converter::convert`: separate frame buffers, packed 24-bit little-endian output, per-frame clip counts | API and input/output plumbing; the stages, filters and arithmetic are unchanged. |
+| #176 (filter edges, for #170) | `Low` stopband from 36 kHz; a dedicated `Wide` filter (F80) for 176.4 kHz output | New filter parameters, designed by the methods of P2-P4 (P9 and P10 are this PR's techniques). |
+| #179 (de-interleave) | `chunks_exact(ch)` instead of `step_by(ch)` | Iteration form only. |
+| #191, #193 | an unused accessor removed; doc comments cite specification 3, 3.8 | Dead code and documentation. |
+| #215 | a plain DSD frame's buffer reserved at `C x 4704` bytes (4.4.2) when the frame starts (`audio.rs`, `Demuxer::push_sector_at`) | Allocation sizing, from the specification's frame size; the frames are the same. |
+| #219 | `scarletbook-pcm` scratch buffers resized without zeroing first (`kernel.rs`, `Plan::convert`) | Buffer handling: the kernels write every element. |
+| #234 | the raw-image read buffer released once the TOC is read (`image.rs`, `Image::release_buffer`; `disc.rs`) | Buffer lifetime (memory use). |
+| #222, #235, #236 | tests sized for Miri, and a CI time limit | Test-only. |
+| #168, #212, #232, #239 | fuzz target; `bench dsf`, its parallel prototype and its buffered reader | Fuzz and benchmark programs only; #217's `callpattern` example and `pcm_digest` test (an FNV-1a digest, as S2) are likewise test and benchmark code. |
 
 ## Source register
 
@@ -312,6 +417,11 @@ Kept in `process/` of the evidence store, hashed in `MANIFEST.tsv`, and describe
 
 ### Techniques whose earliest source is from 2006 or later, or missing
 
+Codec techniques only (see "Scope and method"). Rows marked GENERIC (D13, D14, D16-D18,
+M4, the rounding trick of P5, the mechanical part of P11, P12, P13, the loop order of O4,
+O5, R1-R4, X2) are outside the pre-2006 preference and are not listed here; each row gives
+its basis.
+
 - **D1-D5, M1-M3 (spec-mandated DST decoding and demultiplexing).** On this side the earliest
   dated source is sacd-spec (2026). The clean-room rules forbid this side from looking for a
   dated publication of the DST format; establishing the format's publication and
@@ -324,14 +434,13 @@ Kept in `process/` of the evidence store, hashed in `MANIFEST.tsv`, and describe
   project's own, with no source.
 - **S8 (own search heuristics)** and **O3 (output files produced on demand, never written):**
   no source.
-- **D13 (expanded probability lookup tables, low):** no source.
+- **Own derivation with no outside source (OWN):** P9 (exact silence by the idle-pattern
+  factor, and the idle pattern beyond an area's edges), from the specification; the row
+  gives the reasoning.
 - **T1 (TOC digest, low):** parts only (Wang 1997, FNV-1a 2002, Lam 1988); no source states
   the combination. FNV-1a, which it replaced, could be restored at some speed cost.
-- **Partly supported:** D8 (the 2^52-scaled 64-bit register layout), D14 (specialisation by
-  cloning, `cooper1993` metadata only), S4 (track starts as interpolation knots), P3 (the
-  cos(w/2) factorisation of type II responses not found by text search), P5 (the
-  add-and-subtract 1.5 x 2^52 rounding trick: not in Goldberg 1991; IEEE 754-1985 not
-  obtained), X2 (reference counts used to cancel abandoned work).
+- **Partly supported:** D8 (the 2^52-scaled 64-bit register layout, which D15 also uses),
+  S4 (track starts as interpolation knots).
 - **O1:** the date of Sony's DSF File Format Specification 1.01 is not on record. The only
   date this side may record is that the Wayback Machine first captured the copy at the URL in
   sacd-spec `PROVENANCE.md` on 2013-11-02; that bounds its public availability at that URL,
@@ -344,7 +453,7 @@ the register says where to obtain it.
 
 - **Flagged techniques:** `peled_liu1973` and `peled_liu1974` (D7/P1; White 1989 states the
   technique, so the clearance does not rest on them), `peterson1957` (S4), `cooper1993`
-  (D14), `carter_wegman1979` (T1), `peterson_brown1961` (O2), `ieee754_1985` (P5).
+  (D14, D18, P12; a historical note only, as those rows are GENERIC), `carter_wegman1979` (T1), `peterson_brown1961` (O2), `ieee754_1985` (P5; its rounding trick is GENERIC).
 - **PCM papers:** `parks_mcclellan1972` (P3), `mintzer1982` (P2/P4), `hogenauer1981`
   (considered, not used), `chao1990` and `schreier_temes2005` (P8, test only); books
   `crochiere_rabiner1983` and `oppenheim_schafer1999`; `kaiser1974` (citation only, no
