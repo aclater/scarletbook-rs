@@ -24,7 +24,7 @@ in [CHANGELOG.md](CHANGELOG.md), and vulnerabilities are reported as described i
 
 The crates are on crates.io: [`scarletbook`](https://crates.io/crates/scarletbook) (the
 reader), [`scarletbook-pcm`](https://crates.io/crates/scarletbook-pcm) (DSD to PCM) and
-[`scarletbook-ffi`](https://crates.io/crates/scarletbook-ffi) (the C ABI, for Rust programs
+[`scarletbook-ffi`](https://crates.io/crates/scarletbook-ffi) (the C ABI, from 0.5.8, for Rust programs
 that build the C library themselves; C users take the [release assets](#release-assets)).
 
 ```sh

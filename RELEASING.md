@@ -43,78 +43,83 @@ fuzz data and the ABI records stay in the repository.
 crates.io issues a 30-minute token to this repository's release workflow through GitHub
 OIDC (`rust-lang/crates-io-auth-action`); no token is stored. It can only be configured for
 a crate that already exists on crates.io ("Your crate must already be published to crates.io
-(initial publish requires an API token)", crates.io documentation, "Trusted Publishing").
-So each crate's first version is published with an API token, by one of the two ways below,
-and trusted publishing is set up right after.
+(initial publish requires an API token)", crates.io documentation, "Trusted Publishing"), so
+trusted publishing cannot create a crate: each crate's first version is published with an
+API token (below), and trusted publishing is set up right after.
 
-For each of `scarletbook-pcm`, `scarletbook` and `scarletbook-ffi`, once it exists:
+The trusted publisher names this repository and workflow file and **no environment**, so
+the `publish` job stays in `release.yml` itself (not in a reusable workflow it calls) and has
+no `environment:`. To set one up, once the crate exists:
 
 1. Open `https://crates.io/crates/<crate>/settings` (signed in as an owner).
 2. Trusted Publishing, Add, GitHub.
 3. Repository owner `aclater`, repository name `scarletbook-rs`, workflow filename
-   `release.yml`, environment `crates-io`. Save.
+   `release.yml`, environment empty. Save.
+4. Optionally, require trusted publishing for the crate, so that no API token can publish it.
 
-## The first publish of a crate
+| Crate | First version | Published by | Trusted publisher |
+|---|---|---|---|
+| `scarletbook-pcm` | 0.5.7 | the owner, from the tag v0.5.7 (option A) | configured |
+| `scarletbook` | 0.5.7 | the owner, from the tag v0.5.7 (option A) | configured |
+| `scarletbook-ffi` | 0.5.8 (pending) | option A or B below, for this crate only | after its first publish |
 
-The crates.io account needs a verified e-mail address before it can publish
-(`https://crates.io/settings/profile`).
+At v0.5.7, `scarletbook-ffi` had `publish = false` and versionless path dependencies, so it
+could not be published from that tag; it starts at 0.5.8.
 
-Both ways use a short-lived API token. Create it at `https://crates.io/settings/tokens/new`:
+## The first publish of a crate (`scarletbook-ffi` at 0.5.8)
 
-- name: `scarletbook bootstrap`;
-- expiration: 1 day for option A, 7 days for option B;
-- scopes: `publish-new` and `publish-update` only;
-- crates: `scarletbook`, `scarletbook-pcm`, `scarletbook-ffi` (or the pattern `scarletbook*`).
+On the tag v0.5.8 the `publish` job publishes `scarletbook-pcm` and `scarletbook` through
+trusted publishing, then reaches `scarletbook-ffi`, which is not on crates.io yet. Without
+a bootstrap token (option B) it stops there with an error that names the crate; the release
+itself and the other two crates are already done. Then use option A, or set the token and
+re-run the job (option B).
 
-Copy the token; crates.io shows it once.
+Both options use a short-lived API token. Create it at `https://crates.io/settings/tokens/new`:
+
+- name: `scarletbook-ffi bootstrap`;
+- expiration: 1 day;
+- scopes: `publish-new` only;
+- crates: `scarletbook-ffi`.
+
+Copy the token; crates.io shows it once. The crates.io account needs a verified e-mail
+address (`https://crates.io/settings/profile`).
 
 ### Option A: publish from the tag on your own machine
 
-Needs Rust 1.85 or later (`rustup update stable`) and git.
+Needs Rust 1.85 or later (`rustup update stable`) and git. Run it after the tag's `publish`
+job has published (or skipped) `scarletbook-pcm` and `scarletbook` 0.5.8, since
+`scarletbook-ffi` depends on exactly those versions.
 
 ```sh
 git clone https://github.com/aclater/scarletbook-rs.git
 cd scarletbook-rs
-git checkout vX.Y.Z                          # the release tag, e.g. v0.5.7
+git checkout v0.5.8
 git status                                   # must be clean: cargo refuses dirty trees
 cargo login                                  # paste the token
-cargo publish --locked -p scarletbook-pcm
-cargo publish --locked -p scarletbook
-cargo publish --locked -p scarletbook-ffi    # not for v0.5.7: see below
+cargo publish --locked -p scarletbook-ffi
 cargo logout                                 # removes the token from ~/.cargo/credentials.toml
 ```
 
-Then revoke the token at `https://crates.io/settings/tokens` and set up trusted publishing
-for each crate published (above). If the tag's `publish` job ran before or fails for a
-crate without a trusted publisher, re-run it after setting one up; it skips what is
-already there.
+### Option B: a repository secret for one release
 
-### Option B: a token secret for one release
-
-The `publish` job uses the environment secret `CRATES_IO_BOOTSTRAP_TOKEN`, when it is set,
-instead of trusted publishing. It only exists in the workflow from 0.5.8 on, so it cannot
-publish v0.5.7.
+The `publish` job publishes a crate that is not on crates.io yet with the repository secret
+`CRATES_IO_BOOTSTRAP_TOKEN`, if it is set; crates that already exist still go through trusted
+publishing, so requiring trusted publishing on them is no obstacle.
 
 ```sh
-# Before pushing the tag: create the environment and store the token in it.
-gh api -X PUT repos/aclater/scarletbook-rs/environments/crates-io
-gh secret set CRATES_IO_BOOTSTRAP_TOKEN --env crates-io --repo aclater/scarletbook-rs
+# Before pushing the tag v0.5.8, or before re-running its failed publish job:
+gh secret set CRATES_IO_BOOTSTRAP_TOKEN --repo aclater/scarletbook-rs
 # (paste the token at the prompt)
 
-# Push the tag as usual; the release workflow publishes with the token and warns that it did.
+# Push the tag (or re-run the job: gh run rerun <run id> --failed).
 
 # Right after the publish job has succeeded:
-gh secret delete CRATES_IO_BOOTSTRAP_TOKEN --env crates-io --repo aclater/scarletbook-rs
+gh secret delete CRATES_IO_BOOTSTRAP_TOKEN --repo aclater/scarletbook-rs
 ```
 
-Then revoke the token at `https://crates.io/settings/tokens` and set up trusted publishing
-for every crate (above), so that the next release publishes without a token.
+### After either option
 
-### v0.5.7
-
-At the tag v0.5.7, `scarletbook-pcm` and `scarletbook` can be published as they are
-(`cargo publish --dry-run` passes for both), but `scarletbook-ffi` cannot: it has
-`publish = false` and its path dependencies have no version. The tag's `release.yml` has no
-`publish` job either. So 0.5.7 is published by option A, for `scarletbook-pcm` and
-`scarletbook` only; `scarletbook-ffi` starts at 0.5.8, by option A or B for that one crate
-(the other two then publish through trusted publishing).
+1. Revoke the token at `https://crates.io/settings/tokens`.
+2. Set up the trusted publisher for `scarletbook-ffi` (above), and optionally require
+   trusted publishing for it.
+3. Update the table above. From then on every tag publishes all three crates by itself.
