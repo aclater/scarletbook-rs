@@ -38,6 +38,11 @@
       "id": "plain-dsd-2ch-78m",
       "synth": ["--minutes", "78", "--area", "2ch", "--kind", "dsd"],
       "approx_bytes": 3310000000
+    },
+    {
+      "id": "plain-dsd-5ch-30m",
+      "synth": ["--minutes", "30", "--area", "mc", "--mc-channels", "5", "--kind", "dsd"],
+      "approx_bytes": 3182000000
     }
   ],
   "defaults": {
@@ -78,10 +83,17 @@
     },
     {
       "id": "dsf-plain-2ch",
-      "path": "plain-DSD area to DSF",
+      "path": "plain-DSD area to DSF, 2 channels",
       "image": "plain-dsd-2ch-78m",
       "command": ["{kit}/bench", "dsf", "{image}", "--area", "2ch", "--threads", "0", "--out", "/dev/null"],
       "frames": 351000
+    },
+    {
+      "id": "dsf-plain-5ch",
+      "path": "plain-DSD area to DSF, 5 channels",
+      "image": "plain-dsd-5ch-30m",
+      "command": ["{kit}/bench", "dsf", "{image}", "--area", "mc", "--threads", "0", "--out", "/dev/null"],
+      "frames": 135000
     },
     {
       "id": "dsf-dst-2ch-tall",

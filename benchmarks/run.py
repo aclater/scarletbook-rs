@@ -5,7 +5,10 @@ Usage:
     python3 -I run.py --kit generic=DIR [--kit v3=DIR] --work DIR [--case ID]... [--smoke]
         > results.jsonl
 
-Each DIR is an unpacked scarletbook-benchkit archive. The runner writes the run list's images
+Each DIR is an unpacked scarletbook-benchkit archive. `--kit BUILD@LABEL=DIR` times kits of
+several versions in one alternation (benchmarks/compare.sh); LABEL, by default the kit's
+version, goes into each result line. A case whose program a kit lacks (an older version) is
+skipped for that kit. The runner writes the run list's images
 into WORK with the first kit's scarletbook-synth (the images do not depend on the build),
 runs every case's rounds, alternating the builds, and prints one JSON line per timed run on
 stdout. Progress goes to stderr. It needs Python 3.8 or later and nothing else: no network,
@@ -111,7 +114,7 @@ def warm(path):
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--runlist", default=os.path.join(HERE, "runlist.json"))
-    p.add_argument("--kit", action="append", required=True, metavar="BUILD=DIR")
+    p.add_argument("--kit", action="append", required=True, metavar="BUILD[@LABEL]=DIR")
     p.add_argument("--work", required=True)
     p.add_argument("--case", action="append", default=[])
     p.add_argument("--smoke", action="store_true")
@@ -124,14 +127,18 @@ def main():
     known = {b["id"]: b for b in runlist["builds"]}
     kits = []
     for spec in a.kit:
-        build, _, path = spec.partition("=")
+        name, _, path = spec.partition("=")
+        build, _, label = name.partition("@")
         if build not in known or not path:
-            sys.exit(f"--kit {spec}: expected BUILD=DIR with BUILD one of {sorted(known)}")
+            sys.exit(f"--kit {spec}: expected BUILD[@LABEL]=DIR with BUILD one of {sorted(known)}")
         missing = [f for f in known[build]["cpu_flags"] if f not in flags]
         if missing:
             print(f"skipping build {build}: the CPU lacks {' '.join(missing)}", file=sys.stderr)
             continue
-        kits.append((build, os.path.abspath(path)))
+        path = os.path.abspath(path)
+        version = subprocess.run([os.path.join(path, "bench"), "--version"], capture_output=True,
+                                 text=True, check=True).stdout.split()[-1]
+        kits.append((build, label or version, path, version))
     if not kits:
         sys.exit("no build can run on this CPU")
     os.makedirs(a.work, exist_ok=True)
@@ -139,8 +146,6 @@ def main():
     os.makedirs(scratch, exist_ok=True)
 
     host = host_facts()
-    version = subprocess.run([os.path.join(kits[0][1], "bench"), "--version"], capture_output=True,
-                             text=True, check=True).stdout.split()[-1]
     defaults = runlist["defaults"]
     cases = [c for c in runlist["cases"] if not a.case or c["id"] in a.case]
     images = {i["id"]: i for i in runlist["images"]}
@@ -151,7 +156,7 @@ def main():
         path = os.path.join(os.path.abspath(a.work), name)
         if not os.path.exists(path):
             recipe = images[image_id]["synth"]
-            argv = [os.path.join(kits[0][1], "scarletbook-synth"), path + ".part"]
+            argv = [os.path.join(kits[0][2], "scarletbook-synth"), path + ".part"]
             argv += smoke_synth(recipe) if a.smoke else recipe
             print("+ " + shlex.join(argv), file=sys.stderr)
             subprocess.run(argv, check=True)
@@ -167,24 +172,29 @@ def main():
         image = paths.get(c["image"])
         if image and c["cache"] == "warm":
             warm(image)
-        for build, kit in kits:
+        # Kits that have the case's program (an older version may not).
+        able = [k for k in kits if os.path.exists(expand(c["command"][:1], k[2], image, scratch)[0])]
+        for build, label, *_ in sorted(set(kits) - set(able)):
+            print(f"skipping {c['id']} for {build}@{label}: the kit has no {os.path.basename(c['command'][0])}", file=sys.stderr)
+        for build, label, kit, version in able:
             for _ in range(warmups):
                 run_child(expand(c["command"], kit, image, scratch), False)
         copies = os.path.join(scratch, "copies")
         os.makedirs(copies, exist_ok=True)
         for r in range(rounds):
             # abba: the builds in order on even rounds, reversed on odd ones.
-            order = kits if c["alternation"] != "abba" or r % 2 == 0 else kits[::-1]
-            for build, kit in order:
+            order = able if c["alternation"] != "abba" or r % 2 == 0 else able[::-1]
+            for build, label, kit, version in order:
                 argv = expand(c["command"], kit, image, scratch)
-                copy = os.path.join(copies, f"{c['id']}-{build}-{r}-{os.path.basename(argv[0])}")
+                copy = os.path.join(copies, f"{c['id']}-{build}-{label}-{r}-{os.path.basename(argv[0])}")
                 shutil.copy2(argv[0], copy)
                 argv[0] = copy
-                print(f"+ [{c['id']} {build} round {r}] " + shlex.join(argv), file=sys.stderr)
+                print(f"+ [{c['id']} {build}@{label} round {r}] " + shlex.join(argv), file=sys.stderr)
                 wall, code, ru, stdout, stderr = run_child(argv, keep)
                 line = {
                     "case": c["id"],
                     "build": build,
+                    "label": label,
                     "version": version,
                     "round": r,
                     "exit": code,

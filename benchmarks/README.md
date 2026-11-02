@@ -33,6 +33,7 @@ An archive holds one directory:
 | `callpattern` | the scarletbook-pcm `callpattern` example: DSD64 stereo to 176.4 kHz 24-bit, generated input |
 | `runlist.json` | the cases (below) |
 | `run.py` | the reference runner (below) |
+| `table.py` | prints the Markdown table of `RESULTS.md` from the runner's output |
 | `README.txt`, `README.md`, `LICENSE-*` | version, commit and build; this file; the licences |
 
 The programs are statically linked against glibc (`x86_64-unknown-linux-gnu` with
@@ -52,7 +53,7 @@ generic one also runs the AVX2 DST decoder and PCM kernels on CPUs that have the
   flags a build needs. A runner skips a build whose flags the CPU lacks and says so.
 - `images`: each image's `scarletbook-synth` arguments after the output path. The images are
   deterministic (DST frames from the generated stress set, not from the corpus), so any kit
-  writes the same bytes; `approx_bytes` is for disk planning (about 4.9 GB in all).
+  writes the same bytes; `approx_bytes` is for disk planning (about 8 GB in all).
 - `defaults` and `cases`. Each case has an `id`, the `path` of #224 it measures, an `image`
   (or `null`), a `command` with placeholders, and, unless the default applies:
   - `rounds` (default 5): timed runs per build;
@@ -75,7 +76,8 @@ image file, `{scratch}` a writable directory. Threads `0` mean one per logical C
 | `dst-decode-2ch-tall` | DST decode, all threads, 2 ch | 50 min 2 ch DST |
 | `dst-decode-6ch-t1` | DST decode, one thread, 6 ch | 2 min 6 ch DST |
 | `dst-decode-6ch-tall` | DST decode, all threads, 6 ch | 10 min 6 ch DST |
-| `dsf-plain-2ch` | plain-DSD area to DSF (to `/dev/null`) | 78 min 2 ch plain DSD |
+| `dsf-plain-2ch` | plain-DSD area to DSF, 2 ch (to `/dev/null`) | 78 min 2 ch plain DSD |
+| `dsf-plain-5ch` | plain-DSD area to DSF, 5 ch (to `/dev/null`) | 30 min 5 ch plain DSD |
 | `dsf-dst-2ch-tall` | DST area to DSF, all threads (to `/dev/null`) | 50 min 2 ch DST |
 | `pcm-callpattern` | DSD to PCM, one thread | none (generated in memory) |
 
@@ -85,7 +87,7 @@ an image.
 
 ## The sandboxed-runner contract
 
-**Inputs:** one or both kit archives of one version, unpacked; about 5 GB of free disk for the
+**Inputs:** one or both kit archives of one version, unpacked; about 8 GB of free disk for the
 images; nothing else. **Network:** none. **Privileges:** none.
 
 **What the runner executes**, in this order:
@@ -108,6 +110,7 @@ images; nothing else. **Network:** none. **Privileges:** none.
 | `case` | the case id |
 | `build` | `generic` or `v3` |
 | `version` | the last word of `bench --version` |
+| `label` | the kit's label (`--kit BUILD@LABEL=DIR`), by default its version |
 | `round` | 0, 1, ... |
 | `exit` | the exit code; a non-zero one fails the run (`stderr` holds its first 4000 bytes) |
 | `wall_s` | wall-clock seconds from start to exit |
@@ -140,5 +143,13 @@ python3 -I $g/run.py --kit generic=$g --kit v3=$g-v3 --work work > results.jsonl
 ```
 
 `--case ID` (repeatable) selects cases; `--smoke` runs every case once on tiny images, which
-is what `benchkit.yml` does to check each kit. A full run takes about 15 minutes on a
-16-core Zen 2 machine and writes about 4.9 GB of images.
+is what `benchkit.yml` does to check each kit. A full run of two builds takes about 12 minutes
+on a 16-core Zen 2 machine and writes about 8 GB of images. `--kit BUILD@LABEL=DIR` times kits
+of several versions in one alternation; `python3 -I table.py results.jsonl` prints the medians
+as a Markdown table.
+
+## Published numbers
+
+[`RESULTS.md`](RESULTS.md) holds the measured figures per release on lennon (3950X), generic
+and x86-64-v3, with the method and what was not measured. `compare.sh` reproduces a section:
+it builds kits from two revisions and times them against each other with this run list.
