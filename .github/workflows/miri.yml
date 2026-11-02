@@ -128,7 +128,7 @@ jobs:
               miri -p scarletbook "${args[@]}" ;;
             core-lib) miri -p scarletbook --lib -- --skip fast_loop_matches_general ;;
             # The run-time dispatch of the DST decoder and of the output path, the core crate's
-            # unsafe code (#146, #202): on pull requests that change them (ci.yml), about MINUTES.
+            # unsafe code (#146, #202): on pull requests that change them (ci.yml), about 12 minutes.
             core-dispatch)
               miri -p scarletbook --lib -- --exact dispatch::tests::detected_decoder_matches_generic_simple \
                 dispatch::output_tests::detected_output_matches_generic_simple
