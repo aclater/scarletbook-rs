@@ -715,6 +715,7 @@ pub fn seek_index_disc(bytes: &[u8]) {
     let d = seek_disc();
     let Ok(index) = AreaIndex::from_bytes(&d.area, d.sectors, bytes, usize::MAX) else { return };
     let checked = index.checkpoints() == 0 && index.confirmations() == 0 && !index.is_complete();
+    let has_checkpoints = index.checkpoints() > 0;
     let slot = d.area.slot;
     let mut disc = Disc::open(std::io::Cursor::new(&d.image[..])).unwrap();
     if disc.set_seek_index(slot, index).is_err() {
@@ -730,7 +731,21 @@ pub fn seek_index_disc(bytes: &[u8]) {
         assert!(frames.windows(2).all(|w| w[0].number < w[1].number), "frames not increasing");
         reads.push((k, frames, cursor));
     }
-    while !disc.verify_speculation(slot, 1000).unwrap() {}
+    // Bytes that load can hold checkpoints of no reading of this image: extending the index
+    // refuses them with a typed error, as documented (#253). Without a checkpoint, nothing
+    // can mismatch.
+    loop {
+        match disc.verify_speculation(slot, 1000) {
+            Ok(true) => break,
+            Ok(false) => {}
+            Err(scarletbook::Error::InvalidArgument("seek index does not match the image"))
+                if has_checkpoints =>
+            {
+                break;
+            }
+            Err(e) => panic!("verifying: {e:?}"),
+        }
+    }
     let _ = disc.take_seek_events(slot);
     let kept = disc.seek_index(slot).unwrap();
     assert!(kept.memory() <= 1 << 20, "{} bytes", kept.memory());
