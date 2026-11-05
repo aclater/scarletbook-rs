@@ -210,5 +210,23 @@ const _: () = {
         both::<output::CallerChunk>();
         both::<output::DsfChainFile>();
         both::<output::DstLengths>();
+        both::<output::AlbumArtistFrame>();
+        both::<output::ArrangerFrame>();
+        both::<output::ArtistTitleSource>();
+        both::<output::CommentKind>();
+        both::<output::DateFrame>();
+        both::<output::DsdiffDeparture>();
+        both::<output::DsfBitsPerSample>();
+        both::<output::DstIndexOffset>();
+        both::<output::Id3Encoding>();
+        both::<output::InfoChunk>();
+        both::<output::InvalidDst>();
+        both::<output::LocalChunk>();
+        both::<output::MarkerKind>();
+        both::<output::MarkerText>();
+        both::<output::Markers>();
+        both::<output::PropertyChunk>();
+        both::<output::TagItem>();
+        both::<output::TextSource>();
     }
 };
