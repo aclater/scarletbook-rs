@@ -313,6 +313,12 @@ impl Plan {
         plan
     }
 
+    /// The instruction set the kernels run on.
+    #[cfg(test)]
+    pub(crate) fn isa(&self) -> Isa {
+        self.isa
+    }
+
     /// Runs the kernels on `isa` instead of the detected one.
     #[cfg(test)]
     pub(crate) fn set_isa(&mut self, isa: Isa) {
