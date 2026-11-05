@@ -85,6 +85,26 @@ def host_facts():
     }
 
 
+def free_memory():
+    """Free memory by block size, from /proc/buddyinfo: GiB in blocks under 2 MiB and at or over
+    it, or (None, None) where that file is missing. The blocks a fresh image copy lands in move
+    plain-DSD seconds (README, "Fresh copies"), so each round records them."""
+    page = os.sysconf("SC_PAGE_SIZE")
+    small = large = 0
+    try:
+        with open("/proc/buddyinfo") as f:
+            for line in f:
+                for order, count in enumerate(line.split()[4:]):
+                    size = page << order
+                    if size < 1 << 21:
+                        small += int(count) * size
+                    else:
+                        large += int(count) * size
+    except (OSError, ValueError):
+        return None, None
+    return round(small / (1 << 30), 2), round(large / (1 << 30), 2)
+
+
 def run_child(argv, keep_stdout):
     """Runs argv; returns wall seconds, exit code, rusage, stdout (or None) and stderr."""
     # stdout and stderr go to files, not pipes, so that neither can block the child; the
@@ -299,6 +319,8 @@ def main():
             print(f"skipping {c['id']} for {build}@{label}: the kit has no {os.path.basename(c['command'][0])}", file=sys.stderr)
         image = None
         for r in range(rounds):
+            # Before the copy is written: this is what it is written into.
+            free_small, free_large = free_memory()
             if source:
                 # A fresh copy of the image for each round, shared by the builds of the round
                 # (README, "Fresh copies"): the page-cache pages that hold one image file can
@@ -331,6 +353,8 @@ def main():
                     "sys_s": round(ru.ru_stime, 6),
                     "cpu_s": round(ru.ru_utime + ru.ru_stime, 6),
                     "max_rss_kib": ru.ru_maxrss,
+                    "free_below_2m_gib": free_small,
+                    "free_from_2m_gib": free_large,
                     "host": host,
                 }
                 if keep:

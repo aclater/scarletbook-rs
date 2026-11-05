@@ -135,6 +135,7 @@ image (up to 5 × 3.3 GB); nothing else. **Network:** none, after the download a
 | `wall_s` | wall-clock seconds from start to exit |
 | `user_s`, `sys_s`, `cpu_s` | the child's user, system and total CPU seconds (`wait4` rusage) |
 | `max_rss_kib` | the child's peak resident set |
+| `free_below_2m_gib`, `free_from_2m_gib` | free memory at the start of the round, before its image copy is written, in blocks under 2 MiB and at or over it (`/proc/buddyinfo`; null without that file) |
 | `stdout` | the program's stdout, for cases with `stdout: keep` |
 | `host` | `cpu` (model name), `logical_cpus`, `usable_cpus` (affinity), `smt`, `governor`, `mem_bytes`, `kernel` |
 
@@ -165,15 +166,65 @@ rounds absorbs a slow first round. On lennon the plain-DSD rows then agree with 
 images in the fast state within 1.5 %.
 
 **Fresh copies differ too (#259).** A fresh copy removes the stuck offset, but not the spread between
-copies. On lennon, ten byte-identical fresh copies of the 78-minute stereo image, one 0.5.7 `bench`,
-three runs each: 0.484 to 0.543 s (12 %), median 0.507 s, while the runs of any one copy agree within
-1.2 %. User and system time both move, so it is not only the kernel's copy.
+copies. On the Zen 2 benchmark host, ten byte-identical fresh copies of the 78-minute stereo image, one
+0.5.7 `bench`, three runs each: 0.484 to 0.543 s (12 %), median 0.507 s, while the runs of any one copy
+agree within 1.2 %.
 
-**Whole runs differ as well, for a reason not yet found.** The 0.5.8 table's five stereo rounds all ran
-at 0.540 s or above, which ten-copy spread alone would not give: the same library read 0.483 s in the
-0.5.7 section. Writing and deleting four other images first did not reproduce it (median 0.500 s, 1 of
-10 copies at 0.540 s or above). The case run alone through `run.py` fell round by round from 0.560 to
-0.505 s, median 0.525 s, so the state of the run matters.
+**Only the kernel's cycles move.** Over 56 measurements of about 30 copies, with perf counters, wall time
+ran from 0.475 to 0.589 s:
+
+| Counter | Range | Correlation with wall time |
+|---|---|---|
+| Kernel cycles | 973-1478 M | 0.996 |
+| Kernel cache misses | 10.3-25.2 M | 0.967 |
+| dTLB load misses | 0.14-1.77 M | 0.976 |
+| User cycles | 1194-1246 M | 0.18 |
+| Kernel instructions | 322-326 M | |
+| User instructions | 2923-2931 M | |
+| Clock | 4.49-4.61 GHz | |
+
+So the code path and the clock stay the same, and the same kernel instructions take up to 52 % more
+cycles. `wait4`'s user time ran from 0.24 to 0.30 s while user cycles stayed flat, so that split is too
+coarse to show this. A copy keeps its time: five copies re-timed at once and again 60 s later stayed
+within 3 %. Temperature had no visible effect: one copy read 0.58-0.60 s from 35 to 65 °C (Tctl), before
+and after 40 s of load on all threads.
+
+**The free memory a copy is written into predicts its time.** Two chains of 12 fresh copies, all kept, each
+staged and then timed. "Taken from" is the net fall in free memory by block size while the copy was written:
+
+| Taken from | Wall time |
+|---|---|
+| Blocks under 256 KiB (falling as those blocks run out) | 0.50-0.59 s |
+| Partly blocks of 256 KiB to 2 MiB | 0.49 s |
+| Mainly blocks of 256 KiB and over | 0.475-0.48 s |
+| None free, kswapd reclaiming page cache | 0.52-0.56 s |
+
+The real `run.py`, `dsf-plain-2ch`, two builds, five rounds, predicted from that before it ran:
+
+| State at the start | Rounds, slowest build | Median wall |
+|---|---|---|
+| 36 GB free under 2 MiB, 9 GB at or over | 0.596, 0.588, 0.584, 0.571, 0.540 s | 0.584 s |
+| 27 GB under, 9 GB at or over | 0.545, 0.538, 0.539, 0.531, 0.513 s | 0.534 s |
+| Under 1 GB under, 7 GB at or over (page cache filled first) | 0.486, 0.482, 0.532, 0.578, 0.573 s | 0.531 s |
+| Under 1 GB under, 7 GB at or over, repeated | 0.483, 0.482, 0.517, 0.534, 0.542 s | 0.517 s |
+
+In the last two, 7 GB lasts two copies, then reclaim starts. **So the memory state alone, with the same
+code and the same staging, gives both figures #259 set out to explain,** about 0.48 s and rounds nearly
+all at 0.540 s or above, under the shared benchmark lock. This is stereo only; the 5-channel case wasn't
+tested.
+
+**Not known.** Why smaller free blocks cost more kernel cycles: the physical layout of a file's pages
+can't be read without root, so the misses above are a correlation, not a mechanism. What the memory state
+was during the published 0.5.7 and 0.5.8 runs: nothing recorded it, so this reproduces the gap between
+those tables but doesn't show it was the cause. `run.py` now records the state for each round. What
+leaves memory in a given state, such as builds, idle fuzzing or other users' work, wasn't tested.
+
+**Other users' runs stay a candidate.** The load history during the earlier runs isn't available, so it
+can't be tested directly. The lock doesn't remove the effect: every figure above ran under it, and the
+56 measurements saw at most 0.42 CPUs of other work. Competing work has a different look: 8 busy CPUs
+took one copy from 0.58 to 0.62 s and the clock from 4.6 to 4.2 GHz, and 16 took it to 0.64-0.90 s with
+user times of 0.31-0.44 s, above the 0.5.8 stereo rounds' 0.25-0.28 s. That argues against 16 or more
+busy CPUs throughout those rounds, but not against smaller load.
 
 So **seconds can differ between tables by more than 10 % with no change in the code.** The builds of a
 round read the same copy, and their per-round ratios agreed within 0.7 % while those rounds spread 7 %

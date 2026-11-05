@@ -73,12 +73,13 @@ are at 1 / 8 / 256 frames per call.
 
 **Compare within this section only.** The plain-DSD rows read 0.555 s and 0.614 s for 0.5.7 here,
 against 0.483 s and 0.540 s for the same library in the 0.5.7 section. The DST rows agree within 1 %.
-Byte-identical fresh copies of an image differ by that much (#259): ten copies of the stereo image ran
-at 0.484 to 0.543 s, each copy's own runs within 1.2 % (`README.md`, "Fresh copies"). That shows
-seconds can move this much between byte-identical copies, but it does not fully explain this gap:
-those ten copies have a median of 0.507 s, and all five stereo rounds here ran at 0.540 s or above, so
-something that affects a whole run also differs (not identified). Within a round both builds read
-the same copy, and the per-round ratios stay within 0.7 %, so this table's comparison is sound.
+Byte-identical fresh copies of an image differ by that much (#259), and how much follows the free memory
+each copy is written into: `run.py` on the same library gave rounds of 0.540-0.596 s with free memory
+mostly in small blocks and 0.48 s on copies drawn from large ones (`README.md`, "Fresh copies"). Nothing
+recorded the memory state during this run, so that reproduces this gap but doesn't show it was the
+cause, and other users' runs, which the shared lock did not yet exclude, can't be tested after the fact.
+Within a round both builds read the same copy, and the per-round ratios stay within 0.7 %, so this
+table's comparison is sound.
 
 ### `bench realtime` (#255, new)
 
