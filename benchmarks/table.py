@@ -7,7 +7,9 @@ One row per case and build, one column group per label (version), in `--labels` 
 the order the labels first appear: the median wall time, the median CPU time (user + system), and, from the
 second label on, the ratio of its median wall time to the first label's. For `callpattern`
 the figures are its own: the median over rounds of its CPU milliseconds per second of audio,
-at 1, 8 and 256 frames per call. Failed runs are left out and counted under the table. So is any
+at 1, 8 and 256 frames per call. A case with a `figure` shows that line of its stdout instead of
+wall and CPU time, the median over rounds, in microseconds: what it times is far shorter than
+starting a process. Failed runs are left out and counted under the table. So is any
 cell whose rounds differ by more than SPREAD_LISTED in wall time, with its range: each round reads
 its own copy of the image, and byte-identical copies can differ by more than a median of a few
 rounds evens out (README.md, "Fresh copies"). The builds of a round read the same copy; the printed
@@ -34,6 +36,18 @@ def callpattern_ms(stdout):
     return out
 
 
+def figure_of(line, name):
+    """The value of the `name<TAB>value` line of a run's stdout, or None."""
+    m = re.search(rf"^{re.escape(name)}\t([0-9.]+)$", line.get("stdout") or "", re.M)
+    return float(m.group(1)) if m else None
+
+
+def timed(line, figures):
+    """What a run measured: its case's figure, or else its wall time."""
+    name = figures.get(line["case"])
+    return figure_of(line, name) if name else line["wall_s"]
+
+
 def fmt(x, digits=3):
     return "-" if x is None else f"{x:.{digits}f}"
 
@@ -47,6 +61,7 @@ def main():
     runlist = json.load(open(a.runlist))
     paths = {c["id"]: c["path"] for c in runlist["cases"]}
     order = [c["id"] for c in runlist["cases"]]
+    figures = {c["id"]: c["figure"] for c in runlist["cases"] if "figure" in c}
 
     lines, failed = [], 0
     for path in a.results:
@@ -94,6 +109,10 @@ def main():
                            else None for n in (1, 8, 256)}
                     wall = med[8]
                     cells += [" / ".join(fmt(med[n], 2) for n in (1, 8, 256)) + " ms per s", "-"]
+                elif case in figures:
+                    values = [v for v in (timed(r, figures) for r in rs) if v is not None]
+                    wall = statistics.median(values) if values else None
+                    cells += [fmt(wall, 1) + " µs" if wall is not None else "-", "-"]
                 else:
                     wall = statistics.median(r["wall_s"] for r in rs) if rs else None
                     cpu = statistics.median(r["cpu_s"] for r in rs) if rs else None
@@ -114,9 +133,11 @@ def main():
     for case in cases:
         for build in builds:
             for label in labels:
-                walls = [r["wall_s"] for r in runs.get((case, build, label), [])]
+                walls = [timed(r, figures) for r in runs.get((case, build, label), [])]
+                walls = [w for w in walls if w is not None]
                 if walls and min(walls) > 0 and max(walls) / min(walls) > SPREAD_LISTED:
-                    spread.append(f"{paths.get(case, case)}, {build}, {label}: {min(walls):.3f} to {max(walls):.3f} s")
+                    unit = f"{min(walls):.1f} to {max(walls):.1f} µs" if case in figures else f"{min(walls):.3f} to {max(walls):.3f} s"
+                    spread.append(f"{paths.get(case, case)}, {build}, {label}: {unit}")
     if spread:
         print("\nSpread between rounds above "
               f"{(SPREAD_LISTED - 1) * 100:.0f} %, so read these seconds as a range: " + "; ".join(spread) + ".")
