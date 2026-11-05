@@ -10,7 +10,8 @@ the figures are its own: the median over rounds of its CPU milliseconds per seco
 at 1, 8 and 256 frames per call. Failed runs are left out and counted under the table. So is any
 cell whose rounds differ by more than SPREAD_LISTED in wall time, with its range: each round reads
 its own copy of the image, and byte-identical copies can differ by more than a median of a few
-rounds evens out (README.md, "Fresh copies"). Ratios compare the same copies; seconds do not.
+rounds evens out (README.md, "Fresh copies"). The builds of a round read the same copy; the printed
+ratio is of the medians over the rounds, which on such cases can differ slightly from a per-round ratio.
 """
 import argparse
 import json

@@ -74,9 +74,11 @@ are at 1 / 8 / 256 frames per call.
 **Compare within this section only.** The plain-DSD rows read 0.555 s and 0.614 s for 0.5.7 here,
 against 0.483 s and 0.540 s for the same library in the 0.5.7 section. The DST rows agree within 1 %.
 Byte-identical fresh copies of an image differ by that much (#259): ten copies of the stereo image ran
-at 0.484 to 0.543 s, each copy's own runs within 1.2 % (`README.md`, "Fresh copies"). That
-measurement accounts for 0.483 s and most of the gap; this table's slowest round was 0.577 s, which
-it does not reach. Ratios are unaffected, since each round's copy is shared by both builds.
+at 0.484 to 0.543 s, each copy's own runs within 1.2 % (`README.md`, "Fresh copies"). That shows
+seconds can move this much between byte-identical copies, but it does not fully explain this gap:
+those ten copies have a median of 0.507 s, and all five stereo rounds here ran at 0.540 s or above, so
+something that affects a whole run also differs (not identified). Within a round both builds read
+the same copy, and the per-round ratios stay within 0.7 %, so this table's comparison is sound.
 
 ### `bench realtime` (#255, new)
 
