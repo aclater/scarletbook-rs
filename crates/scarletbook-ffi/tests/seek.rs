@@ -844,7 +844,8 @@ fn a_refutation_reaches_the_c_caller() {
         assert_eq!(g, w);
     }
     audio_free(a);
-    // As pysacd does: re-read [first, exact_from) exactly and keep the rest.
+    // Specification 4, 4.2 item 8: positions numbered a* or more are exact even when
+    // refuted, so re-read [first, exact_from) exactly and keep the rest.
     assert_eq!(policy(disc, 0, SB_SEEK_POLICY_EXACT, 0), SbStatus::Ok);
     let r = range_open(disc, 0, first, s.exact_from);
     let mut joined = read_all(r, disc).0;
