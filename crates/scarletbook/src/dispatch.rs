@@ -21,6 +21,13 @@
 //! The wrapper holds no other unsafe operation: no intrinsics, no raw pointers. The
 //! exception is to be revisited under #199, for a safe alternative such as struct target
 //! features (RFC 3525) or per-CPU builds.
+//!
+//! Under Miri, `is_x86_feature_detected!` reports only the features the build enabled, so
+//! a plain `cargo miri test` runs the generic code on both sides of the tests below and
+//! never reaches the wrapper. The `core-dispatch-avx2` slice (`miri.yml`, main and nightly)
+//! builds with the features, which makes Miri run the wrapper and everything it calls. Miri
+//! also reports calling the wrapper without them as undefined behaviour. It interprets the
+//! Rust code, not the AVX2 machine code: the native tests check what the compiler builds.
 
 #![allow(unsafe_code)]
 
@@ -317,8 +324,8 @@ mod output_tests {
     }
 
     /// The same on small synthetic areas of 1, 2, 5 and 6 channels: a range and its chain
-    /// of two files. Under Miri (the `core-dispatch` slice), 2 channels and three of the
-    /// layouts ([`layouts`]).
+    /// of two files. Under Miri (the `core-dispatch` and `core-dispatch-avx2` slices), 2
+    /// channels and three of the layouts ([`layouts`]).
     #[test]
     fn detected_output_matches_generic_simple() {
         let channels: &[u8] = if cfg!(miri) { &[2] } else { &[1, 2, 5, 6] };
@@ -415,7 +422,7 @@ mod tests {
     /// The decoder chosen for this CPU gives exactly the output and results of the generic
     /// decoder on the DST frames of the corpus (1 to 6 channels), on the generated stress
     /// frames of the benchmarks (2 and 6 channels), and on damaged copies of both. (On a
-    /// CPU without the features, and under Miri, both are the generic decoder.)
+    /// CPU without the features, both are the generic decoder.)
     #[test]
     #[cfg_attr(
         miri,
@@ -440,7 +447,8 @@ mod tests {
         assert!(seen > 100, "only {seen} frames");
     }
 
-    /// The same on small generated frames, short enough for Miri.
+    /// The same on small generated frames, short enough for Miri. (Under Miri, both are
+    /// the generic decoder unless the build enables the features: `core-dispatch-avx2`.)
     #[test]
     fn detected_decoder_matches_generic_simple() {
         let mut seed = 0x51_3C_7A_D2u64;
@@ -464,5 +472,22 @@ mod tests {
                 .collect();
             assert_same(&pool, nch, "generated");
         }
+    }
+
+    /// `core-dispatch-avx2` really runs the wrapper. This test exists only in a Miri build
+    /// with the features, and the slice requires it by name: if the slice loses its flags,
+    /// the test is gone and the slice fails; if [`Isa::detect`] comes to need a feature the
+    /// flags don't enable, this fails.
+    #[cfg(all(
+        miri,
+        target_feature = "avx2",
+        target_feature = "bmi1",
+        target_feature = "bmi2",
+        target_feature = "lzcnt",
+        target_feature = "movbe"
+    ))]
+    #[test]
+    fn miri_slice_selects_the_wrapper() {
+        assert_eq!(Isa::detect(), Isa(Level::Avx2Bmi));
     }
 }

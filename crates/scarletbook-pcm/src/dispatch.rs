@@ -19,6 +19,13 @@
 //! The wrappers hold no other unsafe operation: no intrinsics, no raw pointers. The
 //! exception is to be revisited under #199, for a safe alternative such as struct target
 //! features (RFC 3525) or per-CPU builds.
+//!
+//! Under Miri, `is_x86_feature_detected!` reports only the features the build enabled, so
+//! a plain `cargo miri test` runs the generic kernels on both sides of the test below and
+//! never reaches the wrappers. The `pcm-dispatch-avx2` slice (`miri.yml`, main and nightly)
+//! builds with the features, which makes Miri run all six wrappers. Miri also reports
+//! calling one without them as undefined behaviour. It interprets the Rust code, not the
+//! AVX2 machine code: the native tests check what the compiler builds.
 
 #![allow(unsafe_code)]
 
@@ -175,8 +182,9 @@ mod tests {
     /// The kernels chosen for this CPU give exactly the output of the generic kernels, in
     /// every configuration, for a whole run and for a frame with neighbours, in both sample
     /// layouts and with the same clip counts. (On a CPU without AVX2 and FMA, and under Miri
-    /// unless it is run with `-C target-feature=+avx2,+fma`, both are the generic kernels.
-    /// Under Miri, only `Default` is converted, which still runs every kernel.)
+    /// unless it is built with `-C target-feature=+avx2,+fma` as `pcm-dispatch-avx2` is, both
+    /// are the generic kernels. Under Miri, only `Default` is converted, which still runs
+    /// every kernel.)
     #[test]
     fn detected_kernels_match_generic() {
         let cases: &[(u8, usize, f64)] =
@@ -226,5 +234,15 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// `pcm-dispatch-avx2` really runs the wrappers. This test exists only in a Miri build
+    /// with the features, and the slice requires it by name: if the slice loses its flags,
+    /// the test is gone and the slice fails; if [`Isa::detect`] comes to need a feature the
+    /// flags don't enable, this fails.
+    #[cfg(all(miri, target_feature = "avx2", target_feature = "fma"))]
+    #[test]
+    fn miri_slice_selects_the_wrappers() {
+        assert_eq!(Isa::detect(), Isa(Level::Avx2Fma));
     }
 }

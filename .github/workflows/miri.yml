@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     # About twice each slice's measured time, so that a stuck run fails within the hour instead
     # of GitHub's 6-hour default (#205). Slices not listed get 20 minutes.
-    timeout-minutes: ${{ fromJSON('{"core-tags":60,"core-chain":55,"core":45,"core-lib":25,"core-dispatch":25,"lanes-1-2":20,"lanes-3":20,"lanes-4":20}')[matrix.slice] || 20 }}
+    timeout-minutes: ${{ fromJSON('{"core-tags":60,"core-chain":55,"core":45,"core-lib":25,"core-dispatch":25,"core-dispatch-avx2":25,"pcm-dispatch-avx2":25,"lanes-1-2":20,"lanes-3":20,"lanes-4":20}')[matrix.slice] || 20 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -45,8 +45,9 @@ jobs:
       - run: rustup toolchain install "$RUST_NIGHTLY" --profile minimal -c miri,rust-src
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          # One cache per feature set, shared by the slices (they build the same crates).
-          key: miri-${{ startsWith(matrix.slice, 'parallel') && 'parallel' || 'default' }}
+          # One cache per feature set, shared by the slices (they build the same crates), and
+          # one for the -avx2 slices' RUSTFLAGS, so that they can't replace what the others use.
+          key: miri-${{ startsWith(matrix.slice, 'parallel') && 'parallel' || endsWith(matrix.slice, '-avx2') && 'avx2' || 'default' }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # The `parallel` slices use Tree Borrows, not Miri's default Stacked Borrows: under
       # Stacked Borrows Miri reports undefined behaviour inside crossbeam-epoch (rayon's
@@ -126,13 +127,32 @@ jobs:
                   done ;;
               esac
               miri -p scarletbook "${args[@]}" ;;
-            # The dispatch tests run in their own slice, core-dispatch, on main and nightly too.
+            # The dispatch tests run in their own slices (below).
             core-lib) miri -p scarletbook --lib -- --skip fast_loop_matches_general --skip dispatch:: ;;
-            # The run-time dispatch of the DST decoder and of the output path, the core crate's
-            # unsafe code (#146, #202): on pull requests that change them (ci.yml), about 12 minutes.
+            # On pull requests that change the DST decoder or the output path (ci.yml), about 12
+            # minutes. No target features are enabled, so under Miri `Isa::detect` finds none and
+            # both sides of these tests are the generic code: this checks the safe code and
+            # the calls into the dispatch module, NOT the unsafe wrapper (#267).
             core-dispatch)
               miri -p scarletbook --lib -- --exact dispatch::tests::detected_decoder_matches_generic_simple \
                 dispatch::output_tests::detected_output_matches_generic_simple
+              named 2 ;;
+            # The unsafe code itself, the condition of the dispatch modules (#146, #173, #267): main
+            # and nightly only (miri-full.yml), never on pull requests. Under Miri,
+            # `is_x86_feature_detected!` reports what the build enabled, so RUSTFLAGS makes
+            # `Isa::detect` choose the wrappers and Miri run them. MIRIFLAGS wouldn't: the
+            # features must be set when compiling. `miri_slice_selects_*` exists only with these
+            # flags, so `named` fails if they are lost.
+            core-dispatch-avx2)
+              RUSTFLAGS="-C target-feature=+avx2,+bmi1,+bmi2,+lzcnt,+movbe" miri -p scarletbook --lib -- --exact \
+                dispatch::tests::miri_slice_selects_the_wrapper \
+                dispatch::tests::detected_decoder_matches_generic_simple \
+                dispatch::output_tests::detected_output_matches_generic_simple
+              named 3 ;;
+            pcm-dispatch-avx2)
+              RUSTFLAGS="-C target-feature=+avx2,+fma" miri -p scarletbook-pcm --lib -- --exact \
+                dispatch::tests::miri_slice_selects_the_wrappers \
+                dispatch::tests::detected_kernels_match_generic
               named 2 ;;
             lanes-1-2)
               miri -p scarletbook --lib -- --exact dst::tests::fast_loop_matches_general_1_frame \

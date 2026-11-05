@@ -1,0 +1,2 @@
+Fixed
+- Miri now runs the dispatched AVX2 code. Until now it ran only the generic code on both sides of the dispatch tests, because `is_x86_feature_detected!` under Miri reports only what the build enabled. The `core-dispatch-avx2` and `pcm-dispatch-avx2` slices of the main and nightly Miri run build with the target features, and fail if those flags are lost; `scarletbook-pcm`'s dispatch test was in no slice before. Pull request CI is unchanged (#267, #PR).
