@@ -1,1 +1,1 @@
-| 2026-11-05 | #PRNUM (#203): DST decoder step and loop choice, own profile on the Zen 2 benchmark host | No new sources consulted. Worked from this crate's profile, this repository and sacd-spec 5.5.7; reference timings used only as black-box numbers. |
+| 2026-11-05 | #288 (#203): DST decoder step and loop choice, own profile on the Zen 2 benchmark host | No new sources consulted. Worked from this crate's profile, this repository and sacd-spec 5.5.7; reference timings used only as black-box numbers. |
