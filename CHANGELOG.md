@@ -17,8 +17,8 @@ from 0.5.8).
 saved index that it used to load and then save differently (#253, found by fuzzing). The library
 never writes that form, so saved indexes keep loading. `bench realtime` reports what a real-time
 player needs from one thread (#255). `benchmarks/run.py` times a fresh copy of the image each round,
-so kit timings no longer read high (#248): **seconds from this kit are not comparable with seconds
-from the 0.5.7 kit's `run.py`.** Please use this kit to re-measure #202 and #203, which are not at
+which removes the cause of the high kit timings found under #248: **seconds from this kit are not
+comparable with seconds from the 0.5.7 kit's `run.py`.** Please use this kit to re-measure #202 and #203, which are not at
 target yet and continue towards 0.6.0.
 
 | Path | Build | 0.5.7 wall s | 0.5.7 CPU s | 0.5.8 wall s | 0.5.8 CPU s | 0.5.8 / 0.5.7 |
@@ -37,7 +37,11 @@ Medians of alternating runs on lennon (AMD Ryzen 9 3950X, Zen 2), generic build,
 `benchmarks/compare.sh`, a fresh copy of each program and image per round, images in the page
 cache: 5 rounds, 3 for the 20-minute DST case and for DSD to PCM.
 
-No row changes by more than 1 %. Not measured: the x86-64-v3 build; TOC open, first 128 KiB, cold
+No row changes by more than 1 %. **Compare within this table only:** its plain-DSD rows read about
+14 % above the figures published for the same 0.5.7 library in `benchmarks/RESULTS.md` (0.555 s against
+0.483 s stereo, 0.614 s against 0.540 s 5-channel), on the same fixed runner. The cause has not been
+found, and #248's fix did not rule out every such difference between runs. The DST rows agree within
+1 %, and the ratios within this table are unaffected. Not measured: the x86-64-v3 build; TOC open, first 128 KiB, cold
 runs and the C interface (`benchmarks/RESULTS.md`).
 
 ### Added
@@ -807,7 +811,8 @@ First release: a clean-room reader for SACD images, written from sacd-spec, pass
 - DST decoding about 3.8 times faster on one thread, and parallel decoding that overlaps
   demultiplexing with decoding within a bounded memory (#16, #17, #19).
 
-[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v0.5.7...HEAD
+[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v0.5.8...HEAD
+[0.5.8]: https://github.com/aclater/scarletbook-rs/compare/v0.5.7...v0.5.8
 [0.5.7]: https://github.com/aclater/scarletbook-rs/compare/v0.5.6...v0.5.7
 [0.5.6]: https://github.com/aclater/scarletbook-rs/compare/v0.5.5...v0.5.6
 [0.5.5]: https://github.com/aclater/scarletbook-rs/compare/v0.5.4...v0.5.5
