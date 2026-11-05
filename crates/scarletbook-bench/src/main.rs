@@ -6,6 +6,7 @@
 //! bench --version
 //! bench decode IMAGE --area 2ch|mc --threads N --sink hash|null|raw DIR
 //! bench dsf IMAGE --area 2ch|mc --threads N --out FILE [--via stream|read-at|parallel] [--chunk BYTES]
+//! bench realtime IMAGE --area 2ch|mc [--seeks N]
 //! ```
 //!
 //! It decodes every track of one area, in track order, in one pass over the area
@@ -24,6 +25,15 @@
 //! writer, from the public `Layout` API only (#202, #224). `FILE` may be `/dev/null`, to
 //! leave the cost of writing out.
 //!
+//! `realtime` is not part of that interface either (issue #255): what a real-time player
+//! needs from one thread. It reads the area's whole play range through `Disc::range_audio`,
+//! timing each call that yields a frame (demultiplexing and decoding), then builds a complete
+//! seek index (untimed) and times `--seeks` jumps (default 200) to pseudo-random positions
+//! from a fixed generator, from before `range_audio` until its first frame. It prints one
+//! `name<TAB>value` line per figure. A real-time factor is the seconds of audio per second
+//! of decoding; a window is 75 frames, one second of audio, sliding by one frame. Put the
+//! image in the page cache first, to leave disc reads out, and pin the process to one core.
+//!
 //! Errors: the first line on stderr is one error code: a code of specification 7, 7.7.1
 //! for a rejected image, `no-such-area` when the slot yields no area, and `io-error`,
 //! `usage-error` or `internal-error` otherwise. A message follows on the next line.
@@ -37,6 +47,7 @@ use std::io::{BufReader, BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Instant;
 
 use scarletbook::audio::{AudioFrame, FRAME_BYTES_PER_CHANNEL, TrackAudio};
 use scarletbook::output::{Format, OutputOptions, PositionSource, RegionKind};
@@ -46,10 +57,20 @@ use sha2::{Digest, Sha256};
 
 const USAGE: &str = "usage: bench --version
        bench decode IMAGE --area 2ch|mc --threads N --sink hash|null|raw DIR
-       bench dsf IMAGE --area 2ch|mc --threads N --out FILE [--via stream|read-at|parallel] [--chunk BYTES]";
+       bench dsf IMAGE --area 2ch|mc --threads N --out FILE [--via stream|read-at|parallel] [--chunk BYTES]
+       bench realtime IMAGE --area 2ch|mc [--seeks N]";
 
 /// Bytes per `Layout::fill` or `Layout::read_at` call of `dsf`, by default.
 const DSF_CHUNK: usize = 4 << 20;
+
+/// Frames per second of DSD64 audio, and so the frames of `realtime`'s sliding window.
+const FRAMES_PER_SECOND: usize = 75;
+
+/// `realtime`'s seeks, by default.
+const SEEKS: usize = 200;
+
+/// A frame slower than this misses a player's bound: half a frame period, as #255 rounds it.
+const SLOW_FRAME_NANOS: u64 = 6_700_000;
 
 /// Bytes buffered per output file of the raw sink.
 const OUT_BUFFER: usize = 1 << 20;
@@ -73,6 +94,7 @@ enum Via {
 enum Command {
     Decode(Sink),
     Dsf { out: PathBuf, via: Via, chunk: usize },
+    Realtime { seeks: usize },
 }
 
 #[derive(Debug)]
@@ -84,15 +106,17 @@ struct Args {
 }
 
 fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Args>, String> {
-    let dsf = match args.next().as_deref() {
+    let (dsf, realtime) = match args.next().as_deref() {
         Some("--version") => return Ok(None),
-        Some("decode") => false,
-        Some("dsf") => true,
+        Some("decode") => (false, false),
+        Some("dsf") => (true, false),
+        Some("realtime") => (false, true),
         _ => return Err(USAGE.into()),
     };
     let image = PathBuf::from(args.next().ok_or(USAGE)?);
     let (mut slot, mut threads, mut sink) = (None, None, None);
     let (mut out, mut via, mut chunk) = (None, Via::Stream, DSF_CHUNK);
+    let mut seeks = SEEKS;
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{flag} needs a value\n{USAGE}"));
         match flag.as_str() {
@@ -134,8 +158,21 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Args>, String>
                     .filter(|&n| n > 0)
                     .ok_or_else(|| format!("--chunk must be a positive number, not {v}"))?;
             }
+            "--seeks" if realtime => {
+                let v = value()?;
+                seeks = v.parse::<usize>().map_err(|_| format!("--seeks must be a number, not {v}"))?;
+            }
             other => return Err(format!("unknown argument {other}\n{USAGE}")),
         }
+    }
+    if realtime {
+        // Always one thread: that is what it measures.
+        return match (slot, threads, sink) {
+            (Some(slot), None, None) => {
+                Ok(Some(Args { image, slot, threads: 1, command: Command::Realtime { seeks } }))
+            }
+            _ => Err(format!("realtime takes --area and --seeks only, and needs --area\n{USAGE}")),
+        };
     }
     let command = match (dsf, sink, out) {
         (false, Some(sink), None) => Command::Decode(sink),
@@ -395,6 +432,105 @@ impl<R: Read + Seek> PositionSource for Stream<'_, R> {
     }
 }
 
+/// What `realtime` reports of one pass, from the time of each frame in nanoseconds.
+#[derive(Debug, PartialEq)]
+struct FrameTimes {
+    mean_factor: f64,
+    slowest_window_factor: f64,
+    p999_nanos: u64,
+    max_nanos: u64,
+    slow_frames: usize,
+}
+
+/// The real-time factor of `frames` frames decoded in `nanos` nanoseconds.
+fn factor(frames: usize, nanos: u64) -> f64 {
+    (frames as f64 / FRAMES_PER_SECOND as f64) / (nanos.max(1) as f64 / 1e9)
+}
+
+/// The figures of a pass, `None` for no frames. A pass shorter than a window is its own
+/// slowest window.
+fn frame_times(times: &[u64]) -> Option<FrameTimes> {
+    let mut sorted = times.to_vec();
+    sorted.sort_unstable();
+    let max_nanos = *sorted.last()?;
+    // Nearest rank: the smallest time that at least 99.9 % of the frames do not exceed.
+    let p999_nanos = sorted[(sorted.len() * 999).div_ceil(1000) - 1];
+    let window = FRAMES_PER_SECOND.min(times.len());
+    let mut sum: u64 = times[..window].iter().sum();
+    let mut slowest = sum;
+    for (gone, added) in times.iter().zip(&times[window..]) {
+        sum = sum - gone + added;
+        slowest = slowest.max(sum);
+    }
+    Some(FrameTimes {
+        mean_factor: factor(times.len(), times.iter().sum()),
+        slowest_window_factor: factor(window, slowest),
+        p999_nanos,
+        max_nanos,
+        slow_frames: times.iter().filter(|&&t| t > SLOW_FRAME_NANOS).count(),
+    })
+}
+
+/// The next value of a fixed pseudo-random sequence (xorshift64), for repeatable seeks.
+fn next_random(state: &mut u64) -> u64 {
+    *state ^= *state << 13;
+    *state ^= *state >> 7;
+    *state ^= *state << 17;
+    *state
+}
+
+fn millis(nanos: u64) -> f64 {
+    nanos as f64 / 1e6
+}
+
+/// Prints what a real-time player needs from one thread (see the module documentation).
+fn realtime(path: &Path, slot: Slot, seeks: usize, out: &mut impl Write) -> Result<(), Failure> {
+    let mut disc = open(path)?;
+    let area = disc.toc().area(slot).ok_or(Error::NoSuchArea(slot))?;
+    let end = area.playtime_frames();
+    let mut times = Vec::with_capacity(end as usize);
+    let mut frames = disc.range_audio(slot, 0, end)?;
+    loop {
+        let start = Instant::now();
+        let frame = frames.next();
+        let nanos = start.elapsed().as_nanos();
+        let Some(frame) = frame else { break };
+        std::hint::black_box(&frame?.data);
+        times.push(u64::try_from(nanos).unwrap_or(u64::MAX));
+    }
+    drop(frames);
+    writeln!(out, "frames\t{}", times.len())?;
+    let Some(t) = frame_times(&times) else { return Ok(()) };
+    writeln!(out, "mean_realtime_factor\t{:.2}", t.mean_factor)?;
+    writeln!(out, "slowest_window_realtime_factor\t{:.2}", t.slowest_window_factor)?;
+    writeln!(out, "p999_frame_ms\t{:.3}", millis(t.p999_nanos))?;
+    writeln!(out, "max_frame_ms\t{:.3}", millis(t.max_nanos))?;
+    writeln!(out, "frames_over_6.7_ms\t{}", t.slow_frames)?;
+
+    disc.enable_seek_index(slot, IndexOptions::new())?;
+    while !disc.extend_seek_index(slot, 1 << 20)? {}
+    let mut random = 0x9E37_79B9_7F4A_7C15;
+    let mut jumps = Vec::with_capacity(seeks);
+    for _ in 0..seeks {
+        let position = (next_random(&mut random) % u64::from(end)) as u32;
+        let start = Instant::now();
+        let first = disc.range_audio(slot, position, end)?.next();
+        let nanos = start.elapsed().as_nanos();
+        let first = first.ok_or(Error::InvalidArgument("no frame after a seek"))??;
+        if first.number != position {
+            return Err(Error::InvalidArgument("a seek reached another frame").into());
+        }
+        jumps.push(u64::try_from(nanos).unwrap_or(u64::MAX));
+    }
+    jumps.sort_unstable();
+    writeln!(out, "seeks\t{}", jumps.len())?;
+    if let (Some(median), Some(max)) = (jumps.get(jumps.len() / 2), jumps.last()) {
+        writeln!(out, "seek_median_ms\t{:.3}", millis(*median))?;
+        writeln!(out, "seek_max_ms\t{:.3}", millis(*max))?;
+    }
+    Ok(())
+}
+
 /// Writes the area's play range as one DSF file (see the module documentation).
 fn write_dsf(path: &Path, slot: Slot, out: &Path, via: Via, chunk: usize) -> Result<(), Failure> {
     let mut disc = open(path)?;
@@ -555,6 +691,10 @@ fn run(args: Args) -> Result<(), Failure> {
             write_dsf_parallel(&args.image, args.slot, out, threads, *chunk)
         }
         Command::Dsf { out, via, chunk } => write_dsf(&args.image, args.slot, out, *via, *chunk),
+        Command::Realtime { seeks } => {
+            let mut out = std::io::stdout().lock();
+            realtime(&args.image, args.slot, *seeks, &mut out)
+        }
         Command::Decode(Sink::Null) => decode_area(&args.image, args.slot, &mut NullOut),
         Command::Decode(Sink::Hash) => {
             let stdout = std::io::stdout().lock();
@@ -625,6 +765,39 @@ mod tests {
         assert!(args("decode x.iso --area 2ch --sink null").is_err());
         assert!(args("decode x.iso --area 2ch --threads x --sink null").is_err());
         assert!(args("").is_err());
+        let a = args("realtime x.iso --area mc --seeks 5").unwrap().unwrap();
+        assert_eq!((a.slot, a.threads), (Slot::Multichannel, 1));
+        assert!(matches!(a.command, Command::Realtime { seeks: 5 }));
+        assert!(matches!(
+            args("realtime x.iso --area 2ch").unwrap().unwrap().command,
+            Command::Realtime { seeks: SEEKS }
+        ));
+        assert!(args("realtime x.iso").is_err());
+        assert!(args("realtime x.iso --area 2ch --threads 2").is_err());
+        assert!(args("realtime x.iso --area 2ch --sink null").is_err());
+        assert!(args("decode x.iso --area 2ch --threads 1 --sink null --seeks 5").is_err());
+    }
+
+    #[test]
+    fn frame_figures() {
+        assert_eq!(frame_times(&[]), None);
+        // 150 frames of 1 ms, then one window's worth with a slow frame in it.
+        let mut times = vec![1_000_000u64; 150];
+        times[100] = 8_000_000;
+        let t = frame_times(&times).unwrap();
+        assert_eq!((t.max_nanos, t.slow_frames), (8_000_000, 1));
+        // The slowest second of audio holds the slow frame: 74 ms + 8 ms for 1 s.
+        assert!((t.slowest_window_factor - 1.0 / 0.082).abs() < 1e-9, "{t:?}");
+        // 149 ms + 8 ms for 2 s.
+        assert!((t.mean_factor - 2.0 / 0.157).abs() < 1e-9, "{t:?}");
+        // Rank 150 of 150: the slow frame.
+        assert_eq!(t.p999_nanos, 8_000_000);
+        // Shorter than a window: 3 frames in 3 ms, 1/25 s of audio.
+        let t = frame_times(&[1_000_000; 3]).unwrap();
+        assert!((t.slowest_window_factor - (0.04 / 0.003)).abs() < 1e-9, "{t:?}");
+        assert_eq!(t.p999_nanos, 1_000_000);
+        // Exactly at the bound is not over it.
+        assert_eq!(frame_times(&[SLOW_FRAME_NANOS]).unwrap().slow_frames, 0);
     }
 
     #[test]

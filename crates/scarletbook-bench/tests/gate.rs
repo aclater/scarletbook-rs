@@ -180,3 +180,24 @@ fn dsf_streams_and_read_at_calls_agree() {
     let bad = bench(&["dsf", "x.iso", "--area", "2ch", "--threads", "1"]);
     assert_eq!(String::from_utf8_lossy(&bad.stderr).lines().next(), Some("usage-error"));
 }
+
+/// `bench realtime` reports every figure, on a DST area of the corpus (#255).
+#[test]
+fn realtime_reports_its_figures() {
+    let case = cases().into_iter().find(|c| c["id"] == "dst-features-5ch").unwrap();
+    let out = bench(&["realtime", &image(&case), "--area", "mc", "--seeks", "7"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8(out.stdout).unwrap();
+    let figure = |name: &str| -> f64 {
+        let line = text.lines().find_map(|l| l.strip_prefix(&format!("{name}\t"))).unwrap_or_else(|| {
+            panic!("no {name} in {text}");
+        });
+        line.parse().unwrap()
+    };
+    assert!(figure("frames") > 0.0);
+    assert!(figure("mean_realtime_factor") >= figure("slowest_window_realtime_factor"));
+    assert!(figure("max_frame_ms") >= figure("p999_frame_ms"));
+    assert!(figure("frames_over_6.7_ms") >= 0.0);
+    assert_eq!(figure("seeks"), 7.0);
+    assert!(figure("seek_max_ms") >= figure("seek_median_ms"));
+}
