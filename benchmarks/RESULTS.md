@@ -72,9 +72,11 @@ program and image per round, images in the page cache, output to `/dev/null`. Th
 are at 1 / 8 / 256 frames per call.
 
 **Compare within this section only.** The plain-DSD rows read 0.555 s and 0.614 s for 0.5.7 here,
-against 0.483 s and 0.540 s for the same library in the 0.5.7 section. The two runs used the same
-runner but not the same image copies or the same day; the cause has not been found. The DST rows
-agree within 1 %. Earlier work (#248) found that a file's physical pages can move a run by this much.
+against 0.483 s and 0.540 s for the same library in the 0.5.7 section. The DST rows agree within 1 %.
+Byte-identical fresh copies of an image differ by that much (#259): ten copies of the stereo image ran
+at 0.484 to 0.543 s, each copy's own runs within 1.2 % (`README.md`, "Fresh copies"). That
+measurement accounts for 0.483 s and most of the gap; this table's slowest round was 0.577 s, which
+it does not reach. Ratios are unaffected, since each round's copy is shared by both builds.
 
 ### `bench realtime` (#255, new)
 

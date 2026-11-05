@@ -7,7 +7,10 @@ One row per case and build, one column group per label (version), in `--labels` 
 the order the labels first appear: the median wall time, the median CPU time (user + system), and, from the
 second label on, the ratio of its median wall time to the first label's. For `callpattern`
 the figures are its own: the median over rounds of its CPU milliseconds per second of audio,
-at 1, 8 and 256 frames per call. Failed runs are left out and counted under the table.
+at 1, 8 and 256 frames per call. Failed runs are left out and counted under the table. So is any
+cell whose rounds differ by more than SPREAD_LISTED in wall time, with its range: each round reads
+its own copy of the image, and byte-identical copies can differ by more than a median of a few
+rounds evens out (README.md, "Fresh copies"). Ratios compare the same copies; seconds do not.
 """
 import argparse
 import json
@@ -17,6 +20,9 @@ import statistics
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+# A cell's rounds differing by more than this (fastest to slowest) are listed under the table.
+SPREAD_LISTED = 1.05
 
 
 def callpattern_ms(stdout):
@@ -103,6 +109,16 @@ def main():
           + (f", {failed} failed and left out" if failed else "") + ".")
     print(f"Host: {host.get('cpu')}, {host.get('logical_cpus')} logical CPUs, SMT {host.get('smt')}, "
           f"governor {host.get('governor')}, kernel {host.get('kernel')}.")
+    spread = []
+    for case in cases:
+        for build in builds:
+            for label in labels:
+                walls = [r["wall_s"] for r in runs.get((case, build, label), [])]
+                if walls and min(walls) > 0 and max(walls) / min(walls) > SPREAD_LISTED:
+                    spread.append(f"{paths.get(case, case)}, {build}, {label}: {min(walls):.3f} to {max(walls):.3f} s")
+    if spread:
+        print("\nSpread between rounds above "
+              f"{(SPREAD_LISTED - 1) * 100:.0f} %, so read these seconds as a range: " + "; ".join(spread) + ".")
     missing = runlist.get("missing", [])
     if missing:
         print("\nNot measured: " + "; ".join(f"{m['path']} ({m['reason']})" for m in missing) + ".")

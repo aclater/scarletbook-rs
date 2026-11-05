@@ -164,6 +164,17 @@ copies until the case ends, so that no copy takes pages another just freed; the 
 rounds absorbs a slow first round. On lennon the plain-DSD rows then agree with direct runs on
 images in the fast state within 1.5 %.
 
+**Fresh copies differ too (#259).** A fresh copy removes the stuck offset, but not the spread between
+copies. On lennon, ten byte-identical fresh copies of the 78-minute stereo image, one 0.5.7 `bench`,
+three runs each: 0.484 to 0.543 s (12 %), while the runs of any one copy agree within 1.2 %. User and
+system time both move, so it is not only the kernel's copy. A 5-round median draws only five copies, so
+**two tables can differ by about this much in seconds with no change in the code**: the 0.5.8 table's
+0.555 s and the 0.5.7 section's 0.483 s are the same library. (That table's rounds ran at 0.540 to
+0.577 s, a little above these ten copies; copies written after other large files were deleted, as
+above, may account for the rest, which was not measured.) Each round's copy is shared by the
+builds of that round, so ratios within a table are not affected. `table.py` lists any cell whose rounds
+differ by more than 5 %. Judge a change on the ratio, and compare seconds only as ranges.
+
 **The self-check.** Before the cases, `run.py` times plain-DSD-to-DSF on a 10-minute stereo
 image eight times through its own path (a fresh program copy, `wait4`) and eight times as a
 plain shell command (`sh -c 'exec bench ... >/dev/null 2>&1'`), ABBA, both on one staged copy of
