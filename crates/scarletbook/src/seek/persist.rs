@@ -51,7 +51,7 @@
 //!
 //! | Size | Field |
 //! |---|---|
-//! | 4 | confirmed provisional starts `c`, 1 to `MAX_HINTS` |
+//! | 4 | confirmed provisional starts `c`, 1 to the most seek hints kept |
 //! | 4 | 0 |
 //! | 16 `c` | by increasing LSN: `L` (4), `u_L` (4), digest of sector `L` (8) |
 //!
@@ -253,7 +253,7 @@ impl AreaIndex {
     /// at most `max_inline_budget / 8` hints, now and as it grows
     /// ([`super::IndexOptions::max_hints`] becomes the smaller of the saved one and that), dropping
     /// those closest to the one before them; saved confirmations (format version 3, 16 bytes
-    /// each) are kept up to as many, and to `max_inline_budget / 16` when loaded, the lowest
+    /// each, at most the saved maximum of hints) are kept up to as many, and to `max_inline_budget / 16` when loaded, the lowest
     /// sectors going first (specification 7, 7.1 item 2, sacd-spec `cb9530b`). Pass
     /// [`crate::seek::DEFAULT_INLINE_BUDGET`] or the [`IndexOptions`](super::IndexOptions)
     /// the caller builds with.
@@ -487,7 +487,9 @@ impl AreaIndex {
             if input.u32()? != 0
                 || flags & 2 == 0
                 || c == 0
-                || c > MAX_HINTS
+                // As kept: more than the saved maximum would be dropped here, so that the
+                // index saved after loading differs (#253).
+                || c > index.max_hints
                 || c.saturating_mul(CONFIRMED) > input.left()
             {
                 return Err(bad("seek index confirmations invalid"));

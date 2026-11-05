@@ -217,6 +217,25 @@ fn small_round_trip() {
     assert!(matches!(c.resumed_from(), ResumedFrom::Checkpoint { lsn: 16, .. }), "{:?}", c.resumed_from());
 }
 
+/// Small enough for Miri: more saved confirmations than the saved maximum of hints would be
+/// dropped on loading, and the index would then save differently, so they are refused (#253).
+/// The same bytes with room for the confirmation load and save unchanged.
+#[test]
+fn confirmations_beyond_the_saved_maximum_are_refused() {
+    let (image, area) = harness::seek_area();
+    let n = image.sector_count();
+    let mut bytes =
+        include_bytes!("regressions/seek_index/crash-122027e767ea9c1aba1588f02d41d45af9969961").to_vec();
+    let refused = AreaIndex::from_bytes(&area, n, &harness::with_checksum(&bytes), usize::MAX);
+    assert!(matches!(refused, Err(Error::InvalidArgument("seek index confirmations invalid"))));
+    // The most seek hints kept (format version 2): one instead of none.
+    bytes[92] = 1;
+    let summed = harness::with_checksum(&bytes);
+    let loaded = AreaIndex::from_bytes(&area, n, &summed, usize::MAX).unwrap();
+    assert_eq!(loaded.confirmations(), 1);
+    assert_eq!(loaded.to_bytes(), summed);
+}
+
 /// A DST sector starting frame `number` (sector count `count`) with a packet of `len`
 /// bytes.
 fn start_sector(number: u32, count: u8, len: u16) -> [u8; 2048] {
