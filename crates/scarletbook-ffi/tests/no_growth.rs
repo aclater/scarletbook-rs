@@ -5,20 +5,23 @@
 //!
 //! A counting global allocator, which is why this is a test binary of its own, keeps the
 //! bytes live. After a few warm-up cycles (one-time allocations: the thread's last error
-//! message, the DST decoder's tables and so on) the count must reach a plateau: the same value
-//! after many cycles in a row. LeakSanitizer (CI's `lsan` job) finds memory nothing points to;
-//! this finds memory still reachable that keeps growing, such as a cache or a list without a
+//! message, the DST decoder's tables and so on) the count must come back to the same value
+//! after every cycle. LeakSanitizer (CI's `lsan` job) finds memory nothing points to; this
+//! finds memory still reachable that keeps growing, such as a cache or a list without a
 //! bound. The hour-long soak is in the scheduled workflow.
 //!
-//! The plateau may start late, as not every one-time allocation happens on the cycles' own
-//! thread (#266). The idle pool thread goes to sleep after 33 rounds of `yield_now`, the first
-//! use of the `Mutex` and `Condvar` rayon keeps for that. On macOS std boxes the pthread objects
-//! of both on first use, 64 and 48 bytes, so that first sleep adds 112 bytes for good, at a
-//! time that depends on the scheduler and may fall after the warm-up.
+//! There is one exception, on macOS only (#266). The idle pool thread goes to sleep after 33
+//! rounds of `yield_now`, the first use of the `Mutex` and `Condvar` rayon keeps for that. On
+//! macOS std boxes the pthread objects of both on first use, 64 and 48 bytes, so that first
+//! sleep adds up to 112 bytes for good, at a time that depends on the scheduler and may fall
+//! after the warm-up: see [`FIRST_SLEEP`]. Waiting for it would not be a guarantee, as nothing
+//! shows that the thread has slept. The other platforms stay exact, and code that grows does
+//! so there as well.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::PathBuf;
 use std::ptr;
@@ -76,12 +79,16 @@ static GLOBAL: Counting = Counting;
 /// Frames decoded after each seek.
 const FRAMES: u32 = 3;
 
-/// Cycles in a row, after the warm-up, over which the bytes live must not move.
-const PLATEAU: usize = 20;
+/// Cycles checked after the warm-up.
+const CYCLES: usize = 20;
 
-/// Cycles allowed to reach the plateau: room for a late one-time allocation, none for a list
-/// that keeps growing.
-const MAX_CYCLES: usize = 3 * PLATEAU;
+/// Rise over the settled count that the pool thread's first sleep can explain on macOS: none
+/// yet, the `Condvar` alone (the settled count has the `Mutex`), the `Mutex` alone (the
+/// `Condvar` is about to follow) or both.
+const FIRST_SLEEP: [usize; 4] = [0, 48, 64, 112];
+
+/// The rises allowed on this platform.
+const ALLOWED: &[usize] = if cfg!(target_os = "macos") { &FIRST_SLEEP } else { &[0] };
 
 fn image(id: &str) -> Vec<u8> {
     let corpus = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../corpus");
@@ -163,50 +170,75 @@ fn the_heap_does_not_grow_over_open_seek_decode_close_cycles() {
     for _ in 0..3 {
         cycle();
     }
-    if let Err(after) = plateau(cycle) {
-        panic!("no plateau of {PLATEAU} cycles in {MAX_CYCLES}; bytes live after each cycle: {after:?}");
-    }
-    the_plateau_check_works();
+    let (settled, after) = counts(cycle);
+    assert!(
+        holds(settled, &after, ALLOWED),
+        "bytes live after warm-up: {settled}; after each further cycle: {after:?}"
+    );
+    the_check_works();
 }
 
-/// Runs `cycle` until the bytes live have not moved over `PLATEAU` cycles in a row and returns
-/// how many cycles that took, or, if `MAX_CYCLES` were not enough, the count after each.
-fn plateau(mut cycle: impl FnMut()) -> Result<usize, Vec<usize>> {
+/// The bytes live before `CYCLES` runs of `cycle`, and after each.
+fn counts(mut cycle: impl FnMut()) -> (usize, Vec<usize>) {
     // Allocated before the count is read: its own growth would count.
-    let mut after = Vec::with_capacity(MAX_CYCLES);
-    let mut level = LIVE.load(Ordering::Relaxed);
-    let mut flat = 0;
-    for n in 1..=MAX_CYCLES {
+    let mut after = Vec::with_capacity(CYCLES);
+    let settled = LIVE.load(Ordering::Relaxed);
+    for _ in 0..CYCLES {
         cycle();
-        let live = LIVE.load(Ordering::Relaxed);
-        after.push(live);
-        flat = if live == level { flat + 1 } else { 0 };
-        level = live;
-        if flat == PLATEAU {
-            return Ok(n);
-        }
+        after.push(LIVE.load(Ordering::Relaxed));
     }
-    Err(after)
+    (settled, after)
 }
 
-/// The check itself: a list that grows on every cycle, however little, never passes, and one
-/// late step passes once the plateau after it is complete.
-fn the_plateau_check_works() {
-    let mut list = Vec::new();
-    let after = plateau(|| list.push(Box::new(0u8))).unwrap_err();
-    assert_eq!(after.len(), MAX_CYCLES);
-    drop(list);
+/// Whether every count is `settled` plus one of the `allowed` rises, and none falls back: one
+/// late allocation stays.
+fn holds(settled: usize, after: &[usize], allowed: &[usize]) -> bool {
+    let mut last = 0;
+    after.iter().all(|&n| {
+        let Some(rise) = n.checked_sub(settled) else { return false };
+        let ok = rise >= last && allowed.contains(&rise);
+        last = rise;
+        ok
+    })
+}
 
-    let mut step = None;
-    let mut cycles = 0;
-    let taken = plateau(|| {
-        cycles += 1;
-        if cycles == PLATEAU {
-            step = Some(vec![0u8; 112]);
-        }
-    });
-    // The pool's thread may still allocate during this (see the module documentation), which
-    // can only make it take longer.
-    assert!(matches!(taken, Ok(n) if n >= 2 * PLATEAU), "{taken:?}");
-    drop(step);
+/// The check itself, with macOS's allowance, the looser one, on every platform.
+///
+/// Collections are the cases that matter: unlike a list of boxes they allocate only when they
+/// double, so the gaps between allocations widen while they keep growing, and a check that
+/// waits for a flat stretch would pass them. Their contents are in place before the count is
+/// read, as they would be after the warm-up.
+fn the_check_works() {
+    for per_cycle in [1u64, 2, 4] {
+        let mut list: Vec<u64> = (0..3 * per_cycle).collect();
+        let (settled, after) = counts(|| list.extend(0..per_cycle));
+        assert!(!holds(settled, &after, &FIRST_SLEEP), "Vec<u64>, {per_cycle} a cycle: {after:?}");
+        drop(list);
+
+        let mut map: HashMap<u64, u64> = (0..3 * per_cycle).map(|k| (k, k)).collect();
+        let mut next = 3 * per_cycle;
+        let (settled, after) = counts(|| {
+            map.extend((next..next + per_cycle).map(|k| (k, k)));
+            next += per_cycle;
+        });
+        assert!(!holds(settled, &after, &FIRST_SLEEP), "HashMap, {per_cycle} a cycle: {after:?}");
+        drop(map);
+    }
+
+    let mut boxes = Vec::with_capacity(CYCLES);
+    let (settled, after) = counts(|| boxes.push(Box::new(0u8)));
+    assert!(!holds(settled, &after, &FIRST_SLEEP), "boxes: {after:?}");
+    drop(boxes);
+
+    // From here on no real counts: the pool's thread may still be allocating, and only these
+    // cases would mind.
+    assert!(holds(100, &[100, 100], &[0]));
+    assert!(!holds(100, &[100, 212], &[0]));
+    assert!(holds(100, &[100, 212, 212], &FIRST_SLEEP));
+    assert!(holds(100, &[100, 164, 212, 212], &FIRST_SLEEP));
+    assert!(holds(100, &[148, 148], &FIRST_SLEEP));
+    assert!(!holds(100, &[100, 113], &FIRST_SLEEP));
+    assert!(!holds(100, &[212, 100], &FIRST_SLEEP));
+    assert!(!holds(100, &[212, 324], &FIRST_SLEEP));
+    assert!(!holds(100, &[99], &FIRST_SLEEP));
 }
