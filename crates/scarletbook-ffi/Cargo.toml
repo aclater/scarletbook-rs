@@ -29,8 +29,8 @@ fuzzing = []
 rayon = "1.10"
 # The exact versions of this release (crates.io needs a version beside the path); the
 # release that bumps the workspace version bumps these too, or nothing builds.
-scarletbook = { path = "../scarletbook", version = "=0.5.7", features = ["parallel", "output"] }
-scarletbook-pcm = { path = "../scarletbook-pcm", version = "=0.5.7" }
+scarletbook = { path = "../scarletbook", version = "=0.5.8", features = ["parallel", "output"] }
+scarletbook-pcm = { path = "../scarletbook-pcm", version = "=0.5.8" }
 
 [lints.rust]
 missing_debug_implementations = "warn"

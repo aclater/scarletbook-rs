@@ -5,9 +5,21 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The version
 is shared by every crate of the workspace; releases carry the `bench` program and, from
-0.3.0, the C library, as binary assets. Nothing is published on crates.io yet.
+0.3.0, the C library, as binary assets. The crates are on crates.io from 0.5.7 (`scarletbook-ffi`
+from 0.5.8).
 
 ## [Unreleased]
+
+## [0.5.8] - 2026-11-05
+
+### Added
+
+- crates.io: `scarletbook` and `scarletbook-pcm` are published there from 0.5.7, and `scarletbook-ffi` from 0.5.8; every release tag publishes them from the release workflow with crates.io trusted publishing, after all release checks (RELEASING.md). The README has install lines and a note to pin `=0.5.x` where PCM bytes must not change (#249, #251).
+- `bench realtime IMAGE --area 2ch|mc [--seeks N]`: what a real-time player needs from one thread: the mean real-time factor, the slowest 1-second window, the 99.9th percentile and slowest frame times, the frames over 6.7 ms, and the time from a seek to its first frame with a complete seek index (#255).
+
+### Fixed
+
+- `AreaIndex::from_bytes` refuses a saved index (format version 3) with more confirmations than its saved maximum of seek hints. It used to load it and drop them silently, so that saving the index gave other bytes. The library never writes such an index, so saved indexes keep loading (#253).
 
 ## [0.5.7] - 2026-11-02
 
