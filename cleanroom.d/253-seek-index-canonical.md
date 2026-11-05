@@ -1,0 +1,1 @@
+| 2026-11-05 | seek index load check and fuzz harness (#253) | a saved index with more confirmations than its saved maximum of hints is refused; the `seek_index` harness accepts the documented typed error for checkpoints of no reading of the image. The format is this project's own (`seek/persist.rs`); sacd-spec 4.2 item 9 and 7.1 item 2 re-read. No new sources consulted. |
