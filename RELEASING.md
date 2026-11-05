@@ -61,7 +61,7 @@ no `environment:`. To set one up, once the crate exists:
 |---|---|---|---|
 | `scarletbook-pcm` | 0.5.7 | the owner, from the tag v0.5.7 (option A) | configured |
 | `scarletbook` | 0.5.7 | the owner, from the tag v0.5.7 (option A) | configured |
-| `scarletbook-ffi` | 0.5.8 (pending) | option A or B below, for this crate only | after its first publish |
+| `scarletbook-ffi` | 0.5.8 | the owner, on the tag v0.5.8 | configured |
 
 At v0.5.7, `scarletbook-ffi` had `publish = false` and versionless path dependencies, so it
 could not be published from that tag; it starts at 0.5.8.
