@@ -34,6 +34,16 @@ benchmarks/compare.sh run ../cmp > table.md         # about 20 minutes on lennon
 
 `compare.sh run` passes extra options to `run.py`, for example `--case dst-decode-2ch-t1`.
 
+## Correction, 2026-11-05: what the lock excluded
+
+Every lennon figure in this file taken before 2026-11-05 was timed under a lock that excluded only
+this project's own work, not other users' timed runs on the machine. So those runs were exposed to
+other users' load. Whether any such run actually overlapped is not known. Alternating runs and
+per-round ratios should still hold, since both builds of a round saw the same conditions, but that has
+not been tested. **Absolute seconds, and above all the slowest-frame and slowest-window figures of
+`bench realtime`, should be read with this in mind.** From 2026-11-05, `lennon.sh` times inside the
+machine's shared `benchlock`, and idle fuzzing pauses whenever any `benchlock` process exists (#259).
+
 ## Not measured
 
 Not in the run list yet, so not in these tables:
