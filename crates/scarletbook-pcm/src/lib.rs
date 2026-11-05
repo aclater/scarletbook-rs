@@ -86,6 +86,14 @@
 //! has no transient at its edges. Only the [`Converter::context_bytes`] bytes per channel
 //! of each neighbour nearest the frame are used.
 //!
+//! # Threads
+//!
+//! Every public type of this crate is [`Send`] and [`Sync`]; assertions in this crate's
+//! source stop it building if a type loses either. A [`Converter`] converts one call at a
+//! time (`&mut self`), so use one per worker thread. The output depends only on the input,
+//! so frames can be converted on any number of threads (see above). The crate has no threads of
+//! its own, and its only global state is lookup tables built once on first use.
+//!
 //! # Level
 //!
 //! 100 % modulation is full scale: a constant input of +1 (all bits 1) gives +1.0, that is
@@ -609,3 +617,19 @@ pub fn pack_s24le(src: &[i32], dst: &mut [u8]) {
         d.copy_from_slice(&s.to_le_bytes()[..3]);
     }
 }
+
+// The guarantee of "Threads" above: losing it fails the build (#39).
+const _: () = {
+    const fn both<T: Send + Sync>() {}
+    both::<PcmRate>();
+    both::<Cutoff>();
+    both::<Gain>();
+    both::<PcmConfig>();
+    both::<PcmError>();
+    both::<ConvertStats>();
+    both::<FrameRun<'_>>();
+    both::<Frames<'_>>();
+    both::<Run<'_>>();
+    both::<PcmOut<'_>>();
+    both::<Converter>();
+};
