@@ -1067,6 +1067,16 @@ per chunk, as a filesystem serving the file would, with the area's seek index en
 fill whole DSF rows, about `--chunk` bytes at a time, and write each piece at its offset
 with `write_at`: a prototype of a parallel writer built on the public `Layout` API (#224).
 
+`bench realtime` is outside it too (#255): what a real-time player needs from one thread. It
+prints the mean real-time factor, the slowest 1-second window, the 99.9th percentile and
+slowest frame times, the frames over 6.7 ms (half a frame period), and the median and slowest
+time from a seek to its first frame, with a complete seek index. Put the image in the page
+cache first and pin the process to one core:
+
+```sh
+taskset -c 2 target/release/bench realtime disc.iso --area mc --seeks 200
+```
+
 Pushing a version tag (`v0.1.0`, matching the crate version) runs the release workflow:
 it publishes `bench-<version>-x86_64-linux.tar.gz` (generic x86-64, cargo profile `dist`),
 after the correctness gate has passed on that very build, and two labelled builds,

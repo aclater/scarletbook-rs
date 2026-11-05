@@ -30,7 +30,7 @@ An archive holds one directory:
 
 | File | What it is |
 |---|---|
-| `bench` | the benchmark program (`bench --version`, `bench decode`, `bench dsf`; see `crates/scarletbook-bench`) |
+| `bench` | the benchmark program (`bench --version`, `bench decode`, `bench dsf`, `bench realtime`; see `crates/scarletbook-bench`) |
 | `scarletbook-synth` | writes the synthetic images of the run list |
 | `callpattern` | the scarletbook-pcm `callpattern` example: DSD64 stereo to 176.4 kHz 24-bit, generated input |
 | `runlist.json` | the cases (below) |

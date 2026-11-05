@@ -1,0 +1,1 @@
+| 2026-11-05 | `bench realtime` (#255) | a measuring mode of the benchmark program, from the public `Disc` API; the library is unchanged. xorshift64 for repeatable seek positions, a general-purpose generator with no bearing on the codec. No new sources consulted. |
