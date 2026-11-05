@@ -49,6 +49,54 @@ Not in the run list yet, so not in these tables:
   DSF and DSD to PCM are blank, unless an equivalent revision is compared instead (0.5.6
   below uses `3eb96dc` for 0.5.5).
 
+## 0.5.8
+
+Measured on lennon (3950X), 2026-11-05, with `compare.sh` (generic kits, statically linked, profile
+`dist`): 0.5.7 = `v0.5.7` and 0.5.8 = the release-prep tree. No path's code changed for speed in this
+release, and no row moves by more than 1 %.
+
+| Path | Build | 0.5.7 wall s | 0.5.7 CPU s | 0.5.8 wall s | 0.5.8 CPU s | 0.5.8 / 0.5.7 |
+|---|---|---|---|---|---|---|
+| DST decode, one thread, 2 channels | generic | 6.131 | 6.10 | 6.129 | 6.10 | 1.000 |
+| DST decode, one thread, 2 channels, corpus frames | generic | 20.302 | 20.21 | 20.343 | 20.24 | 1.002 |
+| DST decode, all threads, 2 channels | generic | 4.030 | 126.82 | 4.012 | 126.63 | 0.996 |
+| DST decode, one thread, 6 channels | generic | 7.592 | 7.54 | 7.593 | 7.55 | 1.000 |
+| DST decode, all threads, 6 channels | generic | 2.582 | 81.26 | 2.584 | 81.41 | 1.001 |
+| plain-DSD area to DSF, 2 channels | generic | 0.555 | 0.55 | 0.555 | 0.55 | 1.001 |
+| plain-DSD area to DSF, 5 channels | generic | 0.614 | 0.61 | 0.618 | 0.61 | 1.007 |
+| DST area to DSF, all threads | generic | 4.025 | 127.45 | 4.037 | 128.04 | 1.003 |
+| DSD to PCM, stereo DSD64 to 176.4 kHz 24-bit, one thread | generic | 4.23 / 4.12 / 4.12 ms per s | - | 4.25 / 4.15 / 4.14 ms per s | - | 1.007 |
+
+Medians of 5 rounds (3 for the 20-minute DST case and DSD to PCM; 82 runs), a fresh copy of each
+program and image per round, images in the page cache, output to `/dev/null`. The DSD-to-PCM cells
+are at 1 / 8 / 256 frames per call.
+
+**Compare within this section only.** The plain-DSD rows read 0.555 s and 0.614 s for 0.5.7 here,
+against 0.483 s and 0.540 s for the same library in the 0.5.7 section. The two runs used the same
+runner but not the same image copies or the same day; the cause has not been found. The DST rows
+agree within 1 %. Earlier work (#248) found that a file's physical pages can move a run by this much.
+
+### `bench realtime` (#255, new)
+
+One thread, `lennon.sh bench`, pinned with `taskset -c 2`, 5 runs of a fresh copy; median [range]:
+
+| Figure | 6ch DST stress, 10 min | Stereo DST stress, 50 min |
+|---|---|---|
+| Mean real-time factor | 15.20× [15.08-15.39] | 47.42× [47.04-47.64] |
+| Slowest 1-second window | 12.74× [9.96-14.03] | 19.24× [12.77-33.58] |
+| 99.9th percentile frame | 2.118 ms [1.974-2.529] | 0.700 ms [0.634-0.790] |
+| Slowest frame | 4.651 ms [3.127-4.752] | 3.273 ms [3.266-3.433] |
+| Frames over 6.7 ms | 0 in all runs | 0 in all runs |
+| Seek to first frame, median of 200 | 1.940 ms [1.927-1.961] | 0.639 ms [0.637-0.645] |
+| Seek to first frame, slowest of 200 | 2.718 ms [2.687-2.790] | 0.928 ms [0.927-3.459] |
+
+The slowest-window row varies widely between runs: treat it as a floor to check, not a figure to
+compare between versions.
+
+Not measured for 0.5.8: the x86-64-v3 build; TOC open, first 128 KiB, cold runs and the C interface
+(see "Not measured"); for `bench realtime`, an i9-13900H (#255's reference host), real discs, cold
+seeks and all-thread decoding.
+
 ## 0.5.7
 
 Measured on lennon (3950X), 2026-11-02, with `compare.sh` (generic kits, statically linked,

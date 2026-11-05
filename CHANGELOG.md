@@ -12,6 +12,34 @@ from 0.5.8).
 
 ## [0.5.8] - 2026-11-05
 
+**A seek-index fix, a real-time report in `bench`, a corrected benchmark runner, and the first
+`scarletbook-ffi` on crates.io. No speed change.** `AreaIndex::from_bytes` now refuses a form of
+saved index that it used to load and then save differently (#253, found by fuzzing). The library
+never writes that form, so saved indexes keep loading. `bench realtime` reports what a real-time
+player needs from one thread (#255). `benchmarks/run.py` times a fresh copy of the image each round,
+so kit timings no longer read high (#248): **seconds from this kit are not comparable with seconds
+from the 0.5.7 kit's `run.py`.** Please use this kit to re-measure #202 and #203, which are not at
+target yet and continue towards 0.6.0.
+
+| Path | Build | 0.5.7 wall s | 0.5.7 CPU s | 0.5.8 wall s | 0.5.8 CPU s | 0.5.8 / 0.5.7 |
+|---|---|---|---|---|---|---|
+| DST decode, one thread, 2 channels | generic | 6.131 | 6.10 | 6.129 | 6.10 | 1.000 |
+| DST decode, one thread, 2 channels, corpus frames | generic | 20.302 | 20.21 | 20.343 | 20.24 | 1.002 |
+| DST decode, all threads, 2 channels | generic | 4.030 | 126.82 | 4.012 | 126.63 | 0.996 |
+| DST decode, one thread, 6 channels | generic | 7.592 | 7.54 | 7.593 | 7.55 | 1.000 |
+| DST decode, all threads, 6 channels | generic | 2.582 | 81.26 | 2.584 | 81.41 | 1.001 |
+| plain-DSD area to DSF, 2 channels | generic | 0.555 | 0.55 | 0.555 | 0.55 | 1.001 |
+| plain-DSD area to DSF, 5 channels | generic | 0.614 | 0.61 | 0.618 | 0.61 | 1.007 |
+| DST area to DSF, all threads | generic | 4.025 | 127.45 | 4.037 | 128.04 | 1.003 |
+| DSD to PCM, stereo DSD64 to 176.4 kHz 24-bit, one thread | generic | 4.23 / 4.12 / 4.12 ms per s | - | 4.25 / 4.15 / 4.14 ms per s | - | 1.007 |
+
+Medians of alternating runs on lennon (AMD Ryzen 9 3950X, Zen 2), generic build, kits from
+`benchmarks/compare.sh`, a fresh copy of each program and image per round, images in the page
+cache: 5 rounds, 3 for the 20-minute DST case and for DSD to PCM.
+
+No row changes by more than 1 %. Not measured: the x86-64-v3 build; TOC open, first 128 KiB, cold
+runs and the C interface (`benchmarks/RESULTS.md`).
+
 ### Added
 
 - crates.io: `scarletbook` and `scarletbook-pcm` are published there from 0.5.7, and `scarletbook-ffi` from 0.5.8; every release tag publishes them from the release workflow with crates.io trusted publishing, after all release checks (RELEASING.md). The README has install lines and a note to pin `=0.5.x` where PCM bytes must not change (#249, #251).
