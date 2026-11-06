@@ -729,7 +729,7 @@ impl From<Error> for Failure {
             Error::NoSuchArea(_) => SbStatus::NoSuchArea,
             Error::NoSuchTrack { .. } => SbStatus::NoSuchTrack,
             Error::FrameRangeInvalid { .. } => SbStatus::FrameRangeInvalid,
-            Error::InvalidArgument(_) => SbStatus::InvalidArgument,
+            Error::InvalidArgument(_) | Error::DstLanesInvalid { .. } => SbStatus::InvalidArgument,
             Error::Io(_) => SbStatus::Io,
             Error::Cancelled => SbStatus::Cancelled,
             Error::OutputRefused(scarletbook::OutputRefusal::UnspecifiedLayout { .. }) => {
