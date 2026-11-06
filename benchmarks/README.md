@@ -30,12 +30,13 @@ An archive holds one directory:
 
 | File | What it is |
 |---|---|
-| `bench` | the benchmark program (`bench --version`, `bench decode`, `bench dsf`, `bench realtime`; see `crates/scarletbook-bench`) |
+| `bench` | the benchmark program (`bench --version`, `bench decode`, `bench dsf`, `bench realtime`, `bench open`, `bench first`; see `crates/scarletbook-bench`) |
 | `scarletbook-synth` | writes the synthetic images of the run list |
 | `callpattern` | the scarletbook-pcm `callpattern` example: DSD64 stereo to 176.4 kHz 24-bit, generated input |
 | `runlist.json` | the cases (below) |
 | `corpus/` | the two corpus images `scarletbook-synth` takes DST frames from (CC0, `corpus/LICENSE`) |
 | `run.py` | the reference runner (below) |
+| `evict.py` | evicts an image from the page cache for the cold cases, and checks that it left (below) |
 | `table.py` | prints the Markdown table of `RESULTS.md` from the runner's output |
 | `README.txt`, `README.md`, `LICENSE-*` | version, commit and build; this file; the licences |
 
@@ -56,22 +57,24 @@ generic one also runs the AVX2 DST decoder and PCM kernels on CPUs that have the
   flags a build needs. A runner skips a build whose flags the CPU lacks and says so.
 - `images`: each image's `scarletbook-synth` arguments after the output path. The images are
   deterministic (DST frames from the generated stress set, or from the corpus images in the
-  kit), so any kit writes the same bytes; `approx_bytes` is for disk planning (about 8.3 GB in all).
+  kit), so any kit writes the same bytes; `approx_bytes` is for disk planning (about 8.6 GB in all).
 - `defaults` and `cases`. Each case has an `id`, the `path` of #224 it measures, an `image`
   (or `null`), a `command` with placeholders, and, unless the default applies:
   - `rounds` (default 5): timed runs per build;
   - `alternation` (default `abba`): in each round every build runs once, in list order on even
     rounds and reversed on odd ones, so drift over time falls on both builds alike;
   - `cache` (default `warm`): the image is read once before the case, so it is in the page
-    cache; `cold` is not used yet;
+    cache; `cold` is not used yet (the cold cases below evict inside the run);
   - `warmup_runs` (default 1): untimed runs per build before the rounds;
   - `stdout` (default `discard`): `keep` sends the program's stdout back (callpattern prints
     its own CPU time per second of audio, per call size, and an output checksum);
-  - `frames`: the area's frames, for frames per second.
+  - `frames`: the area's frames, for frames per second;
+  - `figure`: the `name<TAB>value` line of the program's stdout that is the case's result, for
+    cases timed inside the process; `table.py` shows it instead of wall and CPU time.
 - `missing`: the #224 paths the kit cannot time yet, and why.
 
 Placeholders: `{kit}` the unpacked directory of the build being timed, `{image}` the case's
-image file, `{scratch}` a writable directory. Threads `0` mean one per logical CPU.
+image file, `{scratch}` a writable directory, `{evict}` the eviction helper beside the runner. Threads `0` mean one per logical CPU.
 
 | Case | #224 path | Image |
 |---|---|---|
@@ -84,15 +87,40 @@ image file, `{scratch}` a writable directory. Threads `0` mean one per logical C
 | `dsf-plain-5ch` | plain-DSD area to DSF, 5 ch, one thread (to `/dev/null`) | 30 min 5 ch plain DSD |
 | `dsf-dst-2ch-tall` | DST area to DSF, all threads (to `/dev/null`) | 50 min 2 ch DST |
 | `pcm-callpattern` | DSD to PCM, one thread | none (generated in memory) |
+| `open-warm`, `open-cold` | open to parsed TOC | 5 min 2 ch DST, 1-minute tracks |
+| `first-plain-2ch-warm`, `-cold` | first 128 KiB, 2 ch plain DSD | 5 min 2 ch plain DSD, 1-minute tracks |
+| `first-dst-2ch-t1-warm`, `-cold` | first 128 KiB, 2 ch DST, one thread | 5 min 2 ch DST, 1-minute tracks |
+| `first-dst-2ch-tall-warm`, `-cold` | first 128 KiB, 2 ch DST, all threads | 5 min 2 ch DST, 1-minute tracks |
 
-Not in the kit yet (`missing`): TOC open and the first 128 KiB (no `bench` command for either),
-cold runs (no eviction step), the C interface (`bench` uses the Rust API), and DSD to PCM from
-an image.
+Not in the kit yet (`missing`): the first 128 KiB of 5 or 6 channels or without a seek index,
+cold runs of the whole-area cases, the C interface (`bench` uses the Rust API), and DSD to PCM
+from an image.
+
+### Open and first 128 KiB
+
+These last microseconds, far less than starting a process, so `bench open` and `bench first` time
+them inside the process, print the median, and the case's `figure` is that median. The wall and
+CPU time of such a run say nothing about them. `first` reads the middle track of the area, on a
+disc already open, with a complete seek index built untimed: it is a seek, not a scan. A cursor
+without an index scans the area from its start, which is a different figure.
+
+**Cold.** With `--evict`, `bench` runs `evict.py IMAGE` before each iteration, untimed: `fsync`,
+then `posix_fadvise(POSIX_FADV_DONTNEED)`. No root is needed. `bench` is `forbid(unsafe_code)` and
+the Rust standard library has no such call, so the helper is Python, like the runner. The kernel
+can ignore the advice, as on tmpfs, so the helper then counts the file's cached pages with
+`mincore`, and fails the run if any remain: a cold figure on a cached file would look like a very
+fast disc. So keep `--work` on a disk-backed filesystem, and own the image files, as the runner's
+copies are. (`RWF_NOWAIT` reads are no substitute for that check: on the Zen 2 benchmark host,
+Linux 7.1 on btrfs, such reads of an evicted file put about one page per read back in the cache.)
+
+**What cold does not cover.** Only the file's data pages are evicted. The kernel's dentry, inode and
+filesystem metadata caches stay warm (dropping those takes root), and a drive's own cache may
+still hold the sectors just read.
 
 ## The sandboxed-runner contract
 
 **Inputs:** one or both kit archives of one release, verified and unpacked; about 26 GB of free
-disk: 8.3 GB for the images, 0.85 GB for the self-check, and the per-round copies of one case's
+disk: 8.6 GB for the images, 0.85 GB for the self-check, and the per-round copies of one case's
 image (up to 5 × 3.3 GB); nothing else. **Network:** none, after the download and verification.
 **Privileges:** none.
 
@@ -138,8 +166,9 @@ image (up to 5 × 3.3 GB); nothing else. **Network:** none, after the download a
 | `wall_s` | wall-clock seconds from start to exit |
 | `user_s`, `sys_s`, `cpu_s` | the child's user, system and total CPU seconds (`wait4` rusage) |
 | `max_rss_kib` | the child's peak resident set |
+| `free_kib_by_order_before`, `free_kib_by_order_after` | free memory in KiB by block size, before and after the round's image copy is written: index n is blocks of 2^n pages (`/proc/buddyinfo`, all zones; null without that file) |
 | `stdout` | the program's stdout, for cases with `stdout: keep` |
-| `host` | `cpu` (model name), `logical_cpus`, `usable_cpus` (affinity), `smt`, `governor`, `mem_bytes`, `kernel` |
+| `host` | `cpu` (model name), `logical_cpus`, `usable_cpus` (affinity), `smt`, `governor`, `mem_bytes`, `page_bytes`, `kernel` |
 
 Extra fields are welcome (for example the machine's name, the date or the storage).
 
@@ -168,20 +197,81 @@ rounds absorbs a slow first round. On lennon the plain-DSD rows then agree with 
 images in the fast state within 1.5 %.
 
 **Fresh copies differ too (#259).** A fresh copy removes the stuck offset, but not the spread between
-copies. On lennon, ten byte-identical fresh copies of the 78-minute stereo image, one 0.5.7 `bench`,
-three runs each: 0.484 to 0.543 s (12 %), median 0.507 s, while the runs of any one copy agree within
-1.2 %. User and system time both move, so it is not only the kernel's copy.
+copies. On the Zen 2 benchmark host, ten byte-identical fresh copies of the 78-minute stereo image, one
+0.5.7 `bench`, three runs each: 0.484 to 0.543 s (12 %), median 0.507 s, while the runs of any one copy
+agree within 1.2 %.
 
-**Whole runs differ as well, for a reason not yet found.** The 0.5.8 table's five stereo rounds all ran
-at 0.540 s or above, which ten-copy spread alone would not give: the same library read 0.483 s in the
-0.5.7 section. Writing and deleting four other images first did not reproduce it (median 0.500 s, 1 of
-10 copies at 0.540 s or above). The case run alone through `run.py` fell round by round from 0.560 to
-0.505 s, median 0.525 s, so the state of the run matters.
+**The time moves in the kernel.** 56 measurements of about 30 copies, with perf counters (not independent:
+each copy was measured more than once). Wall time ran from 0.475 to 0.589 s:
 
-So **seconds can differ between tables by more than 10 % with no change in the code.** The builds of a
-round read the same copy, and their per-round ratios agreed within 0.7 % while those rounds spread 7 %
-and 18 %. `table.py` lists any cell whose rounds differ by more than 5 %. Judge a change on the
-ratios, and compare seconds only as ranges.
+| Counter | Range |
+|---|---|
+| Kernel cycles | 973-1478 M |
+| Kernel cache misses | 10.3-25.2 M |
+| dTLB load misses | 0.14-1.77 M |
+| User cycles | 1194-1246 M |
+| Kernel instructions | 322-326 M |
+| User instructions | 2923-2931 M |
+| Clock | 4.49-4.61 GHz |
+
+The kernel's 505 M range at this clock is about the whole wall range, so with user cycles flat, this says
+where the time goes and nothing more. The same kernel instructions take up to 52 % more cycles. The misses
+rise with wall time too, which is a correlation, not a mechanism. `wait4`'s user time ran from 0.24 to
+0.30 s while user cycles stayed flat, so that split is too coarse to show this.
+
+A copy keeps its time: five copies re-timed at once and again 60 s later stayed within 3 %, so the fall
+round by round follows the copy, not the time. Temperature had no visible effect: one copy read 0.58-0.60 s
+from 35 to 65 °C (Tctl), before and after 40 s of load on all threads.
+
+**Free-memory state changes these seconds. It is a candidate for the gap between tables, and doesn't yet
+predict a table's median.** Two chains of 12 fresh copies, all kept, each staged and then timed. "Taken from"
+is the net fall in free memory by block size while the copy was written:
+
+| Taken from | Copies | Wall time |
+|---|---|---|
+| Blocks under 256 KiB | 13 | 0.50-0.59 s |
+| Partly blocks of 256 KiB to 2 MiB | 2 | 0.49 s |
+| Mainly blocks of 256 KiB and over | 3 | 0.475-0.48 s |
+| None free, kswapd reclaiming page cache | 6 | 0.52-0.56 s |
+
+Copies taken from the same class still differ by up to 0.09 s, and within each chain they fell as the
+small blocks ran out, so this split doesn't describe the state fully.
+
+`run.py`, `dsf-plain-2ch`, two builds, five rounds, one run per row:
+
+| Free GB at the start (under 2 MiB / from 2 MiB) | 0.5.7 rounds | 0.5.7 median | Of 10 runs, at 0.540 s or above | Of 10 runs, at 0.49 s or below |
+|---|---|---|---|---|
+| 36 / 9 | 0.586, 0.588, 0.584, 0.571, 0.538 s | 0.584 s | 9 | 0 |
+| 27 / 9 | 0.536, 0.535, 0.533, 0.526, 0.506 s | 0.533 s | 1 | 0 |
+| under 1 / 7, page cache filled first | 0.480, 0.482, 0.531, 0.573, 0.550 s | 0.531 s | 4 | 4 |
+| the same, repeated | 0.483, 0.477, 0.517, 0.534, 0.538 s | 0.517 s | 1 | 4 |
+
+In the last two rows, 7 GB lasts about two copies, then reclaim starts. One run gave rounds like the 0.5.8
+table's, and two gave some rounds like the 0.5.7 section's 0.483 s, never as a median of five. The start state
+doesn't separate the medians: 0.533 s against 0.531 and 0.517 s. This is stereo only.
+
+**Not known.** Why smaller free blocks would cost more kernel cycles: a file's physical page layout can't be
+read without root. What the memory state was during the published 0.5.7 and 0.5.8 runs: nothing recorded
+it, so this doesn't show it caused their gap. `run.py` now records every block size before and after each
+round's copy, so later tables can test this. What leaves memory in a given state, such as builds, idle
+fuzzing or other users' work, wasn't tested.
+
+**Other users' runs stay a candidate.** The load history during the earlier runs isn't available, so it
+can't be tested directly. The lock doesn't remove the spread: the 56 measurements ran under it and saw at most
+0.42 CPUs of other work. Competing work has a different look: 8 busy CPUs took one copy from 0.58 to 0.62 s
+and the clock from 4.6 to 4.2 GHz, and 16 took it to 0.64-0.90 s with user times of 0.31-0.44 s, above the
+0.5.8 stereo rounds' 0.25-0.28 s. That argues against 16 or more busy CPUs throughout those rounds, but
+not against smaller load.
+
+So **seconds can differ between tables by more than 10 % with no change in the code.** `table.py` lists any
+cell whose rounds differ by more than 5 %. Compare seconds only as ranges.
+
+**Ratios have limits too.** The builds of a round read the same copy, and in the 0.5.8 table's run their
+per-round ratios agreed within 0.7 % while those rounds spread 7 % and 18 %. That held for that run; it
+isn't a general bound. Over the 20 stereo rounds above, 0.5.8 / 0.5.7 stayed within 1.8 %, except one 1.042
+after reclaim started, and the median ratio of each run was 0.999 to 1.012. So judge on the median over
+rounds, and treat plain-DSD differences under about 2 % as unresolved: 1.001 and 1.007 mean "no change
+resolved".
 
 **The self-check.** Before the cases, `run.py` times plain-DSD-to-DSF on a 10-minute stereo
 image eight times through its own path (a fresh program copy, `wait4`) and eight times as a
@@ -218,7 +308,7 @@ python3 -I $g/run.py --kit generic=$g --kit v3=$g-v3 --work work > results.jsonl
 
 `--case ID` (repeatable) selects cases; `--smoke` runs every case once on tiny images, which
 is what `benchkit.yml` does to check each kit (with the self-check in a non-blocking step). A full run of two builds takes about 10 minutes
-on a 16-core Zen 2 machine and writes about 8.3 GB of images. `--kit BUILD@LABEL=DIR` times kits
+on a 16-core Zen 2 machine and writes about 8.6 GB of images. `--kit BUILD@LABEL=DIR` times kits
 of several versions in one alternation; `python3 -I table.py results.jsonl` prints the medians
 as a Markdown table.
 
