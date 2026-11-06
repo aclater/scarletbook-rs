@@ -246,6 +246,11 @@ current pool by default, or the pool chosen for a cursor with
 `TrackAudioCursor::set_decode_on(DecodeOn::Pool(pool))`, whichever thread reads it
 (`DecodeOn::CallingThread` keeps a cursor off every pool).
 
+With `parallel`, rayon 1 is part of the public Rust API, and that is a stated decision (#39):
+`DecodeOn::Pool` takes an `Arc<rayon::ThreadPool>`, not a wrapper of this library's. rayon 1 is
+stable, and a wrapper would add interface for a problem that may never come. The cost is that a
+rayon 2 would need a new major version of `scarletbook`. A program's pool must come from rayon 1.
+
 ## C library
 
 ```c

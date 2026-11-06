@@ -1,0 +1,1 @@
+| 2026-11-06 | rayon in the public Rust API stated as a decision (#39) | the owner's decision on #39; the Rust API Guidelines' C-STABLE, already cited in the audit there. No new sources consulted. |
