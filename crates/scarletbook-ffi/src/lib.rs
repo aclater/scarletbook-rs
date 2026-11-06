@@ -25,10 +25,10 @@ pub use output::*;
 use scarletbook::log::{Level, Log};
 use scarletbook::toc::{AreaTextItem, DiscTextItem, TrackTextItem};
 use scarletbook::{
-    Area, AreaCursor, AreaIndex, AudioFrame, CancelToken, DecodeOn, Disc, Error, FrameContent, FrameKind,
-    FrameStatus, IndexOptions, LoudspeakerLayout, MasterToc, Progress, ReadAt, ReadAtReader, SeekPolicy,
-    Slot, Speaker, Speculation, SpeculativeOptions, Stored, Track, TrackAudioCursor, TrackCursor, TrackFrame,
-    WarningCode,
+    Area, AreaCursor, AreaIndex, AudioFrame, CancelToken, DecodeOn, Disc, Error, ErrorClass, FrameContent,
+    FrameKind, FrameStatus, IndexOptions, LoudspeakerLayout, MasterToc, Progress, ReadAt, ReadAtReader,
+    SeekPolicy, Slot, Speaker, Speculation, SpeculativeOptions, Stored, Track, TrackAudioCursor, TrackCursor,
+    TrackFrame, WarningCode,
 };
 use scarletbook_pcm::{
     Converter, Cutoff, FRAME_BYTES_PER_CHANNEL, FrameRun, Gain, MAX_CHANNELS, PcmConfig, PcmRate,
@@ -700,6 +700,22 @@ impl Failure {
     }
 }
 
+/// The status of an error that has no arm of its own in the conversion below: the first
+/// status of its class. The message still names the error. `tests/error_status_policy.rs`
+/// fails on any such error, so this only matters to a build that skipped the tests.
+fn class_status(class: ErrorClass) -> SbStatus {
+    match class {
+        ErrorClass::Rejected => SbStatus::NotScarletbook,
+        ErrorClass::TrackRefused => SbStatus::ChannelCountUnsupported,
+        ErrorClass::TrackSkipped => SbStatus::TrackEmpty,
+        ErrorClass::Usage => SbStatus::InvalidArgument,
+        ErrorClass::Io => SbStatus::Io,
+        ErrorClass::Cancelled => SbStatus::Cancelled,
+        // A class added later is the caller's request that cannot be met, not a panic.
+        _ => SbStatus::InvalidArgument,
+    }
+}
+
 impl From<Error> for Failure {
     fn from(e: Error) -> Self {
         let status = match &e {
@@ -722,7 +738,7 @@ impl From<Error> for Failure {
             Error::OutputRefused(scarletbook::OutputRefusal::NotEditedMaster(_)) => SbStatus::NotEditedMaster,
             // A refusal added later is the caller's request that cannot be met, not a panic.
             Error::OutputRefused(_) => SbStatus::InvalidArgument,
-            _ => SbStatus::Panic,
+            _ => class_status(e.class()),
         };
         Failure(status, e.to_string())
     }
@@ -5879,5 +5895,78 @@ mod tests {
         // SAFETY: as above.
         let msg = unsafe { CStr::from_ptr(sb_last_error_message()) };
         assert!(msg.to_bytes().is_empty());
+    }
+
+    /// What C callers get for each error, as of #308. `OutputRefusal::UnspecifiedLayout`
+    /// can't be built here: `tests/output.rs` pins it, through the C call.
+    #[test]
+    fn every_error_keeps_its_status_and_message() {
+        use scarletbook::{EditedMasterCheck, OutputRefusal};
+        let cases = [
+            (
+                Error::NotScarletbook,
+                SbStatus::NotScarletbook,
+                "not a Scarletbook image: no SACDMTOC at LSN 510",
+            ),
+            (
+                Error::MasterTocTruncated,
+                SbStatus::MasterTocTruncated,
+                "master TOC truncated: the image ends before LSN 519",
+            ),
+            (
+                Error::MasterTocVersionUnsupported { major: 2, minor: 0 },
+                SbStatus::MasterTocVersionUnsupported,
+                "master TOC version 2.0 is not supported",
+            ),
+            (Error::NoAudioAreas, SbStatus::NoAudioAreas, "no readable audio area"),
+            (
+                Error::ChannelCountUnsupported { channels: 7 },
+                SbStatus::ChannelCountUnsupported,
+                "track refused: the area has 7 channels, only 1 to 6 are supported",
+            ),
+            (Error::TrackEmpty, SbStatus::TrackEmpty, "track skipped: its duration is 0 frames"),
+            (
+                Error::TrackExceedsCapacity { end_frame: 9, capacity: 7 },
+                SbStatus::TrackExceedsCapacity,
+                "refused: it ends at frame 9, beyond the area capacity of 7 frames",
+            ),
+            (Error::NoSuchArea(Slot::Multichannel), SbStatus::NoSuchArea, "no area in slot multichannel"),
+            (
+                Error::NoSuchTrack { slot: Slot::TwoChannel, track: 3 },
+                SbStatus::NoSuchTrack,
+                "no track 3 in area 2ch",
+            ),
+            (
+                Error::FrameRangeInvalid { first: 1, end: 2, playtime: 3 },
+                SbStatus::FrameRangeInvalid,
+                "frame range [1, 2) is not within the area's timeline [0, 3)",
+            ),
+            (Error::InvalidArgument("x"), SbStatus::InvalidArgument, "invalid argument: x"),
+            (Error::Io(io::Error::other("gone")), SbStatus::Io, "I/O error: gone"),
+            (Error::Cancelled, SbStatus::Cancelled, "cancelled"),
+            (
+                Error::OutputRefused(OutputRefusal::NotEditedMaster(EditedMasterCheck::Range)),
+                SbStatus::NotEditedMaster,
+                "output refused: not an edited master: it holds only the play range of an area",
+            ),
+        ];
+        for (error, status, message) in cases {
+            let Failure(got, text) = Failure::from(error);
+            assert_eq!((got, text.as_str()), (status, message));
+        }
+    }
+
+    #[test]
+    fn an_unmapped_error_gets_a_status_of_its_class() {
+        for (class, status) in [
+            (ErrorClass::Rejected, SbStatus::NotScarletbook),
+            (ErrorClass::TrackRefused, SbStatus::ChannelCountUnsupported),
+            (ErrorClass::TrackSkipped, SbStatus::TrackEmpty),
+            (ErrorClass::Usage, SbStatus::InvalidArgument),
+            (ErrorClass::Io, SbStatus::Io),
+            (ErrorClass::Cancelled, SbStatus::Cancelled),
+        ] {
+            assert_eq!(class_status(class), status);
+        }
     }
 }

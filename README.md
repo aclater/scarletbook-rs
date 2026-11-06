@@ -164,6 +164,22 @@ size counting its pad byte; D2, text as ISO 8859-1) are made only when named, in
 `OutputOptions::dsdiff_departures` or with `SB_OUTPUT_OPTION_DSDIFF_DEPARTURE_D1` and `_D2`.
 A file written with one is not a conforming DSDIFF file.
 
+**An area's tracks as separate files** take no writer of their own, only a loop over these
+calls: use `Disc::continue_range_audio` from track to track, since a plain `range_audio` per
+track rescans the area (more than 2x slower measured on a 16-track stereo area). That
+sequential loop gains nothing over one file. Workers gain on real storage, in two forms:
+
+- **Seek index first:** the bytes are exact.
+- **Speculative with a verifying pass:** the bytes are provisional when written (specification
+  4, 4.2 item 8). They are exact only once the pass is complete and every reading is exact or
+  confirmed, and any other reading's file is rewritten.
+
+Workers reading speculatively with no verifying pass are a speed figure only: nothing
+establishes their bytes, and matching hashes on some images don't. The `scarletbook::output`
+documentation has the code for each form. The figures are on
+[#202](https://github.com/aclater/scarletbook-rs/issues/202): they come from one machine, so
+measure on yours.
+
 ### Seeking within an area
 
 A range far into an area normally costs a scan of the area up to it: which frames a range
@@ -245,6 +261,11 @@ Features: `parallel` decodes DST frames on rayon's thread pool, ahead of the cal
 current pool by default, or the pool chosen for a cursor with
 `TrackAudioCursor::set_decode_on(DecodeOn::Pool(pool))`, whichever thread reads it
 (`DecodeOn::CallingThread` keeps a cursor off every pool).
+
+With `parallel`, rayon 1 is part of the public Rust API, and that is a stated decision (#39):
+`DecodeOn::Pool` takes an `Arc<rayon::ThreadPool>`, not a wrapper of this library's. rayon 1 is
+stable, and a wrapper would add interface for a problem that may never come. The cost is that a
+rayon 2 would need a new major version of `scarletbook`. A program's pool must come from rayon 1.
 
 ## C library
 

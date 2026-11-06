@@ -181,6 +181,79 @@ fn dsf_streams_and_read_at_calls_agree() {
     assert_eq!(String::from_utf8_lossy(&bad.stderr).lines().next(), Some("usage-error"));
 }
 
+/// `bench dsf --via tracks` (issue #202): one file per track, the same from any number of
+/// workers and at any chunk size, and each the bytes of that track's own `Layout::read_at`.
+#[test]
+fn dsf_tracks_match_one_at_a_time_writes() {
+    use scarletbook::output::{Format, OutputOptions};
+    use scarletbook::{Disc, Slot};
+
+    let root = std::env::temp_dir().join(format!("scarletbook-bench-tracks-{}", std::process::id()));
+    for (id, flag, slot) in [
+        ("dsd-stereo-mch-2048", "2ch", Slot::TwoChannel),
+        ("dsd-stereo-mch-2048", "mc", Slot::Multichannel),
+        ("dst-features-5ch", "mc", Slot::Multichannel),
+    ] {
+        let case = cases().into_iter().find(|c| c["id"] == id).unwrap();
+        let img = image(&case);
+        let file = std::fs::File::open(&img).unwrap();
+        let mut disc = Disc::open(std::io::BufReader::new(file)).unwrap();
+        let numbers: Vec<u32> =
+            disc.toc().area(slot).unwrap().tracks.iter().map(|t| u32::from(t.number)).collect();
+        assert!(!numbers.is_empty(), "{id} {flag}");
+        for (via, threads, chunk) in [
+            ("tracks", "1", "4194304"),
+            ("tracks", "3", "5000"),
+            ("tracks", "0", "4093"),
+            ("tracks-scan", "1", "5000"),
+            ("tracks-speculative", "2", "5000"),
+            ("tracks-unverified", "3", "5000"),
+        ] {
+            let dir = root.join(format!("{id}-{flag}-{via}-{threads}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            let out = bench(&[
+                "dsf",
+                &img,
+                "--area",
+                flag,
+                "--threads",
+                threads,
+                "--out",
+                dir.to_str().unwrap(),
+                "--via",
+                via,
+                "--chunk",
+                chunk,
+            ]);
+            assert!(out.status.success(), "{id} {flag} {threads}: {}", String::from_utf8_lossy(&out.stderr));
+            assert_eq!(std::fs::read_dir(&dir).unwrap().count(), numbers.len(), "{id} {flag}");
+            for &n in &numbers {
+                let (first, end) = disc.track_range_with_pause(slot, n).unwrap();
+                let layout =
+                    disc.output_layout(slot, first, end, Format::Dsf, &OutputOptions::default()).unwrap();
+                let mut want = vec![0; usize::try_from(layout.size()).unwrap()];
+                assert_eq!(layout.read_at(&mut disc, 0, &mut want).unwrap(), want.len());
+                let got = std::fs::read(dir.join(format!("{n:03}.dsf"))).unwrap();
+                assert!(got == want, "{id} {flag} {via} --threads {threads}: track {n} differs");
+            }
+        }
+    }
+    std::fs::remove_dir_all(&root).unwrap();
+    let bad = bench(&[
+        "dsf",
+        "/nonexistent.iso",
+        "--area",
+        "2ch",
+        "--threads",
+        "2",
+        "--out",
+        "/dev/null",
+        "--via",
+        "tracks",
+    ]);
+    assert_eq!(String::from_utf8_lossy(&bad.stderr).lines().next(), Some("io-error"));
+}
+
 /// `bench realtime` reports every figure, on a DST area of the corpus (#255).
 #[test]
 fn realtime_reports_its_figures() {
