@@ -1,0 +1,1 @@
+| 2026-11-06 | C interface: an unmapped core error falls back through its class (#308) | the error conversion of the C interface and its tests only; no technique in a codec or format path changes. No new sources consulted. |
