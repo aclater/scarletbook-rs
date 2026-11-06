@@ -1,0 +1,1 @@
+| 2026-11-05 | 5-channel and single-order stress frames in `scarletbook-synth` (#264) | the repository's own stress-frame generator with a new channel count and filter order; no new technique. No new sources consulted. |

@@ -407,3 +407,177 @@ fn a_reading_moves_to_another_disc_unverified() {
     while !b.verify_speculation(Slot::TwoChannel, 1 << 20).unwrap() {}
     assert!(matches!(c.speculation(), Speculation::Unverified { .. }), "{:?}", c.speculation());
 }
+
+/// A reader that runs a hook before each read, passing whether the read goes back from the
+/// farthest byte read so far: a test's way to act at a chosen moment during a pass, on the
+/// pass's own thread, with no sleeps. A pass from the first sector only goes forward; going
+/// back is the check of a provisional reading.
+struct Hooked<F> {
+    inner: Cursor<Vec<u8>>,
+    farthest: u64,
+    hook: F,
+}
+
+impl<F: FnMut(bool)> std::io::Read for Hooked<F> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let at = self.inner.position();
+        (self.hook)(at < self.farthest);
+        let n = self.inner.read(buf)?;
+        self.farthest = self.farthest.max(at + n as u64);
+        Ok(n)
+    }
+}
+
+impl<F> std::io::Seek for Hooked<F> {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.inner.seek(pos)
+    }
+}
+
+/// An image small enough for Miri, with its speculative disc: an interval of 4 sectors and
+/// no minimum gap, so that a range near the end reads provisionally.
+fn small_disc() -> (Vec<u8>, Disc<Cursor<Vec<u8>>>) {
+    let fs: Vec<PFrame> =
+        (0..48).map(|k| PFrame { number: k, dst: true, data: vec![k as u8; 1500] }).collect();
+    let tracks = vec![TrackSpec { start: 0, duration: 48 }];
+    let img = Spec { channels: 2, playtime: 48, tracks, audio: pack(&fs) }.build();
+    let mut disc = Disc::open(Cursor::new(img.clone())).unwrap();
+    disc.enable_seek_index(Slot::TwoChannel, IndexOptions::new().with_interval(4)).unwrap();
+    let options = SpeculativeOptions::new().with_min_gap_sectors(0);
+    disc.set_seek_policy(Slot::TwoChannel, SeekPolicy::Speculative(options)).unwrap();
+    (img, disc)
+}
+
+/// Reads frames 40 to 44 through `disc`: a provisional reading that the shared index holds
+/// from then on, without a verdict yet.
+fn small_reading(disc: &mut Disc<Cursor<Vec<u8>>>, cursor: TrackCursor) -> TrackCursor {
+    let (got, c) = read(disc, cursor);
+    assert_eq!(got.iter().map(|f| f.number).collect::<Vec<_>>(), [40, 41, 42, 43, 44]);
+    assert!(
+        matches!(c.resumed_from(), ResumedFrom::Speculative { lsn, .. } if lsn > 0),
+        "{:?}",
+        c.resumed_from()
+    );
+    assert!(matches!(c.speculation(), Speculation::Pending { .. }), "{:?}", c.speculation());
+    c
+}
+
+/// A reading registered through a disc sharing the index while the pass that completes the
+/// index is reading (#310) is not in the copy that pass checks: the call reports not complete,
+/// although the index is, and the next call settles it even with no budget at all.
+#[test]
+fn a_reading_registered_during_the_final_pass_is_not_reported_complete() {
+    let (img, disc) = small_disc();
+    let mut other = disc.share(Cursor::new(img.clone())).unwrap();
+    let reading = std::cell::RefCell::new(None);
+    let armed = std::cell::Cell::new(false);
+    let hook = |_| {
+        if armed.replace(false) {
+            assert!(!other.seek_index(Slot::TwoChannel).unwrap().is_complete(), "during the pass");
+            let c = other
+                .frames_cursor(Slot::TwoChannel, FrameSpan::Range(40, 45), CursorOptions::new())
+                .unwrap();
+            reading.replace(Some(small_reading(&mut other, c)));
+        }
+    };
+    let mut verifier = disc.share(Hooked { inner: Cursor::new(img), farthest: 0, hook }).unwrap();
+    armed.set(true);
+    // One call over the whole area, so that it is the final pass.
+    assert!(!verifier.verify_speculation(Slot::TwoChannel, u64::MAX).unwrap());
+    let reading = reading.take().expect("registered during the pass");
+    assert!(matches!(reading.speculation(), Speculation::Pending { .. }), "{:?}", reading.speculation());
+    assert!(disc.seek_index(Slot::TwoChannel).unwrap().is_complete());
+    assert!(disc.take_seek_events(Slot::TwoChannel).is_empty());
+    assert!(verifier.verify_speculation(Slot::TwoChannel, 0).unwrap());
+    assert!(matches!(reading.speculation(), Speculation::Confirmed { .. }), "{:?}", reading.speculation());
+    assert_eq!(disc.seek_index(Slot::TwoChannel).unwrap().pending_claims(), 0);
+    let events = disc.take_seek_events(Slot::TwoChannel);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].speculation, reading.speculation());
+}
+
+/// One round per call: a reading registered during the check of an earlier one takes a call
+/// of its own, and the loop ends once no disc registers more. It comes from a cursor made
+/// before the pass, which is sure to read provisionally.
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "the same path as a_reading_registered_during_the_final_pass_is_not_reported_complete"
+)]
+fn each_call_makes_one_round_and_the_loop_ends() {
+    let (img, disc) = small_disc();
+    let mut other = disc.share(Cursor::new(img.clone())).unwrap();
+    let mut made_before =
+        Some(other.frames_cursor(Slot::TwoChannel, FrameSpan::Range(40, 45), CursorOptions::new()).unwrap());
+    let readings = std::cell::RefCell::new(Vec::new());
+    let stage = std::cell::Cell::new(0);
+    let hook = |back| match stage.get() {
+        1 => {
+            stage.set(2);
+            let c = other
+                .frames_cursor(Slot::TwoChannel, FrameSpan::Range(40, 45), CursorOptions::new())
+                .unwrap();
+            readings.borrow_mut().push(small_reading(&mut other, c));
+        }
+        2 if back => {
+            stage.set(3);
+            assert!(other.seek_index(Slot::TwoChannel).unwrap().is_complete(), "during the check");
+            let c = made_before.take().unwrap();
+            readings.borrow_mut().push(small_reading(&mut other, c));
+        }
+        _ => {}
+    };
+    let mut verifier = disc.share(Hooked { inner: Cursor::new(img), farthest: 0, hook }).unwrap();
+    stage.set(1);
+    let mut verify = || verifier.verify_speculation(Slot::TwoChannel, u64::MAX).unwrap();
+    assert_eq!([verify(), verify(), verify()], [false, false, true]);
+    assert_eq!(stage.get(), 3);
+    let readings = readings.take();
+    assert!(matches!(readings[0].speculation(), Speculation::Confirmed { .. }));
+    assert!(matches!(readings[1].speculation(), Speculation::Confirmed { .. }));
+    assert_eq!(disc.take_seek_events(Slot::TwoChannel).len(), 2);
+}
+
+/// What `true` does not cover (#310): a reading that joins the index after the call that
+/// reported it stays pending, with no event, until the next call. It comes from a cursor made
+/// before the pass, which is sure to read provisionally.
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "the same path as a_reading_registered_during_the_final_pass_is_not_reported_complete"
+)]
+fn a_reading_registered_after_the_pass_waits_for_the_next_call() {
+    let (_, mut disc) = small_disc();
+    let c = disc.frames_cursor(Slot::TwoChannel, FrameSpan::Range(40, 45), CursorOptions::new()).unwrap();
+    assert!(disc.verify_speculation(Slot::TwoChannel, u64::MAX).unwrap());
+    let reading = small_reading(&mut disc, c);
+    assert_eq!(disc.seek_index(Slot::TwoChannel).unwrap().pending_claims(), 1);
+    assert!(disc.take_seek_events(Slot::TwoChannel).is_empty());
+    assert!(disc.verify_speculation(Slot::TwoChannel, u64::MAX).unwrap());
+    assert!(matches!(reading.speculation(), Speculation::Confirmed { .. }), "{:?}", reading.speculation());
+    assert_eq!(disc.take_seek_events(Slot::TwoChannel).len(), 1);
+}
+
+/// A budget of 0 moves the pass on by exactly one checkpoint a call, from an empty index on
+/// (`merge` used to drop the first, so that such a loop never ended): the loop ends, in one call
+/// per boundary and one more, and settles the reading.
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "the same path as a_reading_registered_during_the_final_pass_is_not_reported_complete"
+)]
+fn no_budget_still_finishes() {
+    let (_, mut disc) = small_disc();
+    let c = disc.frames_cursor(Slot::TwoChannel, FrameSpan::Range(40, 45), CursorOptions::new()).unwrap();
+    let reading = small_reading(&mut disc, c);
+    let area = disc.toc().area(Slot::TwoChannel).unwrap();
+    let boundaries = usize::try_from(area.audio_end_lsn - area.audio_start_lsn).unwrap() / 4 + 2;
+    let mut calls = 0;
+    while !disc.verify_speculation(Slot::TwoChannel, 0).unwrap() {
+        calls += 1;
+        assert_eq!(disc.seek_index(Slot::TwoChannel).unwrap().checkpoints(), calls);
+        assert!(calls <= boundaries, "{calls} calls");
+    }
+    assert!(calls > 1, "a call of no budget does not do the whole pass: {calls} calls");
+    assert!(matches!(reading.speculation(), Speculation::Confirmed { .. }), "{:?}", reading.speculation());
+}

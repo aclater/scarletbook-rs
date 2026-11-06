@@ -385,7 +385,8 @@ impl<R: Read + Seek> Disc<R> {
     /// now complete. Reading a whole area this way builds the index for all its ranges at
     /// the cost of one pass. It also checks the provisional readings the index now reaches
     /// ([`AreaIndex::verify`]): their verdicts go to [`Disc::take_seek_events`] and to the
-    /// cursors that made them.
+    /// cursors that made them. A complete index says nothing of a reading registered during
+    /// this call, which [`Disc::verify_speculation`] does account for.
     ///
     /// # Errors
     ///
@@ -412,15 +413,37 @@ impl<R: Read + Seek> Disc<R> {
     /// Builds the seek index of the area from `slot` by about `max_sectors` more sectors
     /// and checks the provisional readings it then reaches (specification 4, 4.2 item 8):
     /// [`Disc::extend_seek_index`], named for what a caller of [`SeekPolicy::Speculative`]
-    /// runs it for, typically in a loop on a clone of the disc in another thread. Returns
-    /// whether the index is complete; every provisional reading of the area has its verdict
-    /// then.
+    /// runs it for, typically in a loop on a clone of the disc in another thread.
+    ///
+    /// Returns `true` when, at this call's last look at the index, the index was complete
+    /// and every provisional reading it held had its verdict. Returns `false` otherwise, with
+    /// nothing wrong: call again. That includes a complete index holding a reading that
+    /// another disc registered during this call, which this call's check did not see.
+    ///
+    /// `true` covers only the readings the index held by then. A reading joins the index when
+    /// its first frame is read through a disc's iterators or
+    /// [`Disc::absorb_seek_checkpoints`], and one that joins later, even before this call
+    /// returns, has no verdict and no event until a later call. A caller that must have every
+    /// verdict runs its `while !disc.verify_speculation(..)? {}` loop once more after its
+    /// readers have finished, then checks each reading's own `speculation()`: a reading with
+    /// no verdict has no event.
+    ///
+    /// Each call makes one round: about `max_sectors` sectors of the pass (at least to the
+    /// next checkpoint, so that 0 makes progress), then the check of the readings the index
+    /// reached and held when the round began. `max_sectors` does not limit those checks: each
+    /// reads a bounded number of sectors, and the number of readings waiting is bounded too.
+    /// Once no disc registers new readings, a loop ends: every `false` either added a
+    /// checkpoint or came from a reading that the next call checks.
     ///
     /// # Errors
     ///
     /// As [`Disc::extend_seek_index`].
     pub fn verify_speculation(&mut self, slot: Slot, max_sectors: u64) -> Result<bool, Error> {
-        self.extend_seek_index(slot, max_sectors)
+        let complete = self.extend_seek_index(slot, max_sectors)?;
+        // A reading registered during the round is not in the copy it checked: not done yet.
+        // The next call checks it, within its own budget.
+        let unchecked = |kept: Option<&AreaIndex>| kept.is_some_and(AreaIndex::has_reached_claims);
+        Ok(complete && !self.shared.seek.read(slot, unchecked))
     }
 
     /// Takes the verdicts on provisional readings of the area from `slot` reached since the
