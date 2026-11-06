@@ -82,7 +82,7 @@ Not written yet.
 Changed in 0.6.0, with no deprecation first. This affects `FrameStatus`, `DecodeOn`, `SectorFormat`,
 `LoudspeakerLayout`, `Speaker` and `TrackTextItem`, so that later variants aren't breaking changes.
 Nothing changes for `Slot`, `AreaKind`, `DiscTextItem`, `AreaTextItem`, `FrameKind`, `FrameContent`,
-`Stored`, `Charset` and `Level`: they are documented as frozen, each with its reason, and a `match`
+`Stored` and `Level`: they are documented as frozen, each with its reason, and a `match`
 on them needs no wildcard arm.
 
 Before:
@@ -103,6 +103,46 @@ let good = match frame.status {
     // A later outcome: decide what it should mean for this program.
     _ => false,
 };
+```
+
+#### `LoudspeakerLayout::Unspecified` needs `..` and can't be built (#304)
+
+Changed in 0.6.0, with no deprecation first. A pattern needs `..` even when it names both fields.
+`LoudspeakerLayout::new` makes the same value.
+
+Before:
+
+```rust
+let layout = LoudspeakerLayout::Unspecified { channels: 4, config: 0 };
+if let LoudspeakerLayout::Unspecified { channels, config } = layout { report(channels, config) }
+```
+
+After:
+
+```rust
+let layout = LoudspeakerLayout::new(4, 0);
+if let LoudspeakerLayout::Unspecified { channels, config, .. } = layout { report(channels, config) }
+```
+
+#### Comparing with a built `Speculation` or `ResumedFrom` needs `matches!` (#302, #304)
+
+Changed in 0.6.0, with no deprecation first. This follows from M3: both types are still `PartialEq`,
+but code outside the crate can't build their variants with fields, so `assert_eq!` against one no
+longer compiles. `Speculation::Exact`, `ResumedFrom::Start` and `ResumedFrom::End` have no fields
+and can still be compared. The same goes for `LoudspeakerLayout::Unspecified`, above.
+
+Before:
+
+```rust
+assert_eq!(cursor.speculation(), Speculation::Confirmed { lsn: 16, first: 4 });
+assert_eq!(cursor.resumed_from(), ResumedFrom::Discarded { lsn: 16 });
+```
+
+After:
+
+```rust
+assert!(matches!(cursor.speculation(), Speculation::Confirmed { lsn: 16, first: 4, .. }));
+assert!(matches!(cursor.resumed_from(), ResumedFrom::Discarded { lsn: 16, .. }));
 ```
 
 ### M5. Plumbing and tuning knobs leave the promise

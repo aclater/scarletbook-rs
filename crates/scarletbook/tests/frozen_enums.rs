@@ -7,7 +7,6 @@
 use scarletbook::Slot;
 use scarletbook::audio::{FrameContent, FrameKind, Stored};
 use scarletbook::log::Level;
-use scarletbook::text::Charset;
 use scarletbook::toc::{AreaKind, AreaTextItem, DiscTextItem};
 
 /// Compile-time in substance, and so small enough for Miri.
@@ -27,11 +26,11 @@ fn frozen_enums_match_without_a_wildcard() {
     match FrameContent::Missing {
         FrameContent::Dsd(_) | FrameContent::Dst(_) | FrameContent::Missing => (),
     }
+    // `Stored::Plain` may be the variant or a deprecated constant of the renamed one (#300): the
+    // match is exhaustive either way, and `allow` keeps it building under `-D warnings`.
+    #[allow(deprecated)]
     match Stored::Missing {
         Stored::Dst(_) | Stored::Plain | Stored::Missing => (),
-    }
-    match Charset::from_code(0) {
-        Charset::Latin1 | Charset::ShiftJisX0213 | Charset::EucKr | Charset::EucCn | Charset::Big5 => (),
     }
 
     assert_eq!(Level::ALL.len(), 5);

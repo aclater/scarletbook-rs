@@ -1,1 +1,1 @@
-| 2026-11-06 | enums `#[non_exhaustive]` or documented as frozen (#39) | sacd-spec 2.5.4, 2.6.2, 3.1, 3.3, 3.6, 4.3.1 and 4.6.1 for the frozen reasons, and this repository's own public types. No new sources consulted. |
+| 2026-11-06 | enums `#[non_exhaustive]` or documented as frozen (#39) | sacd-spec 2.5.4, 3.1, 3.3, 3.6, 4.3.1 and 4.6.1 for the frozen reasons, and this repository's own public types. No new sources consulted. |

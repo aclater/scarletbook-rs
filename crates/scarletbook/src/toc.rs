@@ -223,7 +223,8 @@ text_struct! {
     ///
     /// Frozen: exhaustive on purpose, so a `match` needs no wildcard arm. The disc text
     /// sector has exactly these 16 string offsets, in fixed places (specification 2, 2.5.4),
-    /// with no room for another.
+    /// with no room for another. [`DiscText`] has one field for each item, so no field can be
+    /// added to it while this enum is frozen.
     DiscTextItem {
         /// Album title.
         album_title = "album_title" => AlbumTitle,
@@ -266,6 +267,8 @@ text_struct! {
     ///
     /// Frozen: exhaustive on purpose, so a `match` needs no wildcard arm. The area TOC has
     /// exactly these four string offsets, in fixed places (specification 3, 3.3 and 3.6).
+    /// [`AreaText`] has one field for each item, so no field can be added to it while this
+    /// enum is frozen.
     AreaTextItem {
         /// Area description.
         description = "description" => Description,
@@ -505,6 +508,7 @@ pub enum LoudspeakerLayout {
     /// 5.1-channel: 6 channels, configuration 4.
     FivePointOne,
     /// Any other combination: no defined loudspeaker layout.
+    #[non_exhaustive]
     Unspecified {
         /// The channel count, as stored.
         channels: u8,
@@ -535,29 +539,30 @@ impl LoudspeakerLayout {
     ///
     /// A consumer writing `WAVE_FORMAT_EXTENSIBLE` files might build the channel mask from
     /// it; whether surround channels take the back or the side bits is the consumer's
-    /// choice (this uses the back bits):
+    /// choice (this uses the back bits). `Speaker` can gain variants, so a loudspeaker this
+    /// function doesn't know gives no mask, rather than a mask without it:
     ///
     /// ```
     /// use scarletbook::toc::{LoudspeakerLayout, Speaker};
     ///
-    /// fn wav_mask(speakers: &[Speaker]) -> u32 {
-    ///     speakers
-    ///         .iter()
-    ///         .map(|s| match s {
+    /// fn wav_mask(speakers: &[Speaker]) -> Option<u32> {
+    ///     speakers.iter().try_fold(0, |mask, s| {
+    ///         let bit = match s {
     ///             Speaker::FrontLeft => 0x1,
     ///             Speaker::FrontRight => 0x2,
     ///             Speaker::Centre => 0x4,
     ///             Speaker::LowFrequencyEffects => 0x8,
     ///             Speaker::SurroundLeft => 0x10,
     ///             Speaker::SurroundRight => 0x20,
-    ///             _ => 0,
-    ///         })
-    ///         .fold(0, |mask, bit| mask | bit)
+    ///             _ => return None,
+    ///         };
+    ///         Some(mask | bit)
+    ///     })
     /// }
     ///
-    /// assert_eq!(LoudspeakerLayout::Stereo.speakers().map(wav_mask), Some(0x3));
-    /// assert_eq!(LoudspeakerLayout::ThreeTwo.speakers().map(wav_mask), Some(0x37));
-    /// assert_eq!(LoudspeakerLayout::FivePointOne.speakers().map(wav_mask), Some(0x3F));
+    /// assert_eq!(LoudspeakerLayout::Stereo.speakers().and_then(wav_mask), Some(0x3));
+    /// assert_eq!(LoudspeakerLayout::ThreeTwo.speakers().and_then(wav_mask), Some(0x37));
+    /// assert_eq!(LoudspeakerLayout::FivePointOne.speakers().and_then(wav_mask), Some(0x3F));
     /// assert_eq!(LoudspeakerLayout::new(4, 0).speakers(), None);
     /// ```
     pub fn speakers(self) -> Option<&'static [Speaker]> {
