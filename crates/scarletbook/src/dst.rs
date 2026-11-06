@@ -357,6 +357,8 @@ pub const MAX_LANES: usize = 4;
 ///
 /// The 1-, 3- and 4-channel choices were measured on generated frames; their output is
 /// checked by the corpus's 1-, 3- and 4-channel DST cases (sacd-spec#15).
+///
+/// [`crate::TrackAudioCursor::with_dst_lanes`] chooses another count for one cursor.
 pub fn lanes(channels: u8) -> usize {
     let avx512 = cfg!(target_feature = "avx512cd");
     match channels {
