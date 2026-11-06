@@ -280,7 +280,7 @@ fn seeks_are_logged() {
     let log = scarletbook::log::Log::new(scarletbook::log::Level::Debug, move |_, m| {
         sink.lock().unwrap().push(m.to_string());
     });
-    let mut disc = Disc::open_with_log(Cursor::new(img), log).unwrap();
+    let mut disc = Disc::options().with_log(log).open(Cursor::new(img)).unwrap();
     disc.enable_seek_index(Slot::TwoChannel, IndexOptions::new().with_interval(1)).unwrap();
     while !disc.extend_seek_index(Slot::TwoChannel, 100).unwrap() {}
     lines.lock().unwrap().clear();
@@ -428,7 +428,7 @@ fn clones_reading_at_once_build_one_index() {
         }
     });
     let index = disc.seek_index(Slot::TwoChannel).unwrap();
-    assert!(index.checkpoints() > 100, "{}", index.checkpoints());
+    assert!(index.checkpoint_count() > 100, "{}", index.checkpoint_count());
 }
 
 /// Two images of the same size and layout but different contents (one more malformed
@@ -457,7 +457,7 @@ fn another_images_checkpoints_stay_out() {
     for _ in 0..700 {
         cx.next_frame(x.image_mut()).unwrap().unwrap();
     }
-    assert_eq!(x.seek_index(Slot::TwoChannel).unwrap().checkpoints(), 0);
+    assert_eq!(x.seek_index(Slot::TwoChannel).unwrap().checkpoint_count(), 0);
     // ... and is continued on Y.
     let c = y.continue_range_audio(cx, Slot::TwoChannel, 900, 910).unwrap();
     let got: Vec<_> = y.read_track_audio(c).map(Result::unwrap).collect();

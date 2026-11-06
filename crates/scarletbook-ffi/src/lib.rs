@@ -943,6 +943,8 @@ fn layout_value(a: &Area) -> u32 {
         LoudspeakerLayout::ThreeTwo => SB_LAYOUT_THREE_TWO,
         LoudspeakerLayout::FivePointOne => SB_LAYOUT_FIVE_POINT_ONE,
         LoudspeakerLayout::Unspecified { .. } => SB_LAYOUT_UNSPECIFIED,
+        // A layout this interface has no value for yet has none it can name.
+        _ => SB_LAYOUT_UNSPECIFIED,
     }
 }
 
@@ -957,6 +959,8 @@ fn speaker_value(a: &Area, index: usize) -> u32 {
         Some(Speaker::LowFrequencyEffects) => SB_SPEAKER_LOW_FREQUENCY_EFFECTS,
         Some(Speaker::SurroundLeft) => SB_SPEAKER_SURROUND_LEFT,
         Some(Speaker::SurroundRight) => SB_SPEAKER_SURROUND_RIGHT,
+        // A loudspeaker this interface has no value for yet.
+        Some(_) => SB_SPEAKER_UNSPECIFIED,
     }
 }
 
@@ -1064,7 +1068,7 @@ unsafe fn open_reader(
         return Err(Failure::arg("NULL output pointer"));
     }
     let DiscLog(log, target) = log;
-    let disc = match Disc::open_with_log(reader, log) {
+    let disc = match Disc::options().with_log(log).open(reader) {
         Ok(disc) => disc,
         Err(e) => {
             if let Some(t) = target {
@@ -2848,6 +2852,8 @@ fn decoded_info(frame: &AudioFrame, size: usize) -> SbFrameInfo {
         FrameStatus::Decoded => (SbFrameStatus::Decoded, 0),
         FrameStatus::Missing => (SbFrameStatus::Missing, 0),
         FrameStatus::Invalid(e) => (SbFrameStatus::Invalid, u32::from(e.rule())),
+        // An outcome this interface does not know yet is never reported as good audio.
+        _ => (SbFrameStatus::Invalid, 0),
     };
     // At most size = channels x 4704, so it fits.
     let n = frame.data.len().min(size);
@@ -2947,7 +2953,7 @@ pub unsafe extern "C" fn sb_track_audio_read_with_stored(
         // Stored content and DST equivalents: specification 4, 4.6.1 items 1 to 4.
         let kind = match &stored {
             Stored::Dst(_) => SbFrameKind::Dst,
-            Stored::Plain => SbFrameKind::Dsd,
+            Stored::Dsd => SbFrameKind::Dsd,
             Stored::Missing => SbFrameKind::Missing,
         };
         let bytes: std::borrow::Cow<'_, [u8]> = match (&stored, dst_equivalent == 1) {
@@ -4670,7 +4676,7 @@ pub unsafe extern "C" fn sb_track_audio_speculation(
         let a = unsafe { audio_handle(audio) }?;
         let c = a.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
         let slot = c.slot();
-        let value = SbSpeculation::of(slot, c.speculation_id(), c.speculation());
+        let value = SbSpeculation::of(slot, c.claim(), c.speculation());
         // SAFETY: forwarded contract.
         unsafe { write_out(out, value) }?;
         Ok(SbStatus::Ok)
@@ -4693,7 +4699,7 @@ pub unsafe extern "C" fn sb_raw_frames_speculation(
         let r = unsafe { raw_handle(raw) }?;
         let raw = r.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
         let value = match &raw.source {
-            Source::Range(c) => SbSpeculation::of(c.slot(), c.speculation_id(), c.speculation()),
+            Source::Range(c) => SbSpeculation::of(c.slot(), c.claim(), c.speculation()),
             Source::List(..) => SbSpeculation::default(),
         };
         // SAFETY: forwarded contract.

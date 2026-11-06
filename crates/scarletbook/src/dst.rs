@@ -351,10 +351,19 @@ const WINDOW: usize = HISTORY_BYTES * MAX_NCH;
 
 /// Most frames [`DstDecoder::decode_many`] decodes in lockstep; it decodes more in groups
 /// of this many.
+///
+/// This is also the largest count [`crate::audio::TrackAudioCursor::with_dst_lanes`] accepts.
+/// The name is covered by semantic versioning, but the value is a tuning value and is not: it
+/// may change in any release. Read it instead of relying on a number.
 pub const MAX_LANES: usize = 4;
 
 /// How many frames of `channels` channels to pass to [`DstDecoder::decode_many`] at once
 /// for the most frames per second on one thread (1 if `channels` is not 1 to 6).
+///
+/// This function is covered by semantic versioning, but the number it returns is a tuning
+/// value and is not: it may change in any release, and may differ per build, per CPU and
+/// with any setting that affects decoding. Call it instead of relying on a number. It never
+/// affects the decoded output.
 ///
 /// Chosen by measurement for each build (see the commit that added it): the decoder is
 /// bound by the serial chain of the arithmetic decoder, which more frames overlap until
@@ -449,10 +458,11 @@ impl DstDecoder {
     }
 
     /// Decodes `frames[i]` into `outs[i]` for every `i`, as [`DstDecoder::decode`] would
-    /// one by one, with the same results, but up to [`MAX_LANES`] frames at a time in
+    /// one by one, with the same results, but a few frames at a time in
     /// lockstep on the calling thread: frames are independent (specification 5, 5.1.1), so
     /// the processor overlaps their arithmetic decoders, whose steps otherwise wait for each
-    /// other. [`lanes`] is the best number of frames to pass at once.
+    /// other. It takes any number of frames, and splits them into groups itself. [`lanes`]
+    /// is the best number of frames to pass at once.
     ///
     /// The result has one entry per frame; a frame without an output buffer (when `outs` is
     /// shorter) is [`DstError::InvalidArguments`].

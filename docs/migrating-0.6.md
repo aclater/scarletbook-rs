@@ -145,14 +145,152 @@ if let Err(Error::NoSuchTrack { slot, track, .. }) = result { report(slot, track
 `audio::FrameStatus`, `audio::DecodeOn`, `image::SectorFormat`, `toc::LoudspeakerLayout`,
 `toc::Speaker` and `toc::TrackTextItem`, and the enums documented as frozen.
 
-Not written yet.
+#### A `match` on six enums needs a wildcard arm (#304)
+
+Changed in 0.6.0, with no deprecation first. This affects `FrameStatus`, `DecodeOn`, `SectorFormat`,
+`LoudspeakerLayout`, `Speaker` and `TrackTextItem`, so that later variants aren't breaking changes.
+Nothing changes for `Slot`, `AreaKind`, `DiscTextItem`, `AreaTextItem`, `FrameKind`, `FrameContent`,
+`Stored` and `Level`: they are documented as frozen, each with its reason, and a `match`
+on them needs no wildcard arm. `Version`, `Genre`, `Date`, `Timecode` and `AreaPointer` are
+documented as frozen too, so they can still be built and matched without `..`: nothing to migrate.
+
+Before:
+
+```rust
+let good = match frame.status {
+    FrameStatus::Dsd | FrameStatus::Decoded => true,
+    FrameStatus::Missing | FrameStatus::Invalid(_) => false,
+};
+```
+
+After:
+
+```rust
+let good = match frame.status {
+    FrameStatus::Dsd | FrameStatus::Decoded => true,
+    FrameStatus::Missing | FrameStatus::Invalid(_) => false,
+    // A later outcome: decide what it should mean for this program.
+    _ => false,
+};
+```
+
+#### `LoudspeakerLayout::Unspecified` needs `..` and can't be built (#304)
+
+Changed in 0.6.0, with no deprecation first. A pattern needs `..` even when it names both fields.
+`LoudspeakerLayout::new` makes the same value.
+
+Before:
+
+```rust
+let layout = LoudspeakerLayout::Unspecified { channels: 4, config: 0 };
+if let LoudspeakerLayout::Unspecified { channels, config } = layout { report(channels, config) }
+```
+
+After:
+
+```rust
+let layout = LoudspeakerLayout::new(4, 0);
+if let LoudspeakerLayout::Unspecified { channels, config, .. } = layout { report(channels, config) }
+```
+
+#### Comparing with a built `Speculation` or `ResumedFrom` needs `matches!` (#302, #304)
+
+Changed in 0.6.0, with no deprecation first. This follows from M3: both types are still `PartialEq`,
+but code outside the crate can't build their variants with fields, so `assert_eq!` against one no
+longer compiles. `Speculation::Exact`, `ResumedFrom::Start` and `ResumedFrom::End` have no fields
+and can still be compared. The same goes for `LoudspeakerLayout::Unspecified`, above.
+
+Before:
+
+```rust
+assert_eq!(cursor.speculation(), Speculation::Confirmed { lsn: 16, first: 4 });
+assert_eq!(cursor.resumed_from(), ResumedFrom::Discarded { lsn: 16 });
+```
+
+After:
+
+```rust
+assert!(matches!(cursor.speculation(), Speculation::Confirmed { lsn: 16, first: 4, .. }));
+assert!(matches!(cursor.resumed_from(), ResumedFrom::Discarded { lsn: 16, .. }));
+```
 
 ### M5. Plumbing and tuning knobs leave the promise
 
 The FFI-only methods of `audio::Continuation`, the decoder and scheduler tuning constants, and
 the low-level `text` helpers.
 
-Not written yet.
+#### Plumbing, tuning values and text helpers are hidden (#297)
+
+Hidden in 0.6.0 with `#[doc(hidden)]`, and out of the semver promise: each may change or go in any
+release, with no deprecation first. Calls still compile, and output and the C ABI do not change.
+Code that uses only documented items has nothing to do.
+
+**`Continuation`:** `log_audio`, `audio_unlogged`, `audio_as`, `log_frames`, `frames_unlogged`,
+`frames_as`, `check_index`, `log_audio_indexed`, `audio_indexed_unlogged`, `audio_indexed_as`,
+`log_frames_indexed`, `frames_indexed_unlogged`, `frames_indexed_as`, `log_fresh_frames`,
+`fresh_frames`, and the enum `Opening`. `Continuation::{range, audio, frames}` stay.
+
+Before:
+
+```rust
+let opening = next.log_audio(&prev);
+let cursor = next.audio_as(prev, opening);
+```
+
+After:
+
+```rust
+let cursor = next.audio(prev);
+```
+
+The `*_indexed_*` methods continued a cursor from an index the caller keeps. They have no public
+form of their own. Give the index to the disc, or take what the cursor recorded and open a new
+cursor from the index (`audio_cursor` is in section M6). The new cursor starts from the index
+instead of going on with the earlier scan, and gives the same frames.
+
+Before:
+
+```rust
+let next = disc.range_continuation(slot, first, end)?;
+next.check_index(&index)?;
+let opening = next.log_audio_indexed(&prev, &index);
+let cursor = next.audio_indexed_as(prev, &mut index, opening);
+```
+
+After, with the disc keeping the index:
+
+```rust
+disc.set_seek_index(slot, index)?;
+let cursor = disc.continue_range_audio(prev, slot, first, end)?;
+```
+
+Or, with the caller keeping it:
+
+```rust
+index.absorb(&mut prev)?;
+let span = FrameSpan::Range(first, end);
+let cursor = disc.audio_cursor(slot, span, CursorOptions::new().with_index(&index))?;
+```
+
+**Tuning:** `audio::MAX_PARALLEL_BATCH`, `audio::PARALLEL_FRAMES_PER_THREAD`,
+`seek::MAX_CLAIMS`, `seek::MAX_EVENTS`, `seek::HINT_REACH` and `seek::REPLAY_SECTORS`. They have no
+replacement: code that reads one should stop sizing anything by it. `dst::lanes` stays public and
+documented, as the best number of frames to pass to `DstDecoder::decode_many` at once. The function
+is stable, but the number it returns is a tuning value: it may change in any release, and may
+differ per build, per CPU and with any setting that affects decoding. `dst::MAX_LANES` also stays
+public, as the limit of `TrackAudioCursor::with_dst_lanes`; its value may change in any release too.
+
+**Text:** `text::{decode, decode_string, fixed_bytes, fixed_text, language, string_bytes,
+text_string}` and `text::Charset`, which only they take. `Locale.charset` stays a `u8`, and
+`text::MAX_STRING_BYTES` stays public.
+
+Before:
+
+```rust
+let title = scarletbook::text::text_string(buf, offset, charset);
+```
+
+After: the decoded fields of `Toc`, `Area` and `Track` and their text, instead of parsing TOC bytes.
 
 ### M6. One entry point per concept
 
@@ -164,13 +302,119 @@ Not written yet.
 
 The provisional-reading id, the start sector, the `*with_format*` constructors, and `Stored::Plain`.
 
-Not written yet.
+#### `speculation_id()` is now `claim()`, and `counts_from()` is now `claim_lsn()` (#300)
+
+Deprecated in 0.6.0 and removed before 1.0, on `AreaCursor`, `TrackCursor`, `TrackFrames`,
+`TrackAudioCursor` and `TrackAudio`. They return the same values. Nothing stops building until the
+removal, except in builds that deny warnings.
+
+Before:
+
+```rust
+let (id, from) = (cursor.speculation_id(), cursor.counts_from());
+```
+
+After:
+
+```rust
+let (id, from) = (cursor.claim(), cursor.claim_lsn());
+```
+
+#### The `*with_log` and `*with_format*` constructors give way to `options()` (#300)
+
+Deprecated in 0.6.0 and removed before 1.0: `Image::open_with_log`, `Image::with_format`,
+`Image::with_format_and_log`, `Disc::open_with_log`, `Disc::open_with_format` and
+`Disc::open_with_format_and_log`. They behave the same. Nothing stops building until the removal,
+except in builds that deny warnings. `open`, `from_image`, `share` and `share_with_log` stay.
+
+Before:
+
+```rust
+let a = Disc::open_with_log(reader, log)?;
+let b = Disc::open_with_format(reader, format)?;
+let c = Disc::open_with_format_and_log(reader, format, log)?;
+let d = Image::with_format(reader, format)?;
+```
+
+After:
+
+```rust
+let a = Disc::options().with_log(log).open(reader)?;
+let b = Disc::options().with_format(format).open(reader)?;
+let c = Disc::options().with_format(format).with_log(log).open(reader)?;
+let d = Image::options().with_format(format).open(reader)?;
+```
+
+#### `Stored::Plain` is now `Stored::Dsd` (#300)
+
+**Check this first: a match can silently take the wrong branch.** Under `use Stored::*`, a pattern
+`Plain` no longer names a variant. It becomes a new binding that matches every value, so that arm
+also takes `Dst` and `Missing`. The code still builds, with only warnings (`unreachable_patterns`,
+`unused_variables`, `non_snake_case`). To find it, search for the glob, then change each such
+pattern to `Dsd`:
+
+```sh
+grep -rnE 'Stored::\*' --include='*.rs' .
+```
+
+While migrating, also build with those warnings as errors:
+`RUSTFLAGS="-D unreachable_patterns -D unused_variables" cargo build --all-targets`. Removing the
+old name before 1.0 won't change this: it comes from the rename, and only a path written
+`Stored::Plain` gives an error then.
+
+Deprecated in 0.6.0 and removed before 1.0: the old name stays as a constant, so expressions and
+patterns written `Stored::Plain` on a `Stored` value still build, with a warning. What stops building
+now is `use Stored::Plain`, and `Stored::Plain` in a pattern through a reference: on a `&Stored`, as
+`Some(Stored::Plain)` on an `Option<&Stored>`, or inside a tuple of references. `{:?}` of the value
+prints `Dsd`. Its meaning does not change.
+
+Before:
+
+```rust
+match stored {
+    Stored::Dst(bytes) => write(&bytes),
+    Stored::Plain => write(&frame.data),
+    Stored::Missing => {}
+}
+```
+
+After:
+
+```rust
+match stored {
+    Stored::Dst(bytes) => write(&bytes),
+    Stored::Dsd => write(&frame.data),
+    Stored::Missing => {}
+}
+```
 
 ### S2. Count methods
 
 `AreaIndex::{checkpoints, hints, confirmations, pending_claims}`.
 
-Not written yet.
+#### `AreaIndex`'s count methods are now `*_count` (#299)
+
+Deprecated in 0.6.0 and removed before 1.0: `checkpoints`, `hints`, `confirmations` and
+`pending_claims` become `checkpoint_count`, `hint_count`, `confirmation_count` and
+`pending_claim_count`. They return the same counts. Nothing stops building until the removal, except
+in builds that deny warnings.
+
+Before:
+
+```rust
+let kept = (index.checkpoints(), index.hints(), index.confirmations(), index.pending_claims());
+```
+
+After:
+
+```rust
+let kept = (
+    index.checkpoint_count(),
+    index.hint_count(),
+    index.confirmation_count(),
+    index.pending_claim_count(),
+);
+```
 
 ### S3. `Image::read_sectors`
 

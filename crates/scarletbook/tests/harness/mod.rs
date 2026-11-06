@@ -459,9 +459,10 @@ pub fn seek_area() -> (scarletbook::Image<std::io::Cursor<Vec<u8>>>, scarletbook
             }
         }
     }
-    let image =
-        scarletbook::Image::with_format(std::io::Cursor::new(bytes), scarletbook::SectorFormat::Plain)
-            .unwrap();
+    let image = scarletbook::Image::options()
+        .with_format(scarletbook::SectorFormat::Plain)
+        .open(std::io::Cursor::new(bytes))
+        .unwrap();
     // `Area` can't be built by literal outside the crate: start from a parsed one and set
     // every field, so that this area does not depend on the disc it came from.
     static PARSED: std::sync::OnceLock<scarletbook::Area> = std::sync::OnceLock::new();
@@ -538,7 +539,7 @@ pub fn seek_index_seeds() -> Vec<Vec<u8>> {
     if let Some(v2) = out.iter().find(|b| b[8] == 2).cloned() {
         let mut sum = v2.clone();
         sum.extend_from_slice(&fnv(&v2).to_le_bytes());
-        let hints = AreaIndex::from_bytes(&area, n, &sum, usize::MAX).unwrap().hints();
+        let hints = AreaIndex::from_bytes(&area, n, &sum, usize::MAX).unwrap().hint_count();
         let mut v3 = v2;
         v3[8] = 3;
         v3[14] |= 2;
@@ -727,8 +728,8 @@ fn disc_read<R: Read + Seek>(
 pub fn seek_index_disc(bytes: &[u8]) {
     let d = seek_disc();
     let Ok(index) = AreaIndex::from_bytes(&d.area, d.sectors, bytes, usize::MAX) else { return };
-    let checked = index.checkpoints() == 0 && index.confirmations() == 0 && !index.is_complete();
-    let has_checkpoints = index.checkpoints() > 0;
+    let checked = index.checkpoint_count() == 0 && index.confirmation_count() == 0 && !index.is_complete();
+    let has_checkpoints = index.checkpoint_count() > 0;
     let slot = d.area.slot;
     let mut disc = Disc::open(std::io::Cursor::new(&d.image[..])).unwrap();
     if disc.set_seek_index(slot, index).is_err() {

@@ -59,7 +59,7 @@ fn read(image: &[u8], lanes: Option<usize>, threads: Threads) -> (Read, Vec<usiz
     let lines: Arc<Mutex<Vec<(Level, String)>>> = Arc::default();
     let sink = Arc::clone(&lines);
     let log = Log::new(Level::Trace, move |l, m| sink.lock().unwrap().push((l, m.to_string())));
-    let mut disc = Disc::open_with_log(Cursor::new(image.to_vec()), log).unwrap();
+    let mut disc = Disc::options().with_log(log).open(Cursor::new(image.to_vec())).unwrap();
     let areas: Vec<(Slot, Vec<u32>)> = disc
         .toc()
         .areas

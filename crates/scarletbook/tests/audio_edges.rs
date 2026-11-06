@@ -115,9 +115,12 @@ fn track_frames_report_a_provisional_reading() {
         panic!("{:?}", it.speculation())
     };
     assert!(lsn > 0);
-    assert_eq!(it.counts_from(), Some(lsn));
+    assert_eq!(it.claim_lsn(), Some(lsn));
     assert_eq!(it.suspect(), None, "a well-formed area read in increasing order");
-    let id = it.speculation_id().expect("a provisional reading is numbered");
+    let id = it.claim().expect("a provisional reading is numbered");
+    #[allow(deprecated)]
+    let old_names = (it.counts_from(), it.speculation_id());
+    assert_eq!(old_names, (Some(lsn), Some(id)));
     let (read_so_far, _) = it.progress().get();
     assert!(read_so_far > 0);
     assert_eq!(&*it.dst_equivalent(&FrameContent::Missing), missing_equivalent(2).as_slice());
@@ -125,7 +128,7 @@ fn track_frames_report_a_provisional_reading() {
     assert_eq!(rest, want[1..]);
     assert_eq!(it.range(), (520, 520));
     let c = it.into_cursor();
-    assert_eq!((c.slot(), c.speculation_id(), c.counts_from()), (SLOT, Some(id), Some(lsn)));
+    assert_eq!((c.slot(), c.claim(), c.claim_lsn()), (SLOT, Some(id), Some(lsn)));
     assert_eq!(c.range(), (520, 520));
     // Its verdict names the same reading (4.2 item 8: confirmed on a well-formed area).
     while !disc.verify_speculation(SLOT, 1 << 20).unwrap() {}
@@ -138,7 +141,7 @@ fn track_frames_report_a_provisional_reading() {
     let mut exact = Disc::open(Cursor::new(image(&frames(40), 40))).unwrap();
     let mut it = exact.range_frames(SLOT, 10, 12).unwrap();
     it.next().unwrap().unwrap();
-    assert_eq!((it.speculation(), it.speculation_id(), it.counts_from()), (Speculation::Exact, None, None));
+    assert_eq!((it.speculation(), it.claim(), it.claim_lsn()), (Speculation::Exact, None, None));
 }
 
 /// Decoded audio of an area whose TOC places audio sectors past the end of the image: the
@@ -165,16 +168,13 @@ fn track_audio_reports_a_suspect_reading() {
         panic!("{:?}", it.speculation())
     };
     assert_eq!(it.suspect(), Some(Suspect::AreaLayout));
-    assert_eq!(it.counts_from(), Some(lsn));
-    let id = it.speculation_id().unwrap();
+    assert_eq!(it.claim_lsn(), Some(lsn));
+    let id = it.claim().unwrap();
     let missing = want.iter().filter(|f| f.status == FrameStatus::Missing).count() as u64;
     let invalid = want.iter().filter(|f| matches!(f.status, FrameStatus::Invalid(_))).count() as u64;
     assert_eq!((it.missing_frames(), it.invalid_dst_frames()), (missing, invalid));
     let c = it.into_cursor();
-    assert_eq!(
-        (c.speculation_id(), c.counts_from(), c.suspect()),
-        (Some(id), Some(lsn), Some(Suspect::AreaLayout))
-    );
+    assert_eq!((c.claim(), c.claim_lsn(), c.suspect()), (Some(id), Some(lsn), Some(Suspect::AreaLayout)));
     assert_eq!((c.missing_frames(), c.invalid_dst_frames()), (missing, invalid));
 
     // Without a disc, a cursor checks the end of the image itself.
@@ -208,7 +208,7 @@ fn a_cursor_for_a_longer_image_is_refused() {
     let area = long_disc.toc().areas[0].clone();
     let n = long_disc.toc().sectors;
     let (log, lines) = recorder(Level::Error);
-    let mut disc = Disc::open_with_log(Cursor::new(short.clone()), log).unwrap();
+    let mut disc = Disc::options().with_log(log).open(Cursor::new(short.clone())).unwrap();
     assert!(disc.toc().sectors < n);
 
     // The positions of the sectors read before the missing ones, then the refusal, then
@@ -253,7 +253,7 @@ fn unlogged_continuations_open_alike() {
     let want = plain_frames(&img, 60, 80);
     let want_audio = plain_audio(&img, 60, 80);
     let (log, lines) = recorder(Level::Trace);
-    let mut disc = Disc::open_with_log(Cursor::new(img.clone()), log).unwrap();
+    let mut disc = Disc::options().with_log(log).open(Cursor::new(img.clone())).unwrap();
     disc.enable_seek_index(SLOT, IndexOptions::new().with_interval(8)).unwrap();
 
     // Frames, continued forward from a cursor that read 0..20.
@@ -295,13 +295,13 @@ fn unlogged_continuations_open_alike() {
     while let Some(f) = prev.next_frame(disc.image_mut()) {
         f.unwrap();
     }
-    assert_eq!(index.checkpoints(), 0);
+    assert_eq!(index.checkpoint_count(), 0);
     let cont = disc.range_continuation(SLOT, 10, 30).unwrap();
     assert_eq!(cont.log_frames_indexed(&prev, &index), Opening::FromIndex, "a range behind the cursor");
     let before = lines.lock().unwrap().len();
     let mut next = cont.frames_indexed_unlogged(prev, &mut index);
     assert_eq!(lines.lock().unwrap().len(), before, "no line logged");
-    assert!(index.checkpoints() > 0, "the earlier cursor's checkpoints joined the index");
+    assert!(index.checkpoint_count() > 0, "the earlier cursor's checkpoints joined the index");
     assert!(matches!(next.resumed_from(), ResumedFrom::Checkpoint { .. }), "{:?}", next.resumed_from());
     let mut got = Vec::new();
     while let Some(f) = next.next_frame(disc.image_mut()) {
@@ -379,14 +379,11 @@ fn stored_bytes_of_each_kind() {
         assert_eq!(stored.bytes(&frame), bytes, "frame {}", w.number);
         assert_eq!(stored.content(&frame), w.content);
         kinds.push(stored.clone());
-        if matches!(stored, Stored::Plain) {
+        if matches!(stored, Stored::Dsd) {
             assert_eq!(frame.status, FrameStatus::Dsd);
         }
     }
-    assert!(
-        matches!(kinds[..], [Stored::Plain, Stored::Dst(_), Stored::Missing, Stored::Plain]),
-        "{kinds:?}"
-    );
+    assert!(matches!(kinds[..], [Stored::Dsd, Stored::Dst(_), Stored::Missing, Stored::Dsd]), "{kinds:?}");
     assert!(c.next_frame_with_stored(disc.image_mut()).is_none());
 }
 
@@ -487,7 +484,7 @@ fn provisional_checkpoints_serve_without_hints() {
         let c = disc.range_frames_cursor(SLOT, 500, 700).unwrap();
         let (_, c) = read(&mut disc, c);
         assert!(matches!(c.resumed_from(), ResumedFrom::Speculative { probes, .. } if probes > 0));
-        assert_eq!(disc.seek_index(SLOT).unwrap().hints(), 0);
+        assert_eq!(disc.seek_index(SLOT).unwrap().hint_count(), 0);
         let suspect = (cut > 0).then_some(Suspect::AreaLayout);
         for first in [560, 620, 690] {
             let c = disc.range_frames_cursor(SLOT, first, first + 5).unwrap();
@@ -546,7 +543,7 @@ fn a_foreign_checkpoint_at_l_does_not_confirm() {
     let bytes = a.seek_index(SLOT).unwrap().to_bytes();
     let loaded = AreaIndex::from_bytes(&area, n, &bytes, usize::MAX).unwrap();
     let mut kept = b.take_seek_index(SLOT).unwrap();
-    assert_eq!(kept.pending_claims(), 2);
+    assert_eq!(kept.pending_claim_count(), 2);
     kept.merge(&loaded).unwrap();
     b.set_seek_index(SLOT, kept).unwrap();
     while !b.verify_speculation(SLOT, 1 << 20).unwrap() {}
@@ -568,7 +565,7 @@ fn invalid_frames_are_counted_past_the_line_cap() {
     let fs: Vec<PFrame> = (0..n).map(|k| PFrame { number: k, dst: true, data: vec![0] }).collect();
     let img = image(&fs, n);
     let (log, lines) = recorder(Level::Warn);
-    let mut disc = Disc::open_with_log(Cursor::new(img), log).unwrap();
+    let mut disc = Disc::options().with_log(log).open(Cursor::new(img)).unwrap();
     let mut it = disc.range_audio(SLOT, 0, n).unwrap();
     let mut count = 0;
     for f in it.by_ref() {
@@ -626,7 +623,7 @@ fn checkpoints_are_absorbed_from_every_cursor() {
     assert_eq!(frontier(&disc), before);
     let mut index = AreaIndex::new(&area, disc.toc().sectors, IndexOptions::new()).unwrap();
     index.absorb(&mut c).unwrap();
-    assert_eq!(index.checkpoints(), 0);
+    assert_eq!(index.checkpoint_count(), 0);
 }
 
 /// The message of a caught panic.
@@ -664,7 +661,7 @@ fn a_panic_on_the_pool_comes_back_on_the_caller() {
             panic!("sink on the pool");
         }
     });
-    let mut disc = Disc::open_with_log(Cursor::new(img), log).unwrap();
+    let mut disc = Disc::options().with_log(log).open(Cursor::new(img)).unwrap();
     let pool = Arc::new(rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap());
     let mut c = disc.range_audio_cursor(SLOT, 0, 40).unwrap();
     c.set_decode_on(scarletbook::DecodeOn::Pool(pool));
@@ -715,7 +712,7 @@ fn a_sink_may_decode_on_the_same_pool() {
         let c = disc.range_audio_cursor(SLOT, 0, 60).unwrap();
         *out.lock().unwrap() = decoded(&mut disc, c);
     });
-    let mut disc = Disc::open_with_log(Cursor::new(img), log).unwrap();
+    let mut disc = Disc::options().with_log(log).open(Cursor::new(img)).unwrap();
     let pool = Arc::new(rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap());
     let mut c = disc.range_audio_cursor(SLOT, 0, 60).unwrap();
     c.set_decode_on(scarletbook::DecodeOn::Pool(pool));

@@ -18,6 +18,7 @@ pub const MASTER_TOC_LSN: u32 = 510;
 
 /// How logical sectors are stored in an image file (specification 1, 1.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum SectorFormat {
     /// 2048 bytes per stored sector, data at offset 0.
     Plain,
@@ -82,14 +83,74 @@ pub(crate) enum ReadOutcome {
     OutOfRange,
 }
 
+/// How to open an [`Image`]: [`Image::options`], then what differs from the default, then
+/// [`ImageOptions::open`].
+///
+/// ```no_run
+/// use scarletbook::{Image, SectorFormat, log::Log};
+/// # fn main() -> Result<(), scarletbook::Error> {
+/// let file = std::fs::File::open("disc.iso")?;
+/// let image = Image::options().with_format(SectorFormat::Raw2064).with_log(Log::none()).open(file)?;
+/// # let _ = image;
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Clone, Debug, Default)]
+pub struct ImageOptions {
+    format: Option<SectorFormat>,
+    log: Log,
+}
+
+impl ImageOptions {
+    /// The default: the sector format is detected, and nothing is logged.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The sector format, chosen by the caller instead of detected (specification 1, 1.4
+    /// item 5). The master TOC signature is then checked by the TOC parser.
+    pub fn with_format(mut self, format: SectorFormat) -> Self {
+        self.format = Some(format);
+        self
+    }
+
+    /// Where to report from the start, sector format detection included (see [`crate::log`]).
+    pub fn with_log(mut self, log: Log) -> Self {
+        self.log = log;
+        self
+    }
+
+    /// Opens the image.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] if the reader fails; without a chosen format,
+    /// [`Error::NotScarletbook`] if no format matches.
+    pub fn open<R: Read + Seek>(self, reader: R) -> Result<Image<R>, Error> {
+        match self.format {
+            Some(format) => Image::open_format(reader, format, self.log),
+            None => Image::detect(reader, self.log),
+        }
+    }
+}
+
+impl Image<()> {
+    /// The options for opening an image with a sector format or log of the caller's:
+    /// `Image::options().with_format(f).with_log(l).open(reader)`.
+    pub fn options() -> ImageOptions {
+        ImageOptions::new()
+    }
+}
+
 impl<R: Read + Seek> Image<R> {
-    /// Opens an image, detecting its sector format (specification 1, 1.4).
+    /// Opens an image, detecting its sector format (specification 1, 1.4), logging nothing.
+    /// [`Image::options`] chooses a format or a log.
     ///
     /// # Errors
     ///
     /// [`Error::NotScarletbook`] if no format matches, [`Error::Io`] if the reader fails.
     pub fn open(reader: R) -> Result<Self, Error> {
-        Self::open_with_log(reader, Log::none())
+        Image::options().open(reader)
     }
 
     /// Opens an image, detecting its sector format, and reports to `log` (see
@@ -98,7 +159,15 @@ impl<R: Read + Seek> Image<R> {
     /// # Errors
     ///
     /// As [`Image::open`].
-    pub fn open_with_log(mut reader: R, log: Log) -> Result<Self, Error> {
+    #[deprecated(
+        since = "0.6.0",
+        note = "use `Image::options().with_log(log).open(reader)`; to be removed before 1.0"
+    )]
+    pub fn open_with_log(reader: R, log: Log) -> Result<Self, Error> {
+        Image::options().with_log(log).open(reader)
+    }
+
+    fn detect(mut reader: R, log: Log) -> Result<Self, Error> {
         let len = match reader.seek(SeekFrom::End(0)) {
             Ok(len) => len,
             Err(e) => {
@@ -144,8 +213,12 @@ impl<R: Read + Seek> Image<R> {
     /// # Errors
     ///
     /// [`Error::Io`] if the reader fails.
+    #[deprecated(
+        since = "0.6.0",
+        note = "use `Image::options().with_format(format).open(reader)`; to be removed before 1.0"
+    )]
     pub fn with_format(reader: R, format: SectorFormat) -> Result<Self, Error> {
-        Self::with_format_and_log(reader, format, Log::none())
+        Image::options().with_format(format).open(reader)
     }
 
     /// Opens an image with a sector format chosen by the caller, and reports to `log`
@@ -154,7 +227,15 @@ impl<R: Read + Seek> Image<R> {
     /// # Errors
     ///
     /// As [`Image::with_format`].
-    pub fn with_format_and_log(mut reader: R, format: SectorFormat, log: Log) -> Result<Self, Error> {
+    #[deprecated(
+        since = "0.6.0",
+        note = "use `Image::options().with_format(format).with_log(log).open(reader)`; to be removed before 1.0"
+    )]
+    pub fn with_format_and_log(reader: R, format: SectorFormat, log: Log) -> Result<Self, Error> {
+        Image::options().with_format(format).with_log(log).open(reader)
+    }
+
+    fn open_format(mut reader: R, format: SectorFormat, log: Log) -> Result<Self, Error> {
         let len = match reader.seek(SeekFrom::End(0)) {
             Ok(len) => len,
             Err(e) => {
@@ -421,6 +502,27 @@ mod tests {
     }
 
     #[test]
+    fn options_choose_the_format_or_detect_it() {
+        let f = SectorFormat::Raw2054;
+        let detected = Image::options().open(Cursor::new(image_with_sig(f, 511))).unwrap();
+        assert_eq!(detected.format(), f);
+        // Chosen: no signature is looked for, and the sector count follows the format.
+        let chosen = Image::options().with_format(f).open(Cursor::new(vec![0u8; 2 * 2054])).unwrap();
+        assert_eq!((chosen.format(), chosen.sector_count()), (f, 2));
+        assert!(matches!(Image::options().open(Cursor::new(vec![0u8; 8])), Err(Error::NotScarletbook)));
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn old_constructors_still_work() {
+        let f = SectorFormat::Raw2064;
+        let reader = || Cursor::new(image_with_sig(f, 511));
+        assert_eq!(Image::open_with_log(reader(), Log::none()).unwrap().format(), f);
+        assert_eq!(Image::with_format(reader(), f).unwrap().format(), f);
+        assert_eq!(Image::with_format_and_log(reader(), f, Log::none()).unwrap().format(), f);
+    }
+
+    #[test]
     fn detection_needs_only_eight_bytes() {
         let mut v = image_with_sig(SectorFormat::Plain, 511);
         v.truncate(510 * 2048 + 8);
@@ -440,7 +542,7 @@ mod tests {
         v[at + 2047] = 0xCD;
         // Partial trailing sector does not count.
         v.extend_from_slice(&[0u8; 2063]);
-        let mut img = Image::with_format(Cursor::new(v), f).unwrap();
+        let mut img = Image::options().with_format(f).open(Cursor::new(v)).unwrap();
         assert_eq!(img.sector_count(), 3);
         let mut buf = vec![0u8; 2048];
         assert!(img.read_sectors(2, &mut buf).unwrap());
