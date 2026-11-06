@@ -434,10 +434,10 @@ fn small_reading(disc: &mut Disc<Cursor<Vec<u8>>>, cursor: TrackCursor) -> Track
 }
 
 /// A reading registered through a disc sharing the index while the pass that completes the
-/// index is reading (#310) has its verdict when that pass returns complete, although the
-/// pass worked on a copy of the index that did not hold it.
+/// index is reading (#310) is not in the copy that pass checks: the call reports not complete,
+/// although the index is, and the next call settles it even with no budget at all.
 #[test]
-fn a_reading_registered_during_the_final_pass_has_its_verdict() {
+fn a_reading_registered_during_the_final_pass_is_not_reported_complete() {
     let (img, disc) = small_disc();
     let mut other = disc.share(Cursor::new(img.clone())).unwrap();
     let reading = std::cell::RefCell::new(None);
@@ -452,8 +452,12 @@ fn a_reading_registered_during_the_final_pass_has_its_verdict() {
     let mut verifier = disc.share(Hooked { inner: Cursor::new(img), farthest: 0, hook }).unwrap();
     armed.set(true);
     // One call over the whole area, so that it is the final pass.
-    assert!(verifier.verify_speculation(Slot::TwoChannel, u64::MAX).unwrap());
+    assert!(!verifier.verify_speculation(Slot::TwoChannel, u64::MAX).unwrap());
     let reading = reading.take().expect("registered during the pass");
+    assert!(matches!(reading.speculation(), Speculation::Pending { .. }), "{:?}", reading.speculation());
+    assert!(disc.seek_index(Slot::TwoChannel).unwrap().is_complete());
+    assert!(disc.take_seek_events(Slot::TwoChannel).is_empty());
+    assert!(verifier.verify_speculation(Slot::TwoChannel, 0).unwrap());
     assert!(matches!(reading.speculation(), Speculation::Confirmed { .. }), "{:?}", reading.speculation());
     assert_eq!(disc.seek_index(Slot::TwoChannel).unwrap().pending_claims(), 0);
     let events = disc.take_seek_events(Slot::TwoChannel);
@@ -461,11 +465,15 @@ fn a_reading_registered_during_the_final_pass_has_its_verdict() {
     assert_eq!(events[0].speculation, reading.speculation());
 }
 
-/// A reading registered during the check of the one above is checked too before complete is
-/// reported. It comes from a cursor made before the pass, which is sure to read provisionally.
+/// One round per call: a reading registered during the check of an earlier one takes a call
+/// of its own, and the loop ends once no disc registers more. It comes from a cursor made
+/// before the pass, which is sure to read provisionally.
 #[test]
-#[cfg_attr(miri, ignore = "the same path as a_reading_registered_during_the_final_pass_has_its_verdict")]
-fn a_reading_registered_during_a_check_has_its_verdict() {
+#[cfg_attr(
+    miri,
+    ignore = "the same path as a_reading_registered_during_the_final_pass_is_not_reported_complete"
+)]
+fn each_call_makes_one_round_and_the_loop_ends() {
     let (img, disc) = small_disc();
     let mut other = disc.share(Cursor::new(img.clone())).unwrap();
     let mut made_before = Some(other.range_frames_cursor(Slot::TwoChannel, 40, 45).unwrap());
@@ -487,23 +495,23 @@ fn a_reading_registered_during_a_check_has_its_verdict() {
     };
     let mut verifier = disc.share(Hooked { inner: Cursor::new(img), farthest: 0, hook }).unwrap();
     stage.set(1);
-    assert!(verifier.verify_speculation(Slot::TwoChannel, u64::MAX).unwrap());
+    let mut verify = || verifier.verify_speculation(Slot::TwoChannel, u64::MAX).unwrap();
+    assert_eq!([verify(), verify(), verify()], [false, false, true]);
     assert_eq!(stage.get(), 3);
-    for reading in readings.take() {
-        assert!(
-            matches!(reading.speculation(), Speculation::Confirmed { .. }),
-            "{:?}",
-            reading.speculation()
-        );
-    }
+    let readings = readings.take();
+    assert!(matches!(readings[0].speculation(), Speculation::Confirmed { .. }));
+    assert!(matches!(readings[1].speculation(), Speculation::Confirmed { .. }));
     assert_eq!(disc.take_seek_events(Slot::TwoChannel).len(), 2);
 }
 
-/// What complete does not cover (#310): a reading that joins the index after the call that
+/// What `true` does not cover (#310): a reading that joins the index after the call that
 /// reported it stays pending, with no event, until the next call. It comes from a cursor made
 /// before the pass, which is sure to read provisionally.
 #[test]
-#[cfg_attr(miri, ignore = "the same path as a_reading_registered_during_the_final_pass_has_its_verdict")]
+#[cfg_attr(
+    miri,
+    ignore = "the same path as a_reading_registered_during_the_final_pass_is_not_reported_complete"
+)]
 fn a_reading_registered_after_the_pass_waits_for_the_next_call() {
     let (_, mut disc) = small_disc();
     let c = disc.range_frames_cursor(Slot::TwoChannel, 40, 45).unwrap();
@@ -514,4 +522,28 @@ fn a_reading_registered_after_the_pass_waits_for_the_next_call() {
     assert!(disc.verify_speculation(Slot::TwoChannel, u64::MAX).unwrap());
     assert!(matches!(reading.speculation(), Speculation::Confirmed { .. }), "{:?}", reading.speculation());
     assert_eq!(disc.take_seek_events(Slot::TwoChannel).len(), 1);
+}
+
+/// A budget of 0 moves the pass on by exactly one checkpoint a call, from an empty index on
+/// (`merge` used to drop the first, so that such a loop never ended): the loop ends, in one call
+/// per boundary and one more, and settles the reading.
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "the same path as a_reading_registered_during_the_final_pass_is_not_reported_complete"
+)]
+fn no_budget_still_finishes() {
+    let (_, mut disc) = small_disc();
+    let c = disc.range_frames_cursor(Slot::TwoChannel, 40, 45).unwrap();
+    let reading = small_reading(&mut disc, c);
+    let area = disc.toc().area(Slot::TwoChannel).unwrap();
+    let boundaries = usize::try_from(area.audio_end_lsn - area.audio_start_lsn).unwrap() / 4 + 2;
+    let mut calls = 0;
+    while !disc.verify_speculation(Slot::TwoChannel, 0).unwrap() {
+        calls += 1;
+        assert_eq!(disc.seek_index(Slot::TwoChannel).unwrap().checkpoints(), calls);
+        assert!(calls <= boundaries, "{calls} calls");
+    }
+    assert!(calls > 1, "a call of no budget does not do the whole pass: {calls} calls");
+    assert!(matches!(reading.speculation(), Speculation::Confirmed { .. }), "{:?}", reading.speculation());
 }
