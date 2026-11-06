@@ -1,0 +1,2 @@
+Fixed
+- `Disc::verify_speculation` and `Disc::extend_seek_index` no longer report a complete index with a provisional reading unchecked that another disc registered during the call: they check it first. Its docs, and those of `sb_disc_seek_verify`, now say what complete covers: a reading that joins the index after the call has no verdict and no event until the next call, so a caller that must have every verdict calls it once more after its readers have finished. No delivered frame changes (#310, #PR).

@@ -4745,9 +4745,11 @@ pub unsafe extern "C" fn sb_raw_frames_suspect(raw: *const SbRawFrames, out: *mu
 /// Builds the seek index `disc` keeps for the area from `slot` by about `max_sectors` more
 /// sectors and checks the provisional readings it then reaches: as
 /// `sb_disc_seek_index_extend`, whose verdicts `sb_disc_seek_event_next` returns. `*complete`
-/// (if not NULL) is 1 once the index covers the whole area: every provisional reading of
-/// the area has its verdict then. Call it on a clone in a thread of its own while other
-/// clones read. Fails as `sb_disc_seek_index_extend`.
+/// (if not NULL) is 1 once the index covers the whole area: every provisional reading the
+/// index holds has its verdict then. A reading that joins the index later has none until the
+/// next call, so a caller that must have every verdict calls this once more after its readers
+/// have finished. Call it on a clone in a thread of its own while other clones read. Fails as
+/// `sb_disc_seek_index_extend`.
 ///
 /// # Safety
 ///
