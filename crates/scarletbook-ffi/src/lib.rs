@@ -4761,9 +4761,23 @@ pub unsafe extern "C" fn sb_raw_frames_suspect(raw: *const SbRawFrames, out: *mu
 /// Builds the seek index `disc` keeps for the area from `slot` by about `max_sectors` more
 /// sectors and checks the provisional readings it then reaches: as
 /// `sb_disc_seek_index_extend`, whose verdicts `sb_disc_seek_event_next` returns. `*complete`
-/// (if not NULL) is 1 once the index covers the whole area: every provisional reading of
-/// the area has its verdict then. Call it on a clone in a thread of its own while other
-/// clones read. Fails as `sb_disc_seek_index_extend`.
+/// (if not NULL) is 1 when, at this call's last look at the index, the index covered the whole
+/// area and every provisional reading it held had its verdict; else 0, with nothing wrong:
+/// call again. That includes a complete index holding a reading that another clone registered
+/// during this call, which this call's check did not see.
+///
+/// 1 covers only the readings the index held by then. A reading joins the index when its first
+/// frame is read, and one that joins later, even before this call returns, has no verdict and
+/// no event until a later call. A caller that must have every verdict runs its loop over this
+/// call once more after its readers have finished, then checks each reading's own state.
+///
+/// Each call makes one round: about `max_sectors` sectors of the pass (at least to the next
+/// checkpoint, so that 0 makes progress), then the check of the readings the index reached and
+/// held when the round began, which `max_sectors` does not limit. Once no clone registers new
+/// readings, a loop ends. Call it on a clone in a thread of its own while other clones read.
+/// The disc's read callback runs during this call, with the rules of
+/// `sb_disc_open_callbacks` for calling back into this library. Fails as
+/// `sb_disc_seek_index_extend`.
 ///
 /// # Safety
 ///
@@ -4775,8 +4789,16 @@ pub unsafe extern "C" fn sb_disc_seek_verify(
     max_sectors: u64,
     complete: *mut u8,
 ) -> SbStatus {
-    // SAFETY: forwarded contract.
-    unsafe { sb_disc_seek_index_extend(disc, slot, max_sectors, complete) }
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?;
+        let done = d.get_mut()?.verify_speculation(slot_from(slot)?, max_sectors)?;
+        if !complete.is_null() {
+            // SAFETY: non-NULL and valid for a write by this function's contract.
+            unsafe { complete.write(u8::from(done)) };
+        }
+        Ok(SbStatus::Ok)
+    })
 }
 
 /// The next verdict on a provisional reading of the area from `slot` of `disc` or any of its
