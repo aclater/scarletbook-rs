@@ -8,7 +8,7 @@
 mod common;
 
 use std::io::Cursor;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use common::{PFrame, Spec, TrackSpec, pack};
 use scarletbook::audio::FRAME_BYTES_PER_CHANNEL;
@@ -26,12 +26,18 @@ type Image = Cursor<Vec<u8>>;
 const RANGE: (u32, u32) = (3, 6);
 
 /// Plain DSD frames, two tracks over 6 frames: few sectors, as this file runs under Miri.
+/// Built once: each comparison opens many discs of it.
 fn image() -> Vec<u8> {
-    let fs: Vec<PFrame> = (0..6)
-        .map(|k| PFrame { number: k, dst: false, data: vec![k as u8; 2 * FRAME_BYTES_PER_CHANNEL] })
-        .collect();
-    let tracks = vec![TrackSpec { start: 0, duration: 2 }, TrackSpec { start: 2, duration: 4 }];
-    Spec { channels: 2, playtime: 6, tracks, audio: pack(&fs) }.build()
+    static IMAGE: OnceLock<Vec<u8>> = OnceLock::new();
+    IMAGE
+        .get_or_init(|| {
+            let fs: Vec<PFrame> = (0..6)
+                .map(|k| PFrame { number: k, dst: false, data: vec![k as u8; 2 * FRAME_BYTES_PER_CHANNEL] })
+                .collect();
+            let tracks = vec![TrackSpec { start: 0, duration: 2 }, TrackSpec { start: 2, duration: 4 }];
+            Spec { channels: 2, playtime: 6, tracks, audio: pack(&fs) }.build()
+        })
+        .clone()
 }
 
 /// A disc of [`image`] that keeps every log line.
