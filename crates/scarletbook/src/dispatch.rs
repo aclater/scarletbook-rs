@@ -340,6 +340,27 @@ mod tests {
     use crate::dst::MAX_LANES;
     use crate::{Disc, FrameContent};
 
+    /// [`Isa::detect`] picks the wrapper exactly on a CPU with all of its features. The
+    /// bit-identity tests below can't tell: they would still pass if detection always gave
+    /// the generic level. (Under Miri, the features are those the build enabled.)
+    #[test]
+    fn detect_picks_the_fast_level_on_a_capable_cpu() {
+        #[cfg(target_arch = "x86_64")]
+        let want = if std::arch::is_x86_feature_detected!("avx2")
+            && std::arch::is_x86_feature_detected!("bmi1")
+            && std::arch::is_x86_feature_detected!("bmi2")
+            && std::arch::is_x86_feature_detected!("lzcnt")
+            && std::arch::is_x86_feature_detected!("movbe")
+        {
+            Level::Avx2Bmi
+        } else {
+            Level::Generic
+        };
+        #[cfg(not(target_arch = "x86_64"))]
+        let want = Level::Generic;
+        assert_eq!(Isa::detect(), Isa(want));
+    }
+
     /// Up to `per_track` DST frames of every track of every corpus image, by channel count.
     fn corpus_frames(per_track: usize) -> Vec<Vec<Vec<u8>>> {
         let images = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/images");
