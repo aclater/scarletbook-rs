@@ -11,6 +11,10 @@ use std::sync::OnceLock;
 pub const MAX_STRING_BYTES: usize = 4096;
 
 /// A character set code's decoding (specification 2, 2.6.2), from its low 3 bits.
+///
+/// Not part of the public API: a helper of the TOC parser, not covered by semantic
+/// versioning. It may change or go in any release.
+#[doc(hidden)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Charset {
     /// Codes 0, 1, 2 and 7: every byte maps to U+0000 to U+00FF.

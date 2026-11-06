@@ -108,6 +108,35 @@ After:
 let cursor = next.audio(prev);
 ```
 
+The `*_indexed_*` methods continued a cursor from an index the caller keeps. They have no public
+form of their own. Give the index to the disc, or take what the cursor recorded and open a new
+cursor from the index (`audio_cursor` is in section M6). The new cursor starts from the index
+instead of going on with the earlier scan, and gives the same frames.
+
+Before:
+
+```rust
+let next = disc.range_continuation(slot, first, end)?;
+next.check_index(&index)?;
+let opening = next.log_audio_indexed(&prev, &index);
+let cursor = next.audio_indexed_as(prev, &mut index, opening);
+```
+
+After, with the disc keeping the index:
+
+```rust
+disc.set_seek_index(slot, index)?;
+let cursor = disc.continue_range_audio(prev, slot, first, end)?;
+```
+
+Or, with the caller keeping it:
+
+```rust
+index.absorb(&mut prev)?;
+let span = FrameSpan::Range(first, end);
+let cursor = disc.audio_cursor(slot, span, CursorOptions::new().with_index(&index))?;
+```
+
 **Tuning:** `dst::lanes`, `dst::MAX_LANES`, `audio::MAX_PARALLEL_BATCH`,
 `audio::PARALLEL_FRAMES_PER_THREAD`, `seek::MAX_CLAIMS`, `seek::MAX_EVENTS`, `seek::HINT_REACH` and
 `seek::REPLAY_SECTORS`. The constants have no replacement: don't size anything by them.
@@ -129,7 +158,8 @@ decoder.decode_many(&frames, channels, &mut outs);
 ```
 
 **Text:** `text::{decode, decode_string, fixed_bytes, fixed_text, language, string_bytes,
-text_string}`. `text::Charset` and `text::MAX_STRING_BYTES` stay public.
+text_string}` and `text::Charset`, which only they take. `Locale.charset` stays a `u8`, and
+`text::MAX_STRING_BYTES` stays public.
 
 Before:
 
