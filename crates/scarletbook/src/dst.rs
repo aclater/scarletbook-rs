@@ -1489,6 +1489,10 @@ mod tests {
 
     #[test]
     fn plain_frames() {
+        crate::dispatch::testutil::with_big_stack(plain_frames_body);
+    }
+
+    fn plain_frames_body() {
         let mut out = vec![1u8; 2 * FL];
         decode(&[0x40, 7, 8], 2, &mut out).unwrap();
         assert_eq!(&out[..3], &[7, 8, 0]);
