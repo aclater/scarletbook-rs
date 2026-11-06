@@ -19,6 +19,18 @@
 //! The wrappers hold no other unsafe operation: no intrinsics, no raw pointers. The
 //! exception is to be revisited under #199, for a safe alternative such as struct target
 //! features (RFC 3525) or per-CPU builds.
+//!
+//! Under Miri, `is_x86_feature_detected!` reports only the features the build enabled, so
+//! a plain `cargo miri test` runs the generic kernels on both sides of the test below and
+//! never reaches the wrappers. The `pcm-dispatch-avx2` slice (`miri.yml`, main and nightly)
+//! builds with the features, which makes Miri run all six wrappers.
+//!
+//! That slice checks the code behind the wrappers, not their safety contract. With the
+//! features in the build, Miri accepts a call made without detection; it reports such a call
+//! as undefined behaviour only in a build without them, and this crate's kernels have no such
+//! Miri slice. What stands behind the contract is the type: only [`Isa::detect`] can make the
+//! fast [`Isa`]. Miri also interprets the Rust code, not the AVX2 machine code: the native
+//! tests check what the compiler builds.
 
 #![allow(unsafe_code)]
 
@@ -193,21 +205,22 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "builds a filter table; see detect_picks_the_fast_level_on_a_capable_cpu")]
     fn new_converter_uses_the_detected_isa() {
-        let config = PcmConfig::new(PcmRate::Hz176400, Cutoff::Default, 2);
+        let config = PcmConfig::new(PcmRate::Hz176400, Cutoff::Standard, 2);
         assert_eq!(Converter::new(config).unwrap().plan.isa(), Isa::detect());
     }
 
     /// The kernels chosen for this CPU give exactly the output of the generic kernels, in
     /// every configuration, for a whole run and for a frame with neighbours, in both sample
     /// layouts and with the same clip counts. (On a CPU without AVX2 and FMA, and under Miri
-    /// unless it is run with `-C target-feature=+avx2,+fma`, both are the generic kernels.
-    /// Under Miri, only `Default` is converted, which still runs every kernel.)
+    /// unless it is built with `-C target-feature=+avx2,+fma` as `pcm-dispatch-avx2` is, both
+    /// are the generic kernels. Under Miri, only `Default` is converted, which still runs
+    /// every kernel.)
     #[test]
     fn detected_kernels_match_generic() {
         let cases: &[(u8, usize, f64)] =
             if cfg!(miri) { &[(2, 1, 0.0)] } else { &[(1, 3, 0.0), (2, 3, 0.0), (3, 3, 7.5), (6, 3, -3.0)] };
         for rate in PcmRate::ALL {
-            let cutoffs = if cfg!(miri) { &[Cutoff::Default][..] } else { &Cutoff::ALL[..] };
+            let cutoffs = if cfg!(miri) { &[Cutoff::Standard][..] } else { &Cutoff::ALL[..] };
             for &cutoff in cutoffs.iter().filter(|c| c.supports(rate)) {
                 for &(channels, frames, gain) in cases {
                     let config =
