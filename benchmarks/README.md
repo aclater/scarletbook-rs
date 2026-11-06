@@ -96,6 +96,11 @@ Not in the kit yet (`missing`): the first 128 KiB of 5 or 6 channels or without 
 cold runs of the whole-area cases, the C interface (`bench` uses the Rust API), and DSD to PCM
 from an image.
 
+**DST lanes.** `bench decode ... --lanes K` (1 to 4) decodes `K` DST frames together on each
+thread instead of the library's default for the channel count (`TrackAudioCursor::with_dst_lanes`,
+#203). The output is the same, so `--sink hash` must not change. It is not in the run list: time
+the commands yourself, with fresh copies, alternating (see "Fresh copies").
+
 ### Open and first 128 KiB
 
 These last microseconds, far less than starting a process, so `bench open` and `bench first` time
@@ -146,7 +151,10 @@ image (up to 5 × 3.3 GB); nothing else. **Network:** none, after the download a
    first round also runs each build's `warmup_runs` on it. Each run is the case's `command` with
    the placeholders filled in, started directly (no shell), from any directory, with the program
    (`command[0]`) copied to a new file first and that copy started (see "Fresh copies"). Copies
-   of programs and images are deleted after the case, not between runs or rounds.
+   of programs and images are deleted after the case, not between runs or rounds. A case is
+   skipped for a kit that lacks its program, or whose `bench` has no such command (`run.py` reads
+   the commands from `bench`'s usage message), so comparing an older version leaves those cells
+   blank and fails no runs. A case no kit can run does fail the run.
 3. Nothing runs in the background meanwhile; an otherwise idle machine gives the most useful
    figures.
 

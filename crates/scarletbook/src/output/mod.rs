@@ -32,6 +32,221 @@
 //! The departures from the DSDIFF document that some existing programs make (8.7) are made
 //! only when named in [`OutputOptions::dsdiff_departures`]; a file written with one is not a
 //! conforming DSDIFF file.
+//!
+//! # Writing an area's tracks as separate files
+//!
+//! This crate has no several-files writer, because the calls below are all a fast one needs
+//! (issue [#202], which holds the figures). Each file is a [`Layout`] of the track's range
+//! ([`Disc::track_range_with_pause`]), filled from that range's audio. The forms differ in
+//! how each track's reading starts, which decides their speed and whether the bytes are
+//! exact:
+//!
+//! - **One track after another, with [`Disc::continue_range_audio`].** It reads each audio
+//!   sector once. It costs the same as writing the area as one file, so splitting a
+//!   sequential loop gains nothing. Don't call [`Disc::range_audio`] for each track instead:
+//!   without a seek index, each call scans the area from its first sector. That measured
+//!   more than 2x slower on a 16-track stereo area, and less on areas with fewer tracks.
+//! - **Workers, seek index first.** One pass builds the index
+//!   ([`Disc::extend_seek_index`]). Workers then take the next track, each through its own
+//!   [`Disc::share`], and every track starts from the index.
+//! - **Workers, speculative with verify.** Workers read under [`SeekPolicy::Speculative`]
+//!   while one more thread runs [`Disc::verify_speculation`], so they don't wait for that
+//!   pass. The bytes are written before their verdict: see the table.
+//!
+//! Workers gained on real storage in the figures on #202, but on one machine only. Those
+//! figures aren't from your machine, so measure there. On another machine, a consumer's own
+//! per-track writer was slower with all threads than with one. The figures don't cover an
+//! fsync per file, a cold image, a real disc, a DST area or a write through the C interface,
+//! and waiting for writeback narrowed the gain.
+//!
+//! ## Which forms establish exactness
+//!
+//! | Form | Positions | Exact? |
+//! |---|---|---|
+//! | One after another, [`SeekPolicy::Exact`] | Those of the specification (4.2 item 2) | Yes |
+//! | Workers, seek index first | Those of the specification (4.2 item 7) | Yes, for an index built from this image. For a saved one, only if you know it is of these bytes (4.2 item 9) |
+//! | Workers, speculative with verify | Provisional when written (4.2 item 8) | Only once the pass is complete and every reading is [`Speculation::Exact`] or [`Speculation::Confirmed`]. Rewrite the file of any other |
+//! | Workers, speculative, no verifying pass | Provisional (4.2 item 8) | **No.** A speed figure only, not a way to write files |
+//!
+//! A provisional position is exact only under conditions (a) and (b) of specification 4, 4.2
+//! item 8, and only a pass over the sectors before the reading's start establishes them. No
+//! read of that start or later sectors can, so neither can a check of the file: the hashes of
+//! the speculative rows on #202 matched on three synthetic images, which says nothing about
+//! another disc. Until the verdicts are in, don't hand out a file of the verified form.
+//!
+//! So the unverified row on #202 is not the speed of exact output, and the example below
+//! leaves that form out.
+//!
+//! ## Example
+//!
+//! Each file here has the default [`OutputOptions`] and stands alone. Gapless files
+//! ([`plan_dsf_chain`]) are not covered.
+//!
+//! ```no_run
+//! use std::borrow::Cow;
+//! use std::collections::VecDeque;
+//! use std::fs::File;
+//! use std::io::{BufReader, Read, Seek, Write};
+//! use std::path::Path;
+//! use std::sync::atomic::{AtomicUsize, Ordering};
+//!
+//! use scarletbook::audio::{AudioFrame, TrackAudio};
+//! use scarletbook::output::{Format, OutputOptions, PositionSource};
+//! use scarletbook::seek::{IndexOptions, SeekPolicy, Speculation, SpeculativeOptions};
+//! use scarletbook::{Disc, Error, Slot, TrackAudioCursor};
+//!
+//! const BUFFER: usize = 4 << 20;
+//!
+//! /// The positions of one range in order, with the last few kept: `Layout::fill` may ask
+//! /// for a position again.
+//! struct Window<'a, R> {
+//!     frames: TrackAudio<'a, R>,
+//!     kept: VecDeque<AudioFrame>,
+//! }
+//!
+//! impl<R: Read + Seek> PositionSource for Window<'_, R> {
+//!     fn content(&mut self, t: u32) -> Result<Cow<'_, [u8]>, Error> {
+//!         while self.kept.back().is_none_or(|f| f.number < t) {
+//!             let frame = self.frames.next().ok_or(Error::InvalidArgument("past the range"))??;
+//!             self.kept.push_back(frame);
+//!         }
+//!         while self.kept.front().is_some_and(|f| f.number.saturating_add(4) < t) {
+//!             self.kept.pop_front();
+//!         }
+//!         let front = self.kept.front().map_or(t, |f| f.number);
+//!         let i = t.checked_sub(front).ok_or(Error::InvalidArgument("no longer held"))?;
+//!         let frame = self.kept.get(i as usize).ok_or(Error::InvalidArgument("not held"))?;
+//!         Ok(Cow::Borrowed(&frame.data))
+//!     }
+//! }
+//!
+//! /// Writes the file of track `n`, continuing `prev` if there is one. Returns the reading's
+//! /// state, which knows its verdict.
+//! fn write_track<R: Read + Seek>(
+//!     disc: &mut Disc<R>,
+//!     slot: Slot,
+//!     n: u32,
+//!     prev: Option<TrackAudioCursor>,
+//!     dir: &Path,
+//!     buf: &mut [u8],
+//! ) -> Result<TrackAudioCursor, Error> {
+//!     let (first, end) = disc.track_range_with_pause(slot, n)?;
+//!     let layout = disc.output_layout(slot, first, end, Format::Dsf, &OutputOptions::default())?;
+//!     let cursor = match prev {
+//!         Some(prev) => disc.continue_range_audio(prev, slot, first, end)?,
+//!         None => disc.range_audio_cursor(slot, first, end)?,
+//!     };
+//!     let mut source = Window { frames: disc.read_track_audio(cursor), kept: VecDeque::new() };
+//!     let mut file = File::create(dir.join(format!("{n:03}.dsf")))?;
+//!     let mut offset = 0;
+//!     while offset < layout.size() {
+//!         let filled = layout.fill(offset, buf, &mut source)?;
+//!         file.write_all(&buf[..filled])?;
+//!         offset += filled as u64;
+//!     }
+//!     Ok(source.frames.into_cursor())
+//! }
+//!
+//! /// The area's track numbers.
+//! fn track_numbers<R: Read + Seek>(disc: &Disc<R>, slot: Slot) -> Result<Vec<u32>, Error> {
+//!     let area = disc.toc().area(slot).ok_or(Error::NoSuchArea(slot))?;
+//!     Ok(area.tracks.iter().map(|t| u32::from(t.number)).collect())
+//! }
+//!
+//! /// One track after another: exact, and each audio sector read once.
+//! fn in_order(image: &Path, slot: Slot, dir: &Path) -> Result<(), Error> {
+//!     let mut disc = Disc::open(BufReader::new(File::open(image)?))?;
+//!     let mut buf = vec![0; BUFFER];
+//!     let mut cursor = None;
+//!     for n in track_numbers(&disc, slot)? {
+//!         cursor = Some(write_track(&mut disc, slot, n, cursor.take(), dir, &mut buf)?);
+//!     }
+//!     Ok(())
+//! }
+//!
+//! /// `workers` threads taking the next track, each through a disc of its own. Returns each
+//! /// track's reading state.
+//! fn write_from_workers(
+//!     root: &Disc<BufReader<File>>,
+//!     image: &Path,
+//!     slot: Slot,
+//!     dir: &Path,
+//!     workers: usize,
+//! ) -> Result<Vec<(u32, TrackAudioCursor)>, Error> {
+//!     let numbers = track_numbers(root, slot)?;
+//!     let next = AtomicUsize::new(0);
+//!     std::thread::scope(|scope| {
+//!         let work = || -> Result<Vec<(u32, TrackAudioCursor)>, Error> {
+//!             let mut disc = root.share(BufReader::new(File::open(image)?))?;
+//!             let mut buf = vec![0; BUFFER];
+//!             let mut written = Vec::new();
+//!             while let Some(&n) = numbers.get(next.fetch_add(1, Ordering::Relaxed)) {
+//!                 written.push((n, write_track(&mut disc, slot, n, None, dir, &mut buf)?));
+//!             }
+//!             Ok(written)
+//!         };
+//!         let handles: Vec<_> =
+//!             (0..workers.clamp(1, numbers.len().max(1))).map(|_| scope.spawn(work)).collect();
+//!         let mut written = Vec::new();
+//!         for handle in handles {
+//!             written.extend(handle.join().expect("a worker panicked")?);
+//!         }
+//!         Ok(written)
+//!     })
+//! }
+//!
+//! /// Workers, seek index first: exact, at the cost of one more pass.
+//! fn index_first(image: &Path, slot: Slot, dir: &Path, workers: usize) -> Result<(), Error> {
+//!     let mut root = Disc::open(BufReader::new(File::open(image)?))?;
+//!     root.enable_seek_index(slot, IndexOptions::new())?;
+//!     while !root.extend_seek_index(slot, u64::MAX)? {}
+//!     write_from_workers(&root, image, slot, dir, workers)?;
+//!     Ok(())
+//! }
+//!
+//! /// Workers, speculative with verify: the files are provisional until this returns, and
+//! /// exact only when it returns `Ok`.
+//! fn speculative_with_verify(image: &Path, slot: Slot, dir: &Path, workers: usize) -> Result<(), Error> {
+//!     let mut root = Disc::open(BufReader::new(File::open(image)?))?;
+//!     // Without a seek index, no reading is ever checked.
+//!     root.enable_seek_index(slot, IndexOptions::new())?;
+//!     root.set_seek_policy(slot, SeekPolicy::Speculative(SpeculativeOptions::new()))?;
+//!     let written = std::thread::scope(|scope| {
+//!         let verifier = scope.spawn(|| -> Result<(), Error> {
+//!             let mut disc = root.share(BufReader::new(File::open(image)?))?;
+//!             while !disc.verify_speculation(slot, u64::MAX)? {}
+//!             Ok(())
+//!         });
+//!         let written = write_from_workers(&root, image, slot, dir, workers);
+//!         verifier.join().expect("the verifier panicked")?;
+//!         written
+//!     })?;
+//!     // Once more, for a reading that began while that pass was ending: it has no verdict yet.
+//!     while !root.verify_speculation(slot, u64::MAX)? {}
+//!     // Each reading's own state, not the events: a reading with no verdict has no event.
+//!     root.set_seek_policy(slot, SeekPolicy::Exact)?;
+//!     let mut buf = vec![0; BUFFER];
+//!     for (n, reading) in written {
+//!         if !matches!(reading.speculation(), Speculation::Exact | Speculation::Confirmed { .. }) {
+//!             write_track(&mut root, slot, n, None, dir, &mut buf)?;
+//!         }
+//!     }
+//!     Ok(())
+//! }
+//!
+//! fn main() -> Result<(), Error> {
+//!     let (image, slot, dir) = (Path::new("disc.iso"), Slot::TwoChannel, Path::new("out"));
+//!     in_order(image, slot, dir)?;
+//!     index_first(image, slot, dir, 8)?;
+//!     speculative_with_verify(image, slot, dir, 8)
+//! }
+//! ```
+//!
+//! [#202]: https://github.com/aclater/scarletbook-rs/issues/202
+//! [`Speculation::Exact`]: crate::seek::Speculation::Exact
+//! [`Speculation::Confirmed`]: crate::seek::Speculation::Confirmed
+//! [`SeekPolicy::Exact`]: crate::seek::SeekPolicy::Exact
+//! [`SeekPolicy::Speculative`]: crate::seek::SeekPolicy::Speculative
 
 mod dsdiff;
 mod dsdiff_dst;

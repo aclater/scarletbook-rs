@@ -357,6 +357,8 @@ pub const MAX_LANES: usize = 4;
 ///
 /// The 1-, 3- and 4-channel choices were measured on generated frames; their output is
 /// checked by the corpus's 1-, 3- and 4-channel DST cases (sacd-spec#15).
+///
+/// [`crate::TrackAudioCursor::with_dst_lanes`] chooses another count for one cursor.
 pub fn lanes(channels: u8) -> usize {
     let avx512 = cfg!(target_feature = "avx512cd");
     match channels {
@@ -1489,6 +1491,10 @@ mod tests {
 
     #[test]
     fn plain_frames() {
+        crate::dispatch::testutil::with_big_stack(plain_frames_body);
+    }
+
+    fn plain_frames_body() {
         let mut out = vec![1u8; 2 * FL];
         decode(&[0x40, 7, 8], 2, &mut out).unwrap();
         assert_eq!(&out[..3], &[7, 8, 0]);
