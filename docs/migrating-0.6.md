@@ -279,7 +279,29 @@ Not written yet.
 
 `AreaIndex::{checkpoints, hints, confirmations, pending_claims}`.
 
-Not written yet.
+#### `AreaIndex`'s count methods are now `*_count` (#299)
+
+Deprecated in 0.6.0 and removed before 1.0: `checkpoints`, `hints`, `confirmations` and
+`pending_claims` become `checkpoint_count`, `hint_count`, `confirmation_count` and
+`pending_claim_count`. They return the same counts. Nothing stops building until the removal, except
+in builds that deny warnings.
+
+Before:
+
+```rust
+let kept = (index.checkpoints(), index.hints(), index.confirmations(), index.pending_claims());
+```
+
+After:
+
+```rust
+let kept = (
+    index.checkpoint_count(),
+    index.hint_count(),
+    index.confirmation_count(),
+    index.pending_claim_count(),
+);
+```
 
 ### S3. `Image::read_sectors`
 

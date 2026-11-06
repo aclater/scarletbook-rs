@@ -232,7 +232,7 @@ fn confirmations_beyond_the_saved_maximum_are_refused() {
     bytes[92] = 1;
     let summed = harness::with_checksum(&bytes);
     let loaded = AreaIndex::from_bytes(&area, n, &summed, usize::MAX).unwrap();
-    assert_eq!(loaded.confirmations(), 1);
+    assert_eq!(loaded.confirmation_count(), 1);
     assert_eq!(loaded.to_bytes(), summed);
 }
 
@@ -289,7 +289,7 @@ fn checkpoints_share_one_frame_buffer() {
     let options = IndexOptions::new().with_interval(1).with_inline_budget(70_000);
     let mut index = AreaIndex::new(&area, n, options).unwrap();
     while !index.extend(d.image_mut(), 1000).unwrap() {}
-    assert!(index.memory() < 2 * 70_000 + 40 * index.checkpoints(), "{}", index.memory());
+    assert!(index.memory() < 2 * 70_000 + 40 * index.checkpoint_count(), "{}", index.memory());
     let c = TrackCursor::for_range_indexed(&area, 1, playtime, n, &index).unwrap();
     let (got, c) = frames(&mut d, c);
     let ResumedFrom::Checkpoint { lsn, replay_from } = c.resumed_from() else {
@@ -311,7 +311,7 @@ fn checkpoints_share_one_frame_buffer() {
     let ResumedFrom::Checkpoint { lsn, replay_from } = c.resumed_from() else { panic!() };
     assert!(replay_from < lsn, "replayed");
     assert_eq!(got, straight(&mut d, 1, playtime));
-    assert!(index.to_bytes().len() < 70_000 + 60 * index.checkpoints());
+    assert!(index.to_bytes().len() < 70_000 + 60 * index.checkpoint_count());
 }
 
 /// A reader that fails every read reaching past `limit` bytes.
@@ -394,7 +394,7 @@ fn an_index_is_of_one_image() {
     assert_eq!(index, before);
     let mut fresh = AreaIndex::new(&area, n, options).unwrap();
     fresh.absorb(&mut c).unwrap();
-    assert_eq!(fresh.checkpoints(), 0, "the refused cursor recorded nothing more");
+    assert_eq!(fresh.checkpoint_count(), 0, "the refused cursor recorded nothing more");
     // Extending with Y: refused.
     assert!(matches!(index.extend(y.image_mut(), 40), Err(Error::InvalidArgument(_))));
     assert_eq!(index, before);
