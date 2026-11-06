@@ -201,3 +201,52 @@ fn realtime_reports_its_figures() {
     assert_eq!(figure("seeks"), 7.0);
     assert!(figure("seek_max_ms") >= figure("seek_median_ms"));
 }
+
+/// `open` and `first` print their figures, and a failing `--evict` program fails the run.
+#[cfg(unix)]
+#[test]
+fn open_and_first_print_figures() {
+    let img = corpus().join("images/dst-features-2ch-6ch.iso").to_string_lossy().into_owned();
+    let figures = |args: &[&str]| {
+        let out = bench(args);
+        assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let open = figures(&["open", &img, "--iterations", "3", "--evict", "/bin/true"]);
+    assert!(open.starts_with("iterations\t3\nmedian_us\t"), "{open}");
+    for threads in ["1", "0"] {
+        let first = figures(&[
+            "first",
+            &img,
+            "--area",
+            "2ch",
+            "--threads",
+            threads,
+            "--bytes",
+            "4096",
+            "--iterations",
+            "2",
+        ]);
+        assert!(first.contains("iterations\t2\nmedian_us\t"), "{first}");
+    }
+    for args in [
+        &["open", &img, "--iterations", "1", "--evict", "/bin/false"][..],
+        &["first", &img, "--area", "2ch", "--threads", "1", "--iterations", "1", "--evict", "/no/such"][..],
+    ] {
+        let out = bench(args);
+        assert!(!out.status.success(), "{args:?}");
+        assert_eq!(String::from_utf8_lossy(&out.stderr).lines().next(), Some("io-error"), "{args:?}");
+    }
+    // Asking for more than the track holds is an error, not a short figure. These, and a track
+    // the area lacks and more iterations than `bench` keeps, are usage errors, and none panics.
+    for args in [
+        &["first", &img, "--area", "2ch", "--threads", "1", "--bytes", "4000000000"][..],
+        &["first", &img, "--area", "2ch", "--threads", "1", "--track", "99"][..],
+        &["first", &img, "--area", "2ch", "--threads", "1", "--iterations", "18446744073709551615"][..],
+        &["open", &img, "--iterations", "18446744073709551615"][..],
+    ] {
+        let out = bench(args);
+        assert!(!out.status.success(), "{args:?}");
+        assert_eq!(String::from_utf8_lossy(&out.stderr).lines().next(), Some("usage-error"), "{args:?}");
+    }
+}
