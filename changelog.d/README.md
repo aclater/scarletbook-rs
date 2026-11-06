@@ -10,6 +10,10 @@ Added
 - Loudspeaker layouts of areas (specification 3, 3.4.1): ... (#75, #77).
 ```
 
+A fragment for a breaking change or a deprecation planned for 0.6.0 (#39) ends with its section
+of [`docs/migrating-0.6.md`](../docs/migrating-0.6.md), and the same pull request adds the
+before-and-after there.
+
 `.github/scripts/fragments.py assemble VERSION DATE` folds them into CHANGELOG.md when a
 release is prepared. CI checks their format, and that a pull request changing library or
 program code adds one (CONTRIBUTING.md, "Change records").
