@@ -20,6 +20,10 @@
 //! assert_eq!(text.title.as_deref(), Some("Title"));
 //! # let _ = describe;
 //! ```
+//!
+//! TOC fields keep the width stored on the disc, so an LSN here is a `u32`, while
+//! [`Image`] and the [`seek`](crate::seek) module take and report sectors as
+//! `u64`. `u64::from` converts one to the other.
 
 use std::io::{Read, Seek};
 
@@ -429,7 +433,7 @@ impl MasterToc {
 /// An area's kind, from its TOC signature (specification 3, 3.3).
 ///
 /// Frozen: exhaustive on purpose, so a `match` needs no wildcard arm. An area TOC has one of
-/// exactly two signatures, one for each area slot ([`Slot`]).
+/// exactly two signatures. A slot can hold either: see [`Area::kind`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AreaKind {
     /// `TWOCHTOC`.
@@ -452,9 +456,12 @@ impl AreaKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Area {
-    /// The master TOC slot it came from.
+    /// The master TOC slot it came from, which is how every call taking a [`Slot`] finds
+    /// this area.
     pub slot: Slot,
-    /// Its kind, from the signature.
+    /// Its kind, from the signature, not from the slot (specification 3, 3.1 rule 3). A slot
+    /// can yield an area of the other kind, and both slots can yield areas of the same kind,
+    /// so use `slot` to address an area and `kind` to describe it.
     pub kind: AreaKind,
     /// Version (offsets 8 and 9).
     pub version: Version,

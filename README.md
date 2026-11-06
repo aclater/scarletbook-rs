@@ -1119,7 +1119,7 @@ the C ABI is in [ABI compatibility](#abi-compatibility).
 Before 1.0, as in Cargo, the `y` step of `0.y.z` is the major one and may break the API, and
 the `z` step is the minor one and may only add to it. The interface is not frozen yet:
 [#39](https://github.com/aclater/scarletbook-rs/issues/39) tracks the changes planned before
-1.0.
+1.0, and [Migrating to 0.6.0](docs/migrating-0.6.md) gives a before-and-after for each.
 
 Not covered:
 
@@ -1131,8 +1131,8 @@ Not covered:
 ### Versions
 
 Every crate of the workspace shares one version, so a breaking change in one crate raises the
-version of them all, including crates that did not change. Whether this stays so after 1.0 is
-still to be decided ([#39](https://github.com/aclater/scarletbook-rs/issues/39)).
+version of them all, including crates that did not change. This stays so from 1.0
+([#39](https://github.com/aclater/scarletbook-rs/issues/39), owner decision of 2026-11-06).
 
 ### Minimum supported Rust version
 

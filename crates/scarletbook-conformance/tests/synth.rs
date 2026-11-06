@@ -34,7 +34,7 @@ fn check(kind: Kind, format: SectorFormat, mc_channels: u8, src: &DstSource) {
     // The three master TOC copies are identical (specification 1, 1.5.1).
     let mut copies = [vec![0u8; 10 * 2048], vec![0u8; 10 * 2048], vec![0u8; 10 * 2048]];
     for (lsn, buf) in [510, 520, 530].into_iter().zip(&mut copies) {
-        assert!(disc.image_mut().read_sectors(lsn, buf).unwrap());
+        disc.image_mut().read_sectors(lsn, buf).unwrap();
     }
     assert!(copies[0] == copies[1] && copies[0] == copies[2]);
 

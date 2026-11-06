@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use scarletbook::log::{Level, Log};
-use scarletbook::{AudioFrame, Disc, FrameStatus, Slot};
+use scarletbook::{AudioFrame, CursorOptions, Disc, FrameSpan, FrameStatus, Slot};
 
 fn image(id: &str) -> Vec<u8> {
     let path =
@@ -41,7 +41,7 @@ fn decode_all(disc: &mut Disc<Cursor<Vec<u8>>>) -> Vec<(Slot, AudioFrame)> {
             }
             let next = match cursor.take() {
                 Some(prev) => disc.continue_track_audio(prev, slot, n).unwrap(),
-                None => disc.track_audio_cursor(slot, n).unwrap(),
+                None => disc.audio_cursor(slot, FrameSpan::Track(n), CursorOptions::new()).unwrap(),
             };
             let mut audio = disc.read_track_audio(next);
             for frame in audio.by_ref() {
@@ -259,7 +259,7 @@ fn frame_and_sector_problems_with_their_position() {
     let mut listed = Vec::new();
     for slot in Slot::ALL {
         let Some(count) = disc.toc().area(slot).map(|a| a.tracks.len() as u32) else { continue };
-        let cursor = disc.track_audio_cursor(slot, count).unwrap();
+        let cursor = disc.audio_cursor(slot, FrameSpan::Track(count), CursorOptions::new()).unwrap();
         let mut audio = disc.read_track_audio(cursor);
         audio.by_ref().for_each(drop);
         listed.extend(audio.warnings().iter().map(|w| (slot, w.lsn.unwrap())));
@@ -308,7 +308,7 @@ fn no_sink_or_a_quiet_level_changes_nothing() {
     // set_log takes effect from the next call on.
     let (log, lines) = recorder(Level::Warn);
     plain.set_log(log);
-    let cursor = plain.track_audio_cursor(Slot::TwoChannel, 1).unwrap();
+    let cursor = plain.audio_cursor(Slot::TwoChannel, FrameSpan::Track(1), CursorOptions::new()).unwrap();
     let first = plain
         .read_track_audio(cursor)
         .filter_map(Result::ok)
@@ -400,7 +400,9 @@ fn a_cursor_decodes_on_the_pool_it_is_given() {
             let next = match cursor.take() {
                 Some(prev) => disc.continue_track_audio(prev, Slot::TwoChannel, n).unwrap(),
                 None => {
-                    let mut c = disc.track_audio_cursor(Slot::TwoChannel, n).unwrap();
+                    let mut c = disc
+                        .audio_cursor(Slot::TwoChannel, FrameSpan::Track(n), CursorOptions::new())
+                        .unwrap();
                     c.set_decode_on(on.clone());
                     c
                 }
