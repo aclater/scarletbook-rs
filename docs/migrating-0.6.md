@@ -83,7 +83,8 @@ Changed in 0.6.0, with no deprecation first. This affects `FrameStatus`, `Decode
 `LoudspeakerLayout`, `Speaker` and `TrackTextItem`, so that later variants aren't breaking changes.
 Nothing changes for `Slot`, `AreaKind`, `DiscTextItem`, `AreaTextItem`, `FrameKind`, `FrameContent`,
 `Stored` and `Level`: they are documented as frozen, each with its reason, and a `match`
-on them needs no wildcard arm.
+on them needs no wildcard arm. `Version`, `Genre`, `Date`, `Timecode` and `AreaPointer` are
+documented as frozen too, so they can still be built and matched without `..`: nothing to migrate.
 
 Before:
 

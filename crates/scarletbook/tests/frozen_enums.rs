@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! The enums documented as frozen stay exhaustive: no `match` here has a wildcard arm, so this
-//! file stops compiling if one of them gains a variant or becomes `#[non_exhaustive]`. Changing
-//! that is a breaking change, and needs a decision first (#39).
+//! The enums and structs documented as frozen stay exhaustive: no `match` here has a wildcard arm
+//! and no pattern has `..`, so this file stops compiling if one of them gains a variant or a field,
+//! or becomes `#[non_exhaustive]`. Changing that is a breaking change, and needs a decision first
+//! (#39).
 
 use scarletbook::Slot;
 use scarletbook::audio::{FrameContent, FrameKind, Stored};
 use scarletbook::log::Level;
-use scarletbook::toc::{AreaKind, AreaTextItem, DiscTextItem};
+use scarletbook::toc::{AreaKind, AreaPointer, AreaTextItem, Date, DiscTextItem, Genre, Timecode, Version};
 
 /// Compile-time in substance, and so small enough for Miri.
 #[test]
@@ -71,4 +72,20 @@ fn frozen_enums_match_without_a_wildcard() {
             | DiscTextItem::DiscCopyrightPhonetic => (),
         }
     }
+}
+
+/// Built by literal and taken apart without `..`, as a caller outside the crate may do.
+#[test]
+fn frozen_structs_build_and_match_without_rest() {
+    let Version { major, minor } = Version { major: 1, minor: 20 };
+    assert_eq!((major, minor), (1, 20));
+    let Genre { category, index } = Genre { category: 1, index: 2 };
+    assert_eq!((category, index), (1, 2));
+    let Date { year, month, day } = Date { year: 2026, month: 11, day: 6 };
+    assert_eq!((year, month, day), (2026, 11, 6));
+    let Timecode { minutes, seconds, frames } = Timecode { minutes: 1, seconds: 2, frames: 3 };
+    assert_eq!((minutes, seconds, frames), (1, 2, 3));
+    let AreaPointer { toc1_lsn, toc2_lsn, toc_sectors } =
+        AreaPointer { toc1_lsn: 540, toc2_lsn: 546, toc_sectors: 6 };
+    assert_eq!((toc1_lsn, toc2_lsn, toc_sectors), (540, 546, 6));
 }

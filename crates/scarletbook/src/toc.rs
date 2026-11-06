@@ -33,6 +33,9 @@ impl Toc {
 }
 
 /// A structure version number.
+///
+/// Frozen: exhaustive on purpose, so it can be built and matched without `..`. A version is
+/// exactly the major and minor bytes at offsets 8 and 9 (specification 2, 2.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Version {
     /// Major number.
@@ -42,6 +45,9 @@ pub struct Version {
 }
 
 /// A genre entry (specification 2, 2.4).
+///
+/// Frozen: exhaustive on purpose, so it can be built and matched without `..`. A genre entry
+/// is 4 bytes, and these are the only two of them the specification gives a meaning to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Genre {
     /// The genre table (category) byte.
@@ -98,6 +104,9 @@ const GENERAL_GENRES: [&str; 30] = [
 ];
 
 /// A date as stored (specification 2, 2.3.2); 0 means "not set".
+///
+/// Frozen: exhaustive on purpose, so it can be built and matched without `..`. The stored date
+/// is exactly a year, a month and a day, offsets 120 to 123.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Date {
     /// Year.
@@ -128,6 +137,9 @@ impl Locale {
 }
 
 /// A timecode (specification 0, 0.5).
+///
+/// Frozen: exhaustive on purpose, so it can be built and matched without `..`. A timecode is
+/// exactly 3 bytes: minutes, seconds and frames.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Timecode {
     /// Minutes.
@@ -150,6 +162,9 @@ impl Timecode {
 }
 
 /// Where the master TOC says an area's TOC copies are (specification 3, 3.1).
+///
+/// Frozen: exhaustive on purpose, so it can be built and matched without `..`. The master TOC
+/// gives a slot exactly these three values, in fixed places.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct AreaPointer {
     /// TOC-1 LSN; 0 means the slot is unused.
