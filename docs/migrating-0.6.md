@@ -497,7 +497,45 @@ let kept = (
 
 ### S3. `Image::read_sectors`
 
-Not written yet.
+#### `Image::read_sectors` returns `Result<(), Error>` (#303)
+
+Changed in 0.6.0, with no deprecation first, because the name stays and only the return type changes.
+A range past the image's last sector, formerly `Ok(false)`, is now
+`Error::SectorRangeInvalid { lsn, count, sectors }`, and leaves the buffer as it was. An empty
+buffer, formerly `InvalidArgument`, reads nothing and succeeds for any `lsn` up to the sector count.
+
+Code that uses the `bool` directly gets a compile error. **Code that doesn't still builds, and
+`cargo semver-checks` does not detect this, so search for every call.** For a read past the end:
+
+| Code | Before | Now |
+|---|---|---|
+| `if image.read_sectors(..)? { .. }` | builds | compile error |
+| `image.read_sectors(..)?;`, also into another error type | carries on with unread data | returns the error |
+| `image.read_sectors(..).unwrap();` | carries on with unread data | panics |
+| `.is_ok()`, `.ok().is_some()`, `matches!(_, Ok(_))` | true | false |
+| `let _ = image.read_sectors(..);` | ignored, buffer intact | ignored, buffer intact |
+
+The C library's `sb_disc_read_sectors` does not change.
+
+Before:
+
+```rust
+if image.read_sectors(lsn, &mut buf)? {
+    use_sectors(&buf);
+} else {
+    past_the_end();
+}
+```
+
+After:
+
+```rust
+match image.read_sectors(lsn, &mut buf) {
+    Ok(()) => use_sectors(&buf),
+    Err(Error::SectorRangeInvalid { .. }) => past_the_end(),
+    Err(e) => return Err(e),
+}
+```
 
 ### N3. Duplicate constants
 

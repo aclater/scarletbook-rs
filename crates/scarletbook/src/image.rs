@@ -381,20 +381,33 @@ impl<R: Read + Seek> Image<R> {
         lsn.checked_add(count).is_some_and(|end| end <= self.sectors)
     }
 
-    /// Reads `buf.len() / 2048` logical sectors starting at `lsn` into `buf`.
-    ///
-    /// Returns `Ok(false)` and leaves `buf` unspecified if any of the sectors does not
-    /// exist. `buf.len()` must be a non-zero multiple of 2048.
+    /// Reads `buf.len() / 2048` logical sectors starting at `lsn` into `buf`. A range that
+    /// is not all in the image is refused before anything is read (specification 1, 1.3).
+    /// `buf.len()` must be a multiple of 2048. An empty `buf` reads nothing and succeeds for
+    /// any `lsn` up to [`Image::sector_count`], as `sb_disc_read_sectors` does with a count
+    /// of 0.
     ///
     /// # Errors
     ///
-    /// [`Error::InvalidArgument`] for a bad buffer length, [`Error::Io`] if the reader
-    /// fails (including a reader that is shorter than it reported).
-    pub fn read_sectors(&mut self, lsn: u64, buf: &mut [u8]) -> Result<bool, Error> {
-        if buf.is_empty() || buf.len() % SECTOR_SIZE != 0 {
-            return Err(Error::InvalidArgument("buffer length must be a non-zero multiple of 2048"));
+    /// [`Error::SectorRangeInvalid`] if any of the sectors does not exist, with `buf` left
+    /// as it was. [`Error::InvalidArgument`] for a bad buffer length. [`Error::Io`] if the
+    /// reader fails (including a reader that is shorter than it reported), after which what
+    /// `buf` holds is unspecified.
+    pub fn read_sectors(&mut self, lsn: u64, buf: &mut [u8]) -> Result<(), Error> {
+        if buf.len() % SECTOR_SIZE != 0 {
+            return Err(Error::InvalidArgument("buffer length must be a multiple of 2048"));
         }
-        Ok(self.read_into(lsn, buf)? == ReadOutcome::Ok)
+        if buf.is_empty() && self.contains(lsn, 0) {
+            return Ok(());
+        }
+        match self.read_into(lsn, buf)? {
+            ReadOutcome::Ok => Ok(()),
+            ReadOutcome::OutOfRange => Err(Error::SectorRangeInvalid {
+                lsn,
+                count: (buf.len() / SECTOR_SIZE) as u64,
+                sectors: self.sectors,
+            }),
+        }
     }
 
     pub(crate) fn read_into(&mut self, lsn: u64, buf: &mut [u8]) -> io::Result<ReadOutcome> {
@@ -545,10 +558,26 @@ mod tests {
         let mut img = Image::options().with_format(f).open(Cursor::new(v)).unwrap();
         assert_eq!(img.sector_count(), 3);
         let mut buf = vec![0u8; 2048];
-        assert!(img.read_sectors(2, &mut buf).unwrap());
+        img.read_sectors(2, &mut buf).unwrap();
         assert_eq!((buf[0], buf[2047]), (0xAB, 0xCD));
-        let mut two = vec![0u8; 4096];
-        assert!(!img.read_sectors(2, &mut two).unwrap());
-        assert!(!img.read_sectors(u64::MAX, &mut buf).unwrap());
+        let mut two = vec![7u8; 4096];
+        let e = img.read_sectors(2, &mut two).unwrap_err();
+        assert!(matches!(e, Error::SectorRangeInvalid { lsn: 2, count: 2, sectors: 3 }), "{e:?}");
+        assert_eq!(e.class(), crate::ErrorClass::Usage);
+        assert_eq!(e.code(), None);
+        assert!(two.iter().all(|&b| b == 7), "a refused read writes nothing");
+        let e = img.read_sectors(u64::MAX, &mut buf).unwrap_err();
+        assert!(matches!(e, Error::SectorRangeInvalid { lsn: u64::MAX, count: 1, sectors: 3 }), "{e:?}");
+    }
+
+    #[test]
+    fn empty_reads_succeed_up_to_the_sector_count() {
+        let mut img =
+            Image::options().with_format(SectorFormat::Plain).open(Cursor::new(vec![0u8; 2 * 2048])).unwrap();
+        img.read_sectors(0, &mut []).unwrap();
+        img.read_sectors(2, &mut []).unwrap();
+        let e = img.read_sectors(3, &mut []).unwrap_err();
+        assert!(matches!(e, Error::SectorRangeInvalid { lsn: 3, count: 0, sectors: 2 }), "{e:?}");
+        assert!(matches!(img.read_sectors(0, &mut [0u8; 2047]), Err(Error::InvalidArgument(_))));
     }
 }
