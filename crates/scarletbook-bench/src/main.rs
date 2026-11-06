@@ -86,7 +86,7 @@ use std::time::Instant;
 use scarletbook::audio::{AudioFrame, FRAME_BYTES_PER_CHANNEL, TrackAudio};
 use scarletbook::output::{Format, Layout, OutputOptions, PositionSource, RegionKind};
 use scarletbook::seek::{IndexOptions, SeekPolicy, Speculation, SpeculativeOptions};
-use scarletbook::{Disc, Error, Slot};
+use scarletbook::{CursorOptions, Disc, Error, FrameSpan, Slot};
 use sha2::{Digest, Sha256};
 
 const USAGE: &str = "usage: bench --version
@@ -524,10 +524,13 @@ fn decode_area(path: &Path, slot: Slot, lanes: Option<usize>, out: &mut dyn Outp
         }
         let next = match cursor.take() {
             Some(prev) => disc.continue_track_audio(prev, slot, n)?,
-            None => match lanes {
-                Some(k) => disc.track_audio_cursor(slot, n)?.with_dst_lanes(k)?,
-                None => disc.track_audio_cursor(slot, n)?,
-            },
+            None => {
+                let opened = disc.audio_cursor(slot, FrameSpan::Track(n), CursorOptions::new())?;
+                match lanes {
+                    Some(k) => opened.with_dst_lanes(k)?,
+                    None => opened,
+                }
+            }
         };
         let mut track = disc.read_track_audio(next);
         out.start_track(n, track.channels())?;
@@ -931,7 +934,7 @@ fn write_dsf_tracks_in_order(path: &Path, slot: Slot, out: &Path, chunk: usize) 
         let layout = disc.output_layout(slot, first, end, Format::Dsf, &OutputOptions::default())?;
         let next = match cursor.take() {
             Some(prev) => disc.continue_range_audio(prev, slot, first, end)?,
-            None => disc.range_audio_cursor(slot, first, end)?,
+            None => disc.audio_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new())?,
         };
         let frames = disc.read_track_audio(next);
         cursor = Some(write_track_file(&layout, frames, &track_file(out, n), &mut buf)?.into_cursor());

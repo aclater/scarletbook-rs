@@ -14,7 +14,8 @@ use std::fs::File;
 use std::io::BufReader;
 
 use scarletbook::{
-    AreaIndex, Disc, IndexOptions, SeekPolicy, Slot, Speculation, SpeculativeOptions, TrackFrame,
+    AreaIndex, CursorOptions, Disc, FrameSpan, IndexOptions, SeekPolicy, Slot, Speculation,
+    SpeculativeOptions, TrackFrame,
 };
 use scarletbook_conformance::{corpus_dir, load_cases};
 
@@ -25,7 +26,7 @@ fn read<R: std::io::Read + std::io::Seek>(
     slot: Slot,
     (first, end): (u32, u32),
 ) -> (Frames, scarletbook::TrackCursor) {
-    let c = disc.range_frames_cursor(slot, first, end).unwrap();
+    let c = disc.frames_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new()).unwrap();
     let mut it = disc.read_frames(c);
     let frames = it.by_ref().map(|f| f.unwrap_or_else(|e| panic!("{e}"))).collect();
     (frames, it.into_cursor())
@@ -173,7 +174,9 @@ fn suspect_readings_of_the_corpus() {
                     continue;
                 }
                 for range in ranges(&plain, slot) {
-                    let c = disc.range_frames_cursor(slot, range.0, range.1).unwrap();
+                    let c = disc
+                        .frames_cursor(slot, FrameSpan::Range(range.0, range.1), CursorOptions::new())
+                        .unwrap();
                     let mut it = disc.read_frames(c);
                     let got: Frames = it.by_ref().map(|f| f.unwrap()).collect();
                     let c = it.into_cursor();

@@ -25,10 +25,10 @@ pub use output::*;
 use scarletbook::log::{Level, Log};
 use scarletbook::toc::{AreaTextItem, DiscTextItem, TrackTextItem};
 use scarletbook::{
-    Area, AreaCursor, AreaIndex, AudioFrame, CancelToken, DecodeOn, Disc, Error, ErrorClass, FrameContent,
-    FrameKind, FrameStatus, IndexOptions, LoudspeakerLayout, MasterToc, Progress, ReadAt, ReadAtReader,
-    SeekPolicy, Slot, Speaker, Speculation, SpeculativeOptions, Stored, Track, TrackAudioCursor, TrackCursor,
-    TrackFrame, WarningCode,
+    Area, AreaCursor, AreaIndex, AudioFrame, CancelToken, CursorOptions, DecodeOn, Disc, Error, ErrorClass,
+    FrameContent, FrameKind, FrameSpan, FrameStatus, IndexOptions, LoudspeakerLayout, MasterToc, Progress,
+    ReadAt, ReadAtReader, SeekPolicy, Slot, Speaker, Speculation, SpeculativeOptions, Stored, Track,
+    TrackAudioCursor, TrackCursor, TrackFrame, WarningCode,
 };
 use scarletbook_pcm::{
     Converter, Cutoff, FRAME_BYTES_PER_CHANNEL, FrameRun, Gain, MAX_CHANNELS, PcmConfig, PcmRate,
@@ -734,6 +734,7 @@ impl From<Error> for Failure {
             Error::NoSuchArea(_) => SbStatus::NoSuchArea,
             Error::NoSuchTrack { .. } => SbStatus::NoSuchTrack,
             Error::FrameRangeInvalid { .. } => SbStatus::FrameRangeInvalid,
+            Error::SectorRangeInvalid { .. } => SbStatus::SectorRangeInvalid,
             Error::InvalidArgument(_) | Error::DstLanesInvalid { .. } => SbStatus::InvalidArgument,
             Error::Io(_) => SbStatus::Io,
             Error::Cancelled => SbStatus::Cancelled,
@@ -2475,11 +2476,8 @@ pub unsafe extern "C" fn sb_disc_read_sectors(
         // contract; the library holds no reference into the caller's memory.
         let out = unsafe { std::slice::from_raw_parts_mut(buf, need) };
         // In range (checked above), so a failure is an I/O error.
-        if image.read_sectors(lsn, out)? {
-            Ok(SbStatus::Ok)
-        } else {
-            Err(Failure(SbStatus::SectorRangeInvalid, format!("sectors from {lsn} are not all in the image")))
-        }
+        image.read_sectors(lsn, out)?;
+        Ok(SbStatus::Ok)
     })
 }
 
@@ -2521,7 +2519,8 @@ pub unsafe extern "C" fn sb_track_audio_open(
         if out.is_null() {
             return Err(Failure::arg("NULL output pointer"));
         }
-        let cursor = handle.get()?.track_audio_cursor(slot_from(slot)?, number)?;
+        let cursor =
+            handle.get()?.audio_cursor(slot_from(slot)?, FrameSpan::Track(number), CursorOptions::new())?;
         let audio = SbTrackAudio::fresh(cursor, handle.id);
         // SAFETY: non-NULL and valid for a write by this function's contract.
         unsafe { out.write(Box::into_raw(audio)) };
@@ -2602,9 +2601,13 @@ unsafe fn open_next(
         };
         if prev.is_null() {
             let cursor = match (target, &index) {
-                (Target::Track(n), _) => d.track_audio_cursor(slot, n)?,
-                (Target::Range(first, end), None) => d.range_audio_cursor(slot, first, end)?,
-                (Target::Range(first, end), Some(i)) => d.range_audio_cursor_indexed(slot, first, end, i)?,
+                (Target::Track(n), _) => d.audio_cursor(slot, FrameSpan::Track(n), CursorOptions::new())?,
+                (Target::Range(first, end), None) => {
+                    d.audio_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new())?
+                }
+                (Target::Range(first, end), Some(i)) => {
+                    d.audio_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new().with_index(i))?
+                }
             };
             let audio = SbTrackAudio::fresh(cursor, handle.id);
             // SAFETY: non-NULL and valid for a write by this function's contract.
@@ -3328,8 +3331,10 @@ unsafe fn raw_open_next(
         };
         let cursor = if prev.is_null() {
             match &index {
-                None => d.range_frames_cursor(slot, first, end)?,
-                Some(i) => d.range_frames_cursor_indexed(slot, first, end, i)?,
+                None => d.frames_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new())?,
+                Some(i) => {
+                    d.frames_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new().with_index(i))?
+                }
             }
         } else {
             // Every check that can fail comes before `prev` is taken, so a failure leaves
@@ -3359,12 +3364,12 @@ unsafe fn raw_open_next(
             // A stored frame list records no checkpoints: after one, a range starts from
             // the index, made here, before `prev` is taken (it does not log or fail).
             let from_index = match (&borrowed.source, &index) {
-                (Source::List(..), Some(i)) => Some(TrackCursor::for_range_indexed(
+                (Source::List(..), Some(i)) => Some(TrackCursor::open_range(
                     find_area(&d, slot_index(slot))?,
                     first,
                     end,
                     d.toc().sectors,
-                    i,
+                    CursorOptions::new().with_index(i),
                 )?),
                 _ => None,
             };
@@ -5897,6 +5902,17 @@ mod tests {
     #[test]
     fn the_default_gap_is_the_librarys() {
         assert_eq!(SB_SEEK_DEFAULT_MIN_GAP, scarletbook::SpeculativeOptions::default().min_gap_sectors);
+    }
+
+    /// An error the conversion doesn't name would come out with the first status of its class.
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn a_sector_range_error_has_its_status() {
+        let reader = std::io::Cursor::new(vec![0u8; 2048]);
+        let mut image =
+            scarletbook::Image::options().with_format(scarletbook::SectorFormat::Plain).open(reader).unwrap();
+        let e = image.read_sectors(1, &mut [0u8; 2048]).unwrap_err();
+        assert_eq!(Failure::from(e).0, SbStatus::SectorRangeInvalid);
     }
 
     #[test]
