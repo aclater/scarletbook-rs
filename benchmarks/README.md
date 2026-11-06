@@ -118,7 +118,10 @@ image (up to 5 × 3.3 GB); nothing else. **Network:** none, after the download a
    first round also runs each build's `warmup_runs` on it. Each run is the case's `command` with
    the placeholders filled in, started directly (no shell), from any directory, with the program
    (`command[0]`) copied to a new file first and that copy started (see "Fresh copies"). Copies
-   of programs and images are deleted after the case, not between runs or rounds.
+   of programs and images are deleted after the case, not between runs or rounds. A case is
+   skipped for a kit that lacks its program, or whose `bench` has no such command (`run.py` reads
+   the commands from `bench`'s usage message), so comparing an older version leaves those cells
+   blank and fails no runs. A case no kit can run does fail the run.
 3. Nothing runs in the background meanwhile; an otherwise idle machine gives the most useful
    figures.
 
