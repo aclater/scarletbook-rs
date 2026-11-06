@@ -1,0 +1,1 @@
+| 2026-11-06 | enums `#[non_exhaustive]` or documented as frozen, and frozen TOC structs (#39) | sacd-spec 0.5, 2.3, 2.3.2, 2.4, 2.5.4, 3.1, 3.3, 3.6, 4.3.1 and 4.6.1 for the frozen reasons, and this repository's own public types. No new sources consulted. |

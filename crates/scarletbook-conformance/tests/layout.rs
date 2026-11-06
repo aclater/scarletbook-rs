@@ -39,10 +39,21 @@ fn corpus_area_layouts() {
                     LoudspeakerLayout::FivePointOne,
                     Some(&[FrontLeft, FrontRight, Centre, LowFrequencyEffects, SurroundLeft, SurroundRight]),
                 ),
-                _ => (LoudspeakerLayout::Unspecified { channels, config }, None),
+                _ => (LoudspeakerLayout::new(channels, config), None),
             };
             assert_eq!(area.loudspeaker_layout(), layout, "{id} {slot}");
             assert_eq!(area.channel_speakers(), speakers, "{id} {slot}");
+            if speakers.is_none() {
+                // `new` made the expected value above, so check the stored fields it keeps.
+                assert!(
+                    matches!(
+                        area.loudspeaker_layout(),
+                        LoudspeakerLayout::Unspecified { channels: c, config: k, .. }
+                            if c == channels && k == config
+                    ),
+                    "{id} {slot}"
+                );
+            }
         }
     }
     // The corpus's combinations: the three defined ones, 1, 3 and 4 channels, and
