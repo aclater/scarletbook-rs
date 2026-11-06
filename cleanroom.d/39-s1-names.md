@@ -1,0 +1,1 @@
+| 2026-11-06 | Rust names unified with the C interface, options values for opening (#39) | this repository's own public names only, and the Rust API Guidelines' C-BUILDER, already cited in the audit on #39. No new sources consulted. |

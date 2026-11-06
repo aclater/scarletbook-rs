@@ -280,7 +280,7 @@ fn seeks_are_logged() {
     let log = scarletbook::log::Log::new(scarletbook::log::Level::Debug, move |_, m| {
         sink.lock().unwrap().push(m.to_string());
     });
-    let mut disc = Disc::open_with_log(Cursor::new(img), log).unwrap();
+    let mut disc = Disc::options().log(log).open(Cursor::new(img)).unwrap();
     disc.enable_seek_index(Slot::TwoChannel, IndexOptions::new().with_interval(1)).unwrap();
     while !disc.extend_seek_index(Slot::TwoChannel, 100).unwrap() {}
     lines.lock().unwrap().clear();

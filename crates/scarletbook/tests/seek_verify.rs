@@ -94,7 +94,7 @@ fn well_formed_readings_are_confirmed() {
     assert_eq!(events.len(), 3, "{events:?}");
     for c in &cursors {
         assert!(matches!(c.speculation(), Speculation::Confirmed { .. }), "{:?}", c.speculation());
-        let id = c.speculation_id().unwrap();
+        let id = c.claim().unwrap();
         let e = events.iter().find(|e| e.claim == id).unwrap();
         assert_eq!(e.speculation, c.speculation());
     }

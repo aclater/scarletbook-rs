@@ -459,9 +459,10 @@ pub fn seek_area() -> (scarletbook::Image<std::io::Cursor<Vec<u8>>>, scarletbook
             }
         }
     }
-    let image =
-        scarletbook::Image::with_format(std::io::Cursor::new(bytes), scarletbook::SectorFormat::Plain)
-            .unwrap();
+    let image = scarletbook::Image::options()
+        .format(scarletbook::SectorFormat::Plain)
+        .open(std::io::Cursor::new(bytes))
+        .unwrap();
     let area = scarletbook::Area {
         slot: scarletbook::Slot::TwoChannel,
         kind: AreaKind::TwoChannel,

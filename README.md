@@ -207,7 +207,7 @@ in reads sized to it (one for a range of up to 1 MiB). Their positions are
 marked provisional (`speculation()`): they equal a straight read on well-formed discs, but no
 reader can know that without reading the sectors before the range, and on hostile images they
 can differ (see `SeekPolicy`). Their malformed counts begin at the provisional start
-(`counts_from()`). With a seek index enabled for the area, each provisional reading is
+(`claim_lsn()`). With a seek index enabled for the area, each provisional reading is
 checked once the index reaches it (build it with `disc.verify_speculation(slot, sectors)`,
 for example on a clone in another thread): confirmed, or refuted with the frame from which its
 positions are exact; the cursor's `speculation()` and `disc.take_seek_events(slot)` report it,
@@ -484,6 +484,19 @@ pcm, clipped = C.create_string_buffer(spf.value * 2 * 3), (C.c_uint64 * 6)()
 check(lib.sb_pcm_convert_run(conv, prev, cur, len(cur), nxt, 1, pcm, len(pcm), clipped))  # SB_PCM_S24LE
 lib.sb_pcm_converter_free(conv)
 ```
+
+### Rust and C names
+
+Where the two interfaces name the same thing differently:
+
+| Rust | C |
+|---|---|
+| Stored frames: `TrackCursor`, `TrackFrames`, `Disc::track_frames`, `Disc::range_frames` | Raw frames: `SbRawFrames`, `sb_raw_frames_*` |
+| `Disc::stored_frame_list` | `sb_stored_frame_list_open`, which returns an `SbRawFrames` |
+| `Disc::share`, `Disc::share_with_log` (a new reader) | `sb_disc_clone_callbacks` (new read and seek callbacks) |
+| `claim()` on a cursor, `None` for exact positions | `SbSpeculation.claim`, 0 for exact positions |
+| `claim_lsn()` on a cursor, `None` before the start is chosen and for exact positions | `SbSpeculation.lsn`, 0 in those cases |
+| `Stored::Dsd`, `FrameKind::Dsd`, `FrameStatus::Dsd` | `SB_FRAME_KIND_DSD` |
 
 ### Release assets
 
