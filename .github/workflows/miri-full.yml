@@ -5,7 +5,8 @@ name: Miri (full)
 # 20 to 30 minutes each; 50 to 75 minutes as one slice before #205; moved off pull
 # requests because the core crate's only unsafe code is its run-time dispatch module (#146),
 # which `core-dispatch-avx2` and `pcm-dispatch-avx2` run here, with the target features the
-# wrappers need (#267); ci.yml's `core-dispatch` runs only the generic code), the core
+# wrappers need, checking the code behind them but not their safety contract (#267); ci.yml's
+# `core-dispatch` runs only the generic code), the core
 # unit tests (the fast-loop check, split by frame count) and the
 # long tests of the parallel path. They take 6 to 9 minutes, longer than merges are apart at
 # busy times, so they run here rather than in ci.yml, whose runs on main a newer push cancels.

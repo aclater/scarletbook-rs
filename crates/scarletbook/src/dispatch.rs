@@ -25,9 +25,14 @@
 //! Under Miri, `is_x86_feature_detected!` reports only the features the build enabled, so
 //! a plain `cargo miri test` runs the generic code on both sides of the tests below and
 //! never reaches the wrapper. The `core-dispatch-avx2` slice (`miri.yml`, main and nightly)
-//! builds with the features, which makes Miri run the wrapper and everything it calls. Miri
-//! also reports calling the wrapper without them as undefined behaviour. It interprets the
-//! Rust code, not the AVX2 machine code: the native tests check what the compiler builds.
+//! builds with the features, which makes Miri run the wrapper and everything it calls.
+//!
+//! That slice checks the code behind the wrapper, not the wrapper's safety contract. With the
+//! features in the build, Miri accepts a call made without detection; it reports such a call
+//! as undefined behaviour only in a build without them, which here means `core-dispatch`, on
+//! the pull requests it runs on. What stands behind the contract is the type: only
+//! [`Isa::detect`] can make the fast [`Isa`]. Miri also interprets the Rust code, not the
+//! AVX2 machine code: the native tests check what the compiler builds.
 
 #![allow(unsafe_code)]
 
