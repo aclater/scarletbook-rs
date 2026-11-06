@@ -1,0 +1,2 @@
+Changed
+- DST decoding is faster with the same output: Q comes from a table in the fast loop for 1, 2, 5 and 6 channels. On the Zen 2 benchmark host (3950X, generic build): stereo about 7 % less time at one and at all threads, 6 channels 5 to 6 % at one thread and 7 to 8 % at all threads, 5 channels 5 % and 9 %, 1 channel about 7 % at one thread (generated frames). 3 and 4 channels keep their path (#203, #330).
