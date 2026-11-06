@@ -7,8 +7,8 @@
 
 use std::io::{self, Read, Seek, SeekFrom};
 
+use scarletbook::audio::FRAME_BYTES_PER_CHANNEL as FL;
 use scarletbook::audio::{FRAME_BYTES_PER_CHANNEL, MAX_FRAME_BYTES};
-use scarletbook::dst::FL;
 use scarletbook::{AreaIndex, Demuxer, Disc, DstDecoder, FrameKind};
 use scarletbook_pcm::{ConvertStats, Converter, Cutoff, FrameRun, Gain, PcmConfig, PcmError, PcmRate};
 

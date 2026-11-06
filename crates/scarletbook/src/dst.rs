@@ -12,11 +12,19 @@ use crate::dispatch::{self, Isa};
 /// Bits (samples) per channel per frame, `NB` (specification 5, 5.1.2).
 pub const NB: usize = 37_632;
 
-/// Bytes per channel per frame, `FL`.
+/// Bytes per channel per frame, `FL`: the old name of
+/// [`audio::FRAME_BYTES_PER_CHANNEL`](crate::audio::FRAME_BYTES_PER_CHANNEL).
+#[deprecated(since = "0.6.0", note = "use `audio::FRAME_BYTES_PER_CHANNEL`; to be removed before 1.0")]
 pub const FL: usize = FRAME_BYTES_PER_CHANNEL;
 
-/// Largest channel count, `Nch`.
-pub const MAX_CHANNELS: usize = 6;
+/// Largest channel count, `Nch`, as a `usize`: the old name of
+/// [`audio::MAX_CHANNELS`](crate::audio::MAX_CHANNELS), which is a `u8` like every channel
+/// count of this interface.
+#[deprecated(since = "0.6.0", note = "use `audio::MAX_CHANNELS`, a `u8`; to be removed before 1.0")]
+pub const MAX_CHANNELS: usize = MAX_NCH;
+
+/// [`audio::MAX_CHANNELS`](crate::audio::MAX_CHANNELS) for array sizes and indexes, `Nch`.
+const MAX_NCH: usize = crate::audio::MAX_CHANNELS as usize;
 
 const MAX_ORDER: usize = 128;
 const MAX_PTABLE_LEN: usize = 64;
@@ -176,7 +184,7 @@ impl<'a> Bits<'a> {
 /// One segmentation: per channel, the start bit of each segment.
 #[derive(Clone, Debug, Default)]
 struct Segmentation {
-    starts: [Vec<u32>; MAX_CHANNELS],
+    starts: [Vec<u32>; MAX_NCH],
 }
 
 impl Segmentation {
@@ -212,7 +220,7 @@ impl Kind {
 fn read_segmentation(bits: &mut Bits<'_>, kind: Kind, nch: usize) -> Result<Segmentation, DstError> {
     let shared = bits.bit()? == 1;
     let lmin = kind.lmin_bytes();
-    let rmax = FL as u32 - lmin;
+    let rmax = FRAME_BYTES_PER_CHANNEL as u32 - lmin;
     let mut resolution: Option<u32> = None;
     let mut seg = Segmentation::default();
     let read_channels = if shared { 1 } else { nch };
@@ -338,8 +346,8 @@ static ZERO_TABLES: [ByteTable; HISTORY_BYTES] = [[[0; 8]; 256]; HISTORY_BYTES];
 const HISTORY_FILL: u8 = 0xAA;
 
 /// Bytes of history read for one byte of every channel, at most: [`HISTORY_BYTES`] bytes
-/// of [`MAX_CHANNELS`] channels, interleaved.
-const WINDOW: usize = HISTORY_BYTES * MAX_CHANNELS;
+/// of [`MAX_NCH`] channels, interleaved.
+const WINDOW: usize = HISTORY_BYTES * MAX_NCH;
 
 /// Most frames [`DstDecoder::decode_many`] decodes in lockstep; it decodes more in groups
 /// of this many.
@@ -655,19 +663,19 @@ struct Coded<'b> {
     /// Each filter's prediction order.
     orders: Vec<usize>,
     /// Per channel, the half-probability length `NH` (5.4).
-    nh: [usize; MAX_CHANNELS],
+    nh: [usize; MAX_NCH],
     tables: &'b [ByteTable],
     partial: &'b [[i16; 256]],
     luts: &'b [Lut],
     /// See [`Lane::probes`], and per channel the filter and ptable they hold.
     probes: &'b mut [Probe],
-    keys: [(usize, usize); MAX_CHANNELS],
+    keys: [(usize, usize); MAX_NCH],
     arith: Arith<'b>,
     /// See [`Lane::hist`].
     hist: &'b mut [u8],
     /// Per channel, the current filter and ptable segment.
-    fidx: [usize; MAX_CHANNELS],
-    pidx: [usize; MAX_CHANNELS],
+    fidx: [usize; MAX_NCH],
+    pidx: [usize; MAX_NCH],
     n: usize,
     /// The number of code bits, `fs`.
     fs: usize,
@@ -681,20 +689,20 @@ struct Span<'t> {
     /// Whether the span holds bits of some channel's half-probability region.
     half: bool,
     /// Per channel, the history bytes its filter uses, and the most of any channel.
-    used: [usize; MAX_CHANNELS],
+    used: [usize; MAX_NCH],
     most: usize,
-    tabs: [&'t [ByteTable; HISTORY_BYTES]; MAX_CHANNELS],
-    partial: [&'t [i16; 256]; MAX_CHANNELS],
-    luts: [&'t Lut; MAX_CHANNELS],
+    tabs: [&'t [ByteTable; HISTORY_BYTES]; MAX_NCH],
+    partial: [&'t [i16; 256]; MAX_NCH],
+    luts: [&'t Lut; MAX_NCH],
     /// Per channel, the filter and ptable.
-    keys: [(usize, usize); MAX_CHANNELS],
+    keys: [(usize, usize); MAX_NCH],
 }
 
 impl<'b> Coded<'b> {
     /// Reads the header of `frame` (`nch` channels) and prepares `lane` for its code, up
     /// to the coded X bit. A plain frame is copied to `out` at once (`Ok(None)`).
     fn start(lane: &'b mut Lane, frame: &[u8], nch: usize, out: &mut [u8]) -> Result<Option<Self>, DstError> {
-        if !(1..=MAX_CHANNELS).contains(&nch) || out.len() != nch * FL {
+        if !(1..=MAX_NCH).contains(&nch) || out.len() != nch * FRAME_BYTES_PER_CHANNEL {
             return Err(DstError::InvalidArguments);
         }
         if frame.len() <= 1 {
@@ -725,7 +733,7 @@ impl<'b> Coded<'b> {
         };
 
         // Half probability (5.3.4).
-        let mut half = [false; MAX_CHANNELS];
+        let mut half = [false; MAX_NCH];
         for h in half.iter_mut().take(nch) {
             *h = bits.bit()? == 1;
         }
@@ -752,9 +760,9 @@ impl<'b> Coded<'b> {
         lane.build_tables(&filters);
         lane.build_luts(&ptables);
         // Initial history (5.5.2).
-        lane.hist.resize((HISTORY_BYTES + FL) * nch + WINDOW, 0);
+        lane.hist.resize((HISTORY_BYTES + FRAME_BYTES_PER_CHANNEL) * nch + WINDOW, 0);
         lane.hist[..HISTORY_BYTES * nch].fill(HISTORY_FILL);
-        lane.probes.resize(MAX_CHANNELS, NO_PROBE);
+        lane.probes.resize(MAX_NCH, NO_PROBE);
         let Lane { tables, partial, luts, probes, code, hist, .. } = lane;
         let mut code = CodeBits::new(code, frame, header + 1, fs.saturating_sub(1));
 
@@ -772,7 +780,7 @@ impl<'b> Coded<'b> {
         let _ = arith.decode(px);
 
         // Half-probability lengths (5.4).
-        let mut nh = [0usize; MAX_CHANNELS];
+        let mut nh = [0usize; MAX_NCH];
         for ch in 0..nch {
             if half[ch] {
                 nh[ch] = filters[usize::from(fmap[ch][0])].order;
@@ -790,11 +798,11 @@ impl<'b> Coded<'b> {
             partial,
             luts,
             probes,
-            keys: [(usize::MAX, usize::MAX); MAX_CHANNELS],
+            keys: [(usize::MAX, usize::MAX); MAX_NCH],
             arith,
             hist,
-            fidx: [0; MAX_CHANNELS],
-            pidx: [0; MAX_CHANNELS],
+            fidx: [0; MAX_NCH],
+            pidx: [0; MAX_NCH],
             n: 0,
             fs,
         }))
@@ -808,12 +816,12 @@ impl<'b> Coded<'b> {
         let mut span = Span {
             end: NB,
             half: false,
-            used: [0; MAX_CHANNELS],
+            used: [0; MAX_NCH],
             most: 0,
-            tabs: [&ZERO_TABLES; MAX_CHANNELS],
-            partial: [&[0; 256]; MAX_CHANNELS],
-            luts: [&NO_LUT; MAX_CHANNELS],
-            keys: [(0, 0); MAX_CHANNELS],
+            tabs: [&ZERO_TABLES; MAX_NCH],
+            partial: [&[0; 256]; MAX_NCH],
+            luts: [&NO_LUT; MAX_NCH],
+            keys: [(0, 0); MAX_NCH],
         };
         for ch in 0..self.nch {
             span.end = span.end.min(segment_end(&self.fseg.starts[ch], self.fidx[ch]));
@@ -869,7 +877,7 @@ impl<'b> Coded<'b> {
         LaneRun {
             start: self.n / 8,
             tabs: span.tabs,
-            probes: self.probes.get(..MAX_CHANNELS).and_then(|p| p.try_into().ok()).unwrap_or(&NO_PROBES),
+            probes: self.probes.get(..MAX_NCH).and_then(|p| p.try_into().ok()).unwrap_or(&NO_PROBES),
             arith: &mut self.arith,
             hist: self.hist,
         }
@@ -1035,8 +1043,8 @@ struct Aligned([i16; 8]);
 /// One frame's part in [`run`]: its chunk from byte `start` on and its decoding state.
 struct LaneRun<'r, 'b> {
     start: usize,
-    tabs: [&'b [ByteTable; HISTORY_BYTES]; MAX_CHANNELS],
-    probes: &'r [Probe; MAX_CHANNELS],
+    tabs: [&'b [ByteTable; HISTORY_BYTES]; MAX_NCH],
+    probes: &'r [Probe; MAX_NCH],
     arith: &'r mut Arith<'b>,
     hist: &'r mut [u8],
 }
@@ -1064,7 +1072,7 @@ fn run_inline<const K: usize, const NCH: usize, const U: usize>(lanes: &mut [Lan
     let mut ar: [Arith<'_>; K] = core::array::from_fn(|l| *lanes[l].arith);
     let tabs: [[&[ByteTable; HISTORY_BYTES]; NCH]; K] =
         core::array::from_fn(|l| core::array::from_fn(|ch| lanes[l].tabs[ch]));
-    let probes: [&[Probe; MAX_CHANNELS]; K] = core::array::from_fn(|l| lanes[l].probes);
+    let probes: [&[Probe; MAX_NCH]; K] = core::array::from_fn(|l| lanes[l].probes);
     // Per frame and channel, the shares of the complete bytes at each bit of the current
     // byte.
     let mut base = [[Aligned([0i16; 8]); NCH]; K];
@@ -1205,12 +1213,12 @@ fn run_general(
     start: usize,
     span: &Span<'_>,
     nch: usize,
-    nh: &[usize; MAX_CHANNELS],
+    nh: &[usize; MAX_NCH],
     arith: &mut Arith<'_>,
     hist: &mut [u8],
 ) {
     for m in start / 8..span.end / 8 {
-        let mut base = [[0i16; 8]; MAX_CHANNELS];
+        let mut base = [[0i16; 8]; MAX_NCH];
         for ch in 0..nch {
             for d in 0..span.used[ch] {
                 let byte = hist.get((HISTORY_BYTES + m - 1 - d) * nch + ch).copied().unwrap_or(0);
@@ -1221,7 +1229,7 @@ fn run_general(
                 }
             }
         }
-        let mut cur = [0u32; MAX_CHANNELS];
+        let mut cur = [0u32; MAX_NCH];
         for r in 0..8u32 {
             for ch in 0..nch {
                 arith.refill();
@@ -1295,7 +1303,7 @@ impl Probe {
 const NO_PROBE: Probe = Probe { partial: [0; 256], scaled: [128 << 52; MAX_PTABLE_LEN], lut: [128; LUT_LEN] };
 
 /// The probes of the channels that are not decoded.
-static NO_PROBES: [Probe; MAX_CHANNELS] = [NO_PROBE; MAX_CHANNELS];
+static NO_PROBES: [Probe; MAX_NCH] = [NO_PROBE; MAX_NCH];
 
 /// The probability table of the channels that are not decoded.
 static NO_LUT: Lut = [128; LUT_LEN];
@@ -1513,7 +1521,7 @@ mod tests {
     }
 
     fn plain_frames_body() {
-        let mut out = vec![1u8; 2 * FL];
+        let mut out = vec![1u8; 2 * FRAME_BYTES_PER_CHANNEL];
         decode(&[0x40, 7, 8], 2, &mut out).unwrap();
         assert_eq!(&out[..3], &[7, 8, 0]);
         assert!(out[2..].iter().all(|&b| b == 0));
@@ -1574,7 +1582,7 @@ mod tests {
             .collect();
         let chunks: &[(usize, usize)] =
             if cfg!(miri) { &[(0, 0), (8, 24)] } else { &[(0, 0), (8, 16), (24, 96)] };
-        for nch in 1..=MAX_CHANNELS {
+        for nch in 1..=MAX_NCH {
             for u in [4, 8, 16] {
                 for &(start, end) in chunks {
                     // Frame l starts 64 l bits later; channel c of frame l uses u - (c + l)
@@ -1590,12 +1598,12 @@ mod tests {
                                 tabs: core::array::from_fn(|c| &tables[used[c]]),
                                 partial: core::array::from_fn(|c| &partials[(c + l) % 2]),
                                 luts: core::array::from_fn(|c| &luts[(c + 2 * l) % 3 % 2]),
-                                keys: [(0, 0); MAX_CHANNELS],
+                                keys: [(0, 0); MAX_NCH],
                             }
                         })
                         .collect();
                     let starts: Vec<usize> = (0..k).map(|l| start + 64 * l).collect();
-                    let len = (HISTORY_BYTES + FL) * nch + WINDOW;
+                    let len = (HISTORY_BYTES + FRAME_BYTES_PER_CHANNEL) * nch + WINDOW;
                     let hists: Vec<Vec<u8>> =
                         (0..k).map(|_| (0..len).map(|_| rnd() as u8).collect()).collect();
                     let mut results = Vec::new();
@@ -1620,14 +1628,14 @@ mod tests {
                                     starts[l],
                                     &spans[l],
                                     nch,
-                                    &[0; MAX_CHANNELS],
+                                    &[0; MAX_NCH],
                                     &mut ars[l],
                                     &mut hists[l],
                                 );
                             }
                         } else {
                             let bytes = (end - start) / 8;
-                            let probes: Vec<[Probe; MAX_CHANNELS]> = spans
+                            let probes: Vec<[Probe; MAX_NCH]> = spans
                                 .iter()
                                 .map(|s| {
                                     core::array::from_fn(|c| {

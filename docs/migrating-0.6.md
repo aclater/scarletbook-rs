@@ -112,7 +112,25 @@ Not written yet.
 
 `MAX_CHANNELS`, `dst::FL` and `audio::FRAME_BYTES_PER_CHANNEL`.
 
-Not written yet.
+#### `dst::MAX_CHANNELS` and `dst::FL` give way to the `audio` constants (#293)
+
+Deprecated in 0.6.0 and removed before 1.0. `audio::MAX_CHANNELS` is a `u8`, where
+`dst::MAX_CHANNELS` was a `usize`, so a size needs a conversion. The values do not change. Nothing
+stops building until the removal, except in builds that deny warnings.
+`scarletbook_pcm::MAX_CHANNELS` and `scarletbook_pcm::FRAME_BYTES_PER_CHANNEL` stay, because that
+crate does not depend on `scarletbook`.
+
+Before:
+
+```rust
+let buf = vec![0u8; dst::FL * dst::MAX_CHANNELS];
+```
+
+After:
+
+```rust
+let buf = vec![0u8; audio::FRAME_BYTES_PER_CHANNEL * usize::from(audio::MAX_CHANNELS)];
+```
 
 ### N5. `Cutoff::Default`
 

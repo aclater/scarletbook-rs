@@ -6,7 +6,8 @@
 use std::fs::File;
 use std::io::BufReader;
 
-use scarletbook::dst::{DstDecoder, FL, MAX_LANES};
+use scarletbook::audio::FRAME_BYTES_PER_CHANNEL as FL;
+use scarletbook::dst::{DstDecoder, MAX_LANES};
 use scarletbook::{Disc, FrameContent};
 use scarletbook_conformance::{corpus_dir, load_cases};
 
