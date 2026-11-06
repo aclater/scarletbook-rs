@@ -6,7 +6,7 @@
 use std::fs::File;
 use std::io::BufReader;
 
-use scarletbook::{AudioFrame, Disc, Error, Slot, TrackAudioCursor};
+use scarletbook::{AudioFrame, CursorOptions, Disc, Error, FrameSpan, Slot, TrackAudioCursor};
 use scarletbook_conformance::{corpus_dir, load_cases};
 
 type Image = Disc<BufReader<File>>;
@@ -65,7 +65,7 @@ fn whole_area_is_tracks_plus_gaps() {
             let Some(area) = disc.toc().area(slot) else { continue };
             let playtime = area.playtime_frames();
             let channels = area.channel_count;
-            let whole = match disc.range_audio_cursor(slot, 0, playtime) {
+            let whole = match disc.audio_cursor(slot, FrameSpan::Range(0, playtime), CursorOptions::new()) {
                 Ok(c) => c,
                 Err(Error::TrackEmpty) => {
                     assert_eq!(playtime, 0, "{id} {slot}");
@@ -112,17 +112,21 @@ fn whole_area_is_tracks_plus_gaps() {
             for &p in &pieces {
                 let (c, next) = match p {
                     Piece::Track(n) => (
-                        disc.track_audio_cursor(slot, n).unwrap(),
+                        disc.audio_cursor(slot, FrameSpan::Track(n), CursorOptions::new()).unwrap(),
                         match cursor.take() {
                             Some(prev) => disc.continue_track_audio(prev, slot, n).unwrap(),
-                            None => disc.track_audio_cursor(slot, n).unwrap(),
+                            None => {
+                                disc.audio_cursor(slot, FrameSpan::Track(n), CursorOptions::new()).unwrap()
+                            }
                         },
                     ),
                     Piece::Range(a, b) => (
-                        disc.range_audio_cursor(slot, a, b).unwrap(),
+                        disc.audio_cursor(slot, FrameSpan::Range(a, b), CursorOptions::new()).unwrap(),
                         match cursor.take() {
                             Some(prev) => disc.continue_range_audio(prev, slot, a, b).unwrap(),
-                            None => disc.range_audio_cursor(slot, a, b).unwrap(),
+                            None => {
+                                disc.audio_cursor(slot, FrameSpan::Range(a, b), CursorOptions::new()).unwrap()
+                            }
                         },
                     ),
                 };

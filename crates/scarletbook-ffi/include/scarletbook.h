@@ -11,10 +11,17 @@
  *   calling thread and stays valid until that thread's next call into this library.
  *
  * - Handles. SbDisc, SbTrackAudio, SbRawFrames, SbPool, SbSeekIndex, SbCancel,
- *   SbProgress and SbPcmConverter are opaque. Each is created by one
+ *   SbProgress, SbPcmConverter, SbOutputOptions, SbOutputLayout, SbTags and SbDstLengths
+ *   are opaque. Each is created by one
  *   function and released by exactly one call to its _free function; passing NULL to a
  *   _free function does nothing. A function that creates a handle sets *out to NULL when it fails, so
  *   freeing that pointer afterwards is safe.
+ *   A const handle pointer does not mean the call leaves the handle unchanged: handles
+ *   check for use at run time, so most take const even in calls that change them, such as
+ *   a read or a setter. A pointer is not const only for: a _free function and the prev of
+ *   an _open_next function, which consume their handle; sb_pcm_convert_run; and an
+ *   SbSeekIndex that the call records into (sb_seek_index_extend, sb_seek_index_merge's
+ *   into, sb_seek_index_verify, the _absorb functions and the _open_next_indexed functions).
  *
  * - Pointers. Pointer arguments must be NULL or valid for the access the function
  *   documents. NULL where a value is required gives SB_STATUS_INVALID_ARGUMENT.
@@ -26,6 +33,22 @@
  *   If buf is NULL or cap <= *len, nothing is written to buf and the call returns
  *   SB_STATUS_BUFFER_TOO_SMALL: call again with cap > *len. A string can contain U+0000
  *   (a language code can), so use *len rather than strlen.
+ *
+ * - Buffers. Nothing is written past a buffer's size, and a NULL buffer counts as too
+ *   small. A call that is given too small a buffer returns SB_STATUS_BUFFER_TOO_SMALL. How
+ *   to learn the size needed depends on what the call copies:
+ *   strings, as above: a call with cap 0 gives *len, and cap must be above it;
+ *   byte data and lists (sb_disc_manufacturer, sb_seek_index_save, sb_disc_toc,
+ *   sb_dst_lengths_get): a call with cap 0 gives *len or *count, and cap must be at least
+ *   that, with no NUL added;
+ *   stored frames (sb_raw_frames_read, sb_raw_frames_read_dst_equivalent and the raw_buf
+ *   of sb_track_audio_read_with_stored): the size is in *info or *raw_info, and the same
+ *   frame comes back from the next call;
+ *   a size the caller works out, with nothing reported: sb_disc_read_sectors (count x
+ *   2048), sb_track_audio_read and sb_dst_decode (channels x 4704), sb_pcm_convert_run
+ *   and sb_output_dsf_chain_plan (count - 1 entries).
+ *   sb_output_layout_read and sb_output_layout_fill are different: they copy up to len
+ *   bytes of a file from offset, and *written says how many.
  *
  * - Threads. A handle may be moved between threads, but must not be used by two threads
  *   at once; an SbPool, which only holds threads, may, and so may an SbCancel and an
@@ -2944,6 +2967,11 @@ uint32_t sb_track_audio_channels(const struct SbTrackAudio *audio);
  was opened from or a clone of it (`sb_disc_clone`). The disc's read callbacks, if any,
  run during this call.
 
+ With `buf` NULL or `cap` below channels x 4704 (`sb_track_audio_channels`), the call
+ returns `SB_STATUS_BUFFER_TOO_SMALL`, does not write `*info`, and reads nothing: the
+ next call with room gets the same frame. This differs from `sb_raw_frames_read`, whose
+ frames vary in size, which reports the size needed in `*info`.
+
  # Safety
 
  `audio` and `disc` must be NULL or live handles; `buf` NULL or valid for `cap` bytes of
@@ -3314,13 +3342,14 @@ void sb_raw_frames_free(struct SbRawFrames *raw);
  bytes of `out`. On `SB_STATUS_INVALID_DST_FRAME`, `*rule` (if not NULL) receives the
  rule of specification 5, 5.6 and the output bytes are unspecified. A frame is at most
  `SB_MAX_FRAME_BYTES` long (specification 4, 4.4.3 and 7, 7.6): a longer `len` returns
- `SB_STATUS_INVALID_ARGUMENT` without reading `frame`.
+ `SB_STATUS_INVALID_ARGUMENT` without reading `frame`. With `out` NULL or `out_len` below
+ `channels x 4704`, the call returns `SB_STATUS_BUFFER_TOO_SMALL` and writes nothing.
 
  # Safety
 
- `frame` must be NULL (only with `len` 0) or valid for `len` bytes of reads; `out` valid
- for `out_len` bytes of writes and not overlapping `frame`; `rule` NULL or valid for a
- write.
+ `frame` must be NULL (only with `len` 0) or valid for `len` bytes of reads; `out` NULL or
+ valid for `out_len` bytes of writes and not overlapping `frame`; `rule` NULL or valid for
+ a write.
  */
 SbStatus sb_dst_decode(const uint8_t *frame,
                        size_t len,
