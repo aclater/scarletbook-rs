@@ -137,12 +137,13 @@ let span = FrameSpan::Range(first, end);
 let cursor = disc.audio_cursor(slot, span, CursorOptions::new().with_index(&index))?;
 ```
 
-**Tuning:** `dst::MAX_LANES`, `audio::MAX_PARALLEL_BATCH`, `audio::PARALLEL_FRAMES_PER_THREAD`,
+**Tuning:** `audio::MAX_PARALLEL_BATCH`, `audio::PARALLEL_FRAMES_PER_THREAD`,
 `seek::MAX_CLAIMS`, `seek::MAX_EVENTS`, `seek::HINT_REACH` and `seek::REPLAY_SECTORS`. They have no
 replacement: code that reads one should stop sizing anything by it. `dst::lanes` stays public and
 documented, as the best number of frames to pass to `DstDecoder::decode_many` at once. The function
 is stable, but the number it returns is a tuning value: it may change in any release, and may
-differ per build, per CPU and with any setting that affects decoding.
+differ per build, per CPU and with any setting that affects decoding. `dst::MAX_LANES` also stays
+public, as the limit of `TrackAudioCursor::with_dst_lanes`; its value may change in any release too.
 
 **Text:** `text::{decode, decode_string, fixed_bytes, fixed_text, language, string_bytes,
 text_string}` and `text::Charset`, which only they take. `Locale.charset` stays a `u8`, and

@@ -63,6 +63,61 @@ In the run list, but not in every table:
   DSF and DSD to PCM are blank, unless an equivalent revision is compared instead (0.5.6
   below uses `3eb96dc` for 0.5.5).
 
+## 0.5.9
+
+Measured on the Zen 2 benchmark host (AMD Ryzen 9 3950X), 2026-11-06, with `compare.sh` (generic kits, statically linked, profile `dist`): 0.5.8 = `v0.5.8` and 0.5.9 = the release-prep tree. Timed under the machine's shared benchmark lock. 122 runs, none failed. The kit was built just before #283 merged; #283 changes only comments, Miri-only tests and CI, no timed code.
+
+| Path | Build | 0.5.8 wall s | 0.5.8 CPU s | 0.5.9 wall s | 0.5.9 CPU s | 0.5.9 / 0.5.8 | Median of per-round ratios [range] |
+|---|---|---|---|---|---|---|---|
+| DST decode, one thread, 2 channels | generic | 6.131 | 6.09 | 6.079 | 6.05 | 0.991 | 0.992 [0.981-0.998] |
+| DST decode, one thread, 2 channels, corpus frames | generic | 20.296 | 20.19 | 20.013 | 19.91 | 0.986 | 0.988 [0.984-0.988] |
+| DST decode, all threads, 2 channels | generic | 4.010 | 126.66 | 3.880 | 122.07 | 0.968 | 0.965 [0.962-0.979] |
+| DST decode, one thread, 6 channels | generic | 7.645 | 7.61 | 7.373 | 7.33 | 0.964 | 0.965 [0.962-0.984] |
+| DST decode, all threads, 6 channels | generic | 2.593 | 81.48 | 2.483 | 78.23 | 0.958 | 0.961 [0.951-0.964] |
+| plain-DSD area to DSF, 2 channels | generic | 0.553 | 0.55 | 0.557 | 0.55 | 1.006 | 1.004 [0.987-1.006], unresolved |
+| plain-DSD area to DSF, 5 channels | generic | 0.611 | 0.60 | 0.600 | 0.59 | 0.982 | 0.970 [0.957-0.982], see below |
+| DST area to DSF, all threads | generic | 4.041 | 128.03 | 3.900 | 123.38 | 0.965 | 0.965 [0.875-0.970] |
+| DSD to PCM, stereo DSD64 to 176.4 kHz 24-bit, one thread | generic | 4.25 / 4.16 / 4.16 ms per s | - | 3.89 / 3.82 / 3.82 ms per s | - | 0.918 | - |
+| open to parsed TOC, page cache | generic | - | - | 16.9 µs | - | - | - |
+| open to parsed TOC, evicted | generic | - | - | 213.3 µs | - | - | - |
+| first 128 KiB, 2 channels, plain DSD, page cache | generic | - | - | 29.5 µs | - | - | - |
+| first 128 KiB, 2 channels, plain DSD, evicted | generic | - | - | 244.5 µs | - | - | - |
+| first 128 KiB, 2 channels, DST, one thread, page cache | generic | - | - | 4003.0 µs | - | - | - |
+| first 128 KiB, 2 channels, DST, one thread, evicted | generic | - | - | 4407.9 µs | - | - | - |
+| first 128 KiB, 2 channels, DST, all threads, page cache | generic | - | - | 2362.9 µs | - | - | - |
+| first 128 KiB, 2 channels, DST, all threads, evicted | generic | - | - | 4335.2 µs | - | - | - |
+
+Medians of 5 rounds (3 for the 20-minute DST case and DSD to PCM), a fresh copy of each program and image per round, images in the page cache, output to `/dev/null`. The DSD-to-PCM cells are at 1 / 8 / 256 frames per call. `open` and `first` are new in 0.5.9's kit: their cells are the program's own median in microseconds, with no 0.5.8 figure. Spread between rounds above 5 %, so read as a range: plain-DSD 2 channels 0.537 to 0.567 s (0.5.8) and 0.532 to 0.566 s (0.5.9); plain-DSD 5 channels 0.562 to 0.644 s and 0.538 to 0.624 s; DST area to DSF 4.021 to 4.455 s (0.5.8); open, page cache 14.7 to 18.7 µs; open, evicted 192.6 to 235.5 µs; first 128 KiB plain DSD, evicted 236.5 to 253.4 µs; first 128 KiB DST all threads, evicted 4159.3 to 4798.9 µs.
+
+**Plain-DSD rows:** differences under about 2 % are unresolved (#259), so they aren't stated as "within 1 %". The 2-channel row (1.006; 3 of 5 rounds slower, 2 faster) shows no change either way. The 5-channel row is 0.982 as a ratio of medians, under that line, and 0.970 as the median of per-round ratios, with all 5 rounds below 1. That agrees with #287's own 0.970 over 7 rounds, which is why it is reported as a likely gain and not a settled figure.
+
+No row is slower than 0.5.8 beyond noise.
+
+**5 channels (#288).** The run list has no 5-channel DST case, so this is a separate run, same method, 5 rounds, 20 runs, none failed:
+
+| Path (not in the run list) | Build | 0.5.8 wall s | 0.5.8 CPU s | 0.5.9 wall s | 0.5.9 CPU s | 0.5.9 / 0.5.8 | Median of per-round ratios [range] |
+|---|---|---|---|---|---|---|---|
+| DST decode, one thread, 5 channels, corpus frames, 3 min | generic | 8.147 | 8.11 | 7.459 | 7.41 | 0.916 | 0.915 [0.913-0.923] |
+| DST decode, all threads, 5 channels, corpus frames, 10 min | generic | 1.877 | 59.01 | 1.608 | 50.41 | 0.856 | 0.856 [0.853-0.857] |
+
+### `bench realtime` (#255), under the shared lock
+
+Generic kit, one pinned core, background fuzzing paused, image in the page cache, a fresh program copy per run, 5 runs per image, one short lock hold per run. Median [range]. This replaces the 0.5.8 section's `bench realtime` table, which predates the lock. 0.5.8's column is from #255 (2026-11-05); 0.5.9's was taken on 2026-11-06, in separate runs, not alternating with 0.5.8.
+
+| Figure | Need | 6ch DST stress, 10 min, 0.5.8 | 6ch, 0.5.9 | Stereo DST stress, 50 min, 0.5.8 | Stereo, 0.5.9 |
+|---|---|---|---|---|---|
+| Mean real-time factor | ≥ 4× | 15.46× [15.19-15.52] | 15.80× [15.55-15.85] | 47.52× [47.36-47.58] | 47.94× [46.63-48.02] |
+| Slowest 1-second window | ≥ 2× | 12.36× [6.69-13.83] | 14.56× [14.50-15.01] | 38.51× [13.33-38.60] | 37.17× [24.71-39.17] |
+| 99.9th percentile frame | | 2.055 ms [2.023-2.317] | 1.930 ms [1.914-1.961] | 0.639 ms [0.636-0.839] | 0.634 ms [0.631-0.657] |
+| Slowest frame | ≤ 6.7 ms | 4.743 ms [2.859-5.878] | 4.166 ms [2.451-4.675] | 3.432 ms [3.292-3.450] | 3.433 ms [3.268-3.463] |
+| Frames over 6.7 ms | 0 | 0 in all runs | 0 in all runs | 0 in all runs | 0 in all runs |
+| Seek to first frame, median of 200 | ≤ 100 ms | 1.906 ms [1.894-1.964] | 1.859 ms [1.855-1.869] | 0.636 ms [0.635-0.638] | 0.636 ms [0.634-0.640] |
+| Seek to first frame, slowest of 200 | ≤ 100 ms | 2.836 ms [2.783-2.848] | 2.734 ms [2.704-2.815] | 0.922 ms [0.920-0.945] | 0.916 ms [0.912-0.922] |
+
+All needs are met in every run. The tails still vary between runs: treat the slowest-window and slowest-frame rows as floors to check, not as figures to compare between versions.
+
+Not measured for 0.5.9: the x86-64-v3 build; AVX-512 builds, Zen 5 and Raptor Lake; real output files; the first 128 KiB of 5 or 6 channels or without a seek index; cold runs of the whole-area cases; the C interface (see "Not measured"); `--lanes` is not in the run list (#318 has its figures). For `bench realtime`: an i9-13900H (#255's reference host), real discs, the corpus's own 6-channel areas, cold seeks and all-thread decoding.
+
 ## 0.5.8
 
 Measured on lennon (3950X), 2026-11-05, with `compare.sh` (generic kits, statically linked, profile
