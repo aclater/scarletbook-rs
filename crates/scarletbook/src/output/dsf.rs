@@ -274,6 +274,8 @@ impl DsfData {
     /// Every row is filled whole, a position at a time, every channel from one pass over its
     /// content ([`DsfData::fill_row`]): in place, or, for a row `out` only touches, in a
     /// scratch row and copied from there.
+    /// So a read of part of a row asks for all of that row's positions, and fails if any of
+    /// them fails.
     #[inline(always)]
     pub(super) fn fill(
         &self,
@@ -515,6 +517,51 @@ mod tests {
             done += run;
         }
         Ok(())
+    }
+
+    /// A read of part of a row asks for all of that row's positions, as [`DsfData::positions`]
+    /// allows, so an error in one fails a read of bytes that lie in another or are only pad:
+    /// a choice made for #202, which filling a block at a time, the old path, did not make.
+    /// A later change to it should be a decision, not a side effect. Small enough for Miri
+    /// as it is: two positions of two channels.
+    #[test]
+    fn partial_row_asks_for_every_position_of_its_row() {
+        struct Failing {
+            made: Made,
+            bad: u32,
+        }
+        impl PositionSource for Failing {
+            fn content(&mut self, t: u32) -> Result<Cow<'_, [u8]>, Error> {
+                if t == self.bad {
+                    return Err(Error::InvalidArgument("the bad position"));
+                }
+                self.made.content(t)
+            }
+        }
+        let first = 3;
+        let len = 2 * FRAME_BYTES_PER_CHANNEL;
+        let row = 2 * BLOCK;
+
+        // Row 1 holds stream bytes 4096 to 8191; position 1 starts at 4704. These 64 bytes
+        // are all in position 0.
+        let data = DsfData { channels: 2, start: 0, stream: 3 * BLOCK, skip: 0, reverse: true };
+        assert_eq!(data.positions(row..row + 64), 0..2);
+        let mut source = Failing { made: Made(2, Vec::new()), bad: first + 1 };
+        let mut part = [0; 64];
+        let result = data.fill(row, &mut part, first, &mut Checked { inner: &mut source, len });
+        assert!(matches!(result, Err(Error::InvalidArgument("the bad position"))));
+        fill_blocks(&data, row, &mut part, first, &mut Checked { inner: &mut source, len }).unwrap();
+        // Row 0 lies in position 0 alone.
+        data.fill(0, &mut part, first, &mut Checked { inner: &mut source, len }).unwrap();
+
+        // Row 1 of a stream that ends inside it: byte 20 of its block is pad.
+        let data = DsfData { channels: 2, start: 0, stream: BLOCK + 10, skip: 0, reverse: true };
+        let mut source = Failing { made: Made(2, Vec::new()), bad: first };
+        let mut pad = [0xAA; 1];
+        let result = data.fill(row + 20, &mut pad, first, &mut Checked { inner: &mut source, len });
+        assert!(matches!(result, Err(Error::InvalidArgument("the bad position"))));
+        fill_blocks(&data, row + 20, &mut pad, first, &mut Checked { inner: &mut source, len }).unwrap();
+        assert_eq!(pad, [0]);
     }
 
     /// Whole rows (filled a position at a time) are the bytes that filling a block at a
