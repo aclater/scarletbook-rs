@@ -5,17 +5,20 @@
 //! ```text
 //! scarletbook-synth OUT --minutes M --area 2ch|mc|both --kind dsd|dst
 //!     [--sector-size 2048|2064|2054] [--mc-channels 5|6] [--track-minutes T] [--corpus DIR]
-//!     [--dst-frames corpus|stress|uneven]
+//!     [--dst-frames corpus|stress|uneven] [--dst-order N]
 //! ```
 //!
 //! `M` and `T` may be fractional; each area lasts `M` minutes, with one track per `T`
 //! minutes (default 5). DST frames are taken from the conformance corpus (default: this
 //! repository's `corpus/`) or, with `--dst-frames stress`, from the generated stress set of
-//! the `dst_frames` benchmark (2 and 6 channels only; `scarletbook/tests/common/dst_enc.rs`),
-//! which is used to train and check profile-guided builds on frames that are not in the
-//! corpus; or, with `--dst-frames uneven`, from the corpus with sizes following a slow
-//! envelope, an uneven bit rate as on real discs, which seeks by timecode find harder
-//! (`scarletbook-seekcost`; `DstSource::uneven`). See `scarletbook_conformance::synth` for the layout.
+//! the `dst_frames` benchmark (`scarletbook/tests/common/dst_enc.rs`; for 5 channels, the
+//! same layouts of a signal of their own, which that benchmark does not run), which is used
+//! to train and check profile-guided builds on frames that are not in the corpus; or, with
+//! `--dst-frames uneven`, from the corpus with sizes following a slow envelope, an uneven
+//! bit rate as on real discs, which seeks by timecode find harder (`scarletbook-seekcost`;
+//! `DstSource::uneven`). `--dst-order N` (1 to 128, `--dst-frames stress` only) replaces the
+//! stress layouts with one filter of order `N` per channel, to time one history-byte branch
+//! of the decoder. See `scarletbook_conformance::synth` for the layout.
 
 use std::fs::File;
 use std::io::BufWriter;
@@ -32,9 +35,12 @@ mod dst_enc;
 /// Frames per layout of the stress set (3 layouts, so 3 x this many distinct frames).
 const STRESS_FRAMES: usize = 4;
 
+/// Frames of one filter order, as many distinct frames as the stress set has.
+const ORDER_FRAMES: usize = 3 * STRESS_FRAMES;
+
 const USAGE: &str = "usage: scarletbook-synth OUT --minutes M --area 2ch|mc|both --kind dsd|dst \
                      [--sector-size 2048|2064|2054] [--mc-channels 5|6] [--track-minutes T] [--corpus DIR] \
-                     [--dst-frames corpus|stress|uneven]";
+                     [--dst-frames corpus|stress|uneven] [--dst-order N]";
 
 fn frames(minutes: &str) -> Result<u32, String> {
     let m: f64 = minutes.parse().map_err(|_| format!("not a number of minutes: {minutes}"))?;
@@ -48,7 +54,8 @@ fn frames(minutes: &str) -> Result<u32, String> {
 /// Where DST frames come from.
 enum Frames {
     Corpus(PathBuf),
-    Stress,
+    /// The stress set, or with an order only frames of that filter order.
+    Stress(Option<usize>),
     Uneven(PathBuf),
 }
 
@@ -66,6 +73,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<(PathBuf, Config, Fra
     let (mut area, mut kind) = (false, false);
     let mut corpus = corpus_dir();
     let (mut stress, mut uneven) = (false, false);
+    let mut order = None;
     while let Some(flag) = args.next() {
         let v = args.next().ok_or_else(|| format!("{flag} needs a value\n{USAGE}"))?;
         match flag.as_str() {
@@ -106,6 +114,12 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<(PathBuf, Config, Fra
                     _ => return Err(format!("--dst-frames must be corpus, stress or uneven, not {v}")),
                 }
             }
+            "--dst-order" => {
+                order = match v.parse() {
+                    Ok(n @ 1..=128) => Some(n),
+                    _ => return Err(format!("--dst-order must be 1 to 128, not {v}")),
+                }
+            }
             _ => return Err(format!("unknown argument {flag}\n{USAGE}")),
         }
     }
@@ -113,33 +127,41 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<(PathBuf, Config, Fra
         return Err(format!("--minutes, --area and --kind are required\n{USAGE}"));
     }
     scarletbook_conformance::synth::check(&cfg)?;
-    if stress && cfg.multichannel && cfg.mc_channels != 6 {
-        return Err("the stress set has no 5-channel frames: use --mc-channels 6".into());
+    if order.is_some() && !stress {
+        return Err("--dst-order needs --dst-frames stress".into());
     }
     let frames = match (stress, uneven) {
-        (true, _) => Frames::Stress,
+        (true, _) => Frames::Stress(order),
         (_, true) => Frames::Uneven(corpus),
         _ => Frames::Corpus(corpus),
     };
     Ok((out, cfg, frames))
 }
 
-fn stress_source() -> DstSource {
-    let mut src = DstSource::default();
-    for f in dst_enc::stress_set(STRESS_FRAMES) {
-        match f.channels {
-            2 => src.two.push(f.frame),
-            _ => src.six.push(f.frame),
+fn stress_source(cfg: &Config, order: Option<usize>) -> DstSource {
+    let area = |on: bool, nch: usize| -> Vec<Vec<u8>> {
+        if !on {
+            return Vec::new();
         }
+        let frames = match order {
+            None => dst_enc::stress_channels(nch, STRESS_FRAMES),
+            Some(n) => dst_enc::stress_order(nch, ORDER_FRAMES, n),
+        };
+        frames.into_iter().map(|f| f.frame).collect()
+    };
+    DstSource {
+        two: area(cfg.two_channel, 2),
+        five: area(cfg.multichannel && cfg.mc_channels == 5, 5),
+        six: area(cfg.multichannel && cfg.mc_channels == 6, 6),
+        envelope: Vec::new(),
     }
-    src
 }
 
 fn run(out: PathBuf, cfg: &Config, frames: Frames) -> Result<(), String> {
     let src = match (cfg.kind, frames) {
         (Kind::Dsd, _) => DstSource::default(),
         (Kind::Dst, Frames::Corpus(corpus)) => DstSource::from_corpus(&corpus)?,
-        (Kind::Dst, Frames::Stress) => stress_source(),
+        (Kind::Dst, Frames::Stress(order)) => stress_source(cfg, order),
         (Kind::Dst, Frames::Uneven(corpus)) => DstSource::from_corpus(&corpus)?.uneven(),
     };
     let file = File::create(&out).map_err(|e| format!("{}: {e}", out.display()))?;

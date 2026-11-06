@@ -265,6 +265,28 @@ fn decode_many_on_stress_frames() {
     }
 }
 
+/// 5-channel stress frames, which the stress set does not hold, decode to their signal in
+/// every layout and at every history-byte branch, alone and in lockstep.
+#[test]
+#[cfg_attr(miri, ignore = "decodes full frames; `detected_decoder_matches_generic_simple` is the small case")]
+fn five_channel_stress_frames_round_trip() {
+    let mut frames = dst_enc::stress_channels(5, 2);
+    for order in [32, 64, 128] {
+        frames.extend(dst_enc::stress_order(5, 2, order));
+    }
+    let mut dec = DstDecoder::new();
+    for pair in frames.chunks(2) {
+        let refs: Vec<&[u8]> = pair.iter().map(|f| f.frame.as_slice()).collect();
+        let mut bufs = vec![vec![0u8; FL * 5]; pair.len()];
+        let mut outs: Vec<&mut [u8]> = bufs.iter_mut().map(Vec::as_mut_slice).collect();
+        let results = dec.decode_many(&refs, 5, &mut outs);
+        for ((r, f), out) in results.iter().zip(pair).zip(&bufs) {
+            assert_eq!(r, &Ok(()), "{}", f.layout);
+            assert!(*out == f.audio, "{}: audio differs", f.layout);
+        }
+    }
+}
+
 /// The generated stress set (as used by the benchmarks) decodes to its signal, in every
 /// layout: segmented, per-channel and coded filters and ptables.
 #[test]
