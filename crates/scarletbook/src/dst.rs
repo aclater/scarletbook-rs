@@ -1295,9 +1295,9 @@ type ScaledLut = [u64; MAX_PTABLE_LEN];
 /// Q (5.5.7) x 2^52, the scale of [`Arith`], indexed by the top 5 bits of A x 2^52: with
 /// t = floor(A / 128), Q is floor(t / 2) with bit 0 ORed with bit 0 of t.
 ///
-/// One load and no shift instead of four shifts and logic operations and a shift. Measured on
-/// Zen 2 (#203), where the 2-channel loop is bound by its integer operations rather than by
-/// the arithmetic decoder's chain, which this lengthens.
+/// One load instead of a shift and two logic operations before the multiply and a shift after
+/// it. Measured on Zen 2 (#203), where the 2-channel loop is bound by its integer operations
+/// rather than by the arithmetic decoder's chain, which this lengthens.
 type QTable = [u64; 32];
 
 const fn q_table() -> QTable {
