@@ -2771,6 +2771,11 @@ pub unsafe extern "C" fn sb_track_audio_channels(audio: *const SbTrackAudio) -> 
 /// was opened from or a clone of it (`sb_disc_clone`). The disc's read callbacks, if any,
 /// run during this call.
 ///
+/// With `buf` NULL or `cap` below channels x 4704 (`sb_track_audio_channels`), the call
+/// returns `SB_STATUS_BUFFER_TOO_SMALL`, does not write `*info`, and reads nothing: the
+/// next call with room gets the same frame. This differs from `sb_raw_frames_read`, whose
+/// frames vary in size, which reports the size needed in `*info`.
+///
 /// # Safety
 ///
 /// `audio` and `disc` must be NULL or live handles; `buf` NULL or valid for `cap` bytes of
@@ -3677,13 +3682,14 @@ pub unsafe extern "C" fn sb_raw_frames_free(raw: *mut SbRawFrames) {
 /// bytes of `out`. On `SB_STATUS_INVALID_DST_FRAME`, `*rule` (if not NULL) receives the
 /// rule of specification 5, 5.6 and the output bytes are unspecified. A frame is at most
 /// `SB_MAX_FRAME_BYTES` long (specification 4, 4.4.3 and 7, 7.6): a longer `len` returns
-/// `SB_STATUS_INVALID_ARGUMENT` without reading `frame`.
+/// `SB_STATUS_INVALID_ARGUMENT` without reading `frame`. With `out` NULL or `out_len` below
+/// `channels x 4704`, the call returns `SB_STATUS_BUFFER_TOO_SMALL` and writes nothing.
 ///
 /// # Safety
 ///
-/// `frame` must be NULL (only with `len` 0) or valid for `len` bytes of reads; `out` valid
-/// for `out_len` bytes of writes and not overlapping `frame`; `rule` NULL or valid for a
-/// write.
+/// `frame` must be NULL (only with `len` 0) or valid for `len` bytes of reads; `out` NULL or
+/// valid for `out_len` bytes of writes and not overlapping `frame`; `rule` NULL or valid for
+/// a write.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sb_dst_decode(
     frame: *const u8,
