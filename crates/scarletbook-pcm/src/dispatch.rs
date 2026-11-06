@@ -182,7 +182,7 @@ mod tests {
         let cases: &[(u8, usize, f64)] =
             if cfg!(miri) { &[(2, 1, 0.0)] } else { &[(1, 3, 0.0), (2, 3, 0.0), (3, 3, 7.5), (6, 3, -3.0)] };
         for rate in PcmRate::ALL {
-            let cutoffs = if cfg!(miri) { &[Cutoff::Default][..] } else { &Cutoff::ALL[..] };
+            let cutoffs = if cfg!(miri) { &[Cutoff::Standard][..] } else { &Cutoff::ALL[..] };
             for &cutoff in cutoffs.iter().filter(|c| c.supports(rate)) {
                 for &(channels, frames, gain) in cases {
                     let config =

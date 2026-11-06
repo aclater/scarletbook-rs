@@ -3777,7 +3777,7 @@ pub unsafe extern "C" fn sb_pcm_converter_new(
             Failure::arg(&format!("rate_hz must be 88200, 176400 or 352800, not {rate_hz}"))
         })?;
         let cutoff = match cutoff {
-            SB_PCM_CUTOFF_DEFAULT => Cutoff::Default,
+            SB_PCM_CUTOFF_DEFAULT => Cutoff::Standard,
             SB_PCM_CUTOFF_LOW => Cutoff::Low,
             SB_PCM_CUTOFF_WIDE => Cutoff::Wide,
             c => return Err(Failure::arg(&format!("unknown cutoff {c}"))),
@@ -5729,7 +5729,7 @@ pub fn fuzz_pcm_convert_run(
     let config = (|| {
         let rate = PcmRate::from_hz(rate_hz)?;
         let cutoff =
-            [Cutoff::Default, Cutoff::Low, Cutoff::Wide].get(usize::try_from(cutoff).ok()?).copied()?;
+            [Cutoff::Standard, Cutoff::Low, Cutoff::Wide].get(usize::try_from(cutoff).ok()?).copied()?;
         let channels = u8::try_from(channels).ok()?;
         let gain = Gain::from_db(gain_db).ok()?;
         Some(PcmConfig::new(rate, cutoff, channels).with_gain(gain))
