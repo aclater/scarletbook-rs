@@ -343,6 +343,10 @@ const WINDOW: usize = HISTORY_BYTES * MAX_CHANNELS;
 
 /// Most frames [`DstDecoder::decode_many`] decodes in lockstep; it decodes more in groups
 /// of this many.
+///
+/// Not part of the public API: a tuning value of the decoder, not covered by semantic
+/// versioning. It may change or go in any release.
+#[doc(hidden)]
 pub const MAX_LANES: usize = 4;
 
 /// How many frames of `channels` channels to pass to [`DstDecoder::decode_many`] at once
@@ -357,6 +361,10 @@ pub const MAX_LANES: usize = 4;
 ///
 /// The 1-, 3- and 4-channel choices were measured on generated frames; their output is
 /// checked by the corpus's 1-, 3- and 4-channel DST cases (sacd-spec#15).
+///
+/// Not part of the public API: a tuning value of the decoder, not covered by semantic
+/// versioning. It may change or go in any release.
+#[doc(hidden)]
 pub fn lanes(channels: u8) -> usize {
     let avx512 = cfg!(target_feature = "avx512cd");
     match channels {
@@ -439,10 +447,10 @@ impl DstDecoder {
     }
 
     /// Decodes `frames[i]` into `outs[i]` for every `i`, as [`DstDecoder::decode`] would
-    /// one by one, with the same results, but up to [`MAX_LANES`] frames at a time in
+    /// one by one, with the same results, but a few frames at a time in
     /// lockstep on the calling thread: frames are independent (specification 5, 5.1.1), so
     /// the processor overlaps their arithmetic decoders, whose steps otherwise wait for each
-    /// other. [`lanes`] is the best number of frames to pass at once.
+    /// other. It takes any number of frames, and splits them into groups itself.
     ///
     /// The result has one entry per frame; a frame without an output buffer (when `outs` is
     /// shorter) is [`DstError::InvalidArguments`].

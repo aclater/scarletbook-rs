@@ -26,7 +26,7 @@
 //! and [`AreaIndex::absorb`] takes those checkpoints into the index. Each audio sector is
 //! then read at most once per index for building it, and once the frontier lies past a
 //! range, opening that range reads at most `W + K` sectors before the sectors of its own
-//! frames (`W` = [`REPLAY_SECTORS`], unless the frame under assembly there is longer and
+//! frames (`W` = 32, unless the frame under assembly there is longer and
 //! does not fit the inline budget).
 //!
 //! # Trust
@@ -91,6 +91,10 @@ pub const DEFAULT_INLINE_BUDGET: usize = 1 << 20;
 /// of sectors; a checkpoint whose frame under assembly started more than `W` sectors
 /// before it stores the frame's bytes (at most [`MAX_FRAME_BYTES`]) while the index's
 /// inline budget lasts, and is replayed from the frame's first sector otherwise.
+///
+/// Not part of the public API: a tuning value of the seek index, not covered by semantic
+/// versioning. It may change or go in any release.
+#[doc(hidden)]
 pub const REPLAY_SECTORS: u64 = 32;
 
 /// Options of an [`AreaIndex`].
@@ -102,7 +106,7 @@ pub struct IndexOptions {
     /// past its checkpoint before the range's first frame is known.
     pub interval: u32,
     /// The most bytes of frames under assembly the index stores, over all its checkpoints
-    /// (see [`REPLAY_SECTORS`]); 0 stores none. A cursor made from the index may hold as
+    /// (frames spread over more sectors than a checkpoint replays); 0 stores none. A cursor made from the index may hold as
     /// much again while it records. Saved indexes keep at most 4 GiB of it.
     pub inline_budget: usize,
     /// Seek hints ([`AreaIndex#seek-hints`]): a sample is recorded at least this many
@@ -158,6 +162,10 @@ pub const MAX_HINTS: usize = 65_536;
 
 /// A seek hint is used for a range whose first frame lies at most this many frames after
 /// the hint's.
+///
+/// Not part of the public API: a tuning value of the seek index, not covered by semantic
+/// versioning. It may change or go in any release.
+#[doc(hidden)]
 pub const HINT_REACH: u32 = 64;
 
 /// Where a cursor made from an index started its scan.
@@ -381,7 +389,7 @@ pub enum Speculation {
         exact_from: u32,
     },
     /// A provisional reading that will not be checked: dropped past the limit of
-    /// [`MAX_CLAIMS`] pending readings per index, or found to be of an index that does not
+    /// pending readings per index, or found to be of an index that does not
     /// match the image. Its positions stay provisional.
     Unverified {
         /// `L`.
@@ -411,11 +419,19 @@ pub enum Suspect {
 
 /// Most provisional readings an index keeps waiting to be checked; past it, the oldest is
 /// dropped as [`Speculation::Unverified`].
+///
+/// Not part of the public API: a tuning value of the seek index, not covered by semantic
+/// versioning. It may change or go in any release.
+#[doc(hidden)]
 pub const MAX_CLAIMS: usize = 256;
 
 /// Most verdicts kept waiting to be taken, per index ([`AreaIndex::take_events`]) and per
 /// disc and area ([`crate::Disc::take_seek_events`]); past it, the oldest are dropped (the
 /// cursors still hold their verdicts).
+///
+/// Not part of the public API: a tuning value of the seek index, not covered by semantic
+/// versioning. It may change or go in any release.
+#[doc(hidden)]
 pub const MAX_EVENTS: usize = 4 * MAX_CLAIMS;
 
 /// Appends `events` to `queue`, keeping the last [`MAX_EVENTS`].
@@ -1186,7 +1202,7 @@ const _: () = {
 /// [`IndexOptions::max_hints`] of them (8 bytes each). They are saved with the index, so
 /// that after a remount a provisional reading ([`SeekPolicy::Speculative`]) of a range near
 /// one read before needs no search: it begins at the hint with the largest frame number
-/// below the range's first frame (at most [`HINT_REACH`] frames below), and reads from
+/// below the range's first frame (if it is close enough below), and reads from
 /// there through the next hint past the range in **one read call** (at most
 /// [`MAX_READ_SECTORS`]). A hint only chooses `L`: the positions are provisional
 /// ([`Speculation::Pending`]) as from any provisional start, whatever the hint says, unless
@@ -1909,7 +1925,7 @@ impl AreaIndex {
 
     /// Checks the provisional readings that the exact checkpoints now reach (specification
     /// 4, 4.2 item 8): for each, the state at its `L` of a reader from the first sector,
-    /// rebuilt from the checkpoint at or before `L` (at most [`REPLAY_SECTORS`] plus the
+    /// rebuilt from the checkpoint at or before `L` (at most a short replay plus the
     /// interval in sectors read through `image`). A reading is confirmed when (a) that
     /// reader's next acceptable frame number at `L` is at most `u` and (b) its frame under
     /// assembly there is none or numbered below `u`, and refuted ("possibly different")
