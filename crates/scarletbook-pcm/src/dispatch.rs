@@ -184,6 +184,31 @@ mod tests {
         Converter, Cutoff, FRAME_BYTES_PER_CHANNEL, FrameRun, Frames, Gain, PcmConfig, PcmRate, Run,
     };
 
+    /// [`Isa::detect`] picks the wrappers exactly on a CPU with AVX2 and FMA. The bit-identity
+    /// test below can't tell: it would still pass if detection always gave the generic level.
+    /// (Under Miri, the features are those the build enabled.)
+    #[test]
+    fn detect_picks_the_fast_level_on_a_capable_cpu() {
+        #[cfg(target_arch = "x86_64")]
+        let want =
+            if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma") {
+                Level::Avx2Fma
+            } else {
+                Level::Generic
+            };
+        #[cfg(not(target_arch = "x86_64"))]
+        let want = Level::Generic;
+        assert_eq!(Isa::detect(), Isa(want));
+    }
+
+    /// A new converter runs with the detected instruction set, not the generic one.
+    #[test]
+    #[cfg_attr(miri, ignore = "builds a filter table; see detect_picks_the_fast_level_on_a_capable_cpu")]
+    fn new_converter_uses_the_detected_isa() {
+        let config = PcmConfig::new(PcmRate::Hz176400, Cutoff::Default, 2);
+        assert_eq!(Converter::new(config).unwrap().plan.isa(), Isa::detect());
+    }
+
     /// The kernels chosen for this CPU give exactly the output of the generic kernels, in
     /// every configuration, for a whole run and for a frame with neighbours, in both sample
     /// layouts and with the same clip counts. (On a CPU without AVX2 and FMA, and under Miri

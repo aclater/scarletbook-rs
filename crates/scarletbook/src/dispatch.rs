@@ -152,6 +152,32 @@ mod avx2 {
 #[path = "../tests/common/dst_enc.rs"]
 mod dst_enc;
 
+#[cfg(test)]
+pub(crate) mod testutil {
+    /// Runs `f` on a thread with a stack of 16 MiB. At opt-level 0, which is what a package
+    /// built outside the workspace gets (its profiles aren't packaged), the inlined decoding
+    /// loops need a few MiB, and test threads have 2 MiB (#268).
+    pub(crate) fn with_big_stack(f: impl FnOnce() + Send) {
+        std::thread::scope(|s| {
+            std::thread::Builder::new().stack_size(16 << 20).spawn_scoped(s, f).unwrap().join().unwrap();
+        });
+    }
+
+    /// The corpus images, or `None` (the test is skipped, with a message) in an unpacked
+    /// crate, which doesn't carry `../../corpus`. In the repository the corpus is required:
+    /// a package has `Cargo.toml.orig` next to its manifest and a checkout doesn't, so a
+    /// missing corpus fails the test there and CI fails (#268).
+    pub(super) fn images() -> Option<std::path::PathBuf> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let images = root.join("../../corpus/images");
+        if !images.exists() && root.join("Cargo.toml.orig").exists() {
+            eprintln!("skipped: {} is not in the packaged crate", images.display());
+            return None;
+        }
+        Some(images)
+    }
+}
+
 #[cfg(all(test, feature = "output"))]
 #[path = "../tests/common/mod.rs"]
 mod common;
@@ -301,12 +327,12 @@ mod output_tests {
     #[test]
     #[cfg_attr(miri, ignore = "the corpus is too large for Miri; see detected_output_matches_generic_simple")]
     fn detected_output_matches_generic() {
+        let Some(images) = super::testutil::images() else { return };
         let mut n = 0;
         for channels in 1..=6 {
             let mut disc = synthetic(channels, 9);
             n += compare(&mut disc, Slot::TwoChannel, &[(0, 9), (1, 4), (4, 9), (2, 3)], 5000);
         }
-        let images = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/images");
         let mut paths: Vec<_> = std::fs::read_dir(images).unwrap().map(|e| e.unwrap().path()).collect();
         paths.sort();
         let mut seen = [false; 7];
@@ -351,9 +377,29 @@ mod tests {
     use crate::dst::{FL, MAX_LANES};
     use crate::{Disc, FrameContent};
 
+    /// [`Isa::detect`] picks the wrapper exactly on a CPU with all of its features. The
+    /// bit-identity tests below can't tell: they would still pass if detection always gave
+    /// the generic level. (Under Miri, the features are those the build enabled.)
+    #[test]
+    fn detect_picks_the_fast_level_on_a_capable_cpu() {
+        #[cfg(target_arch = "x86_64")]
+        let want = if std::arch::is_x86_feature_detected!("avx2")
+            && std::arch::is_x86_feature_detected!("bmi1")
+            && std::arch::is_x86_feature_detected!("bmi2")
+            && std::arch::is_x86_feature_detected!("lzcnt")
+            && std::arch::is_x86_feature_detected!("movbe")
+        {
+            Level::Avx2Bmi
+        } else {
+            Level::Generic
+        };
+        #[cfg(not(target_arch = "x86_64"))]
+        let want = Level::Generic;
+        assert_eq!(Isa::detect(), Isa(want));
+    }
+
     /// Up to `per_track` DST frames of every track of every corpus image, by channel count.
-    fn corpus_frames(per_track: usize) -> Vec<Vec<Vec<u8>>> {
-        let images = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/images");
+    fn corpus_frames(images: &std::path::Path, per_track: usize) -> Vec<Vec<Vec<u8>>> {
         let mut pools = vec![Vec::new(); 7];
         let mut paths: Vec<_> = std::fs::read_dir(images).unwrap().map(|e| e.unwrap().path()).collect();
         paths.sort();
@@ -434,7 +480,8 @@ mod tests {
         ignore = "the corpus is too large for Miri; see detected_decoder_matches_generic_simple"
     )]
     fn detected_decoder_matches_generic() {
-        let pools = corpus_frames(6);
+        let Some(images) = super::testutil::images() else { return };
+        let pools = corpus_frames(&images, 6);
         let mut seen = 0;
         for channels in 1..=6u8 {
             let pool = &pools[usize::from(channels)];
@@ -456,6 +503,10 @@ mod tests {
     /// the generic decoder unless the build enables the features: `core-dispatch-avx2`.)
     #[test]
     fn detected_decoder_matches_generic_simple() {
+        super::testutil::with_big_stack(detected_decoder_matches_generic_simple_body);
+    }
+
+    fn detected_decoder_matches_generic_simple_body() {
         let mut seed = 0x51_3C_7A_D2u64;
         let mut rnd = move || {
             seed ^= seed << 13;

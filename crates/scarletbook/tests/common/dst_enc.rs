@@ -716,12 +716,25 @@ pub fn design(signal: &[Vec<u8>], d: &Design) -> FrameSpec {
 pub struct StressFrame {
     /// Channels.
     pub channels: u8,
-    /// Layout name: `o128`, `o32` or `segmented`.
+    /// Layout name: `o128`, `o32`, `segmented` or, from [`stress_order`], `order`.
     pub layout: &'static str,
     /// The coded frame.
     pub frame: Vec<u8>,
     /// The audio it decodes to, interleaved.
     pub audio: Vec<u8>,
+}
+
+/// One filter of order `order` and one ptable per channel, for the whole frame; filters and
+/// ptables Rice coded.
+fn one_filter(nch: usize, order: usize) -> Design {
+    Design {
+        orders: vec![order],
+        filter_seg: Segmentation::single(nch),
+        ptables: 1,
+        ptable_seg: None,
+        half: true,
+        coded_tables: true,
+    }
 }
 
 /// The layouts of the stress set, for `nch` channels.
@@ -735,28 +748,8 @@ pub fn stress_layouts(nch: usize) -> Vec<(&'static str, Design)> {
         lengths: (0..nch).map(|c| if c % 2 == 0 { vec![2, 2, 2] } else { vec![3, 2] }).collect(),
     };
     vec![
-        (
-            "o128",
-            Design {
-                orders: vec![128],
-                filter_seg: Segmentation::single(nch),
-                ptables: 1,
-                ptable_seg: None,
-                half: true,
-                coded_tables: true,
-            },
-        ),
-        (
-            "o32",
-            Design {
-                orders: vec![32],
-                filter_seg: Segmentation::single(nch),
-                ptables: 1,
-                ptable_seg: None,
-                half: true,
-                coded_tables: true,
-            },
-        ),
+        ("o128", one_filter(nch, 128)),
+        ("o32", one_filter(nch, 32)),
         (
             "segmented",
             Design {
@@ -771,19 +764,37 @@ pub fn stress_layouts(nch: usize) -> Vec<(&'static str, Design)> {
     ]
 }
 
-/// The stress set: for 2 and 6 channels, `frames` consecutive frames of one seeded signal
-/// in each layout of [`stress_layouts`]. Identical on every run.
+/// The seeded signal of `nch` channels, `frames` frames long.
+fn stress_signal(nch: usize, frames: usize) -> Vec<Vec<Vec<u8>>> {
+    sdm_frames(0x5CA4_1E7B ^ nch as u64, nch, frames)
+}
+
+/// `signal`'s frames in the layout `d`.
+fn stress_frames(signal: &[Vec<Vec<u8>>], layout: &'static str, d: &Design) -> Vec<StressFrame> {
+    signal
+        .iter()
+        .map(|s| {
+            let frame = encode(s, &design(s, d));
+            assert!(frame.len() < FL * s.len(), "stress frame does not compress");
+            StressFrame { channels: s.len() as u8, layout, frame, audio: interleave(s) }
+        })
+        .collect()
+}
+
+/// `frames` consecutive frames of one seeded signal of `nch` channels in each layout of
+/// [`stress_layouts`]. Identical on every run.
+pub fn stress_channels(nch: usize, frames: usize) -> Vec<StressFrame> {
+    let signal = stress_signal(nch, frames);
+    stress_layouts(nch).iter().flat_map(|(layout, d)| stress_frames(&signal, layout, d)).collect()
+}
+
+/// The same signal with one filter of order `order` per channel, which reaches one branch
+/// of the decoder's dispatch on history bytes (4, 8 or 16). Identical on every run.
+pub fn stress_order(nch: usize, frames: usize, order: usize) -> Vec<StressFrame> {
+    stress_frames(&stress_signal(nch, frames), "order", &one_filter(nch, order))
+}
+
+/// The stress set: [`stress_channels`] for 2 and 6 channels.
 pub fn stress_set(frames: usize) -> Vec<StressFrame> {
-    let mut out = Vec::new();
-    for nch in [2usize, 6] {
-        let signal = sdm_frames(0x5CA4_1E7B ^ nch as u64, nch, frames);
-        for (layout, d) in stress_layouts(nch) {
-            for s in &signal {
-                let frame = encode(s, &design(s, &d));
-                assert!(frame.len() < FL * nch, "stress frame does not compress");
-                out.push(StressFrame { channels: nch as u8, layout, frame, audio: interleave(s) });
-            }
-        }
-    }
-    out
+    [2usize, 6].into_iter().flat_map(|nch| stress_channels(nch, frames)).collect()
 }

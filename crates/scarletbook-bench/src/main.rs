@@ -4,15 +4,19 @@
 //!
 //! ```text
 //! bench --version
-//! bench decode IMAGE --area 2ch|mc --threads N --sink hash|null|raw DIR
-//! bench dsf IMAGE --area 2ch|mc --threads N --out FILE [--via stream|read-at|parallel] [--chunk BYTES]
+//! bench decode IMAGE --area 2ch|mc --threads N --sink hash|null|raw DIR [--lanes K]
+//! bench dsf IMAGE --area 2ch|mc --threads N --out FILE [--via stream|read-at|parallel|tracks|tracks-scan|tracks-speculative|tracks-unverified] [--chunk BYTES]
 //! bench realtime IMAGE --area 2ch|mc [--seeks N]
+//! bench open IMAGE [--iterations N] [--evict PROGRAM]
+//! bench first IMAGE --area 2ch|mc --threads N [--track N] [--bytes N] [--iterations N] [--evict PROGRAM]
 //! ```
 //!
 //! It decodes every track of one area, in track order, in one pass over the area
 //! (continuing one decoding cursor from track to track). With `--threads N` all decoding
 //! runs on a pool of `N` threads (`0`: one per logical CPU); with `N = 1` it runs on a
-//! single thread.
+//! single thread. `--lanes K` (1 to 4, not part of that interface; issue #203) decodes `K`
+//! DST frames together on each thread, `TrackAudioCursor::with_dst_lanes`, instead of the
+//! library's default for the channel count; the output is the same.
 //!
 //! `dsf` is not part of that interface (issue #202): it writes the area's whole play range
 //! `[0, P)` as one DSF file through `output::Layout`, `--chunk` bytes per call (default
@@ -25,6 +29,21 @@
 //! writer, from the public `Layout` API only (#202, #224). `FILE` may be `/dev/null`, to
 //! leave the cost of writing out.
 //!
+//! The `tracks` ways give one DSF file per track, each track with its pause, from the public
+//! `Layout` API, in `FILE`, an existing directory (or `/dev/null`), as `NNN.dsf` (#202):
+//!
+//! - `--via tracks`: with `N = 1`, a loop over the tracks in order, one pass over the area
+//!   through `Disc::continue_range_audio`. With more, one pass builds the area's seek index,
+//!   then `N` workers (no more than there are tracks) take the next track, each through its
+//!   own `Disc::share`.
+//! - `--via tracks-scan`: the same workers, without an index: each track reads the area from
+//!   its first audio sector. The reference for one-at-a-time writes at `N = 1`, and what a
+//!   per-track loop over `Disc::range_audio` costs.
+//! - `--via tracks-speculative`: the same workers, under `SeekPolicy::Speculative`, with one
+//!   more thread running `Disc::verify_speculation`. It fails if a reading was not confirmed.
+//! - `--via tracks-unverified`: the same without that thread, to show what the pass costs. A
+//!   well-formed image gives the same bytes; nothing here checks that this one is.
+//!
 //! `realtime` is not part of that interface either (issue #255): what a real-time player
 //! needs from one thread. It reads the area's whole play range through `Disc::range_audio`,
 //! timing each call that yields a frame (demultiplexing and decoding), then builds a complete
@@ -33,6 +52,20 @@
 //! `name<TAB>value` line per figure. A real-time factor is the seconds of audio per second
 //! of decoding; a window is 75 frames, one second of audio, sliding by one frame. Put the
 //! image in the page cache first, to leave disc reads out, and pin the process to one core.
+//!
+//! `open` and `first` are not part of that interface either (issue #224): latencies far
+//! below the time a process takes to start, so they are timed inside the process, `N`
+//! times (`--iterations`, default 100), and printed as `name<TAB>value` lines. `open` times
+//! from before opening the file until `Disc::open` has parsed the TOC; closing is not
+//! timed. `first` times the first `--bytes` (default 128 KiB) of a track's decoded audio,
+//! from before `Disc::track_audio` until the frame that completes them, on a disc that is
+//! already open and has a complete seek index (built untimed, as for `realtime`), through a
+//! new file handle per iteration. `--track` defaults to the area's middle track.
+//!
+//! By default the image stays in the page cache. `--evict PROGRAM` runs `PROGRAM IMAGE`,
+//! untimed, before each iteration, and a failure of it fails the run: this crate has no
+//! `unsafe`, and the standard library has no call that evicts a file's pages, so that is
+//! left to a helper (`benchmarks/evict.py`).
 //!
 //! Errors: the first line on stderr is one error code: a code of specification 7, 7.7.1
 //! for a rejected image, `no-such-area` when the slot yields no area, and `io-error`,
@@ -43,6 +76,7 @@
 use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::fs::File;
+use std::hint::black_box;
 use std::io::{BufReader, BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -50,24 +84,42 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use scarletbook::audio::{AudioFrame, FRAME_BYTES_PER_CHANNEL, TrackAudio};
-use scarletbook::output::{Format, OutputOptions, PositionSource, RegionKind};
-use scarletbook::seek::IndexOptions;
+use scarletbook::output::{Format, Layout, OutputOptions, PositionSource, RegionKind};
+use scarletbook::seek::{IndexOptions, SeekPolicy, Speculation, SpeculativeOptions};
 use scarletbook::{Disc, Error, Slot};
 use sha2::{Digest, Sha256};
 
 const USAGE: &str = "usage: bench --version
-       bench decode IMAGE --area 2ch|mc --threads N --sink hash|null|raw DIR
-       bench dsf IMAGE --area 2ch|mc --threads N --out FILE [--via stream|read-at|parallel] [--chunk BYTES]
-       bench realtime IMAGE --area 2ch|mc [--seeks N]";
+       bench decode IMAGE --area 2ch|mc --threads N --sink hash|null|raw DIR [--lanes K]
+       bench dsf IMAGE --area 2ch|mc --threads N --out FILE [--via stream|read-at|parallel|tracks|tracks-scan|tracks-speculative|tracks-unverified] [--chunk BYTES]
+       bench realtime IMAGE --area 2ch|mc [--seeks N]
+       bench open IMAGE [--iterations N] [--evict PROGRAM]
+       bench first IMAGE --area 2ch|mc --threads N [--track N] [--bytes N] [--iterations N] [--evict PROGRAM]";
 
 /// Bytes per `Layout::fill` or `Layout::read_at` call of `dsf`, by default.
 const DSF_CHUNK: usize = 4 << 20;
+
+/// The largest `--chunk`: each of `dsf`'s calls, and each of `--via parallel`'s workers, holds
+/// a buffer of that size.
+const MAX_CHUNK: usize = 256 << 20;
 
 /// Frames per second of DSD64 audio, and so the frames of `realtime`'s sliding window.
 const FRAMES_PER_SECOND: usize = 75;
 
 /// `realtime`'s seeks, by default.
 const SEEKS: usize = 200;
+
+/// Timed iterations of `open` and `first`, by default.
+const ITERATIONS: usize = 100;
+
+/// The most timed iterations of `open` and `first`: their times are kept in memory.
+const MAX_ITERATIONS: usize = 1_000_000;
+
+/// The most `realtime` seeks: their times are kept in memory.
+const MAX_SEEKS: usize = 1_000_000;
+
+/// The bytes of decoded audio `first` times, by default.
+const FIRST_BYTES: usize = 128 << 10;
 
 /// A frame slower than this misses a player's bound: half a frame period, as #255 rounds it.
 const SLOW_FRAME_NANOS: u64 = 6_700_000;
@@ -88,13 +140,27 @@ enum Via {
     Stream,
     ReadAt,
     Parallel,
+    Tracks,
+    TracksScan,
+    TracksSpeculative,
+    TracksUnverified,
 }
 
 #[derive(Debug)]
 enum Command {
-    Decode(Sink),
+    Decode(Sink, Option<usize>),
     Dsf { out: PathBuf, via: Via, chunk: usize },
     Realtime { seeks: usize },
+    Open(Samples),
+    First { track: Option<u32>, bytes: usize, samples: Samples },
+}
+
+/// How `open` and `first` repeat what they time.
+#[derive(Debug)]
+struct Samples {
+    iterations: usize,
+    /// Run with the image as its argument, untimed, before each iteration.
+    evict: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -106,17 +172,21 @@ struct Args {
 }
 
 fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Args>, String> {
-    let (dsf, realtime) = match args.next().as_deref() {
+    let (dsf, realtime, opening, first) = match args.next().as_deref() {
         Some("--version") => return Ok(None),
-        Some("decode") => (false, false),
-        Some("dsf") => (true, false),
-        Some("realtime") => (false, true),
+        Some("decode") => (false, false, false, false),
+        Some("dsf") => (true, false, false, false),
+        Some("realtime") => (false, true, false, false),
+        Some("open") => (false, false, true, false),
+        Some("first") => (false, false, false, true),
         _ => return Err(USAGE.into()),
     };
     let image = PathBuf::from(args.next().ok_or(USAGE)?);
     let (mut slot, mut threads, mut sink) = (None, None, None);
     let (mut out, mut via, mut chunk) = (None, Via::Stream, DSF_CHUNK);
     let mut seeks = SEEKS;
+    let mut lanes = None;
+    let (mut iterations, mut evict, mut track, mut bytes) = (ITERATIONS, None, None, FIRST_BYTES);
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{flag} needs a value\n{USAGE}"));
         match flag.as_str() {
@@ -147,7 +217,15 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Args>, String>
                     "stream" => Via::Stream,
                     "read-at" => Via::ReadAt,
                     "parallel" => Via::Parallel,
-                    other => return Err(format!("--via must be stream, read-at or parallel, not {other}")),
+                    "tracks" => Via::Tracks,
+                    "tracks-scan" => Via::TracksScan,
+                    "tracks-speculative" => Via::TracksSpeculative,
+                    "tracks-unverified" => Via::TracksUnverified,
+                    other => {
+                        return Err(format!(
+                            "--via must be stream, read-at, parallel or tracks, not {other}"
+                        ));
+                    }
                 }
             }
             "--chunk" if dsf => {
@@ -155,12 +233,47 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Args>, String>
                 chunk = v
                     .parse::<usize>()
                     .ok()
-                    .filter(|&n| n > 0)
-                    .ok_or_else(|| format!("--chunk must be a positive number, not {v}"))?;
+                    .filter(|n| (1..=MAX_CHUNK).contains(n))
+                    .ok_or_else(|| format!("--chunk must be from 1 to {MAX_CHUNK}, not {v}"))?;
             }
             "--seeks" if realtime => {
                 let v = value()?;
-                seeks = v.parse::<usize>().map_err(|_| format!("--seeks must be a number, not {v}"))?;
+                seeks = v
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|&n| n <= MAX_SEEKS)
+                    .ok_or_else(|| format!("--seeks must be from 0 to {MAX_SEEKS}, not {v}"))?;
+            }
+            "--iterations" if opening || first => {
+                let v = value()?;
+                iterations = v
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|n| (1..=MAX_ITERATIONS).contains(n))
+                    .ok_or_else(|| format!("--iterations must be from 1 to {MAX_ITERATIONS}, not {v}"))?;
+            }
+            "--lanes" if !(dsf || realtime || opening || first) => {
+                let v = value()?;
+                let max = scarletbook::dst::MAX_LANES;
+                lanes = Some(
+                    v.parse::<usize>()
+                        .ok()
+                        .filter(|n| (1..=max).contains(n))
+                        .ok_or_else(|| format!("--lanes must be from 1 to {max}, not {v}"))?,
+                );
+            }
+            "--evict" if opening || first => evict = Some(PathBuf::from(value()?)),
+            "--track" if first => {
+                let v = value()?;
+                track = Some(v.parse::<u32>().map_err(|_| format!("--track must be a number, not {v}"))?);
+            }
+            "--bytes" if first => {
+                let v = value()?;
+                bytes = v
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|&n| n > 0)
+                    .ok_or_else(|| format!("--bytes must be a positive number, not {v}"))?;
             }
             other => return Err(format!("unknown argument {other}\n{USAGE}")),
         }
@@ -174,8 +287,26 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Args>, String>
             _ => Err(format!("realtime takes --area and --seeks only, and needs --area\n{USAGE}")),
         };
     }
+    let samples = Samples { iterations, evict };
+    if opening {
+        // Reads no area: the slot is not used.
+        return match (slot, threads, sink) {
+            (None, None, None) => {
+                Ok(Some(Args { image, slot: Slot::TwoChannel, threads: 1, command: Command::Open(samples) }))
+            }
+            _ => Err(format!("open takes --iterations and --evict only\n{USAGE}")),
+        };
+    }
+    if first {
+        return match (slot, threads, sink) {
+            (Some(slot), Some(threads), None) => {
+                Ok(Some(Args { image, slot, threads, command: Command::First { track, bytes, samples } }))
+            }
+            _ => Err(format!("first needs --area and --threads, and takes no --sink\n{USAGE}")),
+        };
+    }
     let command = match (dsf, sink, out) {
-        (false, Some(sink), None) => Command::Decode(sink),
+        (false, Some(sink), None) => Command::Decode(sink, lanes),
         (true, None, Some(out)) => Command::Dsf { out, via, chunk },
         (false, ..) => return Err(format!("--area, --threads and --sink are all required\n{USAGE}")),
         (true, ..) => return Err(format!("--area, --threads and --out are all required\n{USAGE}")),
@@ -381,7 +512,7 @@ fn open(path: &Path) -> Result<Disc<BufReader<File>>, Failure> {
     Ok(Disc::open(BufReader::new(file))?)
 }
 
-fn decode_area(path: &Path, slot: Slot, out: &mut dyn Output) -> Result<(), Failure> {
+fn decode_area(path: &Path, slot: Slot, lanes: Option<usize>, out: &mut dyn Output) -> Result<(), Failure> {
     let mut disc = open(path)?;
     let area = disc.toc().area(slot).ok_or(Error::NoSuchArea(slot))?;
     let numbers: Vec<u32> = area.tracks.iter().map(|t| u32::from(t.number)).collect();
@@ -393,7 +524,10 @@ fn decode_area(path: &Path, slot: Slot, out: &mut dyn Output) -> Result<(), Fail
         }
         let next = match cursor.take() {
             Some(prev) => disc.continue_track_audio(prev, slot, n)?,
-            None => disc.track_audio_cursor(slot, n)?,
+            None => match lanes {
+                Some(k) => disc.track_audio_cursor(slot, n)?.with_dst_lanes(k)?,
+                None => disc.track_audio_cursor(slot, n)?,
+            },
         };
         let mut track = disc.read_track_audio(next);
         out.start_track(n, track.channels())?;
@@ -531,6 +665,88 @@ fn realtime(path: &Path, slot: Slot, seeks: usize, out: &mut impl Write) -> Resu
     Ok(())
 }
 
+/// Runs `--evict`'s program on the image, if there is one.
+fn evict(program: Option<&Path>, image: &Path) -> Result<(), Failure> {
+    let Some(program) = program else { return Ok(()) };
+    let run = std::process::Command::new(program)
+        .arg(image)
+        .output()
+        .map_err(|e| Failure { class: "io-error", message: format!("{}: {e}", program.display()) })?;
+    if run.status.success() {
+        return Ok(());
+    }
+    let message =
+        format!("{}: {}: {}", program.display(), run.status, String::from_utf8_lossy(&run.stderr).trim());
+    Err(Failure { class: "io-error", message })
+}
+
+/// Prints the figures of `open` and `first`, from each iteration's time in nanoseconds.
+fn print_times(times: &mut [u64], out: &mut impl Write) -> Result<(), Failure> {
+    times.sort_unstable();
+    writeln!(out, "iterations\t{}", times.len())?;
+    if let (Some(median), Some(min), Some(max)) = (times.get(times.len() / 2), times.first(), times.last()) {
+        writeln!(out, "median_us\t{:.2}", *median as f64 / 1e3)?;
+        writeln!(out, "min_us\t{:.2}", *min as f64 / 1e3)?;
+        writeln!(out, "max_us\t{:.2}", *max as f64 / 1e3)?;
+    }
+    Ok(())
+}
+
+/// Times opening the image up to its parsed TOC (see the module documentation).
+fn open_times(path: &Path, samples: &Samples, out: &mut impl Write) -> Result<(), Failure> {
+    let mut times = Vec::with_capacity(samples.iterations);
+    for _ in 0..samples.iterations {
+        evict(samples.evict.as_deref(), path)?;
+        let start = Instant::now();
+        let disc = open(path)?;
+        black_box(disc.toc());
+        let nanos = start.elapsed().as_nanos();
+        times.push(u64::try_from(nanos).unwrap_or(u64::MAX));
+    }
+    print_times(&mut times, out)
+}
+
+/// Times the first bytes of a track's audio (see the module documentation).
+fn first_times(
+    path: &Path,
+    slot: Slot,
+    (track, bytes): (Option<u32>, usize),
+    samples: &Samples,
+    out: &mut impl Write,
+) -> Result<(), Failure> {
+    let mut base = open(path)?;
+    let area = base.toc().area(slot).ok_or(Error::NoSuchArea(slot))?;
+    let usage = |message: String| Failure { class: "usage-error", message };
+    let middle = area.tracks.get(area.tracks.len() / 2).map(|t| u32::from(t.number));
+    let number = track.or(middle).ok_or_else(|| usage("the area has no tracks".into()))?;
+    if !area.tracks.iter().any(|t| u32::from(t.number) == number) {
+        return Err(usage(format!("--track {number}: the area has no such track")));
+    }
+    base.check_track(slot, number)?;
+    base.enable_seek_index(slot, IndexOptions::new())?;
+    while !base.extend_seek_index(slot, 1 << 20)? {}
+    let mut times = Vec::with_capacity(samples.iterations);
+    for _ in 0..samples.iterations {
+        let mut disc = base.share(BufReader::new(File::open(path)?))?;
+        evict(samples.evict.as_deref(), path)?;
+        let start = Instant::now();
+        let mut frames = disc.track_audio(slot, number)?;
+        let mut got = 0;
+        while got < bytes {
+            let Some(frame) = frames.next() else {
+                return Err(usage(format!("--bytes {bytes}: past the end of track {number}")));
+            };
+            let frame = frame?;
+            got += frame.data.len();
+            black_box(&frame.data);
+        }
+        let nanos = start.elapsed().as_nanos();
+        times.push(u64::try_from(nanos).unwrap_or(u64::MAX));
+    }
+    writeln!(out, "track\t{number}")?;
+    print_times(&mut times, out)
+}
+
 /// Writes the area's play range as one DSF file (see the module documentation).
 fn write_dsf(path: &Path, slot: Slot, out: &Path, via: Via, chunk: usize) -> Result<(), Failure> {
     let mut disc = open(path)?;
@@ -550,10 +766,10 @@ fn write_dsf(path: &Path, slot: Slot, out: &Path, via: Via, chunk: usize) -> Res
                 offset += n as u64;
             }
         }
-        Via::Parallel => {
+        Via::Parallel | Via::Tracks | Via::TracksScan | Via::TracksSpeculative | Via::TracksUnverified => {
             return Err(Failure {
                 class: "internal-error",
-                message: "--via parallel is write_dsf_parallel".into(),
+                message: "--via has a function of its own".into(),
             });
         }
         Via::ReadAt => {
@@ -676,6 +892,144 @@ fn write_dsf_parallel(_: &Path, _: Slot, _: &Path, _: usize, _: usize) -> Result
     Err(Failure { class: "usage-error", message: "--via parallel needs a Unix write_at".into() })
 }
 
+/// The numbers of the area's tracks.
+fn track_numbers<R: Read + Seek>(disc: &Disc<R>, slot: Slot) -> Result<Vec<u32>, Failure> {
+    let area = disc.toc().area(slot).ok_or(Error::NoSuchArea(slot))?;
+    Ok(area.tracks.iter().map(|t| u32::from(t.number)).collect())
+}
+
+/// The file of track `n` in `out`.
+fn track_file(out: &Path, n: u32) -> PathBuf {
+    if out == Path::new("/dev/null") { out.to_path_buf() } else { out.join(format!("{n:03}.dsf")) }
+}
+
+/// Writes one range as the DSF file `out` from `frames`, whose reading state it returns.
+fn write_track_file<'a, R: Read + Seek>(
+    layout: &Layout,
+    frames: TrackAudio<'a, R>,
+    out: &Path,
+    buf: &mut [u8],
+) -> Result<TrackAudio<'a, R>, Failure> {
+    let mut file = File::create(out)?;
+    let mut source = Stream { frames, window: VecDeque::new() };
+    let mut offset = 0u64;
+    while offset < layout.size() {
+        let n = layout.fill(offset, buf, &mut source)?;
+        file.write_all(&buf[..n])?;
+        offset += n as u64;
+    }
+    Ok(source.frames)
+}
+
+/// `--via tracks` with one worker: every track in order, one pass over the area.
+fn write_dsf_tracks_in_order(path: &Path, slot: Slot, out: &Path, chunk: usize) -> Result<(), Failure> {
+    let mut disc = open(path)?;
+    let mut buf = vec![0u8; chunk];
+    let mut cursor = None;
+    for n in track_numbers(&disc, slot)? {
+        let (first, end) = disc.track_range_with_pause(slot, n)?;
+        let layout = disc.output_layout(slot, first, end, Format::Dsf, &OutputOptions::default())?;
+        let next = match cursor.take() {
+            Some(prev) => disc.continue_range_audio(prev, slot, first, end)?,
+            None => disc.range_audio_cursor(slot, first, end)?,
+        };
+        let frames = disc.read_track_audio(next);
+        cursor = Some(write_track_file(&layout, frames, &track_file(out, n), &mut buf)?.into_cursor());
+    }
+    Ok(())
+}
+
+/// One file per track from `workers` threads taking the next track, each reading through a
+/// shared disc as `via` says (see the module documentation). The first failure stops the
+/// others at their next track.
+fn write_dsf_tracks(
+    path: &Path,
+    slot: Slot,
+    out: &Path,
+    via: Via,
+    workers: usize,
+    chunk: usize,
+) -> Result<(), Failure> {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    if via == Via::Tracks && workers == 1 {
+        return write_dsf_tracks_in_order(path, slot, out, chunk);
+    }
+    let mut root = open(path)?;
+    let numbers = track_numbers(&root, slot)?;
+    match via {
+        Via::Tracks => {
+            root.enable_seek_index(slot, IndexOptions::new())?;
+            root.extend_seek_index(slot, u64::MAX)?;
+        }
+        Via::TracksUnverified => {
+            root.set_seek_policy(slot, SeekPolicy::Speculative(SpeculativeOptions::new()))?;
+        }
+        Via::TracksSpeculative => {
+            root.enable_seek_index(slot, IndexOptions::new())?;
+            root.set_seek_policy(slot, SeekPolicy::Speculative(SpeculativeOptions::new()))?;
+        }
+        _ => {}
+    }
+    let root = root;
+    let next = AtomicUsize::new(0);
+    let failed: Mutex<Option<Failure>> = Mutex::new(None);
+    let work = || -> Result<(), Failure> {
+        let mut disc = root.share(BufReader::new(File::open(path)?))?;
+        let mut buf = vec![0u8; chunk];
+        while let Some(&n) = numbers.get(next.fetch_add(1, Ordering::Relaxed)) {
+            if failed.lock().map_or(true, |f| f.is_some()) {
+                break;
+            }
+            let (first, end) = disc.track_range_with_pause(slot, n)?;
+            let layout = disc.output_layout(slot, first, end, Format::Dsf, &OutputOptions::default())?;
+            let frames = disc.range_audio(slot, first, end)?;
+            write_track_file(&layout, frames, &track_file(out, n), &mut buf)?;
+        }
+        Ok(())
+    };
+    // The prototype's speculative verified mode makes one `verify_speculation` call, and the
+    // check below reads events. `verify_speculation` makes one round and returns `false` if
+    // it is not done, and a reading that has no verdict has no event, so such a reading
+    // passes silently here. The recipe in `scarletbook::output` loops (`while
+    // !disc.verify_speculation(..)? {}`), runs it once more on the root after the workers
+    // have finished, and checks each reading's own `speculation()`. Kept as it is so that
+    // what is measured does not change (#310, #313).
+    let verify = || -> Result<(), Failure> {
+        let mut disc = root.share(BufReader::new(File::open(path)?))?;
+        disc.verify_speculation(slot, u64::MAX)?;
+        Ok(())
+    };
+    std::thread::scope(|scope| {
+        for _ in 0..workers.clamp(1, numbers.len().max(1)) {
+            scope.spawn(|| {
+                if let (Err(e), Ok(mut f)) = (work(), failed.lock()) {
+                    f.get_or_insert(e);
+                }
+            });
+        }
+        if via == Via::TracksSpeculative {
+            scope.spawn(|| {
+                if let (Err(e), Ok(mut f)) = (verify(), failed.lock()) {
+                    f.get_or_insert(e);
+                }
+            });
+        }
+    });
+    if let Some(e) = failed.into_inner().ok().flatten() {
+        return Err(e);
+    }
+    // A provisional reading the pass refuted wrote other bytes than an exact one.
+    if root.take_seek_events(slot).iter().any(|e| !matches!(e.speculation, Speculation::Confirmed { .. })) {
+        return Err(Failure {
+            class: "internal-error",
+            message: "a provisional reading not confirmed".into(),
+        });
+    }
+    Ok(())
+}
+
 fn run(args: Args) -> Result<(), Failure> {
     // `--threads 0` is one thread per logical CPU, whatever RAYON_NUM_THREADS says.
     let threads = match args.threads {
@@ -690,25 +1044,35 @@ fn run(args: Args) -> Result<(), Failure> {
         Command::Dsf { out, via: Via::Parallel, chunk } => {
             write_dsf_parallel(&args.image, args.slot, out, threads, *chunk)
         }
+        Command::Dsf {
+            out,
+            via: via @ (Via::Tracks | Via::TracksScan | Via::TracksSpeculative | Via::TracksUnverified),
+            chunk,
+        } => write_dsf_tracks(&args.image, args.slot, out, *via, threads, *chunk),
         Command::Dsf { out, via, chunk } => write_dsf(&args.image, args.slot, out, *via, *chunk),
         Command::Realtime { seeks } => {
             let mut out = std::io::stdout().lock();
             realtime(&args.image, args.slot, *seeks, &mut out)
         }
-        Command::Decode(Sink::Null) => decode_area(&args.image, args.slot, &mut NullOut),
-        Command::Decode(Sink::Hash) => {
+        Command::Open(samples) => open_times(&args.image, samples, &mut std::io::stdout().lock()),
+        Command::First { track, bytes, samples } => {
+            first_times(&args.image, args.slot, (*track, *bytes), samples, &mut std::io::stdout().lock())
+        }
+        Command::Decode(Sink::Null, lanes) => decode_area(&args.image, args.slot, *lanes, &mut NullOut),
+        Command::Decode(Sink::Hash, lanes) => {
             let stdout = std::io::stdout().lock();
             let mut out =
                 HashOut { out: BufWriter::new(stdout), number: 0, hashers: Vec::new(), chan: Vec::new() };
-            decode_area(&args.image, args.slot, &mut out)?;
+            decode_area(&args.image, args.slot, *lanes, &mut out)?;
             out.out.flush()?;
             Ok(())
         }
-        Command::Decode(Sink::Raw(dir)) => {
+        Command::Decode(Sink::Raw(dir), lanes) => {
             std::fs::create_dir_all(dir)?;
             decode_area(
                 &args.image,
                 args.slot,
+                *lanes,
                 &mut RawOut { dir: dir.clone(), files: Vec::new(), chan: Vec::new() },
             )
         }
@@ -752,15 +1116,30 @@ mod tests {
         assert!(args("--version").unwrap().is_none());
         let a = args("decode x.iso --area mc --threads 0 --sink raw out").unwrap().unwrap();
         assert_eq!((a.slot, a.threads), (Slot::Multichannel, 0));
-        assert!(matches!(a.command, Command::Decode(Sink::Raw(ref d))  if d == Path::new("out")));
+        assert!(matches!(a.command, Command::Decode(Sink::Raw(ref d), None)  if d == Path::new("out")));
+        for k in 1..=4 {
+            let a = args(&format!("decode x.iso --area 2ch --threads 0 --sink null --lanes {k}"))
+                .unwrap()
+                .unwrap();
+            assert!(matches!(a.command, Command::Decode(Sink::Null, Some(n)) if n == k));
+        }
+        for k in ["0", "5", "x"] {
+            assert!(args(&format!("decode x.iso --area 2ch --threads 1 --sink null --lanes {k}")).is_err());
+        }
+        assert!(args("dsf x.iso --area 2ch --threads 1 --out f.dsf --lanes 1").is_err());
         let a =
             args("dsf x.iso --area 2ch --threads 1 --out f.dsf --via read-at --chunk 4096").unwrap().unwrap();
         assert!(
             matches!(a.command, Command::Dsf { ref out, via: Via::ReadAt, chunk: 4096 } if out == Path::new("f.dsf"))
         );
+        let a = args("dsf x.iso --area 2ch --threads 4 --out d --via tracks").unwrap().unwrap();
+        assert!(matches!(a.command, Command::Dsf { via: Via::Tracks, .. }));
         assert!(args("dsf x.iso --area 2ch --threads 1 --sink null").is_err());
         assert!(args("decode x.iso --area 2ch --threads 1 --out f.dsf").is_err());
         assert!(args("dsf x.iso --area 2ch --threads 1 --out f.dsf --chunk 0").is_err());
+        assert!(args("dsf x.iso --area 2ch --threads 1 --out f.dsf --chunk 268435457").is_err());
+        assert!(args("realtime x.iso --area 2ch --seeks 1000001").is_err());
+        assert!(args("realtime x.iso --area 2ch --seeks 1000000").is_ok());
         assert!(args("decode x.iso --area 5ch --threads 1 --sink null").is_err());
         assert!(args("decode x.iso --area 2ch --sink null").is_err());
         assert!(args("decode x.iso --area 2ch --threads x --sink null").is_err());
@@ -776,6 +1155,32 @@ mod tests {
         assert!(args("realtime x.iso --area 2ch --threads 2").is_err());
         assert!(args("realtime x.iso --area 2ch --sink null").is_err());
         assert!(args("decode x.iso --area 2ch --threads 1 --sink null --seeks 5").is_err());
+        let a = args("open x.iso --iterations 7 --evict e.py").unwrap().unwrap();
+        assert!(matches!(
+            a.command,
+            Command::Open(Samples { iterations: 7, evict: Some(ref e) }) if e == Path::new("e.py")
+        ));
+        assert!(matches!(
+            args("open x.iso").unwrap().unwrap().command,
+            Command::Open(Samples { iterations: ITERATIONS, evict: None })
+        ));
+        assert!(args("open x.iso --area 2ch").is_err());
+        assert!(args("open x.iso --iterations 0").is_err());
+        assert!(args("open x.iso --iterations 1000000").is_ok());
+        assert!(args("open x.iso --iterations 1000001").is_err());
+        assert!(args("open x.iso --track 1").is_err());
+        let a = args("first x.iso --area mc --threads 0 --track 3 --bytes 4096").unwrap().unwrap();
+        assert_eq!((a.slot, a.threads), (Slot::Multichannel, 0));
+        assert!(matches!(a.command, Command::First { track: Some(3), bytes: 4096, .. }));
+        assert!(matches!(
+            args("first x.iso --area 2ch --threads 1").unwrap().unwrap().command,
+            Command::First { track: None, bytes: FIRST_BYTES, .. }
+        ));
+        assert!(args("first x.iso --area 2ch").is_err());
+        assert!(args("first x.iso --threads 1").is_err());
+        assert!(args("first x.iso --area 2ch --threads 1 --bytes 0").is_err());
+        assert!(args("first x.iso --area 2ch --threads 1 --sink null").is_err());
+        assert!(args("decode x.iso --area 2ch --threads 1 --sink null --evict e").is_err());
     }
 
     #[test]

@@ -11,6 +11,7 @@ use std::ffi::{CStr, c_char, c_void};
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 use scarletbook_ffi::*;
 
@@ -844,7 +845,8 @@ fn a_refutation_reaches_the_c_caller() {
         assert_eq!(g, w);
     }
     audio_free(a);
-    // As pysacd does: re-read [first, exact_from) exactly and keep the rest.
+    // Specification 4, 4.2 item 8: positions numbered a* or more are exact even when
+    // refuted, so re-read [first, exact_from) exactly and keep the rest.
     assert_eq!(policy(disc, 0, SB_SEEK_POLICY_EXACT, 0), SbStatus::Ok);
     let r = range_open(disc, 0, first, s.exact_from);
     let mut joined = read_all(r, disc).0;
@@ -941,5 +943,77 @@ fn suspect_arguments() {
     assert_eq!(unsafe { sb_raw_frames_suspect(ptr::null(), &mut 0) }, SbStatus::InvalidArgument);
     assert_eq!(suspect(a), SB_SUSPECT_NONE);
     audio_free(a);
+    free(disc);
+}
+
+/// What the read callback of `verify_reports_a_reading_registered_during_the_call` needs.
+struct ReadHook {
+    bytes: Vec<u8>,
+    armed: AtomicBool,
+    other: AtomicPtr<SbDisc>,
+    range: (u32, u32),
+    reading: AtomicPtr<SbTrackAudio>,
+}
+
+/// Reads the image; once armed, first registers a provisional reading through the other clone.
+unsafe extern "C" fn hooked_read_at(user: *mut c_void, offset: u64, buf: *mut u8, len: usize) -> i64 {
+    // SAFETY: the test passes a `ReadHook` that outlives the discs.
+    let hook = unsafe { &*(user as *const ReadHook) };
+    if hook.armed.swap(false, Ordering::Relaxed) {
+        let other = hook.other.load(Ordering::Relaxed);
+        let a = range_open(other, 0, hook.range.0, hook.range.1);
+        read_all(a, other);
+        hook.reading.store(a, Ordering::Relaxed);
+    }
+    let from = hook.bytes.len().min(offset as usize);
+    let n = len.min(hook.bytes.len() - from);
+    // SAFETY: `buf` is valid for `len` bytes of writes, and `n` is at most `len`.
+    unsafe { ptr::copy_nonoverlapping(hook.bytes[from..].as_ptr(), buf, n) };
+    n as i64
+}
+
+/// `sb_disc_seek_verify` reports 0 while a reading registered during the call has no verdict,
+/// where `sb_disc_seek_index_extend` would report the index complete; the next call, with no
+/// budget at all, settles it (#310).
+#[test]
+#[cfg_attr(miri, ignore = "reads a corpus image")]
+fn verify_reports_a_reading_registered_during_the_call() {
+    let bytes = image("dst-features-2ch-6ch");
+    let probe = open(&bytes);
+    let p = playtime(probe, 0);
+    free(probe);
+    let hook = ReadHook {
+        armed: AtomicBool::new(false),
+        other: AtomicPtr::new(ptr::null_mut()),
+        range: (p / 2, p / 2 + 3),
+        reading: AtomicPtr::new(ptr::null_mut()),
+        bytes,
+    };
+    let mut disc = ptr::null_mut();
+    let user = &raw const hook as *mut c_void;
+    let size = hook.bytes.len() as u64;
+    // SAFETY: the callback is safe to call with `user`, which outlives the disc and its clone;
+    // `&mut disc` is a valid out-pointer.
+    let opened = unsafe { sb_disc_open_callbacks_at(Some(hooked_read_at), size, user, &mut disc) };
+    assert_eq!(opened, SbStatus::Ok, "{}", last_error());
+    assert_eq!(policy(disc, 0, SB_SEEK_POLICY_SPECULATIVE, 0), SbStatus::Ok);
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { sb_disc_seek_index_enable(disc, 0, 4, SB_SEEK_DEFAULT_INLINE_BUDGET) }, SbStatus::Ok);
+    hook.other.store(clone(disc), Ordering::Relaxed);
+    hook.armed.store(true, Ordering::Relaxed);
+    let mut done = 1u8;
+    // SAFETY: a live handle and a valid out-pointer.
+    let status = unsafe { sb_disc_seek_verify(disc, 0, u64::MAX, &mut done) };
+    assert_eq!(status, SbStatus::Ok, "{}", last_error());
+    let reading = hook.reading.load(Ordering::Relaxed);
+    assert!(!reading.is_null(), "registered during the call");
+    assert_eq!(speculation(reading).state, SB_SPECULATION_PENDING);
+    assert_eq!(done, 0, "not reported complete with a reading unchecked");
+    // SAFETY: a live handle and a valid out-pointer.
+    assert_eq!(unsafe { sb_disc_seek_verify(disc, 0, 0, &mut done) }, SbStatus::Ok, "{}", last_error());
+    assert_eq!(done, 1);
+    assert_eq!(speculation(reading).state, SB_SPECULATION_CONFIRMED);
+    audio_free(reading);
+    free(hook.other.load(Ordering::Relaxed));
     free(disc);
 }

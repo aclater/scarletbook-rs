@@ -164,6 +164,22 @@ size counting its pad byte; D2, text as ISO 8859-1) are made only when named, in
 `OutputOptions::dsdiff_departures` or with `SB_OUTPUT_OPTION_DSDIFF_DEPARTURE_D1` and `_D2`.
 A file written with one is not a conforming DSDIFF file.
 
+**An area's tracks as separate files** take no writer of their own, only a loop over these
+calls: use `Disc::continue_range_audio` from track to track, since a plain `range_audio` per
+track rescans the area (more than 2x slower measured on a 16-track stereo area). That
+sequential loop gains nothing over one file. Workers gain on real storage, in two forms:
+
+- **Seek index first:** the bytes are exact.
+- **Speculative with a verifying pass:** the bytes are provisional when written (specification
+  4, 4.2 item 8). They are exact only once the pass is complete and every reading is exact or
+  confirmed, and any other reading's file is rewritten.
+
+Workers reading speculatively with no verifying pass are a speed figure only: nothing
+establishes their bytes, and matching hashes on some images don't. The `scarletbook::output`
+documentation has the code for each form. The figures are on
+[#202](https://github.com/aclater/scarletbook-rs/issues/202): they come from one machine, so
+measure on yours.
+
 ### Seeking within an area
 
 A range far into an area normally costs a scan of the area up to it: which frames a range
@@ -245,6 +261,11 @@ Features: `parallel` decodes DST frames on rayon's thread pool, ahead of the cal
 current pool by default, or the pool chosen for a cursor with
 `TrackAudioCursor::set_decode_on(DecodeOn::Pool(pool))`, whichever thread reads it
 (`DecodeOn::CallingThread` keeps a cursor off every pool).
+
+With `parallel`, rayon 1 is part of the public Rust API, and that is a stated decision (#39):
+`DecodeOn::Pool` takes an `Arc<rayon::ThreadPool>`, not a wrapper of this library's. rayon 1 is
+stable, and a wrapper would add interface for a problem that may never come. The cost is that a
+rayon 2 would need a new major version of `scarletbook`. A program's pool must come from rayon 1.
 
 ## C library
 
@@ -1043,6 +1064,49 @@ follows every point:
 The check `sb_abi_version() == SB_ABI_VERSION` refuses a library of the other ABI either
 way round.
 
+## Stability
+
+From 1.0, the Rust API of `scarletbook` and `scarletbook-pcm` and the C ABI of
+`scarletbook-ffi` follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html): they stay
+compatible within a major version, by the rules of
+[Cargo's SemVer reference](https://doc.rust-lang.org/cargo/reference/semver.html), and every
+breaking change is listed in [CHANGELOG.md](CHANGELOG.md). What counts as a breaking change of
+the C ABI is in [ABI compatibility](#abi-compatibility).
+
+Before 1.0, as in Cargo, the `y` step of `0.y.z` is the major one and may break the API, and
+the `z` step is the minor one and may only add to it. The interface is not frozen yet:
+[#39](https://github.com/aclater/scarletbook-rs/issues/39) tracks the changes planned before
+1.0.
+
+Not covered:
+
+- items marked `#[doc(hidden)]`;
+- the `fuzzing` feature of `scarletbook-ffi`, which exists for the fuzz targets;
+- the Rust items of `scarletbook-ffi`, whose interface is the C ABI;
+- `scarletbook-bench` and `scarletbook-conformance`, which are not published.
+
+### Versions
+
+Every crate of the workspace shares one version, so a breaking change in one crate raises the
+version of them all, including crates that did not change. Whether this stays so after 1.0 is
+still to be decided ([#39](https://github.com/aclater/scarletbook-rs/issues/39)).
+
+### Minimum supported Rust version
+
+The minimum supported Rust version (MSRV) is 1.85, declared as `rust-version` in
+[Cargo.toml](Cargo.toml).
+
+- **When it can rise:** only in a release that changes the `y` of `x.y.z`, so `0.Y.0` before
+  1.0 and `x.Y.0` from 1.0. It never rises in a release that changes only `z`.
+- **How far it can rise:** only to a Rust release at least 12 months old, so that every Rust
+  release of the last 12 months stays supported. The MSRV does not rise without a reason, such
+  as a feature the code needs.
+- **How you hear of it:** the rise is listed under "Changed" in CHANGELOG.md.
+
+CI's `msrv` job checks `scarletbook`, `scarletbook-pcm` and `scarletbook-ffi` with all features
+on this version, using the repository's `Cargo.lock`. It does not check the lowest dependency
+versions that the crates declare, and it does not run the tests on this version.
+
 ## Benchmarks
 
 `bench` implements the interface of sacd-spec `benchmarks/README.md`:
@@ -1076,6 +1140,23 @@ cache first and pin the process to one core:
 ```sh
 taskset -c 2 target/release/bench realtime disc.iso --area mc --seeks 200
 ```
+
+`bench open` and `bench first` are outside it too (#224). They time what takes far less than
+starting a process, so they time it inside the process, `--iterations` times (default 100, at
+most 1,000,000), and print the median, fastest and slowest time in microseconds. `open` times
+opening an image up to its parsed TOC. `first` times the first `--bytes` (default 128 KiB) of a
+track's decoded audio, by default the area's middle track, on a disc already open with a complete
+seek index:
+
+```sh
+target/release/bench open disc.iso
+target/release/bench first disc.iso --area 2ch --threads 1 --track 3
+target/release/bench first disc.iso --area 2ch --threads 0 --iterations 15 --evict benchmarks/evict.py
+```
+
+The image stays in the page cache unless `--evict PROGRAM` is given. `PROGRAM IMAGE` then runs,
+untimed, before each iteration, and its failure fails the run. `benchmarks/evict.py` evicts the
+image without privileges and fails if any page stays cached, as it does on tmpfs.
 
 Pushing a version tag (`v0.1.0`, matching the crate version) runs the release workflow:
 it publishes `bench-<version>-x86_64-linux.tar.gz` (generic x86-64, cargo profile `dist`),
@@ -1181,7 +1262,7 @@ CPU time exceeds 1.15 (`.github/scripts/bench-regress.py`, #226). It runs on pul
 touch the library sources or build settings, on main (against the previous main) and nightly
 (against the latest release), and is informational, not a required check.
 
-Minimum supported Rust version: 1.85.
+Minimum supported Rust version: 1.85 (see [Stability](#stability)).
 
 ## Licence
 
