@@ -38,7 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
     let frames: Vec<&[u8]> = area.iter().map(Vec::as_slice).collect();
-    let mut conv = Converter::new(PcmConfig::new(PcmRate::Hz176400, Cutoff::Default, 2))?;
+    let mut conv = Converter::new(PcmConfig::new(PcmRate::Hz176400, Cutoff::Standard, 2))?;
     let bytes_per_frame = 3 * conv.samples_per_frame() * ch;
     let mut wav = vec![0u8; total * bytes_per_frame];
     let mut clipped = vec![0u64; total];

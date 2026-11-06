@@ -1,6 +1,25 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! The master TOC (specification 2) and the area TOCs (specification 3).
+//!
+//! The model is read, not built: [`Toc`], [`MasterToc`], [`Area`], [`Track`], [`Locale`] and
+//! the text structs are `#[non_exhaustive]`, so that later fields are not breaking changes.
+//! Read their fields as usual; a pattern ends in `..`. The text structs can still be made
+//! from [`Default`]:
+//!
+//! ```
+//! use scarletbook::toc::{Track, TrackText};
+//!
+//! fn describe(track: &Track) -> (u8, Option<&str>) {
+//!     let Track { number, text, .. } = track;
+//!     (*number, text.title.as_deref())
+//! }
+//!
+//! let mut text = TrackText::default();
+//! text.title = Some("Title".to_string());
+//! assert_eq!(text.title.as_deref(), Some("Title"));
+//! # let _ = describe;
+//! ```
 
 use std::io::{Read, Seek};
 
@@ -14,6 +33,7 @@ pub const MAX_AREA_TOC_SECTORS: u16 = 128;
 
 /// The complete table of contents of a disc image.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Toc {
     /// The image's stored sector format.
     pub sector_format: SectorFormat,
@@ -110,6 +130,7 @@ pub struct Date {
 
 /// A locale entry (specification 2, 2.5.1).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct Locale {
     /// The language code, trailing NUL and space removed; may contain control characters.
     pub language: String,
@@ -173,6 +194,7 @@ macro_rules! text_struct {
     ) => {
         $(#[$meta])*
         #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+        #[non_exhaustive]
         pub struct $name {
             $($(#[$fmeta])* pub $field: Option<String>,)*
         }
@@ -316,6 +338,7 @@ impl TrackTextItem {
 
 /// The master TOC (specification 2).
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct MasterToc {
     /// Version (offsets 8 and 9).
     pub version: Version,
@@ -394,6 +417,7 @@ impl AreaKind {
 
 /// An audio area (specification 3).
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Area {
     /// The master TOC slot it came from.
     pub slot: Slot,
@@ -577,6 +601,7 @@ pub enum Speaker {
 
 /// A track (specification 3, 3.9.1).
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Track {
     /// Track number, 1 to the track count.
     pub number: u8,

@@ -435,6 +435,24 @@ fn refusals() {
     }
 }
 
+/// The status and message of the one `Error` the library's own test can't build (#308).
+#[test]
+fn an_unspecified_layout_keeps_its_status_and_message() {
+    let tracks = vec![common::TrackSpec { start: 0, duration: 1 }];
+    let bytes = common::Spec { channels: 4, playtime: 1, tracks, audio: vec![[0; 2048]] }.build();
+    let d = open(&bytes);
+    let mut l = ptr::null_mut();
+    assert_eq!(
+        c!(sb_output_layout_new(d, 0, 0, 1, 0, ptr::null(), &mut l)),
+        SbStatus::OutputLayoutUnspecified
+    );
+    assert_eq!(
+        c!(CStr::from_ptr(sb_last_error_message())).to_str().unwrap(),
+        "output refused: the area's layout (4 channels, configuration 0x00) is unspecified, and the options give no channel type for it"
+    );
+    c!(sb_disc_free(d));
+}
+
 /// Lower-case hex of a digest.
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
