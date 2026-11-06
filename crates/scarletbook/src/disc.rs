@@ -21,6 +21,24 @@ use crate::toc::{self, Timecode, Toc, TocDigests, TocStored};
 ///
 /// Opening reads only the master TOC and the area TOCs. Audio is read on demand.
 ///
+/// # Which call
+///
+/// | To | Decoded audio | Frames as stored |
+/// |---|---|---|
+/// | read a track | [`Disc::track_audio`] | [`Disc::track_frames`] |
+/// | read a frame range | [`Disc::range_audio`] | [`Disc::range_frames`] |
+/// | read every accepted frame of an area | | [`Disc::stored_frame_list`] |
+/// | hold the reading without a borrow | [`TrackAudio::into_cursor`] | [`TrackFrames::into_cursor`] |
+/// | open a cursor from `&self` | [`Disc::audio_cursor`] | [`Disc::frames_cursor`], [`Disc::stored_frame_list_cursor`] |
+/// | read a cursor | [`Disc::read_track_audio`] | [`Disc::read_frames`] |
+/// | go on to a later track | [`Disc::continue_track_audio`] | [`Disc::continue_track_frames`] |
+/// | go on to a later range | [`Disc::continue_range_audio`] | [`Disc::continue_range_frames`] |
+///
+/// For decoded audio with the stored bytes in one pass, use [`TrackAudio::keep_stored`] and
+/// [`TrackAudio::next_with_stored`]. To start a cursor from your own seek index, or with
+/// another seek policy for that one cursor, use [`CursorOptions`]. [`Disc::area_frames`] is
+/// the diagnostic form of [`Disc::stored_frame_list`].
+///
 /// # Several readers
 ///
 /// A disc reads through one reader with one position, so its reads take `&mut self`. For
@@ -42,8 +60,7 @@ use crate::toc::{self, Timecode, Toc, TocDigests, TocStored};
 ///     for n in 1..=count {
 ///         let mut disc = disc.clone();
 ///         s.spawn(move || -> Result<(), scarletbook::Error> {
-///             let cursor = disc.track_audio_cursor(Slot::TwoChannel, n)?;
-///             for frame in disc.read_track_audio(cursor) {
+///             for frame in disc.track_audio(Slot::TwoChannel, n)? {
 ///                 let _frame = frame?;
 ///             }
 ///             Ok(())

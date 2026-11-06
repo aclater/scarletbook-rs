@@ -167,8 +167,18 @@ let c = TrackCursor::open_range(&area, first, end, n, with)?;
 #### `continue_to` and `continue_to_range` give way to `Disc::continue_*` (#305)
 
 Deprecated in 0.6.0 and removed before 1.0, on `TrackCursor` and `TrackAudioCursor` alike. There is
-no form without a disc. The `Disc` form also tells two images of the same size apart and scans
-afresh, where the old methods left a cursor that refuses to read the other image.
+no form without a disc.
+
+The `Disc` form behaves differently, so check these when you move:
+
+- **Seek policy:** the old methods always open exact. The `Disc` form uses the disc's seek policy,
+  so on a disc with `SeekPolicy::Speculative`, an opening that can't reuse the cursor's state may
+  start provisionally. Check `speculation()`, or keep the disc on `SeekPolicy::Exact`.
+- **Seek index:** the old methods use none. The `Disc` form starts from the disc's index when it
+  can't reuse the cursor's state, and takes what the cursor recorded into that index.
+- **Log:** the old methods log nothing. The `Disc` form logs each opening.
+- **Other images:** the `Disc` form tells two images of the same size apart and scans afresh, where
+  the old methods left a cursor that refuses to read the other image.
 
 Before:
 
