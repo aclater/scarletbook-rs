@@ -532,7 +532,8 @@ fn s1(lut: &[[i32; 256]], bytes: &[u8], start: usize, stride: usize, out: &mut [
     }
 }
 
-/// [`s1`] with `B` tables.
+/// [`s1`] with `B` tables. Each window is read as 64-bit words and taken apart, not loaded a
+/// byte at a time, which leaves the CPU's load ports to the table lookups (issue #224).
 #[inline(always)]
 fn s1_n<const B: usize>(lut: &[[i32; 256]; B], bytes: &[u8], start: usize, stride: usize, out: &mut [f64]) {
     let Some(last) = out.len().checked_sub(1) else { return };
@@ -540,8 +541,14 @@ fn s1_n<const B: usize>(lut: &[[i32; 256]; B], bytes: &[u8], start: usize, strid
     for (o, w) in out.iter_mut().zip(windows) {
         // As in `s1_any`: no partial sum wraps.
         let mut sum = 0i32;
-        for j in 0..B {
-            sum = sum.wrapping_add(lut[j][usize::from(w[j])]);
+        for (tables, part) in lut.chunks(8).zip(w.chunks(8)) {
+            let mut word = [0u8; 8];
+            word[..part.len()].copy_from_slice(part);
+            let mut word = u64::from_le_bytes(word);
+            for table in tables {
+                sum = sum.wrapping_add(table[(word & 0xff) as usize]);
+                word >>= 8;
+            }
         }
         *o = f64::from(sum);
     }
