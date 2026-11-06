@@ -63,7 +63,8 @@ jobs:
           # (#146, #173), so their full tests run under Miri only in miri-full.yml (main and
           # nightly). `ffi` and `ffi-slow` (scarletbook-ffi's tests, split in two, #205) run
           # when any crate it calls changes; `parallel` (rayon under Tree Borrows) when the core
-          # crate does; `core-dispatch` (the core dispatch module's bit-identity tests) when that
+          # crate does; `core-dispatch` (the core dispatch module's bit-identity tests, generic
+          # code on both sides: the wrappers run under Miri only in miri-full.yml, #267) when that
           # module, the decoder or the output path it builds does; all of them when the
           # dependencies, the toolchain or these workflows do.
           shared='^(Cargo\.lock$|rust-toolchain|\.github/workflows/(ci|miri)\.yml$)'

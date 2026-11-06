@@ -141,7 +141,7 @@ type Run<'a> = (&'a str, &'a [&'a str], SectorFormat, &'a [(Slot, u8)]);
 fn synth_writes_images() {
     let dir = scratch("synth");
     #[rustfmt::skip]
-    let runs: [Run; 4] = [
+    let runs: [Run; 6] = [
         ("dsd.iso", &["--minutes", "0.02", "--area", "both", "--kind", "dsd", "--track-minutes", "0.01",
             "--sector-size", "2064"], SectorFormat::Raw2064, &[(Slot::TwoChannel, 2), (Slot::Multichannel, 5)]),
         ("dst.iso", &["--minutes", "0.02", "--area", "mc", "--kind", "dst", "--mc-channels", "6",
@@ -150,6 +150,10 @@ fn synth_writes_images() {
             SectorFormat::Plain, &[(Slot::TwoChannel, 2)]),
         ("plain.iso", &["--minutes", "0.01", "--area", "2ch", "--kind", "dsd", "--sector-size", "2048"],
             SectorFormat::Plain, &[(Slot::TwoChannel, 2)]),
+        ("stress5.iso", &["--minutes", "0.01", "--area", "mc", "--kind", "dst", "--dst-frames", "stress"],
+            SectorFormat::Plain, &[(Slot::Multichannel, 5)]),
+        ("order64.iso", &["--minutes", "0.01", "--area", "both", "--kind", "dst", "--dst-frames", "stress",
+            "--dst-order", "64"], SectorFormat::Plain, &[(Slot::TwoChannel, 2), (Slot::Multichannel, 5)]),
     ];
     for (name, args, format, areas) in runs {
         let path = dir.join(name);
@@ -196,9 +200,14 @@ fn synth_usage() {
     fails(&with(&["--area", "mc", "--mc-channels", "4"]), 1, "multichannel areas have 5 or 6 channels");
     fails(&with(&["--minutes", "1000"]), 1, "duration must be 1 to");
     fails(&with(&["--minutes", "4", "--track-minutes", "0.01"]), 1, "at most 255 tracks");
-    // The stress set has no 5-channel frames; checked before any frame is made.
-    let stress = ["--area", "both", "--kind", "dst", "--dst-frames", "stress"];
-    fails(&with(&stress), 1, "the stress set has no 5-channel frames");
+    // Checked before any frame is made.
+    let stress = ["--kind", "dst", "--dst-frames", "stress"];
+    fails(
+        &with(&[&stress[..], &["--dst-order", "129"]].concat()),
+        1,
+        "--dst-order must be 1 to 128, not 129",
+    );
+    fails(&with(&["--dst-order", "32"]), 1, "--dst-order needs --dst-frames stress");
     let none = dir.join("no-corpus");
     let none = none.to_str().unwrap();
     fails(&with(&["--kind", "dst", "--corpus", none]), 1, "no-corpus");

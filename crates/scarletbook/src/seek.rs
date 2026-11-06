@@ -1861,6 +1861,16 @@ impl AreaIndex {
         std::mem::take(&mut self.events)
     }
 
+    /// Whether the exact checkpoints reach the sector `lsn` of a provisional reading.
+    fn reaches(&self, lsn: u64) -> bool {
+        lsn != 0 && lsn <= self.frontier() && lsn < self.end
+    }
+
+    /// Whether [`AreaIndex::verify`] has a provisional reading to settle.
+    pub(crate) fn has_reached_claims(&self) -> bool {
+        self.claims.iter().any(|c| c.verdict().is_none() && self.reaches(c.lsn()))
+    }
+
     /// Takes from `cursor` its provisional reading, to check, and the provisional
     /// checkpoints it recorded past the frontier: only for a cursor of this index's image.
     pub(crate) fn take_provisional(&mut self, cursor: &mut AreaCursor) {
@@ -1963,7 +1973,6 @@ impl AreaIndex {
         }
         // Checked against this image: the index is of it from now on.
         self.image_id = Some(image.id());
-        let frontier = self.frontier();
         let mut settled = 0;
         let mut i = 0;
         while i < self.claims.len() {
@@ -1973,7 +1982,7 @@ impl AreaIndex {
                 self.claims.remove(i);
                 continue;
             }
-            if lsn == 0 || lsn > frontier || lsn >= self.end {
+            if !self.reaches(lsn) {
                 i += 1;
                 continue;
             }

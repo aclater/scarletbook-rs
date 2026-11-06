@@ -10,7 +10,7 @@ earliest sample in the MSB).
 ```rust
 use scarletbook_pcm::{Converter, Cutoff, FrameRun, PcmConfig, PcmRate};
 
-let mut conv = Converter::new(PcmConfig::new(PcmRate::Hz176400, Cutoff::Default, 2))?;
+let mut conv = Converter::new(PcmConfig::new(PcmRate::Hz176400, Cutoff::Standard, 2))?;
 let mut pcm = vec![0i32; conv.samples_per_frame() * 2];
 conv.convert_frame(prev, frame, next, &mut pcm)?;     // prev/next: None at the area's edges
 // or a whole run: conv.convert_run(FrameRun { before, frames, after }, &mut pcm)?
@@ -30,7 +30,7 @@ it, and clips mean the gain is too high. There is no dither.
 
 | Cutoff | Passband | Stopband from | Rates |
 |---|---|---|---|
-| `Default` | 40 kHz | 48 kHz | 88.2, 176.4, 352.8 kHz |
+| `Standard` | 40 kHz | 48 kHz | 88.2, 176.4, 352.8 kHz |
 | `Low` | 30 kHz | 36 kHz | 88.2, 176.4, 352.8 kHz |
 | `Wide` | 80 kHz | 88.2 kHz at 176.4 kHz, 96 kHz at 352.8 kHz | 176.4, 352.8 kHz |
 
@@ -40,15 +40,15 @@ by the Parks-McClellan method in `src/design.rs`, which generates the committed
 
 - S1, 2822.4 to 352.8 kHz: 63 taps (95 for `Wide`), evaluated by table lookup on the
   input bytes;
-- a 31-tap halfband to 176.4 kHz (`Default`, `Low`);
-- the sharp filter at 176.4 kHz: 121 taps for `Default`, 161 for `Low`;
+- a 31-tap halfband to 176.4 kHz (`Standard`, `Low`);
+- the sharp filter at 176.4 kHz: 121 taps for `Standard`, 161 for `Low`;
 - for `Wide`, a filter at 352.8 kHz: 121 taps (80/96 kHz) for 352.8 kHz output, and 233
   taps (80/88.2 kHz, decimating by 2) for 176.4 kHz output;
-- 88.2 kHz takes every other 176.4 kHz sample; 352.8 kHz output of `Default` and `Low`
+- 88.2 kHz takes every other 176.4 kHz sample; 352.8 kHz output of `Standard` and `Low`
   interpolates the 176.4 kHz output with the halfband (its even samples are the 176.4 kHz
   samples).
 
-`Default` and `Low` therefore have one response at every rate. `Wide` at 176.4 kHz stops
+`Standard` and `Low` therefore have one response at every rate. `Wide` at 176.4 kHz stops
 from that rate's Nyquist frequency, so that nothing folds back below it. Its transition, 80
 to 88.2 kHz, must be made at 352.8 kHz: a filter at 176.4 kHz, or one in `z^2` at 352.8 kHz,
 has a response symmetric about 88.2 kHz. Output sample `n` is centred on DSD sample
@@ -82,17 +82,17 @@ From the integer tables (`cargo test -p scarletbook-pcm --release --lib -- --ign
 --nocapture report`). The stopband is the smallest attenuation from the stopband edge to
 1.4112 MHz (from 36 kHz for `Low`, and from 88.2 kHz for `Wide` at 176.4 kHz), which
 covers every band that aliases into the output; for 352.8 kHz output of
-`Default` and `Low` the images of the interpolation are listed separately. Linear phase is
+`Standard` and `Low` the images of the interpolation are listed separately. Linear phase is
 exact (symmetric taps).
 
 | Rate | Cutoff | Ripple to 20 kHz | Ripple to passband edge | -0.1 dB | -3 dB | Stopband (min) |
 |---|---|---|---|---|---|---|
-| 88200 | Default | ±0.0039 dB | ±0.0039 dB | 40.7 kHz | 42.7 kHz | 110.9 dB |
+| 88200 | Standard | ±0.0039 dB | ±0.0039 dB | 40.7 kHz | 42.7 kHz | 110.9 dB |
 | 88200 | Low | ±0.0037 dB | ±0.0037 dB | 30.5 kHz | 32.0 kHz | 110.2 dB |
-| 176400 | Default | ±0.0039 dB | ±0.0039 dB | 40.7 kHz | 42.7 kHz | 110.9 dB |
+| 176400 | Standard | ±0.0039 dB | ±0.0039 dB | 40.7 kHz | 42.7 kHz | 110.9 dB |
 | 176400 | Low | ±0.0037 dB | ±0.0037 dB | 30.5 kHz | 32.0 kHz | 110.2 dB |
 | 176400 | Wide | ±0.0039 dB | ±0.0039 dB | 80.7 kHz | 82.7 kHz | 109.7 dB |
-| 352800 | Default | ±0.0039 dB | ±0.0039 dB | 40.7 kHz | 42.7 kHz | 110.9 dB (images 119.3 dB) |
+| 352800 | Standard | ±0.0039 dB | ±0.0039 dB | 40.7 kHz | 42.7 kHz | 110.9 dB (images 119.3 dB) |
 | 352800 | Low | ±0.0037 dB | ±0.0037 dB | 30.5 kHz | 32.0 kHz | 110.2 dB (images 119.3 dB) |
 | 352800 | Wide | ±0.0040 dB | ±0.0042 dB | 81.4 kHz | 85.3 kHz | 111.1 dB |
 
@@ -103,12 +103,12 @@ alone would give at most 0.5 LSB.
 
 | Rate | Cutoff | Largest difference | Samples differing |
 |---|---|---|---|
-| 88200 | Default | 0.616 LSB | 6.79 % |
+| 88200 | Standard | 0.616 LSB | 6.79 % |
 | 88200 | Low | 0.613 LSB | 6.77 % |
-| 176400 | Default | 0.616 LSB | 6.45 % |
+| 176400 | Standard | 0.616 LSB | 6.45 % |
 | 176400 | Low | 0.613 LSB | 6.38 % |
 | 176400 | Wide | 0.562 LSB | 6.00 % |
-| 352800 | Default | 0.679 LSB | 6.52 % |
+| 352800 | Standard | 0.679 LSB | 6.52 % |
 | 352800 | Low | 0.661 LSB | 6.33 % |
 | 352800 | Wide | 0.562 LSB | 6.15 % |
 
@@ -129,17 +129,17 @@ tests run with `SCARLETBOOK_PCM_REPORT=1 cargo test -p scarletbook-pcm --release
 
 | Rate | Cutoff | Sine | Level error | Alignment | THD+N |
 |---|---|---|---|---|---|
-| 176400 | Default | 1.0 kHz, -6 dBFS | +0.0000 dB | +0.00000 samples | -66.6 dB |
-| 176400 | Default | 1.0 kHz, -20 dBFS | +0.0000 dB | +0.00000 samples | -53.2 dB |
-| 176400 | Default | 10.0 kHz, -6 dBFS | +0.0000 dB | +0.00001 samples | -66.3 dB |
-| 176400 | Default | 20.0 kHz, -6 dBFS | +0.0004 dB | +0.00011 samples | -66.5 dB |
-| 176400 | Default | 39.0 kHz, -6 dBFS | +0.0200 dB | +0.00074 samples | -66.7 dB |
+| 176400 | Standard | 1.0 kHz, -6 dBFS | +0.0000 dB | +0.00000 samples | -66.6 dB |
+| 176400 | Standard | 1.0 kHz, -20 dBFS | +0.0000 dB | +0.00000 samples | -53.2 dB |
+| 176400 | Standard | 10.0 kHz, -6 dBFS | +0.0000 dB | +0.00001 samples | -66.3 dB |
+| 176400 | Standard | 20.0 kHz, -6 dBFS | +0.0004 dB | +0.00011 samples | -66.5 dB |
+| 176400 | Standard | 39.0 kHz, -6 dBFS | +0.0200 dB | +0.00074 samples | -66.7 dB |
 | 176400 | Low | 20.0 kHz, -6 dBFS | +0.0004 dB | +0.00011 samples | -80.0 dB |
 | 176400 | Low | 29.0 kHz, -6 dBFS | +0.0038 dB | +0.00037 samples | -80.2 dB |
 | 176400 | Wide | 20.0 kHz, -6 dBFS | +0.0004 dB | +0.00011 samples | -34.5 dB |
 | 176400 | Wide | 79.0 kHz, -6 dBFS | +0.4256 dB | -0.02510 samples | -35.4 dB |
-| 88200 | Default | 20.0 kHz, -6 dBFS | +0.0004 dB | +0.00005 samples | -66.5 dB |
-| 352800 | Default | 20.0 kHz, -6 dBFS | +0.0004 dB | +0.00021 samples | -66.5 dB |
+| 88200 | Standard | 20.0 kHz, -6 dBFS | +0.0004 dB | +0.00005 samples | -66.5 dB |
+| 352800 | Standard | 20.0 kHz, -6 dBFS | +0.0004 dB | +0.00021 samples | -66.5 dB |
 
 Other tests on the same input:
 
@@ -158,29 +158,29 @@ frame with neighbours, on a generic x86-64 build: the filters run with AVX2 and 
 run time, on CPUs that have them, and SSE2 otherwise (the output is the same). Measured
 on an AMD Ryzen AI MAX+ 395 (Zen 5), shared with other work, pinned to one core, the best
 of two runs; the figures are indicative. The requirements are at most 10 ms per second of
-stereo audio at 176.4 kHz with `Default`, and at least 100 times real time per stereo stream
+stereo audio at 176.4 kHz with `Standard`, and at least 100 times real time per stereo stream
 for every filter at 176.4 kHz.
 
 | Rate | Cutoff | Channels | ms CPU per s of audio | × real time |
 |---|---|---|---|---|
-| 88200 | Default | 1 | 1.23 | 813 |
-| 88200 | Default | 2 | 2.63 | 380 |
-| 88200 | Default | 6 | 7.91 | 126 |
+| 88200 | Standard | 1 | 1.23 | 813 |
+| 88200 | Standard | 2 | 2.63 | 380 |
+| 88200 | Standard | 6 | 7.91 | 126 |
 | 88200 | Low | 1 | 1.37 | 730 |
 | 88200 | Low | 2 | 2.92 | 342 |
 | 88200 | Low | 6 | 8.72 | 115 |
-| 176400 | Default | 1 | 1.64 | 610 |
-| **176400** | **Default** | **2** | **3.43** | **292** |
-| 176400 | Default | 6 | 10.35 | 97 |
+| 176400 | Standard | 1 | 1.64 | 610 |
+| **176400** | **Standard** | **2** | **3.43** | **292** |
+| 176400 | Standard | 6 | 10.35 | 97 |
 | 176400 | Low | 1 | 1.91 | 524 |
 | 176400 | Low | 2 | 3.98 | 251 |
 | 176400 | Low | 6 | 11.88 | 84 |
 | 176400 | Wide | 1 | 2.36 | 424 |
 | 176400 | Wide | 2 | 4.88 | 205 |
 | 176400 | Wide | 6 | 14.53 | 69 |
-| 352800 | Default | 1 | 2.09 | 478 |
-| 352800 | Default | 2 | 4.34 | 230 |
-| 352800 | Default | 6 | 13.02 | 77 |
+| 352800 | Standard | 1 | 2.09 | 478 |
+| 352800 | Standard | 2 | 4.34 | 230 |
+| 352800 | Standard | 6 | 13.02 | 77 |
 | 352800 | Low | 1 | 2.36 | 424 |
 | 352800 | Low | 2 | 4.87 | 205 |
 | 352800 | Low | 6 | 14.60 | 68 |
