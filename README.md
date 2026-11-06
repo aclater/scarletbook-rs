@@ -1120,6 +1120,23 @@ cache first and pin the process to one core:
 taskset -c 2 target/release/bench realtime disc.iso --area mc --seeks 200
 ```
 
+`bench open` and `bench first` are outside it too (#224). They time what takes far less than
+starting a process, so they time it inside the process, `--iterations` times (default 100, at
+most 1,000,000), and print the median, fastest and slowest time in microseconds. `open` times
+opening an image up to its parsed TOC. `first` times the first `--bytes` (default 128 KiB) of a
+track's decoded audio, by default the area's middle track, on a disc already open with a complete
+seek index:
+
+```sh
+target/release/bench open disc.iso
+target/release/bench first disc.iso --area 2ch --threads 1 --track 3
+target/release/bench first disc.iso --area 2ch --threads 0 --iterations 15 --evict benchmarks/evict.py
+```
+
+The image stays in the page cache unless `--evict PROGRAM` is given. `PROGRAM IMAGE` then runs,
+untimed, before each iteration, and its failure fails the run. `benchmarks/evict.py` evicts the
+image without privileges and fails if any page stays cached, as it does on tmpfs.
+
 Pushing a version tag (`v0.1.0`, matching the crate version) runs the release workflow:
 it publishes `bench-<version>-x86_64-linux.tar.gz` (generic x86-64, cargo profile `dist`),
 after the correctness gate has passed on that very build, and two labelled builds,
