@@ -11,7 +11,8 @@ mod harness;
 
 use dst_enc::{encode_simple as encode, interleave};
 use proptest::prelude::*;
-use scarletbook::dst::{self, DstDecoder, DstError, FL, MAX_LANES};
+use scarletbook::audio::FRAME_BYTES_PER_CHANNEL as FL;
+use scarletbook::dst::{self, DstDecoder, DstError, MAX_LANES};
 
 fn config() -> ProptestConfig {
     if cfg!(miri) {

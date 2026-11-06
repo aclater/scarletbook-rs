@@ -2389,6 +2389,10 @@ pub const SB_SECTOR_SIZE: u32 = 2048;
 
 const _: () = assert!(SB_SECTOR_SIZE as usize == scarletbook::SECTOR_SIZE);
 
+// scarletbook-pcm does not depend on scarletbook, so it keeps its own copies of these (#39).
+const _: () = assert!(MAX_CHANNELS == scarletbook::audio::MAX_CHANNELS);
+const _: () = assert!(FRAME_BYTES_PER_CHANNEL == scarletbook::audio::FRAME_BYTES_PER_CHANNEL);
+
 /// Copies the user data of the logical sectors `[lsn, lsn + count)` into `buf`, 2048
 /// bytes (`SB_SECTOR_SIZE`) per sector in order, whatever the image's stored sector size
 /// (`SbDiscInfo.sector_size`): the data a 2048-byte-sector image holds at those sectors.
@@ -3665,7 +3669,7 @@ pub unsafe extern "C" fn sb_dst_decode(
     guard(|| {
         let ch = u8::try_from(channels).ok().filter(|c| (1..=6).contains(c));
         let Some(ch) = ch else { return Err(Failure::arg("channels must be 1 to 6")) };
-        let need = usize::from(ch) * scarletbook::dst::FL;
+        let need = usize::from(ch) * scarletbook::audio::FRAME_BYTES_PER_CHANNEL;
         if out.is_null() || out_len < need {
             return Err(Failure(SbStatus::BufferTooSmall, format!("the output needs {need} bytes")));
         }

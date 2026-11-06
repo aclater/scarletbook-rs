@@ -336,7 +336,8 @@ mod output_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dst::{FL, MAX_LANES};
+    use crate::audio::FRAME_BYTES_PER_CHANNEL as FL;
+    use crate::dst::MAX_LANES;
     use crate::{Disc, FrameContent};
 
     /// Up to `per_track` DST frames of every track of every corpus image, by channel count.

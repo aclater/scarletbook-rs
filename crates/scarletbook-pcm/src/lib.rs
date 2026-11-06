@@ -121,10 +121,11 @@ use std::fmt;
 
 use kernel::Plan;
 
-/// Bytes of one channel in one frame: 37 632 one-bit samples.
+/// Bytes of one channel in one frame: 37 632 one-bit samples. This crate does not depend on
+/// `scarletbook`, so it holds its own copy of `scarletbook::audio::FRAME_BYTES_PER_CHANNEL`.
 pub const FRAME_BYTES_PER_CHANNEL: usize = 4704;
 
-/// The highest channel count of an area.
+/// The highest channel count of an area: this crate's copy of `scarletbook::audio::MAX_CHANNELS`.
 pub const MAX_CHANNELS: u8 = 6;
 
 /// An output sample rate.

@@ -16,7 +16,8 @@
 
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use scarletbook::dst::{FL, NB};
+use scarletbook::audio::FRAME_BYTES_PER_CHANNEL as FL;
+use scarletbook::dst::NB;
 
 /// Bits of the frame, one byte per bit.
 #[derive(Default)]

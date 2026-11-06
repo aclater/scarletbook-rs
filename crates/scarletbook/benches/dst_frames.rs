@@ -31,7 +31,8 @@ use std::io::BufReader;
 use std::path::Path;
 
 use criterion::{Criterion, Throughput};
-use scarletbook::dst::{FL, NB};
+use scarletbook::audio::FRAME_BYTES_PER_CHANNEL as FL;
+use scarletbook::dst::NB;
 use scarletbook::{Disc, DstDecoder, FrameKind, Slot};
 
 /// Frames of each stress layout (consecutive frames of one signal).
