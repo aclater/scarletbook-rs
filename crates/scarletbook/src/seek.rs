@@ -1347,8 +1347,14 @@ impl AreaIndex {
     }
 
     /// The number of checkpoints held.
-    pub fn checkpoints(&self) -> usize {
+    pub fn checkpoint_count(&self) -> usize {
         self.checkpoints.len()
+    }
+
+    /// The old name of [`AreaIndex::checkpoint_count`].
+    #[deprecated(since = "0.6.0", note = "renamed `AreaIndex::checkpoint_count`; to be removed before 1.0")]
+    pub fn checkpoints(&self) -> usize {
+        self.checkpoint_count()
     }
 
     /// The bytes the index holds, for the caller's accounting (see [Memory](Self#memory)).
@@ -1396,8 +1402,14 @@ impl AreaIndex {
 
     /// The provisional starts confirmed and kept (see [Saved
     /// confirmations](Self#saved-confirmations)).
-    pub fn confirmations(&self) -> usize {
+    pub fn confirmation_count(&self) -> usize {
         self.confirmed.len()
+    }
+
+    /// The old name of [`AreaIndex::confirmation_count`].
+    #[deprecated(since = "0.6.0", note = "renamed `AreaIndex::confirmation_count`; to be removed before 1.0")]
+    pub fn confirmations(&self) -> usize {
+        self.confirmation_count()
     }
 
     /// Keeps that a provisional reading from `lsn` for positions `u` or more was confirmed
@@ -1432,8 +1444,14 @@ impl AreaIndex {
     }
 
     /// The seek hints held (see [Seek hints](Self#seek-hints)).
-    pub fn hints(&self) -> usize {
+    pub fn hint_count(&self) -> usize {
         self.samples.len()
+    }
+
+    /// The old name of [`AreaIndex::hint_count`].
+    #[deprecated(since = "0.6.0", note = "renamed `AreaIndex::hint_count`; to be removed before 1.0")]
+    pub fn hints(&self) -> usize {
+        self.hint_count()
     }
 
     /// A recorder of seek hints for a cursor made from this index, if it keeps any.
@@ -1824,8 +1842,17 @@ impl AreaIndex {
 
 impl AreaIndex {
     /// The provisional readings waiting to be checked ([`AreaIndex::verify`]).
-    pub fn pending_claims(&self) -> usize {
+    pub fn pending_claim_count(&self) -> usize {
         self.claims.len()
+    }
+
+    /// The old name of [`AreaIndex::pending_claim_count`].
+    #[deprecated(
+        since = "0.6.0",
+        note = "renamed `AreaIndex::pending_claim_count`; to be removed before 1.0"
+    )]
+    pub fn pending_claims(&self) -> usize {
+        self.pending_claim_count()
     }
 
     /// Takes the verdicts on provisional readings reached since the last call (see
@@ -2318,8 +2345,20 @@ mod tests {
         }
         let ix = AreaIndex::new(&area, 4, IndexOptions::new().with_interval(MAX_INTERVAL)).unwrap();
         assert_eq!(ix.options().interval, MAX_INTERVAL);
-        assert_eq!((ix.frontier(), ix.is_complete(), ix.checkpoints()), (0, false, 0));
+        assert_eq!((ix.frontier(), ix.is_complete(), ix.checkpoint_count()), (0, false, 0));
         assert!(ix.memory() >= std::mem::size_of::<AreaIndex>());
+    }
+
+    /// The deprecated count methods still answer, as the methods that replace them.
+    #[test]
+    #[allow(deprecated)]
+    fn old_count_names_still_answer() {
+        let (_, area, _) = crate::audio::tests_support::area(4);
+        let ix = AreaIndex::new(&area, 4, IndexOptions::new()).unwrap();
+        assert_eq!(ix.checkpoints(), ix.checkpoint_count());
+        assert_eq!(ix.hints(), ix.hint_count());
+        assert_eq!(ix.confirmations(), ix.confirmation_count());
+        assert_eq!(ix.pending_claims(), ix.pending_claim_count());
     }
 
     /// Knots inside the interval steer the guess; knots outside it, or out of order with
