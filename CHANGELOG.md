@@ -12,6 +12,49 @@ from 0.5.8).
 
 ## [0.5.9] - 2026-11-06
 
+**A DST lanes setting to measure with, faster multichannel DST, a correction to what `verify_speculation` promised, and DSF partial rows that can now fail on a bad neighbour.**
+
+- **DST lanes.** `TrackAudioCursor::with_dst_lanes` sets how many DST frames decode together on each thread, and `bench decode --lanes K` exposes it in the kit. The default and the decoded output are unchanged. On the Zen 2 benchmark host 1 lane wins only at all 32 logical CPUs (stereo 6.6 %, 6 channels 5.0 %) and costs 10 to 26 % at 16 threads and one thread, so the default stays until 0.6.0 and is chosen from consumers' numbers on their own CPUs (#203, #318).
+- **Faster DST decoding, same output.** Against 0.5.8, medians of per-round ratios, 5 channels: 8.5 % on one thread, 14.4 % on all threads. 6 channels: 3.5 % and 3.9 %. Stereo: about 1 % and 3.5 %. Measured on Zen 2 only: AVX-512 builds (the `znver5` benchmark build) and Zen 5 are not measured (#203, #288).
+- **`verify_speculation`: check your use of it.** Code relying on the old `Disc::verify_speculation` (C: `sb_disc_seek_verify`) promise may have seen an unverified reading treated as complete. It could report complete while a reading registered by another disc during the call had no verdict and no event. Existing `while !verify_speculation(..)` loops now finish the job; a caller that must have every verdict runs the loop once more after its readers finish and checks each reading. No delivered frame changes (#310, #313).
+- **DSF partial rows: a good read can now fail because of a bad neighbour.** A hard read error in a neighbouring position can fail a read whose own bytes lie elsewhere, and an `sb_output_layout_fill` call that supplies fewer positions than `sb_output_layout_positions` lists now gets `SB_STATUS_INVALID_ARGUMENT`. Reads under 4 KiB from a DST area do more work: with `Layout::read_at`, stereo 1 KiB calls take 1.6 % longer and 512-byte calls 5.1 % longer. In return, plain-DSD areas read in order gain 28 to 51 % at 128 KiB calls, as measured by #287; "Changed" has the full entry (#202, #287).
+- **PCM:** DSD to PCM is about 8 % faster on this host, byte-identical (#224, #285, #286).
+
+**#202 and #203 are not closed by this release.** Neither has consumer numbers from this kit: please re-measure with it. `docs/migrating-0.6.md` is an unfinished skeleton, and nothing on it applies to 0.5.x.
+
+| Path | Build | 0.5.8 wall s | 0.5.8 CPU s | 0.5.9 wall s | 0.5.9 CPU s | 0.5.9 / 0.5.8 | Median of per-round ratios [range] |
+|---|---|---|---|---|---|---|---|
+| DST decode, one thread, 2 channels | generic | 6.131 | 6.09 | 6.079 | 6.05 | 0.991 | 0.992 [0.981-0.998] |
+| DST decode, one thread, 2 channels, corpus frames | generic | 20.296 | 20.19 | 20.013 | 19.91 | 0.986 | 0.988 [0.984-0.988] |
+| DST decode, all threads, 2 channels | generic | 4.010 | 126.66 | 3.880 | 122.07 | 0.968 | 0.965 [0.962-0.979] |
+| DST decode, one thread, 6 channels | generic | 7.645 | 7.61 | 7.373 | 7.33 | 0.964 | 0.965 [0.962-0.984] |
+| DST decode, all threads, 6 channels | generic | 2.593 | 81.48 | 2.483 | 78.23 | 0.958 | 0.961 [0.951-0.964] |
+| plain-DSD area to DSF, 2 channels | generic | 0.553 | 0.55 | 0.557 | 0.55 | 1.006 | 1.004 [0.987-1.006], unresolved |
+| plain-DSD area to DSF, 5 channels | generic | 0.611 | 0.60 | 0.600 | 0.59 | 0.982 | 0.970 [0.957-0.982], see below |
+| DST area to DSF, all threads | generic | 4.041 | 128.03 | 3.900 | 123.38 | 0.965 | 0.965 [0.875-0.970] |
+| DSD to PCM, stereo DSD64 to 176.4 kHz 24-bit, one thread | generic | 4.25 / 4.16 / 4.16 ms per s | - | 3.89 / 3.82 / 3.82 ms per s | - | 0.918 | - |
+| open to parsed TOC, page cache | generic | - | - | 16.9 µs | - | - | - |
+| open to parsed TOC, evicted | generic | - | - | 213.3 µs | - | - | - |
+| first 128 KiB, 2 channels, plain DSD, page cache | generic | - | - | 29.5 µs | - | - | - |
+| first 128 KiB, 2 channels, plain DSD, evicted | generic | - | - | 244.5 µs | - | - | - |
+| first 128 KiB, 2 channels, DST, one thread, page cache | generic | - | - | 4003.0 µs | - | - | - |
+| first 128 KiB, 2 channels, DST, one thread, evicted | generic | - | - | 4407.9 µs | - | - | - |
+| first 128 KiB, 2 channels, DST, all threads, page cache | generic | - | - | 2362.9 µs | - | - | - |
+| first 128 KiB, 2 channels, DST, all threads, evicted | generic | - | - | 4335.2 µs | - | - | - |
+
+Medians of alternating runs on the Zen 2 benchmark host (AMD Ryzen 9 3950X), 2026-11-06, under the machine's shared benchmark lock, generic build, kits from `benchmarks/compare.sh`, a fresh copy of each program and image per round, images in the page cache, output to `/dev/null`: 5 rounds, 3 for the 20-minute DST case and for DSD to PCM; 122 runs, none failed. The DSD-to-PCM cells are at 1 / 8 / 256 frames per call. `open` and `first` are new in this kit, so 0.5.8 has no figure for them.
+
+**Plain-DSD rows:** differences under about 2 % are unresolved (#259), so they aren't stated as "within 1 %". The 2-channel row (1.006; 3 of 5 rounds slower, 2 faster) shows no change either way. The 5-channel row is 0.982 as a ratio of medians, under that line, and 0.970 as the median of per-round ratios, with all 5 rounds below 1. That agrees with #287's own 0.970 over 7 rounds, which is why it is reported as a likely gain and not a settled figure.
+
+No row is slower than 0.5.8 beyond noise. The run list has no 5-channel DST case, so those figures come from a separate run with the same method (5 rounds, 20 runs, none failed):
+
+| Path (not in the run list) | Build | 0.5.8 wall s | 0.5.8 CPU s | 0.5.9 wall s | 0.5.9 CPU s | 0.5.9 / 0.5.8 | Median of per-round ratios [range] |
+|---|---|---|---|---|---|---|---|
+| DST decode, one thread, 5 channels, corpus frames, 3 min | generic | 8.147 | 8.11 | 7.459 | 7.41 | 0.916 | 0.915 [0.913-0.923] |
+| DST decode, all threads, 5 channels, corpus frames, 10 min | generic | 1.877 | 59.01 | 1.608 | 50.41 | 0.856 | 0.856 [0.853-0.857] |
+
+**Compare within these tables only.** Not measured: the x86-64-v3 build; AVX-512 builds, Zen 5 and Raptor Lake; real output files; the first 128 KiB of 5 or 6 channels or without a seek index; cold runs of the whole-area cases; the C interface (`benchmarks/RESULTS.md`).
+
 ### Added
 
 - `bench dsf --via tracks|tracks-scan|tracks-speculative|tracks-unverified`: one DSF file per track from the public `Layout` API, in order or from N workers, to measure a per-track writer (#202, #306).
