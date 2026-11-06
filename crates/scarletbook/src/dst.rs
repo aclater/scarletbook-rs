@@ -917,13 +917,16 @@ impl Arith<'_> {
         // A is 2048 to 4095 here (4095 at the start, then renormalised), so Q is 8 to 15
         // and Q x p is at most A / 2 + 128 < A: nothing below wraps, and the wrapping
         // forms only spare the hot loop the overflow checks. Everything is x 2^52, like C.
-        // Q (x 2^52) is floor(A / 256) with bit 0 ORed with bit 7 of A.
+        // Q is floor(A / 256) with bit 0 ORed with bit 7 of A: from t = floor(A / 128). Worked
+        // out at the scale of 1, it holds no constant in a register.
         let a = self.a;
-        let q = ((a >> 8) & (0xF << 52)) | ((a >> 7) & (1 << 52));
-        let w0 = q.wrapping_mul(u64::from(p));
+        let t = (a >> 59) as u32;
+        let q = (t >> 1) | (t & 1);
+        let w0 = u64::from(q.wrapping_mul(p)) << 52;
         let w1 = a.wrapping_sub(w0);
         let zero = self.x >= w1;
-        let x = if zero { self.x - w1 } else { self.x };
+        // C - W1 if that does not wrap, else C: the smaller of the two.
+        let x = self.x.wrapping_sub(w1).min(self.x);
         let a = if zero { w0 } else { w1 };
         // A is 8 to 4095 here (w0 >= 8, w1 >= 128), so the shift is 0 to 8; C stays
         // below A, so nothing leaves the top of x.
@@ -1017,8 +1020,10 @@ fn rows<const NCH: usize, const U: usize, const FROM: usize>(
 }
 
 /// Most symbols per bit position (frames x channels) for which [`run`] unrolls a whole
-/// byte; beyond, the loop body would outgrow the instruction caches.
-const UNROLL_BYTE: usize = 10;
+/// byte; beyond, the loop body would outgrow the instruction caches (inferred: no front-end
+/// counters were taken). Measured on Zen 2 (#203): at 10, 5 channels in 2 frames run fewer
+/// instructions unrolled but take more cycles.
+const UNROLL_BYTE: usize = 9;
 
 /// A row on the stack of [`run`], aligned so that no vector access of it splits a cache line.
 #[derive(Clone, Copy)]
@@ -1077,7 +1082,11 @@ fn run_inline<const K: usize, const NCH: usize, const U: usize>(lanes: &mut [Lan
                 rest[l][ch] = Aligned(rows::<NCH, U, 1>(tabs[l][ch], w, ch));
             }
         }
-        let mut cur = [[0u32; NCH]; K];
+        // The bits of the byte so far. The loop that does not unroll the bit position starts
+        // them from a marker bit, so that they are the index `2^r | bits` of `Probe::partial`
+        // as they stand; 8 shifts move the marker out of the low byte, which is all that is
+        // read after the loop.
+        let mut cur = [[if K * NCH <= UNROLL_BYTE { 0u32 } else { 1 }; NCH]; K];
         // A refill waits for the position after the previous symbol, so it is done as
         // rarely as allowed: before every 6 symbols, counted from the byte's first.
         macro_rules! symbol {
@@ -1127,7 +1136,7 @@ fn run_inline<const K: usize, const NCH: usize, const U: usize>(lanes: &mut [Lan
                     if $ch == 0 {
                         ar[$l].refill();
                     }
-                    let idx = ((1 << $r) | cur[$l][$ch]) as usize & 0xFF;
+                    let idx = cur[$l][$ch] as usize & 0xFF;
                     let probe = &probes[$l][$ch];
                     let spred = base[$l][$ch].0[$r].wrapping_add(probe.partial[idx]);
                     let y = if const { byte_lut(NCH) } {
