@@ -7,8 +7,8 @@
 
 use std::io::{self, Read, Seek, SeekFrom};
 
+use scarletbook::audio::FRAME_BYTES_PER_CHANNEL as FL;
 use scarletbook::audio::{FRAME_BYTES_PER_CHANNEL, MAX_FRAME_BYTES};
-use scarletbook::dst::FL;
 use scarletbook::{AreaIndex, CursorOptions, Demuxer, Disc, DstDecoder, FrameKind, FrameSpan, SeekPolicy};
 use scarletbook_pcm::{ConvertStats, Converter, Cutoff, FrameRun, Gain, PcmConfig, PcmError, PcmRate};
 
@@ -316,7 +316,7 @@ pub fn pcm_select(input: &mut [u8]) {
 /// refused, with nothing written.
 pub fn pcm(case: &PcmCase<'_>) {
     let cutoff = match case.cutoff {
-        0 => Cutoff::Default,
+        0 => Cutoff::Standard,
         1 => Cutoff::Low,
         2 => Cutoff::Wide,
         _ => return,
@@ -459,33 +459,41 @@ pub fn seek_area() -> (scarletbook::Image<std::io::Cursor<Vec<u8>>>, scarletbook
             }
         }
     }
-    let image =
-        scarletbook::Image::with_format(std::io::Cursor::new(bytes), scarletbook::SectorFormat::Plain)
-            .unwrap();
-    let area = scarletbook::Area {
-        slot: scarletbook::Slot::TwoChannel,
-        kind: AreaKind::TwoChannel,
-        version: Version { major: 1, minor: 20 },
-        toc_lsn: 0,
-        toc_sectors: 0,
-        max_byte_rate: 0,
-        sample_frequency_code: 4,
-        frame_format: 0,
-        channel_count: 2,
-        area_config: 0,
-        max_available_channels: 2,
-        area_mute_flags: 0,
-        track_attribute: 0,
-        playtime: Timecode { minutes: 0, seconds: 0, frames: 20 },
-        track_offset: 0,
-        audio_start_lsn: 0,
-        audio_end_lsn: SEEK_SECTORS - 1,
-        text_channel_count: 0,
-        locales: Vec::new(),
-        text_charset: 0,
-        text: AreaText::default(),
-        tracks: Vec::new(),
-    };
+    let image = scarletbook::Image::options()
+        .with_format(scarletbook::SectorFormat::Plain)
+        .open(std::io::Cursor::new(bytes))
+        .unwrap();
+    // `Area` can't be built by literal outside the crate: start from a parsed one and set
+    // every field, so that this area does not depend on the disc it came from.
+    static PARSED: std::sync::OnceLock<scarletbook::Area> = std::sync::OnceLock::new();
+    let parsed = PARSED.get_or_init(|| {
+        let img = seek_disc_image();
+        let disc = Disc::open(std::io::Cursor::new(&img[..])).unwrap();
+        disc.toc().areas[0].clone()
+    });
+    let mut area = parsed.clone();
+    area.slot = scarletbook::Slot::TwoChannel;
+    area.kind = AreaKind::TwoChannel;
+    area.version = Version { major: 1, minor: 20 };
+    area.toc_lsn = 0;
+    area.toc_sectors = 0;
+    area.max_byte_rate = 0;
+    area.sample_frequency_code = 4;
+    area.frame_format = 0;
+    area.channel_count = 2;
+    area.area_config = 0;
+    area.max_available_channels = 2;
+    area.area_mute_flags = 0;
+    area.track_attribute = 0;
+    area.playtime = Timecode { minutes: 0, seconds: 0, frames: 20 };
+    area.track_offset = 0;
+    area.audio_start_lsn = 0;
+    area.audio_end_lsn = SEEK_SECTORS - 1;
+    area.text_channel_count = 0;
+    area.locales = Vec::new();
+    area.text_charset = 0;
+    area.text = AreaText::default();
+    area.tracks = Vec::new();
     (image, area)
 }
 
@@ -533,7 +541,7 @@ pub fn seek_index_seeds() -> Vec<Vec<u8>> {
     if let Some(v2) = out.iter().find(|b| b[8] == 2).cloned() {
         let mut sum = v2.clone();
         sum.extend_from_slice(&fnv(&v2).to_le_bytes());
-        let hints = AreaIndex::from_bytes(&area, n, &sum, usize::MAX).unwrap().hints();
+        let hints = AreaIndex::from_bytes(&area, n, &sum, usize::MAX).unwrap().hint_count();
         let mut v3 = v2;
         v3[8] = 3;
         v3[14] |= 2;
@@ -627,69 +635,75 @@ pub struct SeekDisc {
     pub expected: Vec<Vec<scarletbook::TrackFrame>>,
 }
 
+/// The image of [`SeekDisc`].
+fn seek_disc_image() -> Vec<u8> {
+    const S: usize = 2048;
+    const AREA_TOC: usize = 540;
+    const AUDIO: usize = AREA_TOC + 6;
+    let sectors = DISC_FRAMES as usize * 4;
+    let mut img = vec![0u8; (AUDIO + sectors) * S];
+    let put = |img: &mut [u8], at: usize, b: &[u8]| img[at..at + b.len()].copy_from_slice(b);
+    let tc = |n: u32| [(n / 4500) as u8, (n / 75 % 60) as u8, (n % 75) as u8];
+    // Master TOC, its text, the manufacturer sector and the two copies.
+    let m = 510 * S;
+    put(&mut img, m, b"SACDMTOC");
+    put(&mut img, m + 8, &[1, 20]);
+    put(&mut img, m + 16, &[0, 1, 0, 1]);
+    put(&mut img, m + 24, b"CAT-1");
+    put(&mut img, m + 64, &(AREA_TOC as u32).to_be_bytes());
+    put(&mut img, m + 84, &6u16.to_be_bytes());
+    img[m + 128] = 1;
+    put(&mut img, m + 136, b"en\x02");
+    put(&mut img, m + S, b"SACDText");
+    put(&mut img, m + 9 * S, b"SACD_Man");
+    let master = img[m..m + 10 * S].to_vec();
+    for copy in [520, 530] {
+        put(&mut img, copy * S, &master);
+    }
+    // The area TOC: one track over the whole area.
+    let a = AREA_TOC * S;
+    put(&mut img, a, b"TWOCHTOC");
+    put(&mut img, a + 8, &[1, 20]);
+    img[a + 20] = 4;
+    img[a + 32] = 2;
+    put(&mut img, a + 64, &tc(DISC_FRAMES));
+    img[a + 69] = 1;
+    put(&mut img, a + 72, &(AUDIO as u32).to_be_bytes());
+    put(&mut img, a + 76, &((AUDIO + sectors - 1) as u32).to_be_bytes());
+    img[a + 80] = 1;
+    put(&mut img, a + 88, b"en\x02");
+    put(&mut img, a + S, b"SACDTTxt");
+    put(&mut img, a + 2 * S, b"SACD_IGL");
+    put(&mut img, a + 4 * S, b"SACDTRL1");
+    put(&mut img, a + 5 * S, b"SACDTRL2");
+    put(&mut img, a + 4 * S + 8, &(AUDIO as u32).to_be_bytes());
+    put(&mut img, a + 4 * S + 1028, &1u32.to_be_bytes());
+    put(&mut img, a + 5 * S + 1028, &tc(DISC_FRAMES));
+    // The audio sectors, each filled with its own byte.
+    let packet = |start: bool, len: u16| ((u16::from(start) << 15) | (2 << 11) | len).to_be_bytes();
+    for (i, s) in img[AUDIO * S..].chunks_exact_mut(S).enumerate() {
+        s.fill(i as u8);
+        if i == 42 {
+            s[0] = 1 << 5;
+            s[1..3].copy_from_slice(&packet(false, 2047));
+        } else if i % 4 == 0 {
+            s[0] = 1 | (1 << 2) | (1 << 5);
+            s[1..3].copy_from_slice(&packet(true, 500));
+            s[3..6].copy_from_slice(&tc(i as u32 / 4));
+            s[6] = 4 << 2;
+        } else {
+            s[0] = 1 | (1 << 5);
+            s[1..3].copy_from_slice(&packet(false, 500));
+        }
+    }
+    img
+}
+
 /// The disc of [`SeekDisc`].
 pub fn seek_disc() -> &'static SeekDisc {
     static DISC: std::sync::OnceLock<SeekDisc> = std::sync::OnceLock::new();
     DISC.get_or_init(|| {
-        const S: usize = 2048;
-        const AREA_TOC: usize = 540;
-        const AUDIO: usize = AREA_TOC + 6;
-        let sectors = DISC_FRAMES as usize * 4;
-        let mut img = vec![0u8; (AUDIO + sectors) * S];
-        let put = |img: &mut [u8], at: usize, b: &[u8]| img[at..at + b.len()].copy_from_slice(b);
-        let tc = |n: u32| [(n / 4500) as u8, (n / 75 % 60) as u8, (n % 75) as u8];
-        // Master TOC, its text, the manufacturer sector and the two copies.
-        let m = 510 * S;
-        put(&mut img, m, b"SACDMTOC");
-        put(&mut img, m + 8, &[1, 20]);
-        put(&mut img, m + 16, &[0, 1, 0, 1]);
-        put(&mut img, m + 24, b"CAT-1");
-        put(&mut img, m + 64, &(AREA_TOC as u32).to_be_bytes());
-        put(&mut img, m + 84, &6u16.to_be_bytes());
-        img[m + 128] = 1;
-        put(&mut img, m + 136, b"en\x02");
-        put(&mut img, m + S, b"SACDText");
-        put(&mut img, m + 9 * S, b"SACD_Man");
-        let master = img[m..m + 10 * S].to_vec();
-        for copy in [520, 530] {
-            put(&mut img, copy * S, &master);
-        }
-        // The area TOC: one track over the whole area.
-        let a = AREA_TOC * S;
-        put(&mut img, a, b"TWOCHTOC");
-        put(&mut img, a + 8, &[1, 20]);
-        img[a + 20] = 4;
-        img[a + 32] = 2;
-        put(&mut img, a + 64, &tc(DISC_FRAMES));
-        img[a + 69] = 1;
-        put(&mut img, a + 72, &(AUDIO as u32).to_be_bytes());
-        put(&mut img, a + 76, &((AUDIO + sectors - 1) as u32).to_be_bytes());
-        img[a + 80] = 1;
-        put(&mut img, a + 88, b"en\x02");
-        put(&mut img, a + S, b"SACDTTxt");
-        put(&mut img, a + 2 * S, b"SACD_IGL");
-        put(&mut img, a + 4 * S, b"SACDTRL1");
-        put(&mut img, a + 5 * S, b"SACDTRL2");
-        put(&mut img, a + 4 * S + 8, &(AUDIO as u32).to_be_bytes());
-        put(&mut img, a + 4 * S + 1028, &1u32.to_be_bytes());
-        put(&mut img, a + 5 * S + 1028, &tc(DISC_FRAMES));
-        // The audio sectors, each filled with its own byte.
-        let packet = |start: bool, len: u16| ((u16::from(start) << 15) | (2 << 11) | len).to_be_bytes();
-        for (i, s) in img[AUDIO * S..].chunks_exact_mut(S).enumerate() {
-            s.fill(i as u8);
-            if i == 42 {
-                s[0] = 1 << 5;
-                s[1..3].copy_from_slice(&packet(false, 2047));
-            } else if i % 4 == 0 {
-                s[0] = 1 | (1 << 2) | (1 << 5);
-                s[1..3].copy_from_slice(&packet(true, 500));
-                s[3..6].copy_from_slice(&tc(i as u32 / 4));
-                s[6] = 4 << 2;
-            } else {
-                s[0] = 1 | (1 << 5);
-                s[1..3].copy_from_slice(&packet(false, 500));
-            }
-        }
+        let img = seek_disc_image();
         let mut disc = Disc::open(std::io::Cursor::new(&img[..])).unwrap();
         let area = disc.toc().areas[0].clone();
         let n = disc.toc().sectors;
@@ -730,8 +744,8 @@ fn disc_read<R: Read + Seek>(
 pub fn seek_index_disc(bytes: &[u8]) {
     let d = seek_disc();
     let Ok(index) = AreaIndex::from_bytes(&d.area, d.sectors, bytes, usize::MAX) else { return };
-    let checked = index.checkpoints() == 0 && index.confirmations() == 0 && !index.is_complete();
-    let has_checkpoints = index.checkpoints() > 0;
+    let checked = index.checkpoint_count() == 0 && index.confirmation_count() == 0 && !index.is_complete();
+    let has_checkpoints = index.checkpoint_count() > 0;
     let slot = d.area.slot;
     let mut disc = Disc::open(std::io::Cursor::new(&d.image[..])).unwrap();
     if disc.set_seek_index(slot, index).is_err() {

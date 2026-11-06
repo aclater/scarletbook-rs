@@ -1,6 +1,25 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! The master TOC (specification 2) and the area TOCs (specification 3).
+//!
+//! The model is read, not built: [`Toc`], [`MasterToc`], [`Area`], [`Track`], [`Locale`] and
+//! the text structs are `#[non_exhaustive]`, so that later fields are not breaking changes.
+//! Read their fields as usual; a pattern ends in `..`. The text structs can still be made
+//! from [`Default`]:
+//!
+//! ```
+//! use scarletbook::toc::{Track, TrackText};
+//!
+//! fn describe(track: &Track) -> (u8, Option<&str>) {
+//!     let Track { number, text, .. } = track;
+//!     (*number, text.title.as_deref())
+//! }
+//!
+//! let mut text = TrackText::default();
+//! text.title = Some("Title".to_string());
+//! assert_eq!(text.title.as_deref(), Some("Title"));
+//! # let _ = describe;
+//! ```
 
 use std::io::{Read, Seek};
 
@@ -14,6 +33,7 @@ pub const MAX_AREA_TOC_SECTORS: u16 = 128;
 
 /// The complete table of contents of a disc image.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Toc {
     /// The image's stored sector format.
     pub sector_format: SectorFormat,
@@ -33,6 +53,9 @@ impl Toc {
 }
 
 /// A structure version number.
+///
+/// Frozen: exhaustive on purpose, so it can be built and matched without `..`. A version is
+/// exactly the major and minor bytes at offsets 8 and 9 (specification 2, 2.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Version {
     /// Major number.
@@ -42,6 +65,9 @@ pub struct Version {
 }
 
 /// A genre entry (specification 2, 2.4).
+///
+/// Frozen: exhaustive on purpose, so it can be built and matched without `..`. A genre entry
+/// is 4 bytes, and these are the only two of them the specification gives a meaning to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Genre {
     /// The genre table (category) byte.
@@ -98,6 +124,9 @@ const GENERAL_GENRES: [&str; 30] = [
 ];
 
 /// A date as stored (specification 2, 2.3.2); 0 means "not set".
+///
+/// Frozen: exhaustive on purpose, so it can be built and matched without `..`. The stored date
+/// is exactly a year, a month and a day, offsets 120 to 123.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Date {
     /// Year.
@@ -110,6 +139,7 @@ pub struct Date {
 
 /// A locale entry (specification 2, 2.5.1).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct Locale {
     /// The language code, trailing NUL and space removed; may contain control characters.
     pub language: String,
@@ -128,6 +158,9 @@ impl Locale {
 }
 
 /// A timecode (specification 0, 0.5).
+///
+/// Frozen: exhaustive on purpose, so it can be built and matched without `..`. A timecode is
+/// exactly 3 bytes: minutes, seconds and frames.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Timecode {
     /// Minutes.
@@ -150,6 +183,9 @@ impl Timecode {
 }
 
 /// Where the master TOC says an area's TOC copies are (specification 3, 3.1).
+///
+/// Frozen: exhaustive on purpose, so it can be built and matched without `..`. The master TOC
+/// gives a slot exactly these three values, in fixed places.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct AreaPointer {
     /// TOC-1 LSN; 0 means the slot is unused.
@@ -169,15 +205,17 @@ impl AreaPointer {
 
 macro_rules! text_struct {
     (
-        $(#[$meta:meta])* $name:ident, $item:ident { $($(#[$fmeta:meta])* $field:ident = $key:literal => $variant:ident),* $(,)? }
+        $(#[$meta:meta])* $name:ident, $(#[$imeta:meta])* $item:ident { $($(#[$fmeta:meta])* $field:ident = $key:literal => $variant:ident),* $(,)? }
     ) => {
         $(#[$meta])*
         #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+        #[non_exhaustive]
         pub struct $name {
             $($(#[$fmeta])* pub $field: Option<String>,)*
         }
 
         /// Identifies one text item.
+        $(#[$imeta])*
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         pub enum $item {
             $($(#[$fmeta])* $variant,)*
@@ -218,7 +256,13 @@ macro_rules! text_struct {
 
 text_struct! {
     /// Disc text: the 16 items of the first text channel (specification 2, 2.5.4).
-    DiscText, DiscTextItem {
+    DiscText,
+    ///
+    /// Frozen: exhaustive on purpose, so a `match` needs no wildcard arm. The disc text
+    /// sector has exactly these 16 string offsets, in fixed places (specification 2, 2.5.4),
+    /// with no room for another. [`DiscText`] has one field for each item, so no field can be
+    /// added to it while this enum is frozen.
+    DiscTextItem {
         /// Album title.
         album_title = "album_title" => AlbumTitle,
         /// Album artist.
@@ -256,7 +300,13 @@ text_struct! {
 
 text_struct! {
     /// Area text (specification 3, 3.6).
-    AreaText, AreaTextItem {
+    AreaText,
+    ///
+    /// Frozen: exhaustive on purpose, so a `match` needs no wildcard arm. The area TOC has
+    /// exactly these four string offsets, in fixed places (specification 3, 3.3 and 3.6).
+    /// [`AreaText`] has one field for each item, so no field can be added to it while this
+    /// enum is frozen.
+    AreaTextItem {
         /// Area description.
         description = "description" => Description,
         /// Area copyright.
@@ -270,7 +320,9 @@ text_struct! {
 
 text_struct! {
     /// Track text (specification 3, 3.8).
-    TrackText, TrackTextItem {
+    TrackText,
+    #[non_exhaustive]
+    TrackTextItem {
         /// Title (type 0x01).
         title = "title" => Title,
         /// Performer (type 0x02).
@@ -316,6 +368,7 @@ impl TrackTextItem {
 
 /// The master TOC (specification 2).
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct MasterToc {
     /// Version (offsets 8 and 9).
     pub version: Version,
@@ -374,6 +427,9 @@ impl MasterToc {
 }
 
 /// An area's kind, from its TOC signature (specification 3, 3.3).
+///
+/// Frozen: exhaustive on purpose, so a `match` needs no wildcard arm. An area TOC has one of
+/// exactly two signatures, one for each area slot ([`Slot`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AreaKind {
     /// `TWOCHTOC`.
@@ -394,6 +450,7 @@ impl AreaKind {
 
 /// An audio area (specification 3).
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Area {
     /// The master TOC slot it came from.
     pub slot: Slot,
@@ -481,6 +538,7 @@ impl Area {
 /// | 5 | 3 | [`ThreeTwo`](LoudspeakerLayout::ThreeTwo) |
 /// | 6 | 4 | [`FivePointOne`](LoudspeakerLayout::FivePointOne) |
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum LoudspeakerLayout {
     /// Stereo: 2 channels, configuration 0.
     Stereo,
@@ -489,6 +547,7 @@ pub enum LoudspeakerLayout {
     /// 5.1-channel: 6 channels, configuration 4.
     FivePointOne,
     /// Any other combination: no defined loudspeaker layout.
+    #[non_exhaustive]
     Unspecified {
         /// The channel count, as stored.
         channels: u8,
@@ -519,28 +578,30 @@ impl LoudspeakerLayout {
     ///
     /// A consumer writing `WAVE_FORMAT_EXTENSIBLE` files might build the channel mask from
     /// it; whether surround channels take the back or the side bits is the consumer's
-    /// choice (this uses the back bits):
+    /// choice (this uses the back bits). `Speaker` can gain variants, so a loudspeaker this
+    /// function doesn't know gives no mask, rather than a mask without it:
     ///
     /// ```
     /// use scarletbook::toc::{LoudspeakerLayout, Speaker};
     ///
-    /// fn wav_mask(speakers: &[Speaker]) -> u32 {
-    ///     speakers
-    ///         .iter()
-    ///         .map(|s| match s {
+    /// fn wav_mask(speakers: &[Speaker]) -> Option<u32> {
+    ///     speakers.iter().try_fold(0, |mask, s| {
+    ///         let bit = match s {
     ///             Speaker::FrontLeft => 0x1,
     ///             Speaker::FrontRight => 0x2,
     ///             Speaker::Centre => 0x4,
     ///             Speaker::LowFrequencyEffects => 0x8,
     ///             Speaker::SurroundLeft => 0x10,
     ///             Speaker::SurroundRight => 0x20,
-    ///         })
-    ///         .fold(0, |mask, bit| mask | bit)
+    ///             _ => return None,
+    ///         };
+    ///         Some(mask | bit)
+    ///     })
     /// }
     ///
-    /// assert_eq!(LoudspeakerLayout::Stereo.speakers().map(wav_mask), Some(0x3));
-    /// assert_eq!(LoudspeakerLayout::ThreeTwo.speakers().map(wav_mask), Some(0x37));
-    /// assert_eq!(LoudspeakerLayout::FivePointOne.speakers().map(wav_mask), Some(0x3F));
+    /// assert_eq!(LoudspeakerLayout::Stereo.speakers().and_then(wav_mask), Some(0x3));
+    /// assert_eq!(LoudspeakerLayout::ThreeTwo.speakers().and_then(wav_mask), Some(0x37));
+    /// assert_eq!(LoudspeakerLayout::FivePointOne.speakers().and_then(wav_mask), Some(0x3F));
     /// assert_eq!(LoudspeakerLayout::new(4, 0).speakers(), None);
     /// ```
     pub fn speakers(self) -> Option<&'static [Speaker]> {
@@ -560,6 +621,7 @@ impl LoudspeakerLayout {
 
 /// A loudspeaker of a defined layout (specification 3, 3.4.1 item 2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Speaker {
     /// Front left; "left" in stereo.
     FrontLeft,
@@ -577,6 +639,7 @@ pub enum Speaker {
 
 /// A track (specification 3, 3.9.1).
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Track {
     /// Track number, 1 to the track count.
     pub number: u8,

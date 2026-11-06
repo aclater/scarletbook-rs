@@ -90,10 +90,10 @@ pub use audio::{
     TrackFrame, TrackFrames,
 };
 pub use control::{CancelToken, Progress};
-pub use disc::Disc;
+pub use disc::{Disc, DiscOptions};
 pub use dst::{DstDecoder, DstError};
 pub use error::{EditedMasterCheck, Error, ErrorClass, OutputRefusal, Slot, Warning, WarningCode};
-pub use image::{Image, MASTER_TOC_LSN, SECTOR_SIZE, SectorFormat};
+pub use image::{Image, ImageOptions, MASTER_TOC_LSN, SECTOR_SIZE, SectorFormat};
 pub use read_at::{ReadAt, ReadAtReader};
 pub use seek::{
     AreaIndex, IndexOptions, ResumedFrom, SeekEvent, SeekPolicy, Speculation, SpeculativeOptions, Suspect,
@@ -143,6 +143,8 @@ const _: () = {
     both::<FrameStatus>();
     both::<Stored>();
     both::<SectorFormat>();
+    both::<DiscOptions>();
+    both::<ImageOptions>();
     both::<CancelToken>();
     both::<Progress>();
     both::<log::Log>();

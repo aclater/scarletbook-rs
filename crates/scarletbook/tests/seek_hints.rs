@@ -101,7 +101,7 @@ fn first_session(img: &[u8]) -> Vec<u8> {
         assert!(matches!(c.resumed_from(), ResumedFrom::Speculative { probes, .. } if probes > 0));
     }
     let index = disc.seek_index(Slot::TwoChannel).unwrap();
-    assert!(index.hints() >= RANGES.len(), "{} hints", index.hints());
+    assert!(index.hint_count() >= RANGES.len(), "{} hints", index.hint_count());
     index.to_bytes()
 }
 
@@ -163,7 +163,7 @@ fn hints_of_another_image_are_dropped() {
     assert!(lines.lock().unwrap().iter().any(|l| l.contains("seek hint")), "{:?}", lines.lock().unwrap());
     // Dropped (the reading's own hints then come in).
     let index = disc.seek_index(Slot::TwoChannel).unwrap();
-    assert!(index.hints() < 20, "{} hints", index.hints());
+    assert!(index.hint_count() < 20, "{} hints", index.hint_count());
 }
 
 /// An index saved by a disc refuses a disc with another TOC (another track list over the
@@ -211,10 +211,10 @@ fn hints_are_saved_and_checked() {
     assert!(AreaIndex::from_bytes(&area, n, &bad, DEFAULT_INLINE_BUDGET).is_err());
     // Within 16 bytes: two hints at most.
     let small = AreaIndex::from_bytes(&area, n, &saved, 16).unwrap();
-    assert!(small.hints() <= 2 && small.hints() > 0, "{}", small.hints());
+    assert!(small.hint_count() <= 2 && small.hint_count() > 0, "{}", small.hint_count());
     // And as it grows: the bound is the caller's.
     assert_eq!(small.options().max_hints, 2);
-    assert!(index.hints() <= IndexOptions::new().max_hints);
+    assert!(index.hint_count() <= IndexOptions::new().max_hints);
 }
 
 /// A first session that verified its readings (one pass) saves their confirmations: after a
@@ -233,7 +233,7 @@ fn confirmations_after_a_remount() {
     }
     while !disc.verify_speculation(Slot::TwoChannel, 1 << 20).unwrap() {}
     let index = disc.seek_index(Slot::TwoChannel).unwrap();
-    assert_eq!(index.confirmations(), RANGES.len());
+    assert_eq!(index.confirmation_count(), RANGES.len());
     // Saved small: hints and confirmations, not the exact checkpoints.
     let full = index.to_bytes().len();
     let saved = index.without_checkpoints().to_bytes();
@@ -314,7 +314,7 @@ fn confirmations_need_a_disc_that_checked_the_fingerprint() {
     let area = disc_b.toc().areas[0].clone();
     let n = disc_b.toc().sectors;
     let mut index = AreaIndex::from_bytes(&area, n, &saved, DEFAULT_INLINE_BUDGET).unwrap();
-    let kept = index.confirmations();
+    let kept = index.confirmation_count();
     assert_eq!(kept, RANGES.len());
     let options = SpeculativeOptions::new().with_min_gap_sectors(64);
     let (first, end) = RANGES[1];
@@ -334,7 +334,7 @@ fn confirmations_need_a_disc_that_checked_the_fingerprint() {
     index.absorb(&mut cursor).unwrap();
     while !index.extend(disc_b.image_mut(), 1 << 20).unwrap() {}
     assert!(matches!(cursor.speculation(), Speculation::Confirmed { .. }), "verified on B itself");
-    assert_eq!(index.confirmations(), kept, "nothing kept for B under A's fingerprint");
+    assert_eq!(index.confirmation_count(), kept, "nothing kept for B under A's fingerprint");
     // A disc of B refuses the index (another TOC); a disc of A takes it and confirms.
     let loaded = AreaIndex::from_bytes(&area, n, &saved, DEFAULT_INLINE_BUDGET).unwrap();
     assert!(disc_b.set_seek_index(Slot::TwoChannel, loaded).is_err());

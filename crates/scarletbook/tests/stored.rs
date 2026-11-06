@@ -116,7 +116,7 @@ fn three<R: Read + Seek>(
     while let Some(r) = it.next_with_stored() {
         match r {
             Ok((f, stored)) => {
-                s.push(Ok(TrackFrame { number: f.number, content: stored.content(&f) }));
+                s.push(Ok(TrackFrame::new(f.number, stored.content(&f))));
                 a.push(Ok(f));
             }
             Err(e) => {

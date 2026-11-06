@@ -111,7 +111,7 @@ proptest! {
         let c = TrackCursor::open_range(&area, 0, 1, n, CursorOptions::new().with_index(&index)).unwrap();
         let (_, mut c) = read(&mut disc, c, 1);
         index.absorb(&mut c).unwrap();
-        prop_assert_eq!(index.checkpoints() >= before.checkpoints(), true);
+        prop_assert_eq!(index.checkpoint_count() >= before.checkpoint_count(), true);
     }
 
     /// Once the index is complete, every range read from it equals the straight read, and
@@ -232,7 +232,7 @@ fn long_frames_under_assembly_are_stored_or_replayed() {
             }
             if first == 2 {
                 // Resumed at the last checkpoint before frame 2's sector, inside frame 1.
-                let ResumedFrom::Checkpoint { lsn, replay_from } = c.resumed_from() else { panic!() };
+                let ResumedFrom::Checkpoint { lsn, replay_from, .. } = c.resumed_from() else { panic!() };
                 assert!(lsn - replay_from <= REPLAY_SECTORS || budget == 0);
                 if budget == 0 {
                     assert_eq!(replay_from, common::AUDIO_LSN as u64 + 1);
@@ -293,7 +293,11 @@ fn first_position_reads_are_bounded() {
     index.absorb(&mut c).unwrap();
     assert!(index.is_complete());
     assert_eq!((read.get() - start) / S as u64, sectors);
-    println!("index of {sectors} sectors: {} checkpoints, {} bytes", index.checkpoints(), index.memory());
+    println!(
+        "index of {sectors} sectors: {} checkpoints, {} bytes",
+        index.checkpoint_count(),
+        index.memory()
+    );
 
     let mut costs = Vec::new();
     for first in (0..1000).step_by(37) {
@@ -344,11 +348,11 @@ fn an_index_of_another_area_is_refused() {
     let mut c =
         TrackCursor::open_range(&area, 0, playtime, n, CursorOptions::new().with_index(&index)).unwrap();
     assert!(matches!(coarse.absorb(&mut c), Err(scarletbook::Error::InvalidArgument(_))));
-    assert_eq!(coarse.checkpoints(), 0);
+    assert_eq!(coarse.checkpoint_count(), 0);
     // A cursor made without an index records nothing.
     let mut plain = TrackCursor::open_range(&area, 0, playtime, n, CursorOptions::new()).unwrap();
     coarse.absorb(&mut plain).unwrap();
-    assert_eq!(coarse.checkpoints(), 0);
+    assert_eq!(coarse.checkpoint_count(), 0);
 }
 
 /// Small enough for Miri: an index built and used over a few sectors.
@@ -430,6 +434,6 @@ fn extend_always_progresses() {
             calls += 1;
             assert!(calls <= 301, "K {k}");
         }
-        assert_eq!(index.checkpoints(), 300usize.div_ceil(k as usize));
+        assert_eq!(index.checkpoint_count(), 300usize.div_ceil(k as usize));
     }
 }

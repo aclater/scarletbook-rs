@@ -556,7 +556,7 @@ impl RawFrames {
                         FrameKind::Dst => FrameContent::Dst(f.data),
                         FrameKind::Dsd => FrameContent::Dsd(f.data),
                     };
-                    TrackFrame { number: f.number, content }
+                    TrackFrame::new(f.number, content)
                 })
             }),
         }
@@ -697,6 +697,11 @@ struct Failure(SbStatus, String);
 impl Failure {
     fn arg(msg: &str) -> Self {
         Failure(SbStatus::InvalidArgument, msg.to_owned())
+    }
+
+    /// `Error::NoSuchTrack`, whose variant only the core crate can build, and its message.
+    fn no_such_track(slot: Slot, track: u32) -> Self {
+        Failure(SbStatus::NoSuchTrack, format!("no track {track} in area {slot}"))
     }
 }
 
@@ -938,6 +943,8 @@ fn layout_value(a: &Area) -> u32 {
         LoudspeakerLayout::ThreeTwo => SB_LAYOUT_THREE_TWO,
         LoudspeakerLayout::FivePointOne => SB_LAYOUT_FIVE_POINT_ONE,
         LoudspeakerLayout::Unspecified { .. } => SB_LAYOUT_UNSPECIFIED,
+        // A layout this interface has no value for yet has none it can name.
+        _ => SB_LAYOUT_UNSPECIFIED,
     }
 }
 
@@ -952,6 +959,8 @@ fn speaker_value(a: &Area, index: usize) -> u32 {
         Some(Speaker::LowFrequencyEffects) => SB_SPEAKER_LOW_FREQUENCY_EFFECTS,
         Some(Speaker::SurroundLeft) => SB_SPEAKER_SURROUND_LEFT,
         Some(Speaker::SurroundRight) => SB_SPEAKER_SURROUND_RIGHT,
+        // A loudspeaker this interface has no value for yet.
+        Some(_) => SB_SPEAKER_UNSPECIFIED,
     }
 }
 
@@ -1059,7 +1068,7 @@ unsafe fn open_reader(
         return Err(Failure::arg("NULL output pointer"));
     }
     let DiscLog(log, target) = log;
-    let disc = match Disc::open_with_log(reader, log) {
+    let disc = match Disc::options().with_log(log).open(reader) {
         Ok(disc) => disc,
         Err(e) => {
             if let Some(t) = target {
@@ -2315,7 +2324,7 @@ pub unsafe extern "C" fn sb_track_info(
         // SAFETY: forwarded contract.
         let d = unsafe { disc_handle(disc) }?.get()?;
         let area = find_area(&d, slot)?;
-        let t = area.track(number).ok_or(Error::NoSuchTrack { slot: area.slot, track: number })?;
+        let t = area.track(number).ok_or_else(|| Failure::no_such_track(area.slot, number))?;
         // SAFETY: forwarded contract.
         unsafe { write_out(out, track_info(t)) }?;
         Ok(SbStatus::Ok)
@@ -2341,7 +2350,7 @@ pub unsafe extern "C" fn sb_track_string(
         // SAFETY: forwarded contract.
         let d = unsafe { disc_handle(disc) }?.get()?;
         let area = find_area(&d, slot)?;
-        let t = area.track(number).ok_or(Error::NoSuchTrack { slot: area.slot, track: number })?;
+        let t = area.track(number).ok_or_else(|| Failure::no_such_track(area.slot, number))?;
         let s = track_string(t, field)?;
         // SAFETY: forwarded contract.
         unsafe { copy_string(s, buf, cap, len) }
@@ -2404,6 +2413,10 @@ pub unsafe extern "C" fn sb_disc_warning(disc: *const SbDisc, index: u32, out: *
 pub const SB_SECTOR_SIZE: u32 = 2048;
 
 const _: () = assert!(SB_SECTOR_SIZE as usize == scarletbook::SECTOR_SIZE);
+
+// scarletbook-pcm does not depend on scarletbook, so it keeps its own copies of these (#39).
+const _: () = assert!(MAX_CHANNELS == scarletbook::audio::MAX_CHANNELS);
+const _: () = assert!(FRAME_BYTES_PER_CHANNEL == scarletbook::audio::FRAME_BYTES_PER_CHANNEL);
 
 /// Copies the user data of the logical sectors `[lsn, lsn + count)` into `buf`, 2048
 /// bytes (`SB_SECTOR_SIZE`) per sector in order, whatever the image's stored sector size
@@ -2844,6 +2857,8 @@ fn decoded_info(frame: &AudioFrame, size: usize) -> SbFrameInfo {
         FrameStatus::Decoded => (SbFrameStatus::Decoded, 0),
         FrameStatus::Missing => (SbFrameStatus::Missing, 0),
         FrameStatus::Invalid(e) => (SbFrameStatus::Invalid, u32::from(e.rule())),
+        // An outcome this interface does not know yet is never reported as good audio.
+        _ => (SbFrameStatus::Invalid, 0),
     };
     // At most size = channels x 4704, so it fits.
     let n = frame.data.len().min(size);
@@ -2943,7 +2958,7 @@ pub unsafe extern "C" fn sb_track_audio_read_with_stored(
         // Stored content and DST equivalents: specification 4, 4.6.1 items 1 to 4.
         let kind = match &stored {
             Stored::Dst(_) => SbFrameKind::Dst,
-            Stored::Plain => SbFrameKind::Dsd,
+            Stored::Dsd => SbFrameKind::Dsd,
             Stored::Missing => SbFrameKind::Missing,
         };
         let bytes: std::borrow::Cow<'_, [u8]> = match (&stored, dst_equivalent == 1) {
@@ -3688,7 +3703,7 @@ pub unsafe extern "C" fn sb_dst_decode(
     guard(|| {
         let ch = u8::try_from(channels).ok().filter(|c| (1..=6).contains(c));
         let Some(ch) = ch else { return Err(Failure::arg("channels must be 1 to 6")) };
-        let need = usize::from(ch) * scarletbook::dst::FL;
+        let need = usize::from(ch) * scarletbook::audio::FRAME_BYTES_PER_CHANNEL;
         if out.is_null() || out_len < need {
             return Err(Failure(SbStatus::BufferTooSmall, format!("the output needs {need} bytes")));
         }
@@ -3800,7 +3815,7 @@ pub unsafe extern "C" fn sb_pcm_converter_new(
             Failure::arg(&format!("rate_hz must be 88200, 176400 or 352800, not {rate_hz}"))
         })?;
         let cutoff = match cutoff {
-            SB_PCM_CUTOFF_DEFAULT => Cutoff::Default,
+            SB_PCM_CUTOFF_DEFAULT => Cutoff::Standard,
             SB_PCM_CUTOFF_LOW => Cutoff::Low,
             SB_PCM_CUTOFF_WIDE => Cutoff::Wide,
             c => return Err(Failure::arg(&format!("unknown cutoff {c}"))),
@@ -4577,12 +4592,12 @@ impl SbSpeculation {
         let claim = claim.unwrap_or(0);
         let none = u32::MAX;
         let (state, lsn, first, last_returned, exact_from) = match s {
-            Speculation::Pending { lsn, first } => (SB_SPECULATION_PENDING, lsn, first, none, 0),
-            Speculation::Confirmed { lsn, first } => (SB_SPECULATION_CONFIRMED, lsn, first, none, 0),
-            Speculation::Refuted { lsn, first, last_returned, exact_from } => {
+            Speculation::Pending { lsn, first, .. } => (SB_SPECULATION_PENDING, lsn, first, none, 0),
+            Speculation::Confirmed { lsn, first, .. } => (SB_SPECULATION_CONFIRMED, lsn, first, none, 0),
+            Speculation::Refuted { lsn, first, last_returned, exact_from, .. } => {
                 (SB_SPECULATION_REFUTED, lsn, first, last_returned.unwrap_or(none), exact_from)
             }
-            Speculation::Unverified { lsn, first } => (SB_SPECULATION_UNVERIFIED, lsn, first, none, 0),
+            Speculation::Unverified { lsn, first, .. } => (SB_SPECULATION_UNVERIFIED, lsn, first, none, 0),
             Speculation::Exact => (SB_SPECULATION_EXACT, 0, 0, none, 0),
             // A state this interface does not know yet is never reported as exact.
             _ => (SB_SPECULATION_UNVERIFIED, 0, 0, none, 0),
@@ -4668,7 +4683,7 @@ pub unsafe extern "C" fn sb_track_audio_speculation(
         let a = unsafe { audio_handle(audio) }?;
         let c = a.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
         let slot = c.slot();
-        let value = SbSpeculation::of(slot, c.speculation_id(), c.speculation());
+        let value = SbSpeculation::of(slot, c.claim(), c.speculation());
         // SAFETY: forwarded contract.
         unsafe { write_out(out, value) }?;
         Ok(SbStatus::Ok)
@@ -4691,7 +4706,7 @@ pub unsafe extern "C" fn sb_raw_frames_speculation(
         let r = unsafe { raw_handle(raw) }?;
         let raw = r.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
         let value = match &raw.source {
-            Source::Range(c) => SbSpeculation::of(c.slot(), c.speculation_id(), c.speculation()),
+            Source::Range(c) => SbSpeculation::of(c.slot(), c.claim(), c.speculation()),
             Source::List(..) => SbSpeculation::default(),
         };
         // SAFETY: forwarded contract.
@@ -5774,7 +5789,7 @@ pub fn fuzz_pcm_convert_run(
     let config = (|| {
         let rate = PcmRate::from_hz(rate_hz)?;
         let cutoff =
-            [Cutoff::Default, Cutoff::Low, Cutoff::Wide].get(usize::try_from(cutoff).ok()?).copied()?;
+            [Cutoff::Standard, Cutoff::Low, Cutoff::Wide].get(usize::try_from(cutoff).ok()?).copied()?;
         let channels = u8::try_from(channels).ok()?;
         let gain = Gain::from_db(gain_db).ok()?;
         Some(PcmConfig::new(rate, cutoff, channels).with_gain(gain))
@@ -5905,7 +5920,9 @@ mod tests {
     }
 
     /// What C callers get for each error, as of #308. `OutputRefusal::UnspecifiedLayout`
-    /// can't be built here: `tests/output.rs` pins it, through the C call.
+    /// can't be built here: `tests/output.rs` pins it, through the C call. Nor can the
+    /// `#[non_exhaustive]` variants: `refusals_keep_their_status_and_message` in `tests/ffi.rs`
+    /// pins those, through the C calls.
     #[test]
     fn every_error_keeps_its_status_and_message() {
         use scarletbook::{EditedMasterCheck, OutputRefusal};
@@ -5920,34 +5937,9 @@ mod tests {
                 SbStatus::MasterTocTruncated,
                 "master TOC truncated: the image ends before LSN 519",
             ),
-            (
-                Error::MasterTocVersionUnsupported { major: 2, minor: 0 },
-                SbStatus::MasterTocVersionUnsupported,
-                "master TOC version 2.0 is not supported",
-            ),
             (Error::NoAudioAreas, SbStatus::NoAudioAreas, "no readable audio area"),
-            (
-                Error::ChannelCountUnsupported { channels: 7 },
-                SbStatus::ChannelCountUnsupported,
-                "track refused: the area has 7 channels, only 1 to 6 are supported",
-            ),
             (Error::TrackEmpty, SbStatus::TrackEmpty, "track skipped: its duration is 0 frames"),
-            (
-                Error::TrackExceedsCapacity { end_frame: 9, capacity: 7 },
-                SbStatus::TrackExceedsCapacity,
-                "refused: it ends at frame 9, beyond the area capacity of 7 frames",
-            ),
             (Error::NoSuchArea(Slot::Multichannel), SbStatus::NoSuchArea, "no area in slot multichannel"),
-            (
-                Error::NoSuchTrack { slot: Slot::TwoChannel, track: 3 },
-                SbStatus::NoSuchTrack,
-                "no track 3 in area 2ch",
-            ),
-            (
-                Error::FrameRangeInvalid { first: 1, end: 2, playtime: 3 },
-                SbStatus::FrameRangeInvalid,
-                "frame range [1, 2) is not within the area's timeline [0, 3)",
-            ),
             (Error::InvalidArgument("x"), SbStatus::InvalidArgument, "invalid argument: x"),
             (Error::Io(io::Error::other("gone")), SbStatus::Io, "I/O error: gone"),
             (Error::Cancelled, SbStatus::Cancelled, "cancelled"),

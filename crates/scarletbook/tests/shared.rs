@@ -431,7 +431,7 @@ fn a_share_reports_to_its_own_log() {
     };
     let (first, second) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Mutex::new(Vec::new())));
     let bytes = synthetic();
-    let disc = Disc::open_with_log(ReadAtReader::new(&bytes[..]), lines(&first)).unwrap();
+    let disc = Disc::options().with_log(lines(&first)).open(ReadAtReader::new(&bytes[..])).unwrap();
     let opened = first.lock().unwrap().len();
     let mut share = disc.share_with_log(Cursor::new(&bytes[..]), lines(&second)).unwrap();
     assert_eq!(first.lock().unwrap().len(), opened, "nothing reported to the original's log");

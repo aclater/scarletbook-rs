@@ -138,7 +138,7 @@ fn range_bounds_and_errors() {
     let mut small = Disc::open(Cursor::new(spec.build())).unwrap();
     small.check_range(Slot::TwoChannel, 0, 14).unwrap();
     let e = small.check_range(Slot::TwoChannel, 10, 15).unwrap_err();
-    assert!(matches!(e, Error::TrackExceedsCapacity { end_frame: 15, capacity: 14 }), "{e:?}");
+    assert!(matches!(e, Error::TrackExceedsCapacity { end_frame: 15, capacity: 14, .. }), "{e:?}");
     assert_eq!(e.code(), Some("track-exceeds-capacity"));
     // A range that fails its checks consumes the cursor; a good one continues it.
     let c = small.audio_cursor(Slot::TwoChannel, FrameSpan::Range(0, 2), CursorOptions::new()).unwrap();
@@ -159,7 +159,7 @@ fn range_bounds_and_errors() {
     let none = Disc::open(Cursor::new(spec.build())).unwrap();
     assert!(matches!(
         none.check_range(Slot::TwoChannel, 3, 1),
-        Err(Error::ChannelCountUnsupported { channels: 0 })
+        Err(Error::ChannelCountUnsupported { channels: 0, .. })
     ));
 }
 

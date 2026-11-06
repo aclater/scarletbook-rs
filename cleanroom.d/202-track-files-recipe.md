@@ -1,1 +1,0 @@
-| 2026-11-06 | recipe for an area's tracks as separate DSF files, in the `scarletbook::output` documentation (#202) | this library's public API, specification 4, 4.2 items 8 and 9, and the figures on #202. No new sources consulted. |

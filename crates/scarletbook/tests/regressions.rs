@@ -61,8 +61,8 @@ fn seek_index_seeds_load() {
         let bare = scarletbook::AreaIndex::from_bytes(&area, image.sector_count(), &bytes, 0).unwrap();
         stored |= bare.memory() < full.memory();
         // Format version 2 (#124): seek hints recorded by extend.
-        hinted |= full.hints() > 0;
-        confirmed |= full.confirmations() > 0;
+        hinted |= full.hint_count() > 0;
+        confirmed |= full.confirmation_count() > 0;
         harness::seek_index(&seed);
     }
     assert!(stored, "no seed stores a frame under assembly");
@@ -86,8 +86,9 @@ fn seek_index_disc_seeds_load() {
             usize::MAX,
         )
         .unwrap();
-        hints_only |= index.hints() > 0 && index.checkpoints() == 0 && index.confirmations() == 0;
-        confirmed |= index.confirmations() > 0;
+        hints_only |=
+            index.hint_count() > 0 && index.checkpoint_count() == 0 && index.confirmation_count() == 0;
+        confirmed |= index.confirmation_count() > 0;
         let mut disc = scarletbook::Disc::open(std::io::Cursor::new(&d.image[..])).unwrap();
         disc.set_seek_index(d.area.slot, index).unwrap();
         harness::seek_index(&seed);

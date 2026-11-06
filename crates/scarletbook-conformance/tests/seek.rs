@@ -174,7 +174,7 @@ fn corpus_reads_on_two_threads_through_one_index() {
                     }
                 });
             });
-            assert!(disc.seek_index(slot).is_some_and(|i| i.checkpoints() > 0 || i.is_complete()));
+            assert!(disc.seek_index(slot).is_some_and(|i| i.checkpoint_count() > 0 || i.is_complete()));
         }
     }
     eprintln!("{areas} areas read on two threads through one index");

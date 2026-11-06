@@ -77,7 +77,9 @@ fn well_formed_readings_are_confirmed() {
             .frames_cursor(Slot::TwoChannel, FrameSpan::Range(first, first + 10), CursorOptions::new())
             .unwrap();
         let (_, c) = read(&mut disc, c);
-        assert!(matches!(c.speculation(), Speculation::Pending { lsn, first: f } if lsn > 0 && f == first));
+        assert!(
+            matches!(c.speculation(), Speculation::Pending { lsn, first: f, .. } if lsn > 0 && f == first)
+        );
         cursors.push(c);
     }
     // Each reading begins at the sector its search found (#123), not on a checkpoint
@@ -96,7 +98,7 @@ fn well_formed_readings_are_confirmed() {
     assert_eq!(events.len(), 3, "{events:?}");
     for c in &cursors {
         assert!(matches!(c.speculation(), Speculation::Confirmed { .. }), "{:?}", c.speculation());
-        let id = c.speculation_id().unwrap();
+        let id = c.claim().unwrap();
         let e = events.iter().find(|e| e.claim == id).unwrap();
         assert_eq!(e.speculation, c.speculation());
     }
@@ -201,7 +203,9 @@ fn provisional_checkpoints_of_another_reading_are_not_used() {
     let mut c = it.into_cursor();
     let p = plain.frames_cursor(Slot::TwoChannel, FrameSpan::Range(500, 505), CursorOptions::new()).unwrap();
     assert_eq!(got, read(&mut plain, p).0);
-    let ResumedFrom::Speculative { lsn, probes } = c.resumed_from() else { panic!("{:?}", c.resumed_from()) };
+    let ResumedFrom::Speculative { lsn, probes, .. } = c.resumed_from() else {
+        panic!("{:?}", c.resumed_from())
+    };
     assert!(probes > 0, "searched, not started from the first reading's checkpoints (LSN {lsn})");
     // A bounded read: the search and the range, not the 2000 sectors from frame 120 on.
     assert!(c.progress().get().0 < 400, "{} sectors", c.progress().get().0);
@@ -243,9 +247,9 @@ fn caller_kept_index_checks_readings() {
     .unwrap();
     let (_, mut c) = read(&mut disc, c);
     index.absorb(&mut c).unwrap();
-    assert_eq!(index.pending_claims(), 1);
+    assert_eq!(index.pending_claim_count(), 1);
     while !index.extend(disc.image_mut(), 1 << 20).unwrap() {}
-    assert_eq!(index.pending_claims(), 0);
+    assert_eq!(index.pending_claim_count(), 0);
     let events = index.take_events();
     assert_eq!(events.len(), 1);
     assert!(matches!(c.speculation(), Speculation::Confirmed { .. }));
@@ -271,7 +275,7 @@ fn the_pending_readings_are_capped() {
         let (_, mut c) = read(&mut disc, c);
         index.absorb(&mut c).unwrap();
     }
-    assert_eq!(index.pending_claims(), scarletbook::seek::MAX_CLAIMS);
+    assert_eq!(index.pending_claim_count(), scarletbook::seek::MAX_CLAIMS);
     let events = index.take_events();
     assert_eq!(events.len(), 3);
     assert!(events.iter().all(|e| matches!(e.speculation, Speculation::Unverified { .. })));
@@ -342,7 +346,7 @@ fn a_foreign_index_does_not_confirm() {
     let bytes = a.seek_index(Slot::TwoChannel).unwrap().to_bytes();
     let loaded = AreaIndex::from_bytes(&area, n, &bytes, usize::MAX).unwrap();
     let mut kept = b.take_seek_index(Slot::TwoChannel).unwrap();
-    assert_eq!(kept.pending_claims(), 1);
+    assert_eq!(kept.pending_claim_count(), 1);
     kept.merge(&loaded).unwrap();
     b.set_seek_index(Slot::TwoChannel, kept).unwrap();
     while !b.verify_speculation(Slot::TwoChannel, 1 << 20).unwrap() {}
@@ -382,7 +386,7 @@ fn a_caller_kept_index_does_not_check_against_another_image() {
     let (_, mut c) = read(&mut a, c);
     assert!(matches!(c.speculation(), Speculation::Pending { .. }));
     index.absorb(&mut c).unwrap();
-    assert_eq!(index.pending_claims(), 1);
+    assert_eq!(index.pending_claim_count(), 1);
     assert!(matches!(index.extend(b.image_mut(), 1 << 20), Err(scarletbook::Error::InvalidArgument(_))));
     assert!(matches!(index.verify(b.image_mut()), Err(scarletbook::Error::InvalidArgument(_))));
     assert!(matches!(c.speculation(), Speculation::Pending { .. }));
@@ -402,7 +406,7 @@ fn a_reading_moves_to_another_disc_unverified() {
     let c = a.frames_cursor(Slot::TwoChannel, FrameSpan::Range(800, 810), CursorOptions::new()).unwrap();
     let (_, c) = read(&mut a, c);
     let kept = a.take_seek_index(Slot::TwoChannel).unwrap();
-    assert_eq!(kept.pending_claims(), 1);
+    assert_eq!(kept.pending_claim_count(), 1);
     b.set_seek_index(Slot::TwoChannel, kept).unwrap();
     while !b.verify_speculation(Slot::TwoChannel, 1 << 20).unwrap() {}
     assert!(matches!(c.speculation(), Speculation::Unverified { .. }), "{:?}", c.speculation());
@@ -490,7 +494,7 @@ fn a_reading_registered_during_the_final_pass_is_not_reported_complete() {
     assert!(disc.take_seek_events(Slot::TwoChannel).is_empty());
     assert!(verifier.verify_speculation(Slot::TwoChannel, 0).unwrap());
     assert!(matches!(reading.speculation(), Speculation::Confirmed { .. }), "{:?}", reading.speculation());
-    assert_eq!(disc.seek_index(Slot::TwoChannel).unwrap().pending_claims(), 0);
+    assert_eq!(disc.seek_index(Slot::TwoChannel).unwrap().pending_claim_count(), 0);
     let events = disc.take_seek_events(Slot::TwoChannel);
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(events[0].speculation, reading.speculation());
@@ -551,7 +555,7 @@ fn a_reading_registered_after_the_pass_waits_for_the_next_call() {
     let c = disc.frames_cursor(Slot::TwoChannel, FrameSpan::Range(40, 45), CursorOptions::new()).unwrap();
     assert!(disc.verify_speculation(Slot::TwoChannel, u64::MAX).unwrap());
     let reading = small_reading(&mut disc, c);
-    assert_eq!(disc.seek_index(Slot::TwoChannel).unwrap().pending_claims(), 1);
+    assert_eq!(disc.seek_index(Slot::TwoChannel).unwrap().pending_claim_count(), 1);
     assert!(disc.take_seek_events(Slot::TwoChannel).is_empty());
     assert!(disc.verify_speculation(Slot::TwoChannel, u64::MAX).unwrap());
     assert!(matches!(reading.speculation(), Speculation::Confirmed { .. }), "{:?}", reading.speculation());
@@ -575,7 +579,7 @@ fn no_budget_still_finishes() {
     let mut calls = 0;
     while !disc.verify_speculation(Slot::TwoChannel, 0).unwrap() {
         calls += 1;
-        assert_eq!(disc.seek_index(Slot::TwoChannel).unwrap().checkpoints(), calls);
+        assert_eq!(disc.seek_index(Slot::TwoChannel).unwrap().checkpoint_count(), calls);
         assert!(calls <= boundaries, "{calls} calls");
     }
     assert!(calls > 1, "a call of no budget does not do the whole pass: {calls} calls");

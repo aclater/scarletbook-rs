@@ -26,7 +26,7 @@
 //! and [`AreaIndex::absorb`] takes those checkpoints into the index. Each audio sector is
 //! then read at most once per index for building it, and once the frontier lies past a
 //! range, opening that range reads at most `W + K` sectors before the sectors of its own
-//! frames (`W` = [`REPLAY_SECTORS`], unless the frame under assembly there is longer and
+//! frames (`W` = 32, unless the frame under assembly there is longer and
 //! does not fit the inline budget).
 //!
 //! # Trust
@@ -91,6 +91,10 @@ pub const DEFAULT_INLINE_BUDGET: usize = 1 << 20;
 /// of sectors; a checkpoint whose frame under assembly started more than `W` sectors
 /// before it stores the frame's bytes (at most [`MAX_FRAME_BYTES`]) while the index's
 /// inline budget lasts, and is replayed from the frame's first sector otherwise.
+///
+/// Not part of the public API: a tuning value of the seek index, not covered by semantic
+/// versioning. It may change or go in any release.
+#[doc(hidden)]
 pub const REPLAY_SECTORS: u64 = 32;
 
 /// Options of an [`AreaIndex`].
@@ -102,8 +106,9 @@ pub struct IndexOptions {
     /// past its checkpoint before the range's first frame is known.
     pub interval: u32,
     /// The most bytes of frames under assembly the index stores, over all its checkpoints
-    /// (see [`REPLAY_SECTORS`]); 0 stores none. A cursor made from the index may hold as
-    /// much again while it records. Saved indexes keep at most 4 GiB of it.
+    /// (frames spread over more sectors than a checkpoint replays); 0 stores none. A cursor
+    /// made from the index may hold as much again while it records. Saved indexes keep at
+    /// most 4 GiB of it.
     pub inline_budget: usize,
     /// Seek hints ([`AreaIndex#seek-hints`]): a sample is recorded at least this many
     /// frames after the one before. Default [`DEFAULT_HINT_SPACING`]; 0 records none.
@@ -158,6 +163,10 @@ pub const MAX_HINTS: usize = 65_536;
 
 /// A seek hint is used for a range whose first frame lies at most this many frames after
 /// the hint's.
+///
+/// Not part of the public API: a tuning value of the seek index, not covered by semantic
+/// versioning. It may change or go in any release.
+#[doc(hidden)]
 pub const HINT_REACH: u32 = 64;
 
 /// Where a cursor made from an index started its scan.
@@ -168,6 +177,7 @@ pub enum ResumedFrom {
     Start,
     /// At the checkpoint at sector `lsn`, after replaying the sectors from `replay_from`
     /// (equal to `lsn` when nothing was replayed) to rebuild the frame under assembly.
+    #[non_exhaustive]
     Checkpoint {
         /// The checkpoint's LSN.
         lsn: u64,
@@ -180,6 +190,7 @@ pub enum ResumedFrom {
     /// At the area's first audio sector, after finding that the index does not hold
     /// sector `lsn` as the image has it (its digest differs): a stale index, or one of
     /// another image of the same size. The index was not used; the cursor records nothing.
+    #[non_exhaustive]
     Discarded {
         /// The checkpoint whose sector differs.
         lsn: u64,
@@ -189,6 +200,7 @@ pub enum ResumedFrom {
     /// frame number, after `probes` reads that chose `lsn` (see [`SeekPolicy`]). The
     /// positions are provisional ([`Speculation`]). Both are 0 until the cursor first
     /// reads, which is when it chooses.
+    #[non_exhaustive]
     Speculative {
         /// The sector the provisional reading began at, `L`.
         lsn: u64,
@@ -244,7 +256,7 @@ pub enum ResumedFrom {
 /// reading returns is a complete frame of the image, in increasing frame number order.
 ///
 /// The malformed sectors and warnings of a provisional reading cover the sectors it
-/// processes from `L` only (4.4.5 item 5); [`crate::TrackCursor::counts_from`] says so.
+/// processes from `L` only (4.4.5 item 5); [`crate::TrackCursor::claim_lsn`] says so.
 /// Its missing and invalid counts are provisional too (4.7.1 item 6).
 ///
 /// # Not serving positions that will be refuted
@@ -350,6 +362,7 @@ pub enum Speculation {
     Exact,
     /// A provisional reading from sector `lsn` for positions `first` or more, not yet
     /// established or refuted (`lsn` is 0 until the cursor first reads).
+    #[non_exhaustive]
     Pending {
         /// `L`.
         lsn: u64,
@@ -358,6 +371,7 @@ pub enum Speculation {
     },
     /// A provisional reading whose conditions (a) and (b) a pass from the first sector has
     /// established: its positions are this specification's (4.2 item 8).
+    #[non_exhaustive]
     Confirmed {
         /// `L`.
         lsn: u64,
@@ -370,6 +384,7 @@ pub enum Speculation {
     /// `exact_from` is at least the specification's `a*` (the next acceptable frame number
     /// of a reader from the first sector just after it delivered or discarded the frame
     /// under assembly at `L`): the larger of `a_L` and one more than that frame's number.
+    #[non_exhaustive]
     Refuted {
         /// `L`.
         lsn: u64,
@@ -381,8 +396,9 @@ pub enum Speculation {
         exact_from: u32,
     },
     /// A provisional reading that will not be checked: dropped past the limit of
-    /// [`MAX_CLAIMS`] pending readings per index, or found to be of an index that does not
+    /// pending readings per index, or found to be of an index that does not
     /// match the image. Its positions stay provisional.
+    #[non_exhaustive]
     Unverified {
         /// `L`.
         lsn: u64,
@@ -411,11 +427,19 @@ pub enum Suspect {
 
 /// Most provisional readings an index keeps waiting to be checked; past it, the oldest is
 /// dropped as [`Speculation::Unverified`].
+///
+/// Not part of the public API: a tuning value of the seek index, not covered by semantic
+/// versioning. It may change or go in any release.
+#[doc(hidden)]
 pub const MAX_CLAIMS: usize = 256;
 
 /// Most verdicts kept waiting to be taken, per index ([`AreaIndex::take_events`]) and per
 /// disc and area ([`crate::Disc::take_seek_events`]); past it, the oldest are dropped (the
 /// cursors still hold their verdicts).
+///
+/// Not part of the public API: a tuning value of the seek index, not covered by semantic
+/// versioning. It may change or go in any release.
+#[doc(hidden)]
 pub const MAX_EVENTS: usize = 4 * MAX_CLAIMS;
 
 /// Appends `events` to `queue`, keeping the last [`MAX_EVENTS`].
@@ -434,7 +458,7 @@ pub struct SeekEvent {
     /// The area.
     pub slot: crate::Slot,
     /// The provisional reading, as the cursors that made it number it
-    /// ([`crate::TrackCursor::speculation_id`]).
+    /// ([`crate::TrackCursor::claim`]).
     pub claim: u64,
     /// Its verdict: [`Speculation::Confirmed`], [`Speculation::Refuted`] or
     /// [`Speculation::Unverified`].
@@ -1186,7 +1210,7 @@ const _: () = {
 /// [`IndexOptions::max_hints`] of them (8 bytes each). They are saved with the index, so
 /// that after a remount a provisional reading ([`SeekPolicy::Speculative`]) of a range near
 /// one read before needs no search: it begins at the hint with the largest frame number
-/// below the range's first frame (at most [`HINT_REACH`] frames below), and reads from
+/// below the range's first frame (if it is close enough below), and reads from
 /// there through the next hint past the range in **one read call** (at most
 /// [`MAX_READ_SECTORS`]). A hint only chooses `L`: the positions are provisional
 /// ([`Speculation::Pending`]) as from any provisional start, whatever the hint says, unless
@@ -1347,8 +1371,14 @@ impl AreaIndex {
     }
 
     /// The number of checkpoints held.
-    pub fn checkpoints(&self) -> usize {
+    pub fn checkpoint_count(&self) -> usize {
         self.checkpoints.len()
+    }
+
+    /// The old name of [`AreaIndex::checkpoint_count`].
+    #[deprecated(since = "0.6.0", note = "renamed `AreaIndex::checkpoint_count`; to be removed before 1.0")]
+    pub fn checkpoints(&self) -> usize {
+        self.checkpoint_count()
     }
 
     /// The bytes the index holds, for the caller's accounting (see [Memory](Self#memory)).
@@ -1396,8 +1426,14 @@ impl AreaIndex {
 
     /// The provisional starts confirmed and kept (see [Saved
     /// confirmations](Self#saved-confirmations)).
-    pub fn confirmations(&self) -> usize {
+    pub fn confirmation_count(&self) -> usize {
         self.confirmed.len()
+    }
+
+    /// The old name of [`AreaIndex::confirmation_count`].
+    #[deprecated(since = "0.6.0", note = "renamed `AreaIndex::confirmation_count`; to be removed before 1.0")]
+    pub fn confirmations(&self) -> usize {
+        self.confirmation_count()
     }
 
     /// Keeps that a provisional reading from `lsn` for positions `u` or more was confirmed
@@ -1432,8 +1468,14 @@ impl AreaIndex {
     }
 
     /// The seek hints held (see [Seek hints](Self#seek-hints)).
-    pub fn hints(&self) -> usize {
+    pub fn hint_count(&self) -> usize {
         self.samples.len()
+    }
+
+    /// The old name of [`AreaIndex::hint_count`].
+    #[deprecated(since = "0.6.0", note = "renamed `AreaIndex::hint_count`; to be removed before 1.0")]
+    pub fn hints(&self) -> usize {
+        self.hint_count()
     }
 
     /// A recorder of seek hints for a cursor made from this index, if it keeps any.
@@ -1824,8 +1866,17 @@ impl AreaIndex {
 
 impl AreaIndex {
     /// The provisional readings waiting to be checked ([`AreaIndex::verify`]).
-    pub fn pending_claims(&self) -> usize {
+    pub fn pending_claim_count(&self) -> usize {
         self.claims.len()
+    }
+
+    /// The old name of [`AreaIndex::pending_claim_count`].
+    #[deprecated(
+        since = "0.6.0",
+        note = "renamed `AreaIndex::pending_claim_count`; to be removed before 1.0"
+    )]
+    pub fn pending_claims(&self) -> usize {
+        self.pending_claim_count()
     }
 
     /// Takes the verdicts on provisional readings reached since the last call (see
@@ -1919,7 +1970,7 @@ impl AreaIndex {
 
     /// Checks the provisional readings that the exact checkpoints now reach (specification
     /// 4, 4.2 item 8): for each, the state at its `L` of a reader from the first sector,
-    /// rebuilt from the checkpoint at or before `L` (at most [`REPLAY_SECTORS`] plus the
+    /// rebuilt from the checkpoint at or before `L` (at most a short replay plus the
     /// interval in sectors read through `image`). A reading is confirmed when (a) that
     /// reader's next acceptable frame number at `L` is at most `u` and (b) its frame under
     /// assembly there is none or numbered below `u`, and refuted ("possibly different")
@@ -2327,8 +2378,20 @@ mod tests {
         }
         let ix = AreaIndex::new(&area, 4, IndexOptions::new().with_interval(MAX_INTERVAL)).unwrap();
         assert_eq!(ix.options().interval, MAX_INTERVAL);
-        assert_eq!((ix.frontier(), ix.is_complete(), ix.checkpoints()), (0, false, 0));
+        assert_eq!((ix.frontier(), ix.is_complete(), ix.checkpoint_count()), (0, false, 0));
         assert!(ix.memory() >= std::mem::size_of::<AreaIndex>());
+    }
+
+    /// The deprecated count methods still answer, as the methods that replace them.
+    #[test]
+    #[allow(deprecated)]
+    fn old_count_names_still_answer() {
+        let (_, area, _) = crate::audio::tests_support::area(4);
+        let ix = AreaIndex::new(&area, 4, IndexOptions::new()).unwrap();
+        assert_eq!(ix.checkpoints(), ix.checkpoint_count());
+        assert_eq!(ix.hints(), ix.hint_count());
+        assert_eq!(ix.confirmations(), ix.confirmation_count());
+        assert_eq!(ix.pending_claims(), ix.pending_claim_count());
     }
 
     /// Knots inside the interval steer the guess; knots outside it, or out of order with

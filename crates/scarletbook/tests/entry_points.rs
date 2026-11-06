@@ -45,7 +45,7 @@ fn disc() -> (Disc<Image>, Arc<Mutex<Vec<String>>>) {
     let lines: Arc<Mutex<Vec<String>>> = Arc::default();
     let sink = Arc::clone(&lines);
     let log = Log::new(Level::Trace, move |_, m| sink.lock().unwrap().push(m.to_string()));
-    let disc = Disc::open_with_log(Cursor::new(image()), log).unwrap();
+    let disc = Disc::options().with_log(log).open(Cursor::new(image())).unwrap();
     lines.lock().unwrap().clear();
     (disc, lines)
 }
