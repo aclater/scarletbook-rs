@@ -43,7 +43,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use scarletbook::audio::FRAME_BYTES_PER_CHANNEL;
-use scarletbook::{DecodeOn, Disc, Slot};
+use scarletbook::{CursorOptions, DecodeOn, Disc, FrameSpan, Slot};
 use scarletbook_ffi::*;
 
 const USAGE: &str = "usage: decode_pool IMAGE rust-pool|rust-install|c-read|c-stored [--area 2ch|mc] [--threads N] \
@@ -126,7 +126,7 @@ fn rust(image: &Path, slot: Slot, pool: &Arc<rayon::ThreadPool>, install: bool, 
             }
             let mut next = match cursor.take() {
                 Some(prev) => disc.continue_track_audio(prev, slot, n).unwrap(),
-                None => disc.track_audio_cursor(slot, n).unwrap(),
+                None => disc.audio_cursor(slot, FrameSpan::Track(n), CursorOptions::new()).unwrap(),
             };
             if !install {
                 next.set_decode_on(DecodeOn::Pool(Arc::clone(pool)));

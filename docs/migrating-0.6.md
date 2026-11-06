@@ -296,7 +296,86 @@ After: the decoded fields of `Toc`, `Area` and `Track` and their text, instead o
 
 The range, track and stored-frame entry points of `Disc`, `TrackAudioCursor` and `TrackCursor`.
 
-Not written yet.
+#### The cursor twins of `Disc` become `audio_cursor` and `frames_cursor` (#305)
+
+Deprecated in 0.6.0 and removed before 1.0. The old names still work and give the same frames,
+errors and log lines; each call warns. `Disc::{track_audio, range_audio, track_frames, range_frames,
+stored_frame_list, stored_frame_list_cursor, read_track_audio, read_frames}`, `into_cursor()`,
+`Disc::continue_*` and `Disc::{track,range}_continuation` stay. `Disc::area_frames` stays as the
+diagnostic form of `stored_frame_list`.
+
+`audio_cursor` and `frames_cursor` take `&self`. With `&mut disc`, the iterator's `into_cursor()`
+gives the same cursor.
+
+Before:
+
+```rust
+let a = disc.track_audio_cursor(slot, n)?;
+let b = disc.range_audio_cursor(slot, first, end)?;
+let c = disc.track_frames_cursor(slot, n)?;
+let d = disc.range_frames_cursor(slot, first, end)?;
+```
+
+After:
+
+```rust
+use scarletbook::{CursorOptions, FrameSpan};
+let a = disc.audio_cursor(slot, FrameSpan::Track(n), CursorOptions::new())?;
+let b = disc.audio_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new())?;
+let c = disc.frames_cursor(slot, FrameSpan::Track(n), CursorOptions::new())?;
+let d = disc.frames_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new())?;
+// or, with `&mut disc`:
+let a = disc.track_audio(slot, n)?.into_cursor();
+```
+
+#### The caller's index moves to `CursorOptions` (#305)
+
+Deprecated in 0.6.0 and removed before 1.0.
+
+Before:
+
+```rust
+let a = disc.range_audio_cursor_indexed(slot, first, end, &index)?;
+let f = disc.range_frames_cursor_indexed(slot, first, end, &index)?;
+```
+
+After:
+
+```rust
+let span = FrameSpan::Range(first, end);
+let a = disc.audio_cursor(slot, span, CursorOptions::new().with_index(&index))?;
+let f = disc.frames_cursor(slot, span, CursorOptions::new().with_index(&index))?;
+```
+
+#### `for_range`, `for_range_indexed` and `for_range_speculative` become `open_range` (#305)
+
+Deprecated in 0.6.0 and removed before 1.0, on `TrackCursor` and `TrackAudioCursor` alike. For
+cursors without a `Disc`. The defaults are no index and `SeekPolicy::Exact`.
+
+Before:
+
+```rust
+let a = TrackCursor::for_range(&area, first, end, n)?;
+let b = TrackCursor::for_range_indexed(&area, first, end, n, &index)?;
+let c = TrackCursor::for_range_speculative(&area, first, end, n, Some(&index), options)?;
+```
+
+After. For an index of `None`, leave out `with_index`.
+
+```rust
+use scarletbook::{CursorOptions, SeekPolicy};
+let a = TrackCursor::open_range(&area, first, end, n, CursorOptions::new())?;
+let b = TrackCursor::open_range(&area, first, end, n, CursorOptions::new().with_index(&index))?;
+let with = CursorOptions::new().with_index(&index).with_policy(SeekPolicy::Speculative(options));
+let c = TrackCursor::open_range(&area, first, end, n, with)?;
+```
+
+#### `continue_to` and `continue_to_range` keep working, for callers without a `Disc` (#305)
+
+Not deprecated, so there is nothing to migrate. `TrackCursor::new`, `TrackAudioCursor::new` and
+`AreaCursor::new` stay as well. With a `Disc`, `Disc::continue_*` is the usual form. It isn't the
+same call: it uses the disc's seek index and policy, logs each opening, and tells two images of the
+same size apart, while `continue_to` always opens exact, with no index and no log.
 
 ### S1. Names and constructors
 
