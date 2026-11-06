@@ -122,7 +122,7 @@ impl std::fmt::Display for Malformed {
 /// with groups of 2 or 3 frames per job, a cap of 256 left under 3 jobs per thread at 32
 /// threads, and the pool ran short of work while the calling thread was busy (#61).
 ///
-/// A cursor continued ([`TrackAudioCursor::continue_to`] and its range form) or dropped
+/// A cursor continued ([`crate::Disc::continue_track_audio`] and its range form) or dropped
 /// while DST frames are in flight drops its handles on them: queued jobs then skip
 /// decoding, and only jobs already decoding run to their end, at most one group of
 /// [`crate::dst::lanes`] frames per pool thread. That memory is held briefly beside the
@@ -1500,6 +1500,73 @@ pub fn track_range_with_pause(area: &Area, number: u32) -> Option<(u32, u32)> {
     Some((first, next.max(track.end_frame())))
 }
 
+/// What a cursor reads: a track, or any frame range of an area
+/// ([`crate::Disc::audio_cursor`], [`crate::Disc::frames_cursor`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum FrameSpan {
+    /// Track `n` (1-based) of the area, checked by [`check_track`].
+    Track(u32),
+    /// The frames `[first, end)` of the area, checked by [`check_range`]; the whole area
+    /// is `[0, P)`, with `P` its play time.
+    Range(u32, u32),
+}
+
+/// How a cursor starts: the seek index it starts from and its seek policy.
+///
+/// [`crate::Disc::audio_cursor`] and [`crate::Disc::frames_cursor`] default to the disc's
+/// index and policy for the area; [`TrackCursor::open_range`] and
+/// [`TrackAudioCursor::open_range`] to no index and [`SeekPolicy::Exact`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CursorOptions<'a> {
+    index: Option<&'a AreaIndex>,
+    policy: Option<SeekPolicy>,
+}
+
+impl<'a> CursorOptions<'a> {
+    /// The defaults.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Starts from `index`, of the caller's, rather than the default: at its last
+    /// checkpoint whose next acceptable frame number is at most the first frame read, or
+    /// reading nothing when the index is complete and no such frame is accepted. The
+    /// positions, their contents, the counts and warnings are those of a scan from the
+    /// area's first audio sector; only the sectors read and the log lines differ, sectors
+    /// replayed to rebuild the frame under assembly not being logged.
+    ///
+    /// The cursor records the checkpoints it crosses past the index's frontier; take them
+    /// with [`AreaIndex::absorb`]. An empty index ([`AreaIndex::new`]) gives a scan from the
+    /// first sector that builds one. An index of another area or image size is
+    /// [`Error::InvalidArgument`] when the cursor is opened.
+    pub fn with_index(mut self, index: &'a AreaIndex) -> Self {
+        self.index = Some(index);
+        self
+    }
+
+    /// Reads with `policy` rather than the default. With [`SeekPolicy::Speculative`], the
+    /// start may be provisional (specification 4, 4.2 item 8, sacd-spec `82eac6c`) when the
+    /// exact start would read more than the options' gap before the range's estimated
+    /// position: the cursor chooses on its first read; [`TrackCursor::speculation`] and
+    /// [`TrackCursor::resumed_from`] then say which start it took. A provisional cursor
+    /// records no checkpoints.
+    pub fn with_policy(mut self, policy: SeekPolicy) -> Self {
+        self.policy = Some(policy);
+        self
+    }
+
+    /// The index asked for, if any.
+    pub(crate) fn index(&self) -> Option<&'a AreaIndex> {
+        self.index
+    }
+
+    /// The policy asked for, if any.
+    pub(crate) fn policy(&self) -> Option<SeekPolicy> {
+        self.policy
+    }
+}
+
 /// How a continuation opens its range ([`Continuation::log_audio`]).
 ///
 /// Not part of the public API: plumbing of the C interface, not covered by semantic
@@ -1586,7 +1653,7 @@ impl<'a> Continuation<'a> {
         (self.first, self.end)
     }
 
-    /// `prev` continued into this range (see [`TrackAudioCursor::continue_to_range`]),
+    /// `prev` continued into this range (see [`crate::Disc::continue_range_audio`]),
     /// or a fresh cursor when its state cannot be reused, or a start from the disc's seek
     /// index. Logs the opening first.
     pub fn audio(self, prev: TrackAudioCursor) -> TrackAudioCursor {
@@ -1649,7 +1716,7 @@ impl<'a> Continuation<'a> {
         })
     }
 
-    /// `prev` continued into this range (see [`TrackCursor::continue_to_range`]), as
+    /// `prev` continued into this range (see [`crate::Disc::continue_range_frames`]), as
     /// [`Continuation::audio`] does for decoded audio.
     pub fn frames(self, prev: TrackCursor) -> TrackCursor {
         let opening = self.log_frames(&prev);
@@ -1828,7 +1895,7 @@ impl<'a> Continuation<'a> {
         self.log_how("frames", Opening::Fresh);
     }
 
-    /// A fresh cursor of this range's positions (see [`TrackCursor::for_range`]), without
+    /// A fresh cursor of this range's positions (see [`TrackCursor::open_range`]), without
     /// logging (see [`Continuation::log_fresh_frames`]).
     ///
     /// Not part of the public API: plumbing of the C interface, not covered by semantic
@@ -1953,7 +2020,7 @@ impl TrackFrame {
 /// The reading state of one track's timeline positions (specification 4, 4.7),
 /// independent of the image it reads from. [`TrackFrames`] is the borrowing iterator.
 ///
-/// A track is one frame range of its area; [`TrackCursor::for_range`] reads any other
+/// A track is one frame range of its area; [`TrackCursor::open_range`] reads any other
 /// (the whole area, or tracks with the pauses between them) with the same frame
 /// numbering, timeline and contents.
 #[derive(Debug)]
@@ -2013,34 +2080,50 @@ impl TrackCursor {
 
     /// A cursor at frame `first` of `area`, ending before frame `end`, after
     /// [`check_range`]: the positions `first` to `end - 1` in order, exactly as a track
-    /// covering them would give.
+    /// covering them would give. See [`CursorOptions`] for the seek index and policy.
+    ///
+    /// # Errors
+    ///
+    /// As [`check_range`], then [`Error::InvalidArgument`] if the options' index is of
+    /// another area or image size.
+    pub fn open_range(
+        area: &Area,
+        first: u32,
+        end: u32,
+        image_sectors: u64,
+        options: CursorOptions<'_>,
+    ) -> Result<Self, Error> {
+        check_range(area, first, end, image_sectors)?;
+        let index = options.index();
+        if let Some(index) = index {
+            index.check_key(area, image_sectors)?;
+        }
+        Ok(match (index, options.policy().unwrap_or_default()) {
+            (None, SeekPolicy::Exact) => Self::start(area, first, end, image_sectors),
+            (Some(index), SeekPolicy::Exact) => Self::start_indexed(area, first, end, image_sectors, index),
+            (index, policy) => Self::start_with(area, (first, end), image_sectors, index, policy),
+        })
+    }
+
+    /// As [`TrackCursor::open_range`] with the default options.
     ///
     /// # Errors
     ///
     /// As [`check_range`].
+    #[deprecated(since = "0.6.0", note = "use `TrackCursor::open_range` with `CursorOptions::new()`")]
     pub fn for_range(area: &Area, first: u32, end: u32, image_sectors: u64) -> Result<Self, Error> {
-        check_range(area, first, end, image_sectors)?;
-        Ok(Self::start(area, first, end, image_sectors))
+        Self::open_range(area, first, end, image_sectors, CursorOptions::new())
     }
 
-    /// As [`TrackCursor::for_range`], starting from `index` instead of the area's first
-    /// audio sector (see [`crate::seek`]): at its last checkpoint whose next acceptable
-    /// frame number is at most `first`, or reading nothing when the index is complete and
-    /// no frame numbered `first` or more is accepted. The positions, their contents, the
-    /// missing count, [`TrackCursor::malformed_sectors`] and [`TrackCursor::warnings`] are
-    /// exactly those of [`TrackCursor::for_range`]: the malformed sectors counted are
-    /// those a scan from the area's first audio sector has processed, the ones before
-    /// the checkpoint coming from the index. Only the sectors read and the log lines
-    /// differ; sectors replayed to rebuild the frame under assembly are not logged.
-    ///
-    /// The cursor records the checkpoints it crosses past the index's frontier; take them
-    /// with [`AreaIndex::absorb`]. An empty index ([`AreaIndex::new`]) gives a scan from
-    /// the first sector that builds one.
+    /// As [`TrackCursor::open_range`] with [`CursorOptions::with_index`].
     ///
     /// # Errors
     ///
-    /// As [`check_range`], then [`Error::InvalidArgument`] if `index` is of another area
-    /// or image size.
+    /// As [`TrackCursor::open_range`].
+    #[deprecated(
+        since = "0.6.0",
+        note = "use `TrackCursor::open_range` with `CursorOptions::new().with_index(index)`"
+    )]
     pub fn for_range_indexed(
         area: &Area,
         first: u32,
@@ -2048,9 +2131,7 @@ impl TrackCursor {
         image_sectors: u64,
         index: &AreaIndex,
     ) -> Result<Self, Error> {
-        check_range(area, first, end, image_sectors)?;
-        index.check_key(area, image_sectors)?;
-        Ok(Self::start_indexed(area, first, end, image_sectors, index))
+        Self::open_range(area, first, end, image_sectors, CursorOptions::new().with_index(index))
     }
 
     /// A scan of `area` for the range `[first, end)`, already checked, from `index` (of
@@ -2109,16 +2190,16 @@ impl TrackCursor {
         self.area.progress()
     }
 
-    /// As [`TrackCursor::for_range_indexed`] (or [`TrackCursor::for_range`] without an
-    /// index), allowing a provisional start (specification 4, 4.2 item 8, sacd-spec
-    /// `82eac6c`; see [`SeekPolicy`]) when the exact start would read more than
-    /// `options.min_gap_sectors` before the range's estimated position. The cursor chooses on
-    /// its first read; [`TrackCursor::speculation`] and [`TrackCursor::resumed_from`] then
-    /// say which start it took. A provisional cursor records no checkpoints.
+    /// As [`TrackCursor::open_range`] with [`SeekPolicy::Speculative`] and, if given,
+    /// [`CursorOptions::with_index`].
     ///
     /// # Errors
     ///
-    /// As [`TrackCursor::for_range_indexed`].
+    /// As [`TrackCursor::open_range`].
+    #[deprecated(
+        since = "0.6.0",
+        note = "use `TrackCursor::open_range` with `CursorOptions::new().with_index(index).with_policy(SeekPolicy::Speculative(options))`"
+    )]
     pub fn for_range_speculative(
         area: &Area,
         first: u32,
@@ -2127,11 +2208,9 @@ impl TrackCursor {
         index: Option<&AreaIndex>,
         options: crate::seek::SpeculativeOptions,
     ) -> Result<Self, Error> {
-        check_range(area, first, end, image_sectors)?;
-        if let Some(index) = index {
-            index.check_key(area, image_sectors)?;
-        }
-        Ok(Self::start_with(area, (first, end), image_sectors, index, SeekPolicy::Speculative(options)))
+        let mut with = CursorOptions::new().with_policy(SeekPolicy::Speculative(options));
+        with.index = index;
+        Self::open_range(area, first, end, image_sectors, with)
     }
 
     /// A cursor of the range, already checked, from `index` (of the area, checked) or the
@@ -2297,7 +2376,7 @@ impl TrackCursor {
     /// onto another image refuses to read it (see [`AreaCursor::next_frame`]). Use
     /// [`crate::Disc::continue_track_audio`], which compares the images and scans afresh.
     ///
-    /// A cursor made from a seek index ([`TrackCursor::for_range_indexed`]) does not keep
+    /// A cursor made from a seek index ([`CursorOptions::with_index`]) does not keep
     /// the index: continued backwards with this method, it scans from the area's first
     /// sector. To start from the index instead, open a new cursor from it.
     ///
@@ -2439,7 +2518,7 @@ impl TrackCursor {
     }
 
     /// Positions returned so far that no accepted frame fills ([`FrameContent::Missing`]);
-    /// 0 again after [`TrackCursor::continue_to`] or [`TrackCursor::continue_to_range`].
+    /// 0 again after [`crate::Disc::continue_track_frames`] or [`crate::Disc::continue_range_frames`].
     pub fn missing_frames(&self) -> u64 {
         self.missing
     }
@@ -2814,7 +2893,7 @@ impl Stored {
 }
 
 /// The decoding state of one track's audio (specification 4, 4.6 and 4.7), or of any
-/// frame range of an area ([`TrackAudioCursor::for_range`]), independent of the image it
+/// frame range of an area ([`TrackAudioCursor::open_range`]), independent of the image it
 /// reads from. [`TrackAudio`] is the borrowing iterator.
 ///
 /// With the `parallel` feature, DST frames are decoded on a rayon thread pool ahead of
@@ -2875,24 +2954,43 @@ impl TrackAudioCursor {
     }
 
     /// A cursor at frame `first` of `area`, ending before frame `end` (see
-    /// [`TrackCursor::for_range`]): the whole area is `[0, P)`, with `P` the play time.
-    /// Frame numbering, fills, statuses and counts are exactly as for a track.
+    /// [`TrackCursor::open_range`]): the whole area is `[0, P)`, with `P` the play time.
+    /// Frame numbering, fills, statuses and counts are exactly as for a track, and with any
+    /// seek index or policy of `options` as without one.
+    ///
+    /// # Errors
+    ///
+    /// As [`TrackCursor::open_range`].
+    pub fn open_range(
+        area: &Area,
+        first: u32,
+        end: u32,
+        image_sectors: u64,
+        options: CursorOptions<'_>,
+    ) -> Result<Self, Error> {
+        // Missing and invalid frames are counted per range (4.7.1 item 6).
+        Ok(Self::from_frames(TrackCursor::open_range(area, first, end, image_sectors, options)?))
+    }
+
+    /// As [`TrackAudioCursor::open_range`] with the default options.
     ///
     /// # Errors
     ///
     /// As [`check_range`].
+    #[deprecated(since = "0.6.0", note = "use `TrackAudioCursor::open_range` with `CursorOptions::new()`")]
     pub fn for_range(area: &Area, first: u32, end: u32, image_sectors: u64) -> Result<Self, Error> {
-        // Missing and invalid frames are counted per range (4.7.1 item 6).
-        Ok(Self::from_frames(TrackCursor::for_range(area, first, end, image_sectors)?))
+        Self::open_range(area, first, end, image_sectors, CursorOptions::new())
     }
 
-    /// As [`TrackAudioCursor::for_range`], starting from `index` (see
-    /// [`TrackCursor::for_range_indexed`]): the frames, statuses and counts are exactly
-    /// those of [`TrackAudioCursor::for_range`].
+    /// As [`TrackAudioCursor::open_range`] with [`CursorOptions::with_index`].
     ///
     /// # Errors
     ///
-    /// As [`TrackCursor::for_range_indexed`].
+    /// As [`TrackCursor::open_range`].
+    #[deprecated(
+        since = "0.6.0",
+        note = "use `TrackAudioCursor::open_range` with `CursorOptions::new().with_index(index)`"
+    )]
     pub fn for_range_indexed(
         area: &Area,
         first: u32,
@@ -2900,7 +2998,7 @@ impl TrackAudioCursor {
         image_sectors: u64,
         index: &AreaIndex,
     ) -> Result<Self, Error> {
-        Ok(Self::from_frames(TrackCursor::for_range_indexed(area, first, end, image_sectors, index)?))
+        Self::open_range(area, first, end, image_sectors, CursorOptions::new().with_index(index))
     }
 
     /// Where this cursor's scan started (see [`ResumedFrom`]).
@@ -2908,12 +3006,16 @@ impl TrackAudioCursor {
         self.frames.resumed_from()
     }
 
-    /// As [`TrackAudioCursor::for_range`], allowing a provisional start (see
-    /// [`TrackCursor::for_range_speculative`]).
+    /// As [`TrackAudioCursor::open_range`] with [`SeekPolicy::Speculative`] and, if given,
+    /// [`CursorOptions::with_index`].
     ///
     /// # Errors
     ///
-    /// As [`TrackCursor::for_range_speculative`].
+    /// As [`TrackCursor::open_range`].
+    #[deprecated(
+        since = "0.6.0",
+        note = "use `TrackAudioCursor::open_range` with `CursorOptions::new().with_index(index).with_policy(SeekPolicy::Speculative(options))`"
+    )]
     pub fn for_range_speculative(
         area: &Area,
         first: u32,
@@ -2922,14 +3024,9 @@ impl TrackAudioCursor {
         index: Option<&AreaIndex>,
         options: crate::seek::SpeculativeOptions,
     ) -> Result<Self, Error> {
-        Ok(Self::from_frames(TrackCursor::for_range_speculative(
-            area,
-            first,
-            end,
-            image_sectors,
-            index,
-            options,
-        )?))
+        let mut with = CursorOptions::new().with_policy(SeekPolicy::Speculative(options));
+        with.index = index;
+        Self::open_range(area, first, end, image_sectors, with)
     }
 
     /// The slot of this cursor's area.
@@ -3122,7 +3219,7 @@ impl TrackAudioCursor {
     }
 
     /// Chooses where the DST frames demultiplexed from now on are decoded (see
-    /// [`DecodeOn`]); continuations ([`TrackAudioCursor::continue_to`] and the like) keep
+    /// [`DecodeOn`]); continuations ([`crate::Disc::continue_track_audio`] and the like) keep
     /// the choice. Frames already sent to a pool finish there and are returned in order,
     /// so the frames returned are the same whenever this is called.
     #[cfg(feature = "parallel")]

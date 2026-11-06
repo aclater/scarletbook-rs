@@ -6,7 +6,8 @@ use std::io::{Read, Seek};
 use std::sync::Arc;
 
 use crate::audio::{
-    self, AreaCursor, AreaFrames, Continuation, TrackAudio, TrackAudioCursor, TrackCursor, TrackFrames,
+    self, AreaCursor, AreaFrames, Continuation, CursorOptions, FrameSpan, TrackAudio, TrackAudioCursor,
+    TrackCursor, TrackFrames,
 };
 use crate::control::CancelToken;
 use crate::error::{Error, Slot, Warning};
@@ -19,6 +20,28 @@ use crate::toc::{self, Timecode, Toc, TocDigests, TocStored};
 /// An opened disc image with its table of contents.
 ///
 /// Opening reads only the master TOC and the area TOCs. Audio is read on demand.
+///
+/// # Which call
+///
+/// | To | Decoded audio | Frames as stored |
+/// |---|---|---|
+/// | read a track | [`Disc::track_audio`] | [`Disc::track_frames`] |
+/// | read a frame range | [`Disc::range_audio`] | [`Disc::range_frames`] |
+/// | read every accepted frame of an area | | [`Disc::stored_frame_list`] |
+/// | hold the reading without a borrow | [`TrackAudio::into_cursor`] | [`TrackFrames::into_cursor`] |
+/// | open a cursor from `&self` | [`Disc::audio_cursor`] | [`Disc::frames_cursor`], [`Disc::stored_frame_list_cursor`] |
+/// | read a cursor | [`Disc::read_track_audio`] | [`Disc::read_frames`] |
+/// | go on to a later track | [`Disc::continue_track_audio`] | [`Disc::continue_track_frames`] |
+/// | go on to a later range | [`Disc::continue_range_audio`] | [`Disc::continue_range_frames`] |
+///
+/// For decoded audio with the stored bytes in one pass, use [`TrackAudio::keep_stored`] and
+/// [`TrackAudio::next_with_stored`]. To start a cursor from your own seek index, or with
+/// another seek policy for that one cursor, use [`CursorOptions`]. [`Disc::area_frames`] is
+/// the diagnostic form of [`Disc::stored_frame_list`].
+///
+/// Without a `Disc`, use [`TrackAudioCursor::new`] or [`TrackCursor::new`] for a track,
+/// [`TrackAudioCursor::open_range`] or [`TrackCursor::open_range`] for a range,
+/// [`AreaCursor::new`] for an area, and `continue_to` and `continue_to_range` to go on.
 ///
 /// # Several readers
 ///
@@ -41,8 +64,7 @@ use crate::toc::{self, Timecode, Toc, TocDigests, TocStored};
 ///     for n in 1..=count {
 ///         let mut disc = disc.clone();
 ///         s.spawn(move || -> Result<(), scarletbook::Error> {
-///             let cursor = disc.track_audio_cursor(Slot::TwoChannel, n)?;
-///             for frame in disc.read_track_audio(cursor) {
+///             for frame in disc.track_audio(Slot::TwoChannel, n)? {
 ///                 let _frame = frame?;
 ///             }
 ///             Ok(())
@@ -524,10 +546,10 @@ impl<R: Read + Seek> Disc<R> {
         self.shared.seek.absorb(crate::audio::sealed::Sealed::area_cursor_mut(cursor), self.image.id());
     }
 
-    /// The accepted frames of the area from `slot`, read from its audio sectors
-    /// (specification 4, 4.2 to 4.5), whatever the area's channel count. For the stored
-    /// frame list of 4.6.1, which refuses areas without audio, use
-    /// [`Disc::stored_frame_list`].
+    /// The diagnostic form of [`Disc::stored_frame_list`]: the accepted frames of the area
+    /// from `slot`, read from its audio sectors (specification 4, 4.2 to 4.5), whatever the
+    /// area's channel count, without the list's channel check. To read a disc's stored
+    /// frames, use [`Disc::stored_frame_list`].
     ///
     /// # Errors
     ///
@@ -594,17 +616,17 @@ impl<R: Read + Seek> Disc<R> {
     }
 
     /// A cursor of the range `[first, end)` of `area`, already checked: from the area's
-    /// seek index if one is kept, else a new scan; logs the opening of `what` (track
-    /// `track`, if one).
-    fn frames_cursor(
+    /// seek index if one is kept, else a new scan, with `policy`; logs the opening of `what`
+    /// (track `track`, if one).
+    fn disc_index_cursor(
         &self,
         area: &crate::Area,
         (first, end): (u32, u32),
         track: Option<u32>,
         what: &str,
+        policy: SeekPolicy,
     ) -> TrackCursor {
         let n = self.image.sector_count();
-        let policy = self.cursor_policy(area.slot);
         let (cursor, how) = self.shared.seek.read(area.slot, |index| {
             let mut cursor = TrackCursor::start_with(area, (first, end), n, index, policy);
             if index.is_some() {
@@ -633,20 +655,81 @@ impl<R: Read + Seek> Disc<R> {
     ///
     /// As [`Disc::check_track`].
     pub fn track_frames(&mut self, slot: Slot, number: u32) -> Result<TrackFrames<'_, R>, Error> {
-        let cursor = self.track_frames_cursor(slot, number)?;
+        let cursor = self.frames_cursor(slot, FrameSpan::Track(number), CursorOptions::new())?;
         Ok(TrackFrames::with_cursor(&mut self.image, cursor, Some(&self.shared.seek)))
     }
 
-    /// The reading state of [`Disc::track_frames`], for callers that cannot hold the
-    /// borrow; read it with [`Disc::read_frames`].
+    /// The reading state of a track or frame range's positions (see [`Disc::track_frames`]
+    /// and [`Disc::range_frames`]), from a shared borrow, for callers that cannot hold the
+    /// iterator's; read it with [`Disc::read_frames`]. With `&mut self`,
+    /// [`TrackFrames::into_cursor`] gives the same. See [`CursorOptions`] for the seek index
+    /// and policy; by default they are the disc's for the area.
+    ///
+    /// # Errors
+    ///
+    /// As [`Disc::check_track`] or [`Disc::check_range`], then [`Error::InvalidArgument`] if
+    /// the options' index is of another area or image size.
+    pub fn frames_cursor(
+        &self,
+        slot: Slot,
+        span: FrameSpan,
+        options: CursorOptions<'_>,
+    ) -> Result<TrackCursor, Error> {
+        self.open_cursor(slot, span, options, "frames")
+    }
+
+    /// The cursor of `span`, after its checks: from the seek index of `options` or else the
+    /// disc's, with the policy of `options` or else the disc's; logs the opening of `what`.
+    fn open_cursor(
+        &self,
+        slot: Slot,
+        span: FrameSpan,
+        options: CursorOptions<'_>,
+        what: &str,
+    ) -> Result<TrackCursor, Error> {
+        let (area, range, track) = match span {
+            FrameSpan::Track(number) => {
+                self.check_track(slot, number)?;
+                let (area, track) = audio::find_track(&self.shared.toc.areas, slot, number)?;
+                (area, (track.start_frame, track.end_frame()), Some(number))
+            }
+            FrameSpan::Range(first, end) => {
+                self.check_range(slot, first, end)?;
+                (self.shared.toc.area(slot).ok_or(Error::NoSuchArea(slot))?, (first, end), None)
+            }
+        };
+        let policy = match options.policy() {
+            Some(SeekPolicy::Speculative(mut o)) => {
+                o.layout_suspect = crate::seek::layout_suspect(&self.shared.toc, slot);
+                SeekPolicy::Speculative(o)
+            }
+            Some(policy) => policy,
+            None => self.cursor_policy(slot),
+        };
+        let Some(index) = options.index() else {
+            return Ok(self.disc_index_cursor(area, range, track, what, policy));
+        };
+        let n = self.image.sector_count();
+        let (first, end) = range;
+        index.check_key(area, n).inspect_err(|e| match track {
+            Some(number) => sb_log!(self.log(), Info, "area {slot} track {number}: {e}"),
+            None => sb_log!(self.log(), Info, "area {slot} range: frames {first}..{end}: {e}"),
+        })?;
+        audio::log_open(self.log(), area, track, range, what, "from the seek index");
+        Ok(TrackCursor::start_with(area, range, n, Some(index), policy))
+    }
+
+    /// [`Disc::frames_cursor`] of a track.
     ///
     /// # Errors
     ///
     /// As [`Disc::check_track`].
+    #[deprecated(
+        since = "0.6.0",
+        note = "use `Disc::frames_cursor` with `FrameSpan::Track(number)`, or `Disc::track_frames` and `into_cursor`"
+    )]
     pub fn track_frames_cursor(&self, slot: Slot, number: u32) -> Result<TrackCursor, Error> {
-        self.check_track(slot, number)?;
-        let (area, track) = audio::find_track(&self.shared.toc.areas, slot, number)?;
-        Ok(self.frames_cursor(area, (track.start_frame, track.end_frame()), Some(number), "frames"))
+        self.frames_cursor(slot, FrameSpan::Track(number), CursorOptions::new())
     }
 
     /// The timeline positions of the frame range `[first, end)` of the area from `slot`,
@@ -658,20 +741,21 @@ impl<R: Read + Seek> Disc<R> {
     ///
     /// As [`Disc::check_range`].
     pub fn range_frames(&mut self, slot: Slot, first: u32, end: u32) -> Result<TrackFrames<'_, R>, Error> {
-        let cursor = self.range_frames_cursor(slot, first, end)?;
+        let cursor = self.frames_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new())?;
         Ok(TrackFrames::with_cursor(&mut self.image, cursor, Some(&self.shared.seek)))
     }
 
-    /// The reading state of [`Disc::range_frames`], for callers that cannot hold the
-    /// borrow; read it with [`Disc::read_frames`].
+    /// [`Disc::frames_cursor`] of a frame range.
     ///
     /// # Errors
     ///
     /// As [`Disc::check_range`].
+    #[deprecated(
+        since = "0.6.0",
+        note = "use `Disc::frames_cursor` with `FrameSpan::Range(first, end)`, or `Disc::range_frames` and `into_cursor`"
+    )]
     pub fn range_frames_cursor(&self, slot: Slot, first: u32, end: u32) -> Result<TrackCursor, Error> {
-        self.check_range(slot, first, end)?;
-        let area = self.shared.toc.area(slot).ok_or(Error::NoSuchArea(slot))?;
-        Ok(self.frames_cursor(area, (first, end), None, "frames"))
+        self.frames_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new())
     }
 
     /// The reading state of track `number`'s positions, continuing `prev` (the state of an
@@ -719,7 +803,7 @@ impl<R: Read + Seek> Disc<R> {
     ///
     /// As [`Disc::check_track`].
     pub fn track_audio(&mut self, slot: Slot, number: u32) -> Result<TrackAudio<'_, R>, Error> {
-        let cursor = self.track_audio_cursor(slot, number)?;
+        let cursor = self.audio_cursor(slot, FrameSpan::Track(number), CursorOptions::new())?;
         Ok(TrackAudio::with_cursor(&mut self.image, cursor, Some(&self.shared.seek)))
     }
 
@@ -756,31 +840,54 @@ impl<R: Read + Seek> Disc<R> {
     ///
     /// As [`Disc::check_range`].
     pub fn range_audio(&mut self, slot: Slot, first: u32, end: u32) -> Result<TrackAudio<'_, R>, Error> {
-        let cursor = self.range_audio_cursor(slot, first, end)?;
+        let cursor = self.audio_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new())?;
         Ok(TrackAudio::with_cursor(&mut self.image, cursor, Some(&self.shared.seek)))
     }
 
-    /// The decoding state of a frame range (see [`Disc::range_audio`]), for callers that
-    /// cannot hold the borrow; read it with [`Disc::read_track_audio`].
+    /// The decoding state of a track or frame range (see [`Disc::track_audio`] and
+    /// [`Disc::range_audio`]), from a shared borrow, for callers that cannot hold the
+    /// iterator's (for example across an FFI boundary); read it with
+    /// [`Disc::read_track_audio`], or advance it with [`TrackAudioCursor::next_frame`],
+    /// passing this disc's [`Disc::image_mut`]. With `&mut self`,
+    /// [`TrackAudio::into_cursor`] gives the same. See [`CursorOptions`] for the seek index
+    /// and policy; by default they are the disc's for the area.
+    ///
+    /// # Errors
+    ///
+    /// As [`Disc::frames_cursor`].
+    pub fn audio_cursor(
+        &self,
+        slot: Slot,
+        span: FrameSpan,
+        options: CursorOptions<'_>,
+    ) -> Result<TrackAudioCursor, Error> {
+        Ok(TrackAudioCursor::from_frames(self.open_cursor(slot, span, options, "decoded audio")?))
+    }
+
+    /// [`Disc::audio_cursor`] of a frame range.
     ///
     /// # Errors
     ///
     /// As [`Disc::check_range`].
+    #[deprecated(
+        since = "0.6.0",
+        note = "use `Disc::audio_cursor` with `FrameSpan::Range(first, end)`, or `Disc::range_audio` and `into_cursor`"
+    )]
     pub fn range_audio_cursor(&self, slot: Slot, first: u32, end: u32) -> Result<TrackAudioCursor, Error> {
-        self.check_range(slot, first, end)?;
-        let area = self.shared.toc.area(slot).ok_or(Error::NoSuchArea(slot))?;
-        Ok(TrackAudioCursor::from_frames(self.frames_cursor(area, (first, end), None, "decoded audio")))
+        self.audio_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new())
     }
 
-    /// [`Disc::range_audio_cursor`] from the caller's seek `index` (see
-    /// [`TrackAudioCursor::for_range_indexed`]) rather than the disc's: for callers that
-    /// keep their indexes themselves (the C interface). Take what the cursor records with
-    /// [`AreaIndex::absorb`].
+    /// [`Disc::audio_cursor`] of a frame range, from the caller's seek `index` rather than
+    /// the disc's ([`CursorOptions::with_index`]).
     ///
     /// # Errors
     ///
     /// As [`Disc::check_range`], then [`Error::InvalidArgument`] if `index` is of another
     /// area or image size.
+    #[deprecated(
+        since = "0.6.0",
+        note = "use `Disc::audio_cursor` with `FrameSpan::Range(first, end)` and `CursorOptions::new().with_index(index)`"
+    )]
     pub fn range_audio_cursor_indexed(
         &self,
         slot: Slot,
@@ -788,15 +895,20 @@ impl<R: Read + Seek> Disc<R> {
         end: u32,
         index: &AreaIndex,
     ) -> Result<TrackAudioCursor, Error> {
-        Ok(TrackAudioCursor::from_frames(self.indexed_cursor(slot, (first, end), index, "decoded audio")?))
+        self.audio_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new().with_index(index))
     }
 
-    /// [`Disc::range_frames_cursor`] from the caller's seek `index` (see
-    /// [`Disc::range_audio_cursor_indexed`]).
+    /// [`Disc::frames_cursor`] of a frame range, from the caller's seek `index` rather than
+    /// the disc's ([`CursorOptions::with_index`]).
     ///
     /// # Errors
     ///
-    /// As [`Disc::range_audio_cursor_indexed`].
+    /// As [`Disc::check_range`], then [`Error::InvalidArgument`] if `index` is of another
+    /// area or image size.
+    #[deprecated(
+        since = "0.6.0",
+        note = "use `Disc::frames_cursor` with `FrameSpan::Range(first, end)` and `CursorOptions::new().with_index(index)`"
+    )]
     pub fn range_frames_cursor_indexed(
         &self,
         slot: Slot,
@@ -804,24 +916,7 @@ impl<R: Read + Seek> Disc<R> {
         end: u32,
         index: &AreaIndex,
     ) -> Result<TrackCursor, Error> {
-        self.indexed_cursor(slot, (first, end), index, "frames")
-    }
-
-    fn indexed_cursor(
-        &self,
-        slot: Slot,
-        (first, end): (u32, u32),
-        index: &AreaIndex,
-        what: &str,
-    ) -> Result<TrackCursor, Error> {
-        self.check_range(slot, first, end)?;
-        let area = self.shared.toc.area(slot).ok_or(Error::NoSuchArea(slot))?;
-        let n = self.image.sector_count();
-        index
-            .check_key(area, n)
-            .inspect_err(|e| sb_log!(self.log(), Info, "area {slot} range: frames {first}..{end}: {e}"))?;
-        audio::log_open(self.log(), area, None, (first, end), what, "from the seek index");
-        Ok(TrackCursor::start_with(area, (first, end), n, Some(index), self.cursor_policy(slot)))
+        self.frames_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new().with_index(index))
     }
 
     /// The decoding state of the frame range `[first, end)` of the area from `slot`,
@@ -842,30 +937,32 @@ impl<R: Read + Seek> Disc<R> {
         Ok(self.range_continuation(slot, first, end)?.audio(prev))
     }
 
-    /// The decoding state of a track, for callers that cannot hold the borrow that
-    /// [`Disc::track_audio`] needs (for example across an FFI boundary). Advance it with
-    /// [`TrackAudioCursor::next_frame`], passing this disc's [`Disc::image_mut`].
+    /// [`Disc::audio_cursor`] of a track.
     ///
     /// # Errors
     ///
     /// As [`Disc::check_track`].
+    #[deprecated(
+        since = "0.6.0",
+        note = "use `Disc::audio_cursor` with `FrameSpan::Track(number)`, or `Disc::track_audio` and `into_cursor`"
+    )]
     pub fn track_audio_cursor(&self, slot: Slot, number: u32) -> Result<TrackAudioCursor, Error> {
-        self.check_track(slot, number)?;
-        let (area, track) = audio::find_track(&self.shared.toc.areas, slot, number)?;
-        let range = (track.start_frame, track.end_frame());
-        Ok(TrackAudioCursor::from_frames(self.frames_cursor(area, range, Some(number), "decoded audio")))
+        self.audio_cursor(slot, FrameSpan::Track(number), CursorOptions::new())
     }
 
     /// The decoding state of track `number` of the area from `slot`, continuing `prev`
     /// (a cursor of an earlier track) without rescanning the area when the result is
     /// the same. Reading an area's tracks in increasing order this way reads each audio
-    /// sector once. See [`TrackAudioCursor::continue_to`]. A track that fails
-    /// [`Disc::check_track`] consumes `prev` without reuse, so check first to keep it.
+    /// sector once. The state is reused when the track is in the same area of the same
+    /// image and starts at or after the cursor's position, and no read has failed; the
+    /// frames are always exactly those of a fresh scan (specification 4, 4.2 item 5). Frames
+    /// of `prev` not yet returned are dropped, and the counts start again at 0. A track that
+    /// fails [`Disc::check_track`] consumes `prev` without reuse, so check first to keep it.
     ///
     /// ```no_run
     /// # fn main() -> Result<(), scarletbook::Error> {
     /// # let mut disc = scarletbook::Disc::open(std::io::Cursor::new(Vec::new()))?;
-    /// use scarletbook::Slot;
+    /// use scarletbook::{CursorOptions, FrameSpan, Slot};
     /// let count = disc.toc().area(Slot::TwoChannel).map_or(0, |a| a.tracks.len()) as u32;
     /// let mut cursor = None;
     /// for n in 1..=count {
@@ -874,7 +971,7 @@ impl<R: Read + Seek> Disc<R> {
     ///     }
     ///     let next = match cursor.take() {
     ///         Some(prev) => disc.continue_track_audio(prev, Slot::TwoChannel, n)?,
-    ///         None => disc.track_audio_cursor(Slot::TwoChannel, n)?,
+    ///         None => disc.audio_cursor(Slot::TwoChannel, FrameSpan::Track(n), CursorOptions::new())?,
     ///     };
     ///     let mut audio = disc.read_track_audio(next);
     ///     for frame in audio.by_ref() {
