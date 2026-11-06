@@ -77,8 +77,10 @@ fn run(out: &std::path::Path) -> Result<usize, String> {
             let mut seed = vec![area.channel_count];
             let mut sector = vec![0u8; 2048];
             for lsn in start..end.min(start + DEMUX_SEED_SECTORS) {
-                if disc.image_mut().read_sectors(lsn, &mut sector).map_err(|e| e.to_string())? {
-                    seed.extend_from_slice(&sector);
+                match disc.image_mut().read_sectors(lsn, &mut sector) {
+                    Ok(()) => seed.extend_from_slice(&sector),
+                    Err(scarletbook::Error::SectorRangeInvalid { .. }) => {}
+                    Err(e) => return Err(e.to_string()),
                 }
             }
             std::fs::write(demux_dir.join(format!("{id}-{}", area.slot)), seed).map_err(|e| e.to_string())?;

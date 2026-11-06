@@ -66,6 +66,7 @@ Updates:
 | 2026-11-05 | two `scarletbook-pcm` methods added (Part of #40) | An audit found two techniques from #130 with no row: P14 (`db_to_linear`) and P15 (`quantise`). Both are recorded as OWN, the conservative status, which counts as OPEN for a future review. Neither method changes, and no existing row's status changed. No stored file or `MANIFEST.tsv` changed. One Crossref metadata lookup for a citation P14 names as not read and not relied on. |
 | 2026-11-06 | DST rows checked against the code, and the S36 disclosure (Part of #40) | An audit's claims, each checked against `dst.rs`, were right. D7 now describes the 8-entry rows and the partial-share table and says what `white1989` does not state; D11 now covers the refill by OR at most every 6 symbols, with S10 and S11 named as #33's later support; D13, D15 and D18 now say that the choice per channel count is the fast loop's, and that `run_general` uses the byte form at every channel count; D8 now points to the S36 read under decision B. **No row's status changed**; whether D7 and D11 should stay CLEARED, given what their sources do not state, is for the owner. No technique or code changed. `white1989` re-read on 2026-11-05 (pp. 5 and 7) and its hash re-checked; no stored file or `MANIFEST.tsv` changed. S10, S11 and S36 were not reopened. |
 | 2026-11-06 | status of D7 and D11 split (Part of #40) | Owner decision of 2026-11-06 on #40: each row's status now separates what its source states from what it doesn't, in the form approved for P5. D7: the technique CLEARED, its layout GENERIC. D11: the technique CLEARED, the OR and the schedule GENERIC. No code or computed result changed. |
+| 2026-11-06 | checked against the merges since the catch-up (Part of #40) | Every pull request merged after #243, up to #302 (`50c56ba`), was checked by its description, and those changing library code also by their diff with comments left out. Techniques: #285 (P16), #286 (P17), #287 (O4, the log row above without a number) and #288 (D16, D19, D20) added their rows when they merged; the code still matches those rows. This log had no row for P16 and P17, so this is it, and "Still open" now names them, the layout of D7, and the OR and schedule of D11 among the GENERIC parts. The rest change no technique; "Changes with no new technique" now lists them, including #313 and #318. #303 and #305 were still open and are not covered. **No row's status changed.** No source was consulted, and no stored file or `MANIFEST.tsv` changed. |
 
 ## Scope and method
 
@@ -280,6 +281,13 @@ Merged since the record was first prepared; each changes code but introduces no 
 | #234 | the raw-image read buffer released once the TOC is read (`image.rs`, `Image::release_buffer`; `disc.rs`) | Buffer lifetime (memory use). |
 | #222, #235, #236 | tests sized for Miri, and a CI time limit | Test-only. |
 | #168, #212, #232, #239 | fuzz target; `bench dsf`, its parallel prototype and its buffered reader | Fuzz and benchmark programs only; #217's `callpattern` example and `pcm_digest` test (an FNV-1a digest, as S2) are likewise test and benchmark code. |
+| #256, #313 | saved seek index: confirmations limited by the file's own saved maximum; `verify_speculation` no longer reports complete with a reached reading unchecked; a merge keeps the index with more checkpoints | Load and validity checks on this project's own format (S2, S3). What is checked and what is saved stay as those rows describe. |
+| #318 | `TrackAudioCursor::with_dst_lanes`: the caller may set how many frames are decoded in a group, 1 to `MAX_LANES` | A setting over D12: `decode_many` and the default from `dst::lanes` are unchanged, and one lane is one frame at a time. The output is the same. |
+| #291, #293, #297 to #302, #304, #311 | Rust names, constants, `#[non_exhaustive]`, hidden items, `TrackFrame::new`, the C layer's fallback for an unmapped error (#39, #308) | API surface only. In #293 the decoder's array sizes take a private constant with the same value. |
+| #274, #280, #292, #309 | thread-safety assertions at compile time; comments and documentation | Nothing computed changes. |
+| #270, #294 | files packaged in the crate; the C library's file name | Packaging. |
+| #282, #283, #315 | tests and Miri slices for the dispatch modules; tests that work from the packaged crate | Test-only, with `#[cfg(test)]` helpers. |
+| #257, #276, #281, #306, #316, #317 | `bench` commands and limits; `scarletbook-synth` stress frames | Benchmark and tooling programs (Z2); the library is not touched. |
 
 ## Source register
 
@@ -449,10 +457,10 @@ Kept in `process/` of the evidence store, hashed in `MANIFEST.tsv`, and describe
 
 ### Techniques whose earliest source is from 2006 or later, or missing
 
-Codec techniques only (see "Scope and method"). Rows marked GENERIC (D13, D14, D16-D18, D20,
-M4, the rounding trick of P5, the mechanical part of P11, P12, P13, the loop order of O4,
-O5, R1-R4, X2) are outside the pre-2006 preference and are not listed here; each row gives
-its basis.
+Codec techniques only (see "Scope and method"). Rows marked GENERIC (the layout of D7, the OR
+and schedule of D11, D13, D14, D16-D18, D20, M4, the rounding trick of P5, the mechanical part
+of P11, P12, P13, P16, P17, the loop order and scratch row of O4, O5, R1-R4, X2) are outside
+the pre-2006 preference and are not listed here; each row gives its basis.
 
 - **D1-D5, M1-M3 (spec-mandated DST decoding and demultiplexing).** On this side the earliest
   dated source is sacd-spec (2026). The clean-room rules forbid this side from looking for a

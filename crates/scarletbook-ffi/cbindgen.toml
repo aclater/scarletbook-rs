@@ -16,10 +16,17 @@ header = """/* SPDX-License-Identifier: MIT OR Apache-2.0 */
  *   calling thread and stays valid until that thread's next call into this library.
  *
  * - Handles. SbDisc, SbTrackAudio, SbRawFrames, SbPool, SbSeekIndex, SbCancel,
- *   SbProgress and SbPcmConverter are opaque. Each is created by one
+ *   SbProgress, SbPcmConverter, SbOutputOptions, SbOutputLayout, SbTags and SbDstLengths
+ *   are opaque. Each is created by one
  *   function and released by exactly one call to its _free function; passing NULL to a
  *   _free function does nothing. A function that creates a handle sets *out to NULL when it fails, so
  *   freeing that pointer afterwards is safe.
+ *   A const handle pointer does not mean the call leaves the handle unchanged: handles
+ *   check for use at run time, so most take const even in calls that change them, such as
+ *   a read or a setter. A pointer is not const only for: a _free function and the prev of
+ *   an _open_next function, which consume their handle; sb_pcm_convert_run; and an
+ *   SbSeekIndex that the call records into (sb_seek_index_extend, sb_seek_index_merge's
+ *   into, sb_seek_index_verify, the _absorb functions and the _open_next_indexed functions).
  *
  * - Pointers. Pointer arguments must be NULL or valid for the access the function
  *   documents. NULL where a value is required gives SB_STATUS_INVALID_ARGUMENT.
@@ -31,6 +38,22 @@ header = """/* SPDX-License-Identifier: MIT OR Apache-2.0 */
  *   If buf is NULL or cap <= *len, nothing is written to buf and the call returns
  *   SB_STATUS_BUFFER_TOO_SMALL: call again with cap > *len. A string can contain U+0000
  *   (a language code can), so use *len rather than strlen.
+ *
+ * - Buffers. Nothing is written past a buffer's size, and a NULL buffer counts as too
+ *   small. A call that is given too small a buffer returns SB_STATUS_BUFFER_TOO_SMALL. How
+ *   to learn the size needed depends on what the call copies:
+ *   strings, as above: a call with cap 0 gives *len, and cap must be above it;
+ *   byte data and lists (sb_disc_manufacturer, sb_seek_index_save, sb_disc_toc,
+ *   sb_dst_lengths_get): a call with cap 0 gives *len or *count, and cap must be at least
+ *   that, with no NUL added;
+ *   stored frames (sb_raw_frames_read, sb_raw_frames_read_dst_equivalent and the raw_buf
+ *   of sb_track_audio_read_with_stored): the size is in *info or *raw_info, and the same
+ *   frame comes back from the next call;
+ *   a size the caller works out, with nothing reported: sb_disc_read_sectors (count x
+ *   2048), sb_track_audio_read and sb_dst_decode (channels x 4704), sb_pcm_convert_run
+ *   and sb_output_dsf_chain_plan (count - 1 entries).
+ *   sb_output_layout_read and sb_output_layout_fill are different: they copy up to len
+ *   bytes of a file from offset, and *written says how many.
  *
  * - Threads. A handle may be moved between threads, but must not be used by two threads
  *   at once; an SbPool, which only holds threads, may, and so may an SbCancel and an

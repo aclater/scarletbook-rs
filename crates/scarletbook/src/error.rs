@@ -106,6 +106,18 @@ pub enum Error {
         /// The area's play time in frames.
         playtime: u32,
     },
+    /// A sector read extends past the image's last sector ([`crate::Image::read_sectors`]):
+    /// it must satisfy `lsn + count <= sectors` (specification 1, 1.3).
+    #[error("{count} sectors at LSN {lsn} are not all in the image's {sectors} sectors")]
+    #[non_exhaustive]
+    SectorRangeInvalid {
+        /// The first sector asked for.
+        lsn: u64,
+        /// The number of sectors asked for.
+        count: u64,
+        /// The image's sector count.
+        sectors: u64,
+    },
     /// A DST lane count is not from 1 to [`crate::dst::MAX_LANES`]
     /// ([`crate::TrackAudioCursor::with_dst_lanes`]).
     #[error("{lanes} DST lanes: must be from 1 to {max}", max = crate::dst::MAX_LANES)]
@@ -214,6 +226,7 @@ impl Error {
             Error::NoSuchArea(_)
             | Error::NoSuchTrack { .. }
             | Error::FrameRangeInvalid { .. }
+            | Error::SectorRangeInvalid { .. }
             | Error::DstLanesInvalid { .. }
             | Error::InvalidArgument(_)
             | Error::Io(_)
@@ -238,6 +251,7 @@ impl Error {
             Error::NoSuchArea(_)
             | Error::NoSuchTrack { .. }
             | Error::FrameRangeInvalid { .. }
+            | Error::SectorRangeInvalid { .. }
             | Error::DstLanesInvalid { .. }
             | Error::InvalidArgument(_)
             | Error::OutputRefused(_) => ErrorClass::Usage,

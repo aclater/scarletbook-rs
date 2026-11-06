@@ -11,7 +11,7 @@ use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 
 use scarletbook::audio::{self, FRAME_BYTES_PER_CHANNEL};
-use scarletbook::{Disc, ErrorClass, FrameContent, Slot, WarningCode};
+use scarletbook::{CursorOptions, Disc, ErrorClass, FrameContent, FrameSpan, Slot, WarningCode};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -89,7 +89,7 @@ pub fn track_audio<R: std::io::Read + std::io::Seek>(
     slot: Slot,
     number: u32,
 ) -> Result<TrackAudio, scarletbook::Error> {
-    let cursor = disc.track_audio_cursor(slot, number)?;
+    let cursor = disc.audio_cursor(slot, FrameSpan::Track(number), CursorOptions::new())?;
     Ok(hash_cursor(disc, cursor)?.0)
 }
 
@@ -132,7 +132,7 @@ pub fn area_audio_sequential<R: std::io::Read + std::io::Seek>(
         }
         let next = match cursor.take() {
             Some(prev) => disc.continue_track_audio(prev, slot, n)?,
-            None => disc.track_audio_cursor(slot, n)?,
+            None => disc.audio_cursor(slot, FrameSpan::Track(n), CursorOptions::new())?,
         };
         let (result, back) = hash_cursor(disc, next)?;
         out.push((n, result));
@@ -351,7 +351,10 @@ fn check_range<R: std::io::Read + std::io::Seek>(
             return;
         }
     }
-    let got = match disc.range_audio_cursor(slot, first, end).and_then(|c| hash_cursor(disc, c)) {
+    let got = match disc
+        .audio_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new())
+        .and_then(|c| hash_cursor(disc, c))
+    {
         Ok((got, _)) => got,
         Err(e) => return fails.push(format!("{what}: {e}")),
     };
