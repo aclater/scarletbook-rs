@@ -43,13 +43,24 @@ const MAX_OPS: usize = 3;
 /// The coefficient scale of the other stages.
 const Q_FIR: i32 = 24;
 
+/// 1.5 x 2^52: an integer below 2^51 in magnitude plus this lies in `[2^52, 2^53)`, where
+/// binary64 values are exactly the integers.
+const MAGIC: f64 = 6_755_399_441_055_744.0;
+
 /// `x` rounded to an integer, half to even: `(x + 1.5 x 2^52) - 1.5 x 2^52` in IEEE-754
 /// round-to-nearest-even arithmetic, exact for `|x| < 2^51` (all values here are below
 /// 2^30). It vectorises on every x86-64, unlike a call to `round_ties_even`.
 #[inline(always)]
 fn round_even(x: f64) -> f64 {
-    const MAGIC: f64 = 6_755_399_441_055_744.0;
     (x + MAGIC) - MAGIC
+}
+
+/// The integer-valued `x`, `-2^31 <= x < 2^31`, as `i32`: `x + 1.5 x 2^52` holds `x` in two's
+/// complement in the low bits of its significand. Unlike `x as i32`, which has to handle NaN
+/// and saturate, it vectorises (issue #224).
+#[inline(always)]
+fn to_i32(x: f64) -> i32 {
+    (x + MAGIC).to_bits() as i32
 }
 
 /// `10^(db / 20)`, for `|db| <= 120`, with IEEE-754 additions, multiplications and
@@ -462,7 +473,9 @@ pub(crate) fn quantise(v: &[f64], gain: f64, q: &mut [i32]) -> u64 {
         // At most `v.len()` clips: no overflow, and no overflow check to keep the loop from
         // vectorising.
         clipped = clipped.wrapping_add(u64::from(c != y));
-        *d = c as i32;
+        // An integer in the 24-bit range: `v` and `gain` are finite (`Converter::new`), so `y`
+        // is never NaN.
+        *d = to_i32(c);
     }
     clipped
 }
@@ -651,6 +664,37 @@ mod tests {
         for x in [0.0, 0.5, 1.5, 2.5, -0.5, -1.5, -2.5, 3.49, -3.51, 1e9 + 0.5, -(2f64.powi(40)) - 0.5] {
             assert_eq!(round_even(x), x.round_ties_even(), "{x}");
         }
+    }
+
+    #[test]
+    fn to_i32_matches_the_cast() {
+        let edges = [0.0, -0.0, 1.0, -1.0, 8_388_607.0, -8_388_608.0, 2_147_483_647.0, -2_147_483_648.0];
+        for x in edges {
+            assert_eq!(to_i32(x), x as i32, "{x}");
+        }
+        for i in (-8_388_608..=8_388_607).step_by(if cfg!(miri) { 1 << 20 } else { 97 }) {
+            assert_eq!(to_i32(f64::from(i)), i);
+        }
+    }
+
+    #[test]
+    fn quantise_rounds_clamps_and_counts() {
+        let v = [
+            0.0,
+            4.0,
+            12.0,
+            -4.0,
+            -12.0,
+            67_108_856.0,
+            67_108_864.0,
+            -67_108_864.0,
+            -67_108_872.0,
+            5e8,
+            -5e8,
+        ];
+        let mut q = [0i32; 11];
+        assert_eq!(quantise(&v, 1.0, &mut q), 4);
+        assert_eq!(q, [0, 0, 2, 0, -2, 8_388_607, 8_388_607, -8_388_608, -8_388_608, 8_388_607, -8_388_608]);
     }
 
     #[test]
