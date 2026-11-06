@@ -146,6 +146,10 @@ pub const PARALLEL_FRAMES_PER_THREAD: usize = 16;
 /// Where a [`TrackAudioCursor`] decodes its DST frames, with the `parallel` feature
 /// ([`TrackAudioCursor::set_decode_on`]). Whichever is chosen, the frames returned, their
 /// order, counts and log lines are the same; only the threads that decode differ.
+///
+/// By a stated decision (#39), [`DecodeOn::Pool`] makes rayon 1 part of this crate's public
+/// API rather than hiding it behind a wrapper: rayon 1 is stable, and a rayon 2 would need
+/// a new major version of this crate.
 #[cfg(feature = "parallel")]
 #[derive(Clone, Debug, Default)]
 pub enum DecodeOn {
