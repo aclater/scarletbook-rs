@@ -459,7 +459,7 @@ dependencies = [
 
 [[package]]
 name = "scarletbook"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "criterion",
  "proptest",
@@ -470,7 +470,7 @@ dependencies = [
 
 [[package]]
 name = "scarletbook-bench"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "rayon",
  "scarletbook",
@@ -480,7 +480,7 @@ dependencies = [
 
 [[package]]
 name = "scarletbook-conformance"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "criterion",
  "scarletbook",
@@ -491,7 +491,7 @@ dependencies = [
 
 [[package]]
 name = "scarletbook-ffi"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "criterion",
  "proptest",
@@ -505,7 +505,7 @@ dependencies = [
 
 [[package]]
 name = "scarletbook-pcm"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "criterion",
  "proptest",

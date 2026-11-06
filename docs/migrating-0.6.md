@@ -112,11 +112,62 @@ Not written yet.
 
 `MAX_CHANNELS`, `dst::FL` and `audio::FRAME_BYTES_PER_CHANNEL`.
 
-Not written yet.
+#### `dst::MAX_CHANNELS` and `dst::FL` give way to the `audio` constants (#293)
+
+Deprecated in 0.6.0 and removed before 1.0. `audio::MAX_CHANNELS` is a `u8`, where
+`dst::MAX_CHANNELS` was a `usize`, so a size needs a conversion. The values do not change. Nothing
+stops building until the removal, except in builds that deny warnings.
+`scarletbook_pcm::MAX_CHANNELS` and `scarletbook_pcm::FRAME_BYTES_PER_CHANNEL` stay, because that
+crate does not depend on `scarletbook`.
+
+Before:
+
+```rust
+let buf = vec![0u8; dst::FL * dst::MAX_CHANNELS];
+```
+
+After:
+
+```rust
+let buf = vec![0u8; audio::FRAME_BYTES_PER_CHANNEL * usize::from(audio::MAX_CHANNELS)];
+```
 
 ### N5. `Cutoff::Default`
 
-Not written yet.
+#### `Cutoff::Default` is now `Cutoff::Standard` (#291)
+
+**Check this first: a match can silently take the wrong branch.** Under `use Cutoff::*`, a pattern
+`Default` no longer names a filter. It becomes a new binding that matches every filter, so that arm
+also takes `Low` and `Wide`. The code still builds, with only warnings (`unreachable_patterns`,
+`unused_variables`, `non_snake_case`). To find it, search for the glob, then change each such
+pattern to `Standard`:
+
+```sh
+grep -rnE 'Cutoff::\*' --include='*.rs' .
+```
+
+While migrating, also build with those warnings as errors:
+`RUSTFLAGS="-D unreachable_patterns -D unused_variables" cargo build --all-targets`. Removing the
+old name before 1.0 won't change this: it comes from the rename, and only a path written
+`Cutoff::Default` gives an error then.
+
+Deprecated in 0.6.0 and removed before 1.0: the old name stays as a constant, so expressions and
+patterns written `Cutoff::Default` on a `Cutoff` value still build, with a warning. What stops building now is `use
+Cutoff::Default` and `Cutoff::Default` in a pattern on a `&Cutoff`, and `{:?}` of the filter prints
+`Standard`. The filter and its output bytes do not change, `Cutoff::default()` is still this filter,
+and the C constant `SB_PCM_CUTOFF_DEFAULT` keeps its name and value.
+
+Before:
+
+```rust
+let config = PcmConfig::new(PcmRate::Hz176400, Cutoff::Default, 2);
+```
+
+After:
+
+```rust
+let config = PcmConfig::new(PcmRate::Hz176400, Cutoff::Standard, 2);
+```
 
 ## C library
 

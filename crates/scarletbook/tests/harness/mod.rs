@@ -7,8 +7,8 @@
 
 use std::io::{self, Read, Seek, SeekFrom};
 
+use scarletbook::audio::FRAME_BYTES_PER_CHANNEL as FL;
 use scarletbook::audio::{FRAME_BYTES_PER_CHANNEL, MAX_FRAME_BYTES};
-use scarletbook::dst::FL;
 use scarletbook::{AreaIndex, Demuxer, Disc, DstDecoder, FrameKind};
 use scarletbook_pcm::{ConvertStats, Converter, Cutoff, FrameRun, Gain, PcmConfig, PcmError, PcmRate};
 
@@ -316,7 +316,7 @@ pub fn pcm_select(input: &mut [u8]) {
 /// refused, with nothing written.
 pub fn pcm(case: &PcmCase<'_>) {
     let cutoff = match case.cutoff {
-        0 => Cutoff::Default,
+        0 => Cutoff::Standard,
         1 => Cutoff::Low,
         2 => Cutoff::Wide,
         _ => return,
