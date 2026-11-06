@@ -1,6 +1,6 @@
 {
   "format_version": 1,
-  "about": "Run list of the published benchmark kits (benchmarks/README.md). Placeholders in commands and synth arguments: {kit} the unpacked kit directory of the build being timed, {image} the image file of the case, {scratch} a writable directory for output. Threads 0 means one thread per logical CPU.",
+  "about": "Run list of the published benchmark kits (benchmarks/README.md). Placeholders in commands and synth arguments: {kit} the unpacked kit directory of the build being timed, {image} the image file of the case, {scratch} a writable directory for output, {evict} the page-cache eviction helper beside the runner. Threads 0 means one thread per logical CPU.",
   "builds": [
     {
       "id": "generic",
@@ -48,6 +48,16 @@
       "id": "plain-dsd-5ch-30m",
       "synth": ["--minutes", "30", "--area", "mc", "--mc-channels", "5", "--kind", "dsd"],
       "approx_bytes": 3182000000
+    },
+    {
+      "id": "dst-stress-2ch-5m-tracks",
+      "synth": ["--minutes", "5", "--track-minutes", "1", "--area", "2ch", "--kind", "dst", "--dst-frames", "stress"],
+      "approx_bytes": 81000000
+    },
+    {
+      "id": "plain-dsd-2ch-5m-tracks",
+      "synth": ["--minutes", "5", "--track-minutes", "1", "--area", "2ch", "--kind", "dsd"],
+      "approx_bytes": 212000000
     }
   ],
   "defaults": {
@@ -123,12 +133,83 @@
       "rounds": 3,
       "warmup_runs": 0,
       "stdout": "keep"
+    },
+    {
+      "id": "open-warm",
+      "path": "open to parsed TOC, page cache",
+      "image": "dst-stress-2ch-5m-tracks",
+      "command": ["{kit}/bench", "open", "{image}", "--iterations", "100"],
+      "warmup_runs": 0,
+      "stdout": "keep",
+      "figure": "median_us"
+    },
+    {
+      "id": "open-cold",
+      "path": "open to parsed TOC, evicted",
+      "image": "dst-stress-2ch-5m-tracks",
+      "command": ["{kit}/bench", "open", "{image}", "--iterations", "15", "--evict", "{evict}"],
+      "warmup_runs": 0,
+      "stdout": "keep",
+      "figure": "median_us"
+    },
+    {
+      "id": "first-plain-2ch-warm",
+      "path": "first 128 KiB, 2 channels, plain DSD, page cache",
+      "image": "plain-dsd-2ch-5m-tracks",
+      "command": ["{kit}/bench", "first", "{image}", "--area", "2ch", "--threads", "1", "--iterations", "100"],
+      "warmup_runs": 0,
+      "stdout": "keep",
+      "figure": "median_us"
+    },
+    {
+      "id": "first-plain-2ch-cold",
+      "path": "first 128 KiB, 2 channels, plain DSD, evicted",
+      "image": "plain-dsd-2ch-5m-tracks",
+      "command": ["{kit}/bench", "first", "{image}", "--area", "2ch", "--threads", "1", "--iterations", "15", "--evict", "{evict}"],
+      "warmup_runs": 0,
+      "stdout": "keep",
+      "figure": "median_us"
+    },
+    {
+      "id": "first-dst-2ch-t1-warm",
+      "path": "first 128 KiB, 2 channels, DST, one thread, page cache",
+      "image": "dst-stress-2ch-5m-tracks",
+      "command": ["{kit}/bench", "first", "{image}", "--area", "2ch", "--threads", "1", "--iterations", "100"],
+      "warmup_runs": 0,
+      "stdout": "keep",
+      "figure": "median_us"
+    },
+    {
+      "id": "first-dst-2ch-t1-cold",
+      "path": "first 128 KiB, 2 channels, DST, one thread, evicted",
+      "image": "dst-stress-2ch-5m-tracks",
+      "command": ["{kit}/bench", "first", "{image}", "--area", "2ch", "--threads", "1", "--iterations", "15", "--evict", "{evict}"],
+      "warmup_runs": 0,
+      "stdout": "keep",
+      "figure": "median_us"
+    },
+    {
+      "id": "first-dst-2ch-tall-warm",
+      "path": "first 128 KiB, 2 channels, DST, all threads, page cache",
+      "image": "dst-stress-2ch-5m-tracks",
+      "command": ["{kit}/bench", "first", "{image}", "--area", "2ch", "--threads", "0", "--iterations", "100"],
+      "warmup_runs": 0,
+      "stdout": "keep",
+      "figure": "median_us"
+    },
+    {
+      "id": "first-dst-2ch-tall-cold",
+      "path": "first 128 KiB, 2 channels, DST, all threads, evicted",
+      "image": "dst-stress-2ch-5m-tracks",
+      "command": ["{kit}/bench", "first", "{image}", "--area", "2ch", "--threads", "0", "--iterations", "15", "--evict", "{evict}"],
+      "warmup_runs": 0,
+      "stdout": "keep",
+      "figure": "median_us"
     }
   ],
   "missing": [
-    {"path": "TOC open (page cache and evicted)", "reason": "bench has no TOC-open command; today only the criterion benchmark toc_read measures it"},
-    {"path": "first 128 KiB (seek), page cache and evicted", "reason": "bench has no first-bytes command"},
-    {"path": "cold (evicted) runs of any case", "reason": "the run list has no eviction step yet; every case is warm"},
+    {"path": "first 128 KiB of 5 or 6 channels, and of a track without a seek index", "reason": "not in the run list; bench first can time them"},
+    {"path": "cold (evicted) runs of the whole-area cases", "reason": "only open and first evict; every other case is warm"},
     {"path": "the C interface", "reason": "bench calls the Rust API only; the C interface's decode_pool benchmark is not a published binary"},
     {"path": "DSD to PCM over a disc image", "reason": "callpattern converts generated DSD in memory, not an area of an image"}
   ]
