@@ -192,7 +192,12 @@ pub enum Cutoff {
 
 impl Cutoff {
     /// The old name of [`Cutoff::Standard`]: the same filter and the same output. It still
-    /// works in expressions and patterns; `use Cutoff::Default` does not.
+    /// works in expressions and in patterns written `Cutoff::Default`; `use Cutoff::Default`
+    /// does not.
+    ///
+    /// **Under `use Cutoff::*`, a pattern `Default` is not this constant.** It is a new
+    /// binding that matches every filter, so that arm also takes `Low` and `Wide`, with only
+    /// warnings (`unreachable_patterns`, `unused_variables`). Write `Standard`.
     #[deprecated(since = "0.6.0", note = "renamed `Cutoff::Standard`; to be removed before 1.0")]
     #[allow(non_upper_case_globals)]
     pub const Default: Cutoff = Cutoff::Standard;
