@@ -57,7 +57,9 @@ In the run list, but not in every table:
 
 Measured on lennon (3950X), 2026-11-05, with `compare.sh` (generic kits, statically linked, profile
 `dist`): 0.5.7 = `v0.5.7` and 0.5.8 = the release-prep tree. No path's code changed for speed in this
-release, and no row moves by more than 1 %.
+release, and no row moves by more than 1 % in this run. On the plain-DSD rows that isn't a resolved
+figure: differences under about 2 % are unresolved (see "Compare within this section only"), so their
+ratios mean "no change resolved", not "within 1 %".
 
 | Path | Build | 0.5.7 wall s | 0.5.7 CPU s | 0.5.8 wall s | 0.5.8 CPU s | 0.5.8 / 0.5.7 |
 |---|---|---|---|---|---|---|
@@ -77,12 +79,17 @@ are at 1 / 8 / 256 frames per call.
 
 **Compare within this section only.** The plain-DSD rows read 0.555 s and 0.614 s for 0.5.7 here,
 against 0.483 s and 0.540 s for the same library in the 0.5.7 section. The DST rows agree within 1 %.
-Byte-identical fresh copies of an image differ by that much (#259): ten copies of the stereo image ran
-at 0.484 to 0.543 s, each copy's own runs within 1.2 % (`README.md`, "Fresh copies"). That shows
-seconds can move this much between byte-identical copies, but it does not fully explain this gap:
-those ten copies have a median of 0.507 s, and all five stereo rounds here ran at 0.540 s or above, so
-something that affects a whole run also differs (not identified). Within a round both builds read
-the same copy, and the per-round ratios stay within 0.7 %, so this table's comparison is sound.
+Byte-identical fresh copies of an image differ by that much (#259). Free-memory state changes these
+seconds: `run.py` on the same library gave rounds like this table's in one run (9 of 10 at 0.540 s or
+above, at 36 GB free under 2 MiB and 9 GB above), medians of 0.517 to 0.533 s in three others, and some
+rounds near 0.48 s in two of those, never as a median (`README.md`, "Fresh copies"). That makes it a
+candidate: nothing recorded the memory state during this run, the state doesn't yet predict a table's median,
+and other users' runs, which the shared lock did not yet exclude, can't be tested after the fact.
+
+Within a round both builds read the same copy, and the per-round ratios stayed within 0.7 % in this run.
+That isn't a general bound: over 20 later stereo rounds they stayed within 1.8 %, except one 1.042 after
+reclaim started. So this table's comparison holds for differences above about 2 % on the plain-DSD rows;
+smaller ones are unresolved.
 
 ### `bench realtime` (#255, new)
 
