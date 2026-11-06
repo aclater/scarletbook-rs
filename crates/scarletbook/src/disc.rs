@@ -10,7 +10,7 @@ use crate::audio::{
 };
 use crate::control::CancelToken;
 use crate::error::{Error, Slot, Warning};
-use crate::image::{Image, SectorFormat};
+use crate::image::{Image, ImageOptions, SectorFormat};
 use crate::log::{Log, sb_log};
 use crate::read_at::{ReadAt, ReadAtReader};
 use crate::seek::{AreaIndex, IndexOptions, SeekIndexes, SeekPolicy, Speculation};
@@ -116,14 +116,69 @@ struct DiscShared {
     seek: SeekIndexes,
 }
 
+/// How to open a [`Disc`]: [`Disc::options`], then what differs from the default, then
+/// [`DiscOptions::open`].
+///
+/// ```no_run
+/// use scarletbook::{Disc, SectorFormat, log::Log};
+/// # fn main() -> Result<(), scarletbook::Error> {
+/// let file = std::fs::File::open("disc.iso")?;
+/// let disc = Disc::options().with_format(SectorFormat::Raw2064).with_log(Log::none()).open(file)?;
+/// # let _ = disc;
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Clone, Debug, Default)]
+pub struct DiscOptions {
+    image: ImageOptions,
+}
+
+impl DiscOptions {
+    /// The default: the sector format is detected, and nothing is logged.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The sector format, chosen by the caller instead of detected
+    /// ([`ImageOptions::with_format`]).
+    pub fn with_format(mut self, format: SectorFormat) -> Self {
+        self.image = self.image.with_format(format);
+        self
+    }
+
+    /// Where to report from the start, sector format detection included (see [`crate::log`]).
+    pub fn with_log(mut self, log: Log) -> Self {
+        self.image = self.image.with_log(log);
+        self
+    }
+
+    /// Opens the disc image and parses its TOC.
+    ///
+    /// # Errors
+    ///
+    /// One of the rejections of specification 7, 7.7.1, or [`Error::Io`].
+    pub fn open<R: Read + Seek>(self, reader: R) -> Result<Disc<R>, Error> {
+        Disc::from_image(self.image.open(reader)?)
+    }
+}
+
+impl Disc<()> {
+    /// The options for opening a disc with a sector format or log of the caller's:
+    /// `Disc::options().with_format(f).with_log(l).open(reader)`.
+    pub fn options() -> DiscOptions {
+        DiscOptions::new()
+    }
+}
+
 impl<R: Read + Seek> Disc<R> {
-    /// Opens a disc image, detecting its sector format.
+    /// Opens a disc image, detecting its sector format, logging nothing. [`Disc::options`]
+    /// chooses a format or a log.
     ///
     /// # Errors
     ///
     /// One of the rejections of specification 7, 7.7.1, or [`Error::Io`].
     pub fn open(reader: R) -> Result<Self, Error> {
-        Self::from_image(Image::open(reader)?)
+        Disc::options().open(reader)
     }
 
     /// Opens a disc image, detecting its sector format, and reports to `log` from the
@@ -132,8 +187,12 @@ impl<R: Read + Seek> Disc<R> {
     /// # Errors
     ///
     /// As [`Disc::open`].
+    #[deprecated(
+        since = "0.6.0",
+        note = "use `Disc::options().with_log(log).open(reader)`; to be removed before 1.0"
+    )]
     pub fn open_with_log(reader: R, log: Log) -> Result<Self, Error> {
-        Self::from_image(Image::open_with_log(reader, log)?)
+        Disc::options().with_log(log).open(reader)
     }
 
     /// Opens a disc image in a sector format chosen by the caller.
@@ -141,8 +200,12 @@ impl<R: Read + Seek> Disc<R> {
     /// # Errors
     ///
     /// As [`Disc::open`].
+    #[deprecated(
+        since = "0.6.0",
+        note = "use `Disc::options().with_format(format).open(reader)`; to be removed before 1.0"
+    )]
     pub fn open_with_format(reader: R, format: SectorFormat) -> Result<Self, Error> {
-        Self::from_image(Image::with_format(reader, format)?)
+        Disc::options().with_format(format).open(reader)
     }
 
     /// Opens a disc image in a sector format chosen by the caller, and reports to `log`
@@ -151,8 +214,12 @@ impl<R: Read + Seek> Disc<R> {
     /// # Errors
     ///
     /// As [`Disc::open`].
+    #[deprecated(
+        since = "0.6.0",
+        note = "use `Disc::options().with_format(format).with_log(log).open(reader)`; to be removed before 1.0"
+    )]
     pub fn open_with_format_and_log(reader: R, format: SectorFormat, log: Log) -> Result<Self, Error> {
-        Self::from_image(Image::with_format_and_log(reader, format, log)?)
+        Disc::options().with_format(format).with_log(log).open(reader)
     }
 
     /// Parses the TOC of an image, reporting to the image's log ([`Image::set_log`]).
@@ -363,7 +430,8 @@ impl<R: Read + Seek> Disc<R> {
     /// now complete. Reading a whole area this way builds the index for all its ranges at
     /// the cost of one pass. It also checks the provisional readings the index now reaches
     /// ([`AreaIndex::verify`]): their verdicts go to [`Disc::take_seek_events`] and to the
-    /// cursors that made them.
+    /// cursors that made them. A complete index says nothing of a reading registered during
+    /// this call, which [`Disc::verify_speculation`] does account for.
     ///
     /// # Errors
     ///
@@ -390,15 +458,37 @@ impl<R: Read + Seek> Disc<R> {
     /// Builds the seek index of the area from `slot` by about `max_sectors` more sectors
     /// and checks the provisional readings it then reaches (specification 4, 4.2 item 8):
     /// [`Disc::extend_seek_index`], named for what a caller of [`SeekPolicy::Speculative`]
-    /// runs it for, typically in a loop on a clone of the disc in another thread. Returns
-    /// whether the index is complete; every provisional reading of the area has its verdict
-    /// then.
+    /// runs it for, typically in a loop on a clone of the disc in another thread.
+    ///
+    /// Returns `true` when, at this call's last look at the index, the index was complete
+    /// and every provisional reading it held had its verdict. Returns `false` otherwise, with
+    /// nothing wrong: call again. That includes a complete index holding a reading that
+    /// another disc registered during this call, which this call's check did not see.
+    ///
+    /// `true` covers only the readings the index held by then. A reading joins the index when
+    /// its first frame is read through a disc's iterators or
+    /// [`Disc::absorb_seek_checkpoints`], and one that joins later, even before this call
+    /// returns, has no verdict and no event until a later call. A caller that must have every
+    /// verdict runs its `while !disc.verify_speculation(..)? {}` loop once more after its
+    /// readers have finished, then checks each reading's own `speculation()`: a reading with
+    /// no verdict has no event.
+    ///
+    /// Each call makes one round: about `max_sectors` sectors of the pass (at least to the
+    /// next checkpoint, so that 0 makes progress), then the check of the readings the index
+    /// reached and held when the round began. `max_sectors` does not limit those checks: each
+    /// reads a bounded number of sectors, and the number of readings waiting is bounded too.
+    /// Once no disc registers new readings, a loop ends: every `false` either added a
+    /// checkpoint or came from a reading that the next call checks.
     ///
     /// # Errors
     ///
     /// As [`Disc::extend_seek_index`].
     pub fn verify_speculation(&mut self, slot: Slot, max_sectors: u64) -> Result<bool, Error> {
-        self.extend_seek_index(slot, max_sectors)
+        let complete = self.extend_seek_index(slot, max_sectors)?;
+        // A reading registered during the round is not in the copy it checked: not done yet.
+        // The next call checks it, within its own budget.
+        let unchecked = |kept: Option<&AreaIndex>| kept.is_some_and(AreaIndex::has_reached_claims);
+        Ok(complete && !self.shared.seek.read(slot, unchecked))
     }
 
     /// Takes the verdicts on provisional readings of the area from `slot` reached since the

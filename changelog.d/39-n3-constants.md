@@ -1,0 +1,2 @@
+Deprecated
+- `dst::MAX_CHANNELS` (a `usize`) and `dst::FL` repeat `audio::MAX_CHANNELS` (a `u8`) and `audio::FRAME_BYTES_PER_CHANNEL`, and are deprecated, to be removed before 1.0. Nothing breaks until then, except for builds that deny warnings. `scarletbook_pcm::MAX_CHANNELS` and `scarletbook_pcm::FRAME_BYTES_PER_CHANNEL` stay, because that crate does not depend on `scarletbook`. Migration: `docs/migrating-0.6.md`, N3 (#39, #293).

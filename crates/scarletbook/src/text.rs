@@ -11,6 +11,10 @@ use std::sync::OnceLock;
 pub const MAX_STRING_BYTES: usize = 4096;
 
 /// A character set code's decoding (specification 2, 2.6.2), from its low 3 bits.
+///
+/// Not part of the public API: a helper of the TOC parser, not covered by semantic
+/// versioning. It may change or go in any release.
+#[doc(hidden)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Charset {
     /// Codes 0, 1, 2 and 7: every byte maps to U+0000 to U+00FF.
@@ -132,6 +136,10 @@ const SJIS_RESERVED: [u16; 10] =
     [0x879F, 0x889E, 0x9873, 0x989E, 0xEAA5, 0xEFF8, 0xEFF9, 0xEFFA, 0xEFFB, 0xEFFC];
 
 /// Decodes bytes with a character set (specification 2, 2.6.2 and 2.6.3). Never fails.
+///
+/// Not part of the public API: a helper of the TOC parser, not covered by semantic
+/// versioning. It may change or go in any release.
+#[doc(hidden)]
 pub fn decode(bytes: &[u8], cs: Charset) -> String {
     let Some(t) = table(cs) else { return latin1(bytes) };
     let mut out = String::with_capacity(bytes.len());
@@ -176,6 +184,10 @@ fn latin1(bytes: &[u8]) -> String {
 
 /// The bytes of a text string at `q` in `buf` (specification 2, 2.6.4 item 1): up to the
 /// first 0x00, within at most 4096 bytes and the end of the buffer.
+///
+/// Not part of the public API: a helper of the TOC parser, not covered by semantic
+/// versioning. It may change or go in any release.
+#[doc(hidden)]
 pub fn string_bytes(buf: &[u8], q: usize) -> &[u8] {
     let end = q.saturating_add(MAX_STRING_BYTES).min(buf.len());
     let Some(range) = buf.get(q..end) else { return &[] };
@@ -185,6 +197,10 @@ pub fn string_bytes(buf: &[u8], q: usize) -> &[u8] {
 
 /// Decodes a text string's bytes and replaces control characters (2.6.4 items 2 to 4).
 /// Returns `None` when the result is empty (the item is absent).
+///
+/// Not part of the public API: a helper of the TOC parser, not covered by semantic
+/// versioning. It may change or go in any release.
+#[doc(hidden)]
 pub fn decode_string(bytes: &[u8], cs: Charset) -> Option<String> {
     let mut s = decode(bytes, cs);
     // Control characters are single bytes in UTF-8: the string is copied again only when it
@@ -196,6 +212,10 @@ pub fn decode_string(bytes: &[u8], cs: Charset) -> Option<String> {
 }
 
 /// The text string at `q` in `buf`, decoded (specification 2, 2.6.4).
+///
+/// Not part of the public API: a helper of the TOC parser, not covered by semantic
+/// versioning. It may change or go in any release.
+#[doc(hidden)]
 pub fn text_string(buf: &[u8], q: usize, cs: Charset) -> Option<String> {
     decode_string(string_bytes(buf, q), cs)
 }
@@ -209,6 +229,10 @@ fn is_w(c: char) -> bool {
 }
 
 /// A fixed text field (specification 2, 2.6.5).
+///
+/// Not part of the public API: a helper of the TOC parser, not covered by semantic
+/// versioning. It may change or go in any release.
+#[doc(hidden)]
 pub fn fixed_text(field: &[u8]) -> String {
     // Each byte is one character, so trimming the bytes trims the text.
     let bytes = fixed_bytes(field);
@@ -219,12 +243,20 @@ pub fn fixed_text(field: &[u8]) -> String {
 
 /// A fixed text field's bytes up to the first 0x00, all of them if there is none
 /// (specification 2, 2.6.5 step 1).
+///
+/// Not part of the public API: a helper of the TOC parser, not covered by semantic
+/// versioning. It may change or go in any release.
+#[doc(hidden)]
 pub fn fixed_bytes(field: &[u8]) -> &[u8] {
     let len = field.iter().position(|&b| b == 0).unwrap_or(field.len());
     field.get(..len).unwrap_or(field)
 }
 
 /// A locale's language code (specification 2, 2.5.1 item 1).
+///
+/// Not part of the public API: a helper of the TOC parser, not covered by semantic
+/// versioning. It may change or go in any release.
+#[doc(hidden)]
 pub fn language(code: [u8; 2]) -> String {
     let s: String = code.iter().map(|&b| char::from(b)).collect();
     s.trim_end_matches(['\u{0}', ' ']).to_owned()

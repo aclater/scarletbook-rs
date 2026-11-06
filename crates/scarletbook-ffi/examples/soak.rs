@@ -127,7 +127,7 @@ impl Rng {
 /// Converts `frames` (whole frames of `channels` channels) to 176.4 kHz PCM.
 fn to_pcm(channels: u8, frames: &[u8]) {
     let Some(rate) = PcmRate::from_hz(176_400) else { return };
-    let Ok(mut conv) = Converter::new(PcmConfig::new(rate, Cutoff::Default, channels)) else { return };
+    let Ok(mut conv) = Converter::new(PcmConfig::new(rate, Cutoff::Standard, channels)) else { return };
     let mut out = vec![0i32; frames.len() / FRAME_BYTES_PER_CHANNEL * conv.samples_per_frame()];
     let _ = conv.convert_run(FrameRun::new(frames), &mut out);
 }

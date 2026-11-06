@@ -131,7 +131,7 @@ fn rejections_are_typed() {
     img[510 * 2048 + 8] = 2;
     assert!(matches!(
         Disc::open(Cursor::new(img.clone())),
-        Err(Error::MasterTocVersionUnsupported { major: 2, minor: 20 })
+        Err(Error::MasterTocVersionUnsupported { major: 2, minor: 20, .. })
     ));
     img.truncate(515 * 2048);
     assert!(matches!(Disc::open(Cursor::new(img)), Err(Error::MasterTocTruncated)));

@@ -192,7 +192,7 @@ proptest! {
 
 #[test]
 fn errors() {
-    let mut conv = Converter::new(PcmConfig::new(PcmRate::Hz176400, Cutoff::Default, 2)).unwrap();
+    let mut conv = Converter::new(PcmConfig::new(PcmRate::Hz176400, Cutoff::Standard, 2)).unwrap();
     let frame = vec![0u8; 2 * FRAME_BYTES_PER_CHANNEL];
     let mut out = vec![0u8; 2 * 2352 * 3];
     let mut counts = [7u64; 2];

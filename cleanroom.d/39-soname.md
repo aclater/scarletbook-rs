@@ -1,0 +1,1 @@
+| 2026-11-06 | shared library named after the C ABI, ABI 2 declared the 1.0 ABI (#39) | packaging of this repository's own library only; linker behaviour checked on real builds. No new sources consulted. |

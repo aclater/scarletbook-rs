@@ -183,7 +183,7 @@ fn dsd(frames: usize, channels: usize, seed: f64) -> Vec<u8> {
 
 fn cutoff_value(c: Cutoff) -> u32 {
     match c {
-        Cutoff::Default => SB_PCM_CUTOFF_DEFAULT,
+        Cutoff::Standard => SB_PCM_CUTOFF_DEFAULT,
         Cutoff::Low => SB_PCM_CUTOFF_LOW,
         Cutoff::Wide => SB_PCM_CUTOFF_WIDE,
         _ => unreachable!(),
@@ -258,7 +258,7 @@ fn clip_counts() {
     for gain in [0.0, 24.0] {
         let c = new(176_400, SB_PCM_CUTOFF_DEFAULT, 3, gain).unwrap();
         let config =
-            PcmConfig::new(PcmRate::Hz176400, Cutoff::Default, 3).with_gain(Gain::from_db(gain).unwrap());
+            PcmConfig::new(PcmRate::Hz176400, Cutoff::Standard, 3).with_gain(Gain::from_db(gain).unwrap());
         let (pcm, stats) = convert_rust(config, FrameRun::new(&frames));
         let want = bytes_of(&pcm, SB_PCM_S24LE);
         let (got, clipped) = convert_c(c, None, &frames, None, SB_PCM_S24LE, want.len());
@@ -436,7 +436,7 @@ fn corpus_frame_digest() {
     let c = new(176_400, SB_PCM_CUTOFF_DEFAULT, 2, 0.0).unwrap();
     let (got, _) = convert_c(c, Some(prev), cur, Some(next), SB_PCM_S24LE, 2352 * 2 * 3);
     free(c);
-    let config = PcmConfig::new(PcmRate::Hz176400, Cutoff::Default, 2);
+    let config = PcmConfig::new(PcmRate::Hz176400, Cutoff::Standard, 2);
     let (pcm, _) = convert_rust(config, FrameRun::new(cur).with_before(Some(prev)).with_after(Some(next)));
     assert!(got == bytes_of(&pcm, SB_PCM_S24LE));
     // The whole track, in one run: frame 1's bytes are the same.

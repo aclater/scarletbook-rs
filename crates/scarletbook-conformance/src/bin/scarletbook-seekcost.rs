@@ -181,7 +181,7 @@ fn run(args: &Args) -> Result<(), String> {
         args.interval,
         ms(built),
         (read.get() - before) / 2048,
-        index.checkpoints(),
+        index.checkpoint_count(),
         index.memory(),
         index.to_bytes().len()
     );
@@ -245,7 +245,7 @@ fn run(args: &Args) -> Result<(), String> {
             ncalls = calls.get() - c0;
             sectors = (read.get() - r0) / 2048;
             start = match cursor.resumed_from() {
-                ResumedFrom::Speculative { lsn, probes } => {
+                ResumedFrom::Speculative { lsn, probes, .. } => {
                     format!("provisional at LSN {lsn}, {probes} probes")
                 }
                 other => format!("{other:?}"),
@@ -313,7 +313,7 @@ fn warm(args: &Args, exact: &mut Image, complete: &AreaIndex, p: u32) -> Result<
         ranges.len(),
         args.frames,
         hinted.len(),
-        first.seek_index(slot).map_or(0, |i| i.hints()),
+        first.seek_index(slot).map_or(0, |i| i.hint_count()),
         confirmed.len(),
         full_bytes.len()
     );

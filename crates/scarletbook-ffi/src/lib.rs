@@ -25,10 +25,10 @@ pub use output::*;
 use scarletbook::log::{Level, Log};
 use scarletbook::toc::{AreaTextItem, DiscTextItem, TrackTextItem};
 use scarletbook::{
-    Area, AreaCursor, AreaIndex, AudioFrame, CancelToken, DecodeOn, Disc, Error, FrameContent, FrameKind,
-    FrameStatus, IndexOptions, LoudspeakerLayout, MasterToc, Progress, ReadAt, ReadAtReader, SeekPolicy,
-    Slot, Speaker, Speculation, SpeculativeOptions, Stored, Track, TrackAudioCursor, TrackCursor, TrackFrame,
-    WarningCode,
+    Area, AreaCursor, AreaIndex, AudioFrame, CancelToken, DecodeOn, Disc, Error, ErrorClass, FrameContent,
+    FrameKind, FrameStatus, IndexOptions, LoudspeakerLayout, MasterToc, Progress, ReadAt, ReadAtReader,
+    SeekPolicy, Slot, Speaker, Speculation, SpeculativeOptions, Stored, Track, TrackAudioCursor, TrackCursor,
+    TrackFrame, WarningCode,
 };
 use scarletbook_pcm::{
     Converter, Cutoff, FRAME_BYTES_PER_CHANNEL, FrameRun, Gain, MAX_CHANNELS, PcmConfig, PcmRate,
@@ -556,7 +556,7 @@ impl RawFrames {
                         FrameKind::Dst => FrameContent::Dst(f.data),
                         FrameKind::Dsd => FrameContent::Dsd(f.data),
                     };
-                    TrackFrame { number: f.number, content }
+                    TrackFrame::new(f.number, content)
                 })
             }),
         }
@@ -698,6 +698,27 @@ impl Failure {
     fn arg(msg: &str) -> Self {
         Failure(SbStatus::InvalidArgument, msg.to_owned())
     }
+
+    /// `Error::NoSuchTrack`, whose variant only the core crate can build, and its message.
+    fn no_such_track(slot: Slot, track: u32) -> Self {
+        Failure(SbStatus::NoSuchTrack, format!("no track {track} in area {slot}"))
+    }
+}
+
+/// The status of an error that has no arm of its own in the conversion below: the first
+/// status of its class. The message still names the error. `tests/error_status_policy.rs`
+/// fails on any such error, so this only matters to a build that skipped the tests.
+fn class_status(class: ErrorClass) -> SbStatus {
+    match class {
+        ErrorClass::Rejected => SbStatus::NotScarletbook,
+        ErrorClass::TrackRefused => SbStatus::ChannelCountUnsupported,
+        ErrorClass::TrackSkipped => SbStatus::TrackEmpty,
+        ErrorClass::Usage => SbStatus::InvalidArgument,
+        ErrorClass::Io => SbStatus::Io,
+        ErrorClass::Cancelled => SbStatus::Cancelled,
+        // A class added later is the caller's request that cannot be met, not a panic.
+        _ => SbStatus::InvalidArgument,
+    }
 }
 
 impl From<Error> for Failure {
@@ -714,7 +735,7 @@ impl From<Error> for Failure {
             Error::NoSuchTrack { .. } => SbStatus::NoSuchTrack,
             Error::FrameRangeInvalid { .. } => SbStatus::FrameRangeInvalid,
             Error::SectorRangeInvalid { .. } => SbStatus::SectorRangeInvalid,
-            Error::InvalidArgument(_) => SbStatus::InvalidArgument,
+            Error::InvalidArgument(_) | Error::DstLanesInvalid { .. } => SbStatus::InvalidArgument,
             Error::Io(_) => SbStatus::Io,
             Error::Cancelled => SbStatus::Cancelled,
             Error::OutputRefused(scarletbook::OutputRefusal::UnspecifiedLayout { .. }) => {
@@ -723,7 +744,7 @@ impl From<Error> for Failure {
             Error::OutputRefused(scarletbook::OutputRefusal::NotEditedMaster(_)) => SbStatus::NotEditedMaster,
             // A refusal added later is the caller's request that cannot be met, not a panic.
             Error::OutputRefused(_) => SbStatus::InvalidArgument,
-            _ => SbStatus::Panic,
+            _ => class_status(e.class()),
         };
         Failure(status, e.to_string())
     }
@@ -923,6 +944,8 @@ fn layout_value(a: &Area) -> u32 {
         LoudspeakerLayout::ThreeTwo => SB_LAYOUT_THREE_TWO,
         LoudspeakerLayout::FivePointOne => SB_LAYOUT_FIVE_POINT_ONE,
         LoudspeakerLayout::Unspecified { .. } => SB_LAYOUT_UNSPECIFIED,
+        // A layout this interface has no value for yet has none it can name.
+        _ => SB_LAYOUT_UNSPECIFIED,
     }
 }
 
@@ -937,6 +960,8 @@ fn speaker_value(a: &Area, index: usize) -> u32 {
         Some(Speaker::LowFrequencyEffects) => SB_SPEAKER_LOW_FREQUENCY_EFFECTS,
         Some(Speaker::SurroundLeft) => SB_SPEAKER_SURROUND_LEFT,
         Some(Speaker::SurroundRight) => SB_SPEAKER_SURROUND_RIGHT,
+        // A loudspeaker this interface has no value for yet.
+        Some(_) => SB_SPEAKER_UNSPECIFIED,
     }
 }
 
@@ -1044,7 +1069,7 @@ unsafe fn open_reader(
         return Err(Failure::arg("NULL output pointer"));
     }
     let DiscLog(log, target) = log;
-    let disc = match Disc::open_with_log(reader, log) {
+    let disc = match Disc::options().with_log(log).open(reader) {
         Ok(disc) => disc,
         Err(e) => {
             if let Some(t) = target {
@@ -2300,7 +2325,7 @@ pub unsafe extern "C" fn sb_track_info(
         // SAFETY: forwarded contract.
         let d = unsafe { disc_handle(disc) }?.get()?;
         let area = find_area(&d, slot)?;
-        let t = area.track(number).ok_or(Error::NoSuchTrack { slot: area.slot, track: number })?;
+        let t = area.track(number).ok_or_else(|| Failure::no_such_track(area.slot, number))?;
         // SAFETY: forwarded contract.
         unsafe { write_out(out, track_info(t)) }?;
         Ok(SbStatus::Ok)
@@ -2326,7 +2351,7 @@ pub unsafe extern "C" fn sb_track_string(
         // SAFETY: forwarded contract.
         let d = unsafe { disc_handle(disc) }?.get()?;
         let area = find_area(&d, slot)?;
-        let t = area.track(number).ok_or(Error::NoSuchTrack { slot: area.slot, track: number })?;
+        let t = area.track(number).ok_or_else(|| Failure::no_such_track(area.slot, number))?;
         let s = track_string(t, field)?;
         // SAFETY: forwarded contract.
         unsafe { copy_string(s, buf, cap, len) }
@@ -2389,6 +2414,10 @@ pub unsafe extern "C" fn sb_disc_warning(disc: *const SbDisc, index: u32, out: *
 pub const SB_SECTOR_SIZE: u32 = 2048;
 
 const _: () = assert!(SB_SECTOR_SIZE as usize == scarletbook::SECTOR_SIZE);
+
+// scarletbook-pcm does not depend on scarletbook, so it keeps its own copies of these (#39).
+const _: () = assert!(MAX_CHANNELS == scarletbook::audio::MAX_CHANNELS);
+const _: () = assert!(FRAME_BYTES_PER_CHANNEL == scarletbook::audio::FRAME_BYTES_PER_CHANNEL);
 
 /// Copies the user data of the logical sectors `[lsn, lsn + count)` into `buf`, 2048
 /// bytes (`SB_SECTOR_SIZE`) per sector in order, whatever the image's stored sector size
@@ -2821,6 +2850,8 @@ fn decoded_info(frame: &AudioFrame, size: usize) -> SbFrameInfo {
         FrameStatus::Decoded => (SbFrameStatus::Decoded, 0),
         FrameStatus::Missing => (SbFrameStatus::Missing, 0),
         FrameStatus::Invalid(e) => (SbFrameStatus::Invalid, u32::from(e.rule())),
+        // An outcome this interface does not know yet is never reported as good audio.
+        _ => (SbFrameStatus::Invalid, 0),
     };
     // At most size = channels x 4704, so it fits.
     let n = frame.data.len().min(size);
@@ -2920,7 +2951,7 @@ pub unsafe extern "C" fn sb_track_audio_read_with_stored(
         // Stored content and DST equivalents: specification 4, 4.6.1 items 1 to 4.
         let kind = match &stored {
             Stored::Dst(_) => SbFrameKind::Dst,
-            Stored::Plain => SbFrameKind::Dsd,
+            Stored::Dsd => SbFrameKind::Dsd,
             Stored::Missing => SbFrameKind::Missing,
         };
         let bytes: std::borrow::Cow<'_, [u8]> = match (&stored, dst_equivalent == 1) {
@@ -3663,7 +3694,7 @@ pub unsafe extern "C" fn sb_dst_decode(
     guard(|| {
         let ch = u8::try_from(channels).ok().filter(|c| (1..=6).contains(c));
         let Some(ch) = ch else { return Err(Failure::arg("channels must be 1 to 6")) };
-        let need = usize::from(ch) * scarletbook::dst::FL;
+        let need = usize::from(ch) * scarletbook::audio::FRAME_BYTES_PER_CHANNEL;
         if out.is_null() || out_len < need {
             return Err(Failure(SbStatus::BufferTooSmall, format!("the output needs {need} bytes")));
         }
@@ -3775,7 +3806,7 @@ pub unsafe extern "C" fn sb_pcm_converter_new(
             Failure::arg(&format!("rate_hz must be 88200, 176400 or 352800, not {rate_hz}"))
         })?;
         let cutoff = match cutoff {
-            SB_PCM_CUTOFF_DEFAULT => Cutoff::Default,
+            SB_PCM_CUTOFF_DEFAULT => Cutoff::Standard,
             SB_PCM_CUTOFF_LOW => Cutoff::Low,
             SB_PCM_CUTOFF_WIDE => Cutoff::Wide,
             c => return Err(Failure::arg(&format!("unknown cutoff {c}"))),
@@ -4552,12 +4583,12 @@ impl SbSpeculation {
         let claim = claim.unwrap_or(0);
         let none = u32::MAX;
         let (state, lsn, first, last_returned, exact_from) = match s {
-            Speculation::Pending { lsn, first } => (SB_SPECULATION_PENDING, lsn, first, none, 0),
-            Speculation::Confirmed { lsn, first } => (SB_SPECULATION_CONFIRMED, lsn, first, none, 0),
-            Speculation::Refuted { lsn, first, last_returned, exact_from } => {
+            Speculation::Pending { lsn, first, .. } => (SB_SPECULATION_PENDING, lsn, first, none, 0),
+            Speculation::Confirmed { lsn, first, .. } => (SB_SPECULATION_CONFIRMED, lsn, first, none, 0),
+            Speculation::Refuted { lsn, first, last_returned, exact_from, .. } => {
                 (SB_SPECULATION_REFUTED, lsn, first, last_returned.unwrap_or(none), exact_from)
             }
-            Speculation::Unverified { lsn, first } => (SB_SPECULATION_UNVERIFIED, lsn, first, none, 0),
+            Speculation::Unverified { lsn, first, .. } => (SB_SPECULATION_UNVERIFIED, lsn, first, none, 0),
             Speculation::Exact => (SB_SPECULATION_EXACT, 0, 0, none, 0),
             // A state this interface does not know yet is never reported as exact.
             _ => (SB_SPECULATION_UNVERIFIED, 0, 0, none, 0),
@@ -4643,7 +4674,7 @@ pub unsafe extern "C" fn sb_track_audio_speculation(
         let a = unsafe { audio_handle(audio) }?;
         let c = a.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
         let slot = c.slot();
-        let value = SbSpeculation::of(slot, c.speculation_id(), c.speculation());
+        let value = SbSpeculation::of(slot, c.claim(), c.speculation());
         // SAFETY: forwarded contract.
         unsafe { write_out(out, value) }?;
         Ok(SbStatus::Ok)
@@ -4666,7 +4697,7 @@ pub unsafe extern "C" fn sb_raw_frames_speculation(
         let r = unsafe { raw_handle(raw) }?;
         let raw = r.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
         let value = match &raw.source {
-            Source::Range(c) => SbSpeculation::of(c.slot(), c.speculation_id(), c.speculation()),
+            Source::Range(c) => SbSpeculation::of(c.slot(), c.claim(), c.speculation()),
             Source::List(..) => SbSpeculation::default(),
         };
         // SAFETY: forwarded contract.
@@ -4743,9 +4774,23 @@ pub unsafe extern "C" fn sb_raw_frames_suspect(raw: *const SbRawFrames, out: *mu
 /// Builds the seek index `disc` keeps for the area from `slot` by about `max_sectors` more
 /// sectors and checks the provisional readings it then reaches: as
 /// `sb_disc_seek_index_extend`, whose verdicts `sb_disc_seek_event_next` returns. `*complete`
-/// (if not NULL) is 1 once the index covers the whole area: every provisional reading of
-/// the area has its verdict then. Call it on a clone in a thread of its own while other
-/// clones read. Fails as `sb_disc_seek_index_extend`.
+/// (if not NULL) is 1 when, at this call's last look at the index, the index covered the whole
+/// area and every provisional reading it held had its verdict; else 0, with nothing wrong:
+/// call again. That includes a complete index holding a reading that another clone registered
+/// during this call, which this call's check did not see.
+///
+/// 1 covers only the readings the index held by then. A reading joins the index when its first
+/// frame is read, and one that joins later, even before this call returns, has no verdict and
+/// no event until a later call. A caller that must have every verdict runs its loop over this
+/// call once more after its readers have finished, then checks each reading's own state.
+///
+/// Each call makes one round: about `max_sectors` sectors of the pass (at least to the next
+/// checkpoint, so that 0 makes progress), then the check of the readings the index reached and
+/// held when the round began, which `max_sectors` does not limit. Once no clone registers new
+/// readings, a loop ends. Call it on a clone in a thread of its own while other clones read.
+/// The disc's read callback runs during this call, with the rules of
+/// `sb_disc_open_callbacks` for calling back into this library. Fails as
+/// `sb_disc_seek_index_extend`.
 ///
 /// # Safety
 ///
@@ -4757,8 +4802,16 @@ pub unsafe extern "C" fn sb_disc_seek_verify(
     max_sectors: u64,
     complete: *mut u8,
 ) -> SbStatus {
-    // SAFETY: forwarded contract.
-    unsafe { sb_disc_seek_index_extend(disc, slot, max_sectors, complete) }
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?;
+        let done = d.get_mut()?.verify_speculation(slot_from(slot)?, max_sectors)?;
+        if !complete.is_null() {
+            // SAFETY: non-NULL and valid for a write by this function's contract.
+            unsafe { complete.write(u8::from(done)) };
+        }
+        Ok(SbStatus::Ok)
+    })
 }
 
 /// The next verdict on a provisional reading of the area from `slot` of `disc` or any of its
@@ -5727,7 +5780,7 @@ pub fn fuzz_pcm_convert_run(
     let config = (|| {
         let rate = PcmRate::from_hz(rate_hz)?;
         let cutoff =
-            [Cutoff::Default, Cutoff::Low, Cutoff::Wide].get(usize::try_from(cutoff).ok()?).copied()?;
+            [Cutoff::Standard, Cutoff::Low, Cutoff::Wide].get(usize::try_from(cutoff).ok()?).copied()?;
         let channels = u8::try_from(channels).ok()?;
         let gain = Gain::from_db(gain_db).ok()?;
         Some(PcmConfig::new(rate, cutoff, channels).with_gain(gain))
@@ -5838,12 +5891,13 @@ mod tests {
         assert_eq!(SB_SEEK_DEFAULT_MIN_GAP, scarletbook::SpeculativeOptions::default().min_gap_sectors);
     }
 
-    /// An error the conversion doesn't name would come out as `SB_STATUS_PANIC`.
+    /// An error the conversion doesn't name would come out with the first status of its class.
     #[test]
     #[allow(clippy::unwrap_used)]
     fn a_sector_range_error_has_its_status() {
         let reader = std::io::Cursor::new(vec![0u8; 2048]);
-        let mut image = scarletbook::Image::with_format(reader, scarletbook::SectorFormat::Plain).unwrap();
+        let mut image =
+            scarletbook::Image::options().with_format(scarletbook::SectorFormat::Plain).open(reader).unwrap();
         let e = image.read_sectors(1, &mut [0u8; 2048]).unwrap_err();
         assert_eq!(Failure::from(e).0, SbStatus::SectorRangeInvalid);
     }
@@ -5865,5 +5919,55 @@ mod tests {
         // SAFETY: as above.
         let msg = unsafe { CStr::from_ptr(sb_last_error_message()) };
         assert!(msg.to_bytes().is_empty());
+    }
+
+    /// What C callers get for each error, as of #308. `OutputRefusal::UnspecifiedLayout`
+    /// can't be built here: `tests/output.rs` pins it, through the C call. Nor can the
+    /// `#[non_exhaustive]` variants: `refusals_keep_their_status_and_message` in `tests/ffi.rs`
+    /// pins those, through the C calls.
+    #[test]
+    fn every_error_keeps_its_status_and_message() {
+        use scarletbook::{EditedMasterCheck, OutputRefusal};
+        let cases = [
+            (
+                Error::NotScarletbook,
+                SbStatus::NotScarletbook,
+                "not a Scarletbook image: no SACDMTOC at LSN 510",
+            ),
+            (
+                Error::MasterTocTruncated,
+                SbStatus::MasterTocTruncated,
+                "master TOC truncated: the image ends before LSN 519",
+            ),
+            (Error::NoAudioAreas, SbStatus::NoAudioAreas, "no readable audio area"),
+            (Error::TrackEmpty, SbStatus::TrackEmpty, "track skipped: its duration is 0 frames"),
+            (Error::NoSuchArea(Slot::Multichannel), SbStatus::NoSuchArea, "no area in slot multichannel"),
+            (Error::InvalidArgument("x"), SbStatus::InvalidArgument, "invalid argument: x"),
+            (Error::Io(io::Error::other("gone")), SbStatus::Io, "I/O error: gone"),
+            (Error::Cancelled, SbStatus::Cancelled, "cancelled"),
+            (
+                Error::OutputRefused(OutputRefusal::NotEditedMaster(EditedMasterCheck::Range)),
+                SbStatus::NotEditedMaster,
+                "output refused: not an edited master: it holds only the play range of an area",
+            ),
+        ];
+        for (error, status, message) in cases {
+            let Failure(got, text) = Failure::from(error);
+            assert_eq!((got, text.as_str()), (status, message));
+        }
+    }
+
+    #[test]
+    fn an_unmapped_error_gets_a_status_of_its_class() {
+        for (class, status) in [
+            (ErrorClass::Rejected, SbStatus::NotScarletbook),
+            (ErrorClass::TrackRefused, SbStatus::ChannelCountUnsupported),
+            (ErrorClass::TrackSkipped, SbStatus::TrackEmpty),
+            (ErrorClass::Usage, SbStatus::InvalidArgument),
+            (ErrorClass::Io, SbStatus::Io),
+            (ErrorClass::Cancelled, SbStatus::Cancelled),
+        ] {
+            assert_eq!(class_status(class), status);
+        }
     }
 }

@@ -1047,7 +1047,7 @@ pub unsafe extern "C" fn sb_tags_from_toc(
         let area = d.toc().area(slot_from(slot)?).ok_or(Error::NoSuchArea(slot_from(slot)?))?;
         let track = match source_track {
             0 => None,
-            n => Some(area.track(n).ok_or(Error::NoSuchTrack { slot: area.slot, track: n })?),
+            n => Some(area.track(n).ok_or_else(|| Failure::no_such_track(area.slot, n))?),
         };
         let set = TagSet::from_toc(d.toc(), area, track, &o);
         // SAFETY: non-NULL and valid for a write by this function's contract.

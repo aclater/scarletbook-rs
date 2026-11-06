@@ -1,1 +1,0 @@
-| 2026-11-05 | plain-DSD timing and free memory (#259) | the benchmark runner and documents only; measured on the Zen 2 benchmark host with this repository's own programs and the kernel's counters. No new sources consulted. |
