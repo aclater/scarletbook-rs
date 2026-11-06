@@ -155,13 +155,13 @@ fn errors() {
     use scarletbook_pcm::PcmError;
     let c = |rate, cutoff, ch| Converter::new(PcmConfig::new(rate, cutoff, ch)).map(|_| ());
     assert!(matches!(c(PcmRate::Hz88200, Cutoff::Wide, 2), Err(PcmError::Unsupported { .. })));
-    assert!(matches!(c(PcmRate::Hz176400, Cutoff::Default, 0), Err(PcmError::Channels(0))));
-    assert!(matches!(c(PcmRate::Hz176400, Cutoff::Default, 7), Err(PcmError::Channels(7))));
+    assert!(matches!(c(PcmRate::Hz176400, Cutoff::Standard, 0), Err(PcmError::Channels(0))));
+    assert!(matches!(c(PcmRate::Hz176400, Cutoff::Standard, 7), Err(PcmError::Channels(7))));
     for db in [f64::NAN, f64::INFINITY, -120.5, 24.01] {
         assert!(matches!(Gain::from_db(db), Err(PcmError::Gain(_))));
     }
     assert_eq!(Gain::from_db(0.0).unwrap().linear(), 1.0);
-    let mut conv = Converter::new(PcmConfig::new(PcmRate::Hz176400, Cutoff::Default, 2)).unwrap();
+    let mut conv = Converter::new(PcmConfig::new(PcmRate::Hz176400, Cutoff::Standard, 2)).unwrap();
     let frame = vec![0u8; 2 * FRAME_BYTES_PER_CHANNEL];
     let mut out = vec![0i32; 2 * 2352];
     assert!(matches!(
@@ -188,4 +188,20 @@ fn pack_s24le_layout() {
     let mut dst = [0u8; 9];
     scarletbook_pcm::pack_s24le(&[1, -1, 8_388_607], &mut dst);
     assert_eq!(dst, [1, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F]);
+}
+
+/// The deprecated name `Cutoff::Default` is `Cutoff::Standard`, in expressions and patterns,
+/// and the default stays that filter.
+#[test]
+#[allow(deprecated)]
+fn old_cutoff_name_is_the_standard_filter() {
+    assert_eq!(Cutoff::Default, Cutoff::Standard);
+    assert_eq!(Cutoff::default(), Cutoff::Standard);
+    assert!(matches!(Cutoff::Standard, Cutoff::Default));
+    assert_eq!(Cutoff::ALL[0], Cutoff::Standard);
+    let hz = match Cutoff::Standard {
+        Cutoff::Default => Cutoff::Default.passband_hz(),
+        _ => 0,
+    };
+    assert_eq!(hz, 40_000);
 }

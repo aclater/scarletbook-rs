@@ -54,7 +54,7 @@ fixed by the specification. Cargo treats `0.5.y` as compatible with `0.5.x`, so 
 same PCM bytes across builds (stored hashes, reproducible files) pins the exact version:
 
 ```toml
-scarletbook-pcm = "=0.5.8"
+scarletbook-pcm = "=0.5.9"
 ```
 
 ## Layout
