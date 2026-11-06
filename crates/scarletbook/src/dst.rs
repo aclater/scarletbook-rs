@@ -1020,8 +1020,9 @@ fn rows<const NCH: usize, const U: usize, const FROM: usize>(
 }
 
 /// Most symbols per bit position (frames x channels) for which [`run`] unrolls a whole
-/// byte; beyond, the loop body outgrows the instruction caches. Measured on Zen 2 (#203): at
-/// 10, 5 channels in 2 frames run fewer instructions unrolled but take more cycles.
+/// byte; beyond, the loop body would outgrow the instruction caches (inferred: no front-end
+/// counters were taken). Measured on Zen 2 (#203): at 10, 5 channels in 2 frames run fewer
+/// instructions unrolled but take more cycles.
 const UNROLL_BYTE: usize = 9;
 
 /// A row on the stack of [`run`], aligned so that no vector access of it splits a cache line.
