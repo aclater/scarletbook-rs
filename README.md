@@ -563,8 +563,10 @@ An archive unpacks to:
 scarletbook-ffi-<version>-<target>/   (scarletbook-ffi-<version>-<target>-v3/ for a -v3 archive)
   include/scarletbook.h
   lib/libscarletbook_ffi.a           static library (every target)
-  lib/libscarletbook_ffi.so          shared library (Linux)
-  lib/libscarletbook_ffi.dylib       shared library (macOS)
+  lib/libscarletbook_ffi.so.2        shared library (Linux) ...
+  lib/libscarletbook_ffi.so          ... and a link to it, for the linker
+  lib/libscarletbook_ffi.2.dylib     shared library (macOS) ...
+  lib/libscarletbook_ffi.dylib       ... and a link to it, for the linker
   lib/scarletbook_ffi.dll            shared library (Windows) ...
   lib/libscarletbook_ffi.dll.a       ... and its import library
   native-static-libs.txt             system libraries to link after the static library
@@ -587,17 +589,37 @@ published without one.
 ```sh
 # Static: the archive, then the system libraries it needs.
 cc app.c -I$PKG/include $PKG/lib/libscarletbook_ffi.a $(cat $PKG/native-static-libs.txt)
-# Shared: ship the library next to the program, or set an rpath.
+# Shared: ship libscarletbook_ffi.so.2 next to the program, or set an rpath.
 cc app.c -I$PKG/include -L$PKG/lib -lscarletbook_ffi -Wl,-rpath,'$ORIGIN'
 ```
 
-The Linux shared library has the SONAME `libscarletbook_ffi.so` and the macOS one the
-install name `@rpath/libscarletbook_ffi.dylib`, so a program finds them through its rpath
-(`-Wl,-rpath,@loader_path` on macOS). The SONAME is unversioned, since integrators ship the
-library with their program; to be revisited at 1.0. With MinGW-w64 GCC,
-`-lscarletbook_ffi` picks the import library (`.dll.a`), so the program needs
-`scarletbook_ffi.dll` at run time; link the static library by its path instead to avoid
-that.
+The shared library's name carries the C ABI version, `SB_ABI_VERSION`, not the crate version
+(see "ABI compatibility"):
+
+| | Name a program records | The file | Link for the linker |
+|---|---|---|---|
+| Linux | SONAME `libscarletbook_ffi.so.2` | `libscarletbook_ffi.so.2` | `libscarletbook_ffi.so` |
+| macOS | install name `@rpath/libscarletbook_ffi.2.dylib`, compatibility version 2.0.0 | `libscarletbook_ffi.2.dylib` | `libscarletbook_ffi.dylib` |
+| Windows | `scarletbook_ffi.dll` (not versioned) | `scarletbook_ffi.dll` | `libscarletbook_ffi.dll.a` (import library) |
+
+`-lscarletbook_ffi` finds the unversioned link and the program records the versioned name, so
+**the versioned file is the one to ship**, found through the program's rpath
+(`-Wl,-rpath,@loader_path` on macOS). Copy it under that name; the link is not needed at run
+time. A library loaded by path, as with ctypes, loads under either name. A program linked
+against an older release recorded the unversioned name, and finds the library through the link
+until it is relinked.
+
+Windows has no SONAME: a program records the DLL's file name. `scarletbook_ffi.dll` keeps its
+name, because integrators ship it next to their program, so `sb_abi_version()` is the only
+check there. With MinGW-w64 GCC, `-lscarletbook_ffi` picks the import library (`.dll.a`), so
+the program needs `scarletbook_ffi.dll` at run time; link the static library by its path
+instead to avoid that.
+
+Only the release archives are named this way, by `.github/scripts/clib-package.sh`. A plain
+`cargo build` makes `libscarletbook_ffi.so` with no SONAME at all. To build one with the SONAME
+from source, for example for a system package, add what the script adds and install it under
+that name:
+`cargo rustc --release -p scarletbook-ffi --lib -- -C link-arg=-Wl,-soname,libscarletbook_ffi.so.2`.
 
 ### Using from Python (ctypes)
 
@@ -610,7 +632,7 @@ without them ctypes passes and returns C `int`, which truncates pointers and 64-
 ```python
 import ctypes as C
 
-lib = C.CDLL("/path/to/libscarletbook_ffi.so")  # .dylib on macOS, scarletbook_ffi.dll on Windows
+lib = C.CDLL("/path/to/libscarletbook_ffi.so.2")  # libscarletbook_ffi.2.dylib on macOS, scarletbook_ffi.dll on Windows
 
 SB_ABI_VERSION = 2  # the SB_ABI_VERSION of the header these bindings follow
 lib.sb_abi_version.argtypes, lib.sb_abi_version.restype = [], C.c_uint32
@@ -947,6 +969,12 @@ offset)` reads the same fields at the offsets documented in `scarletbook.h`.
 
 ### ABI compatibility
 
+**ABI 2 is the 1.0 ABI** ([#39](https://github.com/aclater/scarletbook-rs/issues/39), owner
+decision of 2026-11-06). 1.0.0 will have `SB_ABI_VERSION` 2, and no ABI 3 is planned: no planned
+work needs an ABI 2 struct to grow, because new data comes through new functions and types. On
+Linux and macOS the shared library is named after this number (see "Linking"), so
+`libscarletbook_ffi.so.2` and `libscarletbook_ffi.2.dylib` are the 1.0 names too.
+
 The ABI is everything `scarletbook.h` declares (functions and their signatures, struct
 layouts, enum names and values, macros) and the behaviour the header documents.
 `SB_ABI_VERSION` in the header, and `sb_abi_version()` in the library, number its breaking
@@ -966,13 +994,14 @@ Releases follow this:
 
 - a **patch** release (`x.y.Z`) does not change the ABI;
 - a **minor** release (`x.Y.0`) may add to it, never break it;
-- only a **major** release (`X.0.0`) may break it, and then increments `SB_ABI_VERSION`.
+- only a **major** release (`X.0.0`) may break it, and then increments `SB_ABI_VERSION` and,
+  with it, the number in the library's name, so libraries of two ABIs can sit side by side.
 
 While the version is `0.y.z`, as in Cargo, the `y` step is the major one and the `z` step
 the minor one, so there are no patch releases before 1.0.
 
 The `-v3` archives of a release carry the same ABI as its baseline archives, at the same
-`SB_ABI_VERSION` and `sb_version()`; they differ only in the instruction set (see
+`SB_ABI_VERSION`, library name and `sb_version()`; they differ only in the instruction set (see
 "Release assets"), which the ABI does not cover. A program can switch between the two
 without rebuilding, but must check the CPU before it loads the `-v3` library.
 
@@ -984,7 +1013,7 @@ that loads the library at run time can look the symbol up instead.
 | `SB_ABI_VERSION` | First release |
 |---|---|
 | 1 | 0.1.0 to 0.3.0 (additions only in 0.3.0) |
-| 2 | 0.4.0 (additions in 0.4.1, 0.5.0, 0.5.1, 0.5.2, 0.5.3 and 0.5.4) |
+| 2 | 0.4.0 (additions in 0.4.1, 0.5.0, 0.5.1, 0.5.2, 0.5.3 and 0.5.4); the 1.0 ABI |
 
 CI enforces this. `crates/scarletbook-ffi/abi/abi-N.txt` is the baseline of ABI version N:
 the header's declarations without comments or layout. `.github/scripts/abi-check.py`
