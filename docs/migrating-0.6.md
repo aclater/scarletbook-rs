@@ -77,7 +77,7 @@ Not written yet.
 `audio::FrameStatus`, `audio::DecodeOn`, `image::SectorFormat`, `toc::LoudspeakerLayout`,
 `toc::Speaker` and `toc::TrackTextItem`, and the enums documented as frozen.
 
-#### A `match` on six enums needs a wildcard arm (#39)
+#### A `match` on six enums needs a wildcard arm (#304)
 
 Changed in 0.6.0, with no deprecation first. This affects `FrameStatus`, `DecodeOn`, `SectorFormat`,
 `LoudspeakerLayout`, `Speaker` and `TrackTextItem`, so that later variants aren't breaking changes.
