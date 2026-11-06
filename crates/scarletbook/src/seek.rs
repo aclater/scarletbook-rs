@@ -106,8 +106,9 @@ pub struct IndexOptions {
     /// past its checkpoint before the range's first frame is known.
     pub interval: u32,
     /// The most bytes of frames under assembly the index stores, over all its checkpoints
-    /// (frames spread over more sectors than a checkpoint replays); 0 stores none. A cursor made from the index may hold as
-    /// much again while it records. Saved indexes keep at most 4 GiB of it.
+    /// (frames spread over more sectors than a checkpoint replays); 0 stores none. A cursor
+    /// made from the index may hold as much again while it records. Saved indexes keep at
+    /// most 4 GiB of it.
     pub inline_budget: usize,
     /// Seek hints ([`AreaIndex#seek-hints`]): a sample is recorded at least this many
     /// frames after the one before. Default [`DEFAULT_HINT_SPACING`]; 0 records none.
