@@ -246,6 +246,11 @@ current pool by default, or the pool chosen for a cursor with
 `TrackAudioCursor::set_decode_on(DecodeOn::Pool(pool))`, whichever thread reads it
 (`DecodeOn::CallingThread` keeps a cursor off every pool).
 
+With `parallel`, rayon 1 is part of the public Rust API, and that is a stated decision (#39):
+`DecodeOn::Pool` takes an `Arc<rayon::ThreadPool>`, not a wrapper of this library's. rayon 1 is
+stable, and a wrapper would add interface for a problem that may never come. The cost is that a
+rayon 2 would need a new major version of `scarletbook`. A program's pool must come from rayon 1.
+
 ## C library
 
 ```c
@@ -1043,6 +1048,49 @@ follows every point:
 The check `sb_abi_version() == SB_ABI_VERSION` refuses a library of the other ABI either
 way round.
 
+## Stability
+
+From 1.0, the Rust API of `scarletbook` and `scarletbook-pcm` and the C ABI of
+`scarletbook-ffi` follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html): they stay
+compatible within a major version, by the rules of
+[Cargo's SemVer reference](https://doc.rust-lang.org/cargo/reference/semver.html), and every
+breaking change is listed in [CHANGELOG.md](CHANGELOG.md). What counts as a breaking change of
+the C ABI is in [ABI compatibility](#abi-compatibility).
+
+Before 1.0, as in Cargo, the `y` step of `0.y.z` is the major one and may break the API, and
+the `z` step is the minor one and may only add to it. The interface is not frozen yet:
+[#39](https://github.com/aclater/scarletbook-rs/issues/39) tracks the changes planned before
+1.0.
+
+Not covered:
+
+- items marked `#[doc(hidden)]`;
+- the `fuzzing` feature of `scarletbook-ffi`, which exists for the fuzz targets;
+- the Rust items of `scarletbook-ffi`, whose interface is the C ABI;
+- `scarletbook-bench` and `scarletbook-conformance`, which are not published.
+
+### Versions
+
+Every crate of the workspace shares one version, so a breaking change in one crate raises the
+version of them all, including crates that did not change. Whether this stays so after 1.0 is
+still to be decided ([#39](https://github.com/aclater/scarletbook-rs/issues/39)).
+
+### Minimum supported Rust version
+
+The minimum supported Rust version (MSRV) is 1.85, declared as `rust-version` in
+[Cargo.toml](Cargo.toml).
+
+- **When it can rise:** only in a release that changes the `y` of `x.y.z`, so `0.Y.0` before
+  1.0 and `x.Y.0` from 1.0. It never rises in a release that changes only `z`.
+- **How far it can rise:** only to a Rust release at least 12 months old, so that every Rust
+  release of the last 12 months stays supported. The MSRV does not rise without a reason, such
+  as a feature the code needs.
+- **How you hear of it:** the rise is listed under "Changed" in CHANGELOG.md.
+
+CI's `msrv` job checks `scarletbook`, `scarletbook-pcm` and `scarletbook-ffi` with all features
+on this version, using the repository's `Cargo.lock`. It does not check the lowest dependency
+versions that the crates declare, and it does not run the tests on this version.
+
 ## Benchmarks
 
 `bench` implements the interface of sacd-spec `benchmarks/README.md`:
@@ -1198,7 +1246,7 @@ CPU time exceeds 1.15 (`.github/scripts/bench-regress.py`, #226). It runs on pul
 touch the library sources or build settings, on main (against the previous main) and nightly
 (against the latest release), and is informational, not a required check.
 
-Minimum supported Rust version: 1.85.
+Minimum supported Rust version: 1.85 (see [Stability](#stability)).
 
 ## Licence
 
