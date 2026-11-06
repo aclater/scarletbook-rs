@@ -137,25 +137,12 @@ let span = FrameSpan::Range(first, end);
 let cursor = disc.audio_cursor(slot, span, CursorOptions::new().with_index(&index))?;
 ```
 
-**Tuning:** `dst::lanes`, `dst::MAX_LANES`, `audio::MAX_PARALLEL_BATCH`,
-`audio::PARALLEL_FRAMES_PER_THREAD`, `seek::MAX_CLAIMS`, `seek::MAX_EVENTS`, `seek::HINT_REACH` and
-`seek::REPLAY_SECTORS`. The constants have no replacement: don't size anything by them.
-
-Before:
-
-```rust
-let group = scarletbook::dst::lanes(channels);
-for (frames, outs) in frames.chunks(group).zip(outs.chunks_mut(group)) {
-    decoder.decode_many(frames, channels, outs);
-}
-```
-
-After, with the same output. `decode_many` splits the frames into groups itself, so its speed may
-differ from grouping by `lanes`; a caller who keeps that loop keeps its speed, without a promise.
-
-```rust
-decoder.decode_many(&frames, channels, &mut outs);
-```
+**Tuning:** `dst::MAX_LANES`, `audio::MAX_PARALLEL_BATCH`, `audio::PARALLEL_FRAMES_PER_THREAD`,
+`seek::MAX_CLAIMS`, `seek::MAX_EVENTS`, `seek::HINT_REACH` and `seek::REPLAY_SECTORS`. They have no
+replacement: code that reads one should stop sizing anything by it. `dst::lanes` stays public and
+documented, as the best number of frames to pass to `DstDecoder::decode_many` at once. The function
+is stable, but the number it returns is a tuning value: it may change in any release, and may
+differ per build, per CPU and with any setting that affects decoding.
 
 **Text:** `text::{decode, decode_string, fixed_bytes, fixed_text, language, string_bytes,
 text_string}` and `text::Charset`, which only they take. `Locale.charset` stays a `u8`, and
