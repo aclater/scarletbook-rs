@@ -18,7 +18,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use common::{PFrame, S, Spec, TrackSpec, pack};
 use scarletbook::audio::FRAME_BYTES_PER_CHANNEL;
 use scarletbook::{
-    CancelToken, Disc, Error, IndexOptions, Progress, SeekPolicy, Slot, SpeculativeOptions, TrackFrame,
+    CancelToken, CursorOptions, Disc, Error, FrameSpan, IndexOptions, Progress, SeekPolicy, Slot,
+    SpeculativeOptions, TrackFrame,
 };
 
 /// Sectors a cursor reads at most once cancellation is requested.
@@ -150,12 +151,12 @@ fn through_within<T>(
 }
 
 fn decoded(disc: &mut Disc<impl Read + Seek>, first: u32, end: u32) -> Vec<scarletbook::AudioFrame> {
-    let c = disc.range_audio_cursor(Slot::TwoChannel, first, end).unwrap();
+    let c = disc.audio_cursor(Slot::TwoChannel, FrameSpan::Range(first, end), CursorOptions::new()).unwrap();
     disc.read_track_audio(c).map(Result::unwrap).collect()
 }
 
 fn stored(disc: &mut Disc<impl Read + Seek>, first: u32, end: u32) -> Vec<TrackFrame> {
-    let c = disc.range_frames_cursor(Slot::TwoChannel, first, end).unwrap();
+    let c = disc.frames_cursor(Slot::TwoChannel, FrameSpan::Range(first, end), CursorOptions::new()).unwrap();
     disc.read_frames(c).map(Result::unwrap).collect()
 }
 
@@ -193,7 +194,9 @@ fn cancelled_reads_resume_exactly() {
                 }
                 hook.every.set(every);
                 hook.next.set(hook.bytes.get() + every);
-                let c = disc.range_audio_cursor(Slot::TwoChannel, first, end).unwrap();
+                let c = disc
+                    .audio_cursor(Slot::TwoChannel, FrameSpan::Range(first, end), CursorOptions::new())
+                    .unwrap();
                 let mut it = disc.read_track_audio(c);
                 let (got, cancels) = through(&hook, || it.next());
                 drop(it);
@@ -202,7 +205,9 @@ fn cancelled_reads_resume_exactly() {
                 // A provisional reading may read fewer sectors than `every`.
                 assert!(cancels > 0 || path == "speculative", "{path} {first}..{end} every {every}");
                 hook.next.set(hook.bytes.get() + every);
-                let c = disc.range_frames_cursor(Slot::TwoChannel, first, end).unwrap();
+                let c = disc
+                    .frames_cursor(Slot::TwoChannel, FrameSpan::Range(first, end), CursorOptions::new())
+                    .unwrap();
                 let mut it = disc.read_frames(c);
                 let (got, _) = through(&hook, || it.next());
                 drop(it);
@@ -260,7 +265,7 @@ fn sized_read_cancelled(prepare: impl Fn(&mut Disc<Hooked>)) {
     prepare(&mut disc);
     assert_eq!(hook.bytes.get(), base, "the same reads up to the range");
     hook.at_start.set(true);
-    let c = disc.range_audio_cursor(Slot::TwoChannel, first, end).unwrap();
+    let c = disc.audio_cursor(Slot::TwoChannel, FrameSpan::Range(first, end), CursorOptions::new()).unwrap();
     let mut it = disc.read_track_audio(c);
     let p = it.progress();
     hook.progress.set((p.clone(), base)).unwrap();
@@ -291,7 +296,7 @@ fn cancelled_with_a_pool() {
     let (mut disc, hook) = hooked(&img);
     hook.every.set(40 * S as u64);
     hook.next.set(hook.bytes.get() + 40 * S as u64);
-    let mut c = disc.range_audio_cursor(Slot::TwoChannel, 0, 600).unwrap();
+    let mut c = disc.audio_cursor(Slot::TwoChannel, FrameSpan::Range(0, 600), CursorOptions::new()).unwrap();
     c.set_decode_on(scarletbook::DecodeOn::Pool(Arc::clone(&pool)));
     let mut it = disc.read_track_audio(c);
     let (got, cancels) = through(&hook, || it.next());
@@ -300,7 +305,7 @@ fn cancelled_with_a_pool() {
     drop(it);
     // Dropped while cancelled, with frames in flight.
     hook.every.set(0);
-    let mut c = disc.range_audio_cursor(Slot::TwoChannel, 0, 600).unwrap();
+    let mut c = disc.audio_cursor(Slot::TwoChannel, FrameSpan::Range(0, 600), CursorOptions::new()).unwrap();
     c.set_decode_on(scarletbook::DecodeOn::Pool(pool));
     let mut it = disc.read_track_audio(c);
     for _ in 0..100 {
@@ -367,7 +372,9 @@ fn progress_through_a_cold_scan() {
             }
             p.get()
         } else {
-            let c = disc.range_audio_cursor(Slot::TwoChannel, 800, 830).unwrap();
+            let c = disc
+                .audio_cursor(Slot::TwoChannel, FrameSpan::Range(800, 830), CursorOptions::new())
+                .unwrap();
             let mut it = disc.read_track_audio(c);
             let p = it.progress();
             assert_eq!(p.get(), it.progress().get(), "the same object");
@@ -394,7 +401,7 @@ fn progress_through_a_cold_scan() {
 fn a_continuation_counts_afresh() {
     let img = image(300);
     let mut disc = Disc::open(Cursor::new(img)).unwrap();
-    let c = disc.track_audio_cursor(Slot::TwoChannel, 1).unwrap();
+    let c = disc.audio_cursor(Slot::TwoChannel, FrameSpan::Track(1), CursorOptions::new()).unwrap();
     let mut it = disc.read_track_audio(c);
     let p1 = it.progress();
     it.by_ref().for_each(|f| drop(f.unwrap()));
@@ -435,7 +442,8 @@ fn cancelled_from_another_thread() {
     let bytes = Arc::new(AtomicU64::new(0));
     let mut disc = Disc::open(Slow { inner: Cursor::new(image(900)), bytes: Arc::clone(&bytes) }).unwrap();
     let token = disc.cancel_token();
-    let mut cursor = disc.range_audio_cursor(Slot::TwoChannel, 850, 900).unwrap();
+    let mut cursor =
+        disc.audio_cursor(Slot::TwoChannel, FrameSpan::Range(850, 900), CursorOptions::new()).unwrap();
     let progress = cursor.progress();
     let reader = std::thread::spawn(move || {
         let r = disc.read_track_audio(cursor).next();

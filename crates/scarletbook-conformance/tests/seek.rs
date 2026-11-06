@@ -9,7 +9,9 @@
 use std::fs::File;
 use std::io::BufReader;
 
-use scarletbook::{Disc, FrameStatus, IndexOptions, ReadAtReader, Slot, TrackAudioCursor, Warning};
+use scarletbook::{
+    CursorOptions, Disc, FrameSpan, FrameStatus, IndexOptions, ReadAtReader, Slot, TrackAudioCursor, Warning,
+};
 use scarletbook_conformance::{corpus_dir, load_cases};
 
 #[derive(Debug, PartialEq)]
@@ -92,15 +94,20 @@ fn corpus_reads_through_an_index_equal_plain_reads() {
                 indexed.enable_seek_index(slot, IndexOptions::new().with_interval(interval)).unwrap();
                 let mut prev: Option<TrackAudioCursor> = None;
                 for &(first, end) in &ranges {
-                    let c = plain.range_audio_cursor(slot, first, end).unwrap();
+                    let c =
+                        plain.audio_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new()).unwrap();
                     let (want, _) = read(&mut plain, c);
-                    let c = indexed.range_audio_cursor(slot, first, end).unwrap();
+                    let c = indexed
+                        .audio_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new())
+                        .unwrap();
                     let (got, _) = read(&mut indexed, c);
                     assert_eq!(got, want, "{id} {slot} K {interval} [{first}, {end})");
                     // Continued from the previous range through the index.
                     let c = match prev.take() {
                         Some(p) => indexed.continue_range_audio(p, slot, first, end).unwrap(),
-                        None => indexed.range_audio_cursor(slot, first, end).unwrap(),
+                        None => indexed
+                            .audio_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new())
+                            .unwrap(),
                     };
                     let (got, c) = read(&mut indexed, c);
                     assert_eq!(
@@ -143,7 +150,7 @@ fn corpus_reads_on_two_threads_through_one_index() {
             let want: Vec<Read> = ranges
                 .iter()
                 .map(|&(a, b)| {
-                    let c = plain.range_audio_cursor(slot, a, b).unwrap();
+                    let c = plain.audio_cursor(slot, FrameSpan::Range(a, b), CursorOptions::new()).unwrap();
                     read(&mut plain, c).0
                 })
                 .collect();
@@ -154,13 +161,15 @@ fn corpus_reads_on_two_threads_through_one_index() {
                 let (ranges, want) = (&ranges, &want);
                 s.spawn(move || {
                     for (i, &(a, b)) in ranges.iter().enumerate() {
-                        let c = cloned.range_audio_cursor(slot, a, b).unwrap();
+                        let c =
+                            cloned.audio_cursor(slot, FrameSpan::Range(a, b), CursorOptions::new()).unwrap();
                         assert_eq!(read(&mut cloned, c).0, want[i], "{id} {slot} [{a}, {b}) clone");
                     }
                 });
                 s.spawn(move || {
                     for (i, &(a, b)) in ranges.iter().enumerate().rev() {
-                        let c = shared.range_audio_cursor(slot, a, b).unwrap();
+                        let c =
+                            shared.audio_cursor(slot, FrameSpan::Range(a, b), CursorOptions::new()).unwrap();
                         assert_eq!(read(&mut shared, c).0, want[i], "{id} {slot} [{a}, {b}) share");
                     }
                 });
