@@ -713,6 +713,7 @@ impl From<Error> for Failure {
             Error::NoSuchArea(_) => SbStatus::NoSuchArea,
             Error::NoSuchTrack { .. } => SbStatus::NoSuchTrack,
             Error::FrameRangeInvalid { .. } => SbStatus::FrameRangeInvalid,
+            Error::SectorRangeInvalid { .. } => SbStatus::SectorRangeInvalid,
             Error::InvalidArgument(_) => SbStatus::InvalidArgument,
             Error::Io(_) => SbStatus::Io,
             Error::Cancelled => SbStatus::Cancelled,
@@ -2446,11 +2447,8 @@ pub unsafe extern "C" fn sb_disc_read_sectors(
         // contract; the library holds no reference into the caller's memory.
         let out = unsafe { std::slice::from_raw_parts_mut(buf, need) };
         // In range (checked above), so a failure is an I/O error.
-        if image.read_sectors(lsn, out)? {
-            Ok(SbStatus::Ok)
-        } else {
-            Err(Failure(SbStatus::SectorRangeInvalid, format!("sectors from {lsn} are not all in the image")))
-        }
+        image.read_sectors(lsn, out)?;
+        Ok(SbStatus::Ok)
     })
 }
 
@@ -5838,6 +5836,16 @@ mod tests {
     #[test]
     fn the_default_gap_is_the_librarys() {
         assert_eq!(SB_SEEK_DEFAULT_MIN_GAP, scarletbook::SpeculativeOptions::default().min_gap_sectors);
+    }
+
+    /// An error the conversion doesn't name would come out as `SB_STATUS_PANIC`.
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn a_sector_range_error_has_its_status() {
+        let reader = std::io::Cursor::new(vec![0u8; 2048]);
+        let mut image = scarletbook::Image::with_format(reader, scarletbook::SectorFormat::Plain).unwrap();
+        let e = image.read_sectors(1, &mut [0u8; 2048]).unwrap_err();
+        assert_eq!(Failure::from(e).0, SbStatus::SectorRangeInvalid);
     }
 
     #[test]

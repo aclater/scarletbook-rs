@@ -98,6 +98,18 @@ pub enum Error {
         /// The area's play time in frames.
         playtime: u32,
     },
+    /// A sector read extends past the image's last sector ([`crate::Image::read_sectors`]):
+    /// it must satisfy `lsn + count <= sectors` (specification 1, 1.3).
+    #[error("{count} sectors at LSN {lsn} are not all in the image's {sectors} sectors")]
+    #[non_exhaustive]
+    SectorRangeInvalid {
+        /// The first sector asked for.
+        lsn: u64,
+        /// The number of sectors asked for.
+        count: u64,
+        /// The image's sector count.
+        sectors: u64,
+    },
     /// A caller-supplied argument is invalid (for example a buffer of the wrong size).
     #[error("invalid argument: {0}")]
     InvalidArgument(&'static str),
@@ -198,6 +210,7 @@ impl Error {
             Error::NoSuchArea(_)
             | Error::NoSuchTrack { .. }
             | Error::FrameRangeInvalid { .. }
+            | Error::SectorRangeInvalid { .. }
             | Error::InvalidArgument(_)
             | Error::Io(_)
             | Error::Cancelled
@@ -221,6 +234,7 @@ impl Error {
             Error::NoSuchArea(_)
             | Error::NoSuchTrack { .. }
             | Error::FrameRangeInvalid { .. }
+            | Error::SectorRangeInvalid { .. }
             | Error::InvalidArgument(_)
             | Error::OutputRefused(_) => ErrorClass::Usage,
             Error::Io(_) => ErrorClass::Io,
