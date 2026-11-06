@@ -1,0 +1,1 @@
+| 2026-11-05 | PCM 24-bit conversion vectorised (#224) | profiling and disassembling this crate on the Zen 2 benchmark host; `hecker1996` as already recorded in EVIDENCE.md (P5). No new sources consulted. |
