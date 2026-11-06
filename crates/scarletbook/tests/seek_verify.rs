@@ -459,7 +459,7 @@ fn a_reading_registered_during_the_final_pass_is_not_reported_complete() {
     assert!(disc.take_seek_events(Slot::TwoChannel).is_empty());
     assert!(verifier.verify_speculation(Slot::TwoChannel, 0).unwrap());
     assert!(matches!(reading.speculation(), Speculation::Confirmed { .. }), "{:?}", reading.speculation());
-    assert_eq!(disc.seek_index(Slot::TwoChannel).unwrap().pending_claims(), 0);
+    assert_eq!(disc.seek_index(Slot::TwoChannel).unwrap().pending_claim_count(), 0);
     let events = disc.take_seek_events(Slot::TwoChannel);
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(events[0].speculation, reading.speculation());
@@ -517,7 +517,7 @@ fn a_reading_registered_after_the_pass_waits_for_the_next_call() {
     let c = disc.range_frames_cursor(Slot::TwoChannel, 40, 45).unwrap();
     assert!(disc.verify_speculation(Slot::TwoChannel, u64::MAX).unwrap());
     let reading = small_reading(&mut disc, c);
-    assert_eq!(disc.seek_index(Slot::TwoChannel).unwrap().pending_claims(), 1);
+    assert_eq!(disc.seek_index(Slot::TwoChannel).unwrap().pending_claim_count(), 1);
     assert!(disc.take_seek_events(Slot::TwoChannel).is_empty());
     assert!(disc.verify_speculation(Slot::TwoChannel, u64::MAX).unwrap());
     assert!(matches!(reading.speculation(), Speculation::Confirmed { .. }), "{:?}", reading.speculation());
@@ -541,7 +541,7 @@ fn no_budget_still_finishes() {
     let mut calls = 0;
     while !disc.verify_speculation(Slot::TwoChannel, 0).unwrap() {
         calls += 1;
-        assert_eq!(disc.seek_index(Slot::TwoChannel).unwrap().checkpoints(), calls);
+        assert_eq!(disc.seek_index(Slot::TwoChannel).unwrap().checkpoint_count(), calls);
         assert!(calls <= boundaries, "{calls} calls");
     }
     assert!(calls > 1, "a call of no budget does not do the whole pass: {calls} calls");
