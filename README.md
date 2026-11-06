@@ -1131,8 +1131,8 @@ Not covered:
 ### Versions
 
 Every crate of the workspace shares one version, so a breaking change in one crate raises the
-version of them all, including crates that did not change. Whether this stays so after 1.0 is
-still to be decided ([#39](https://github.com/aclater/scarletbook-rs/issues/39)).
+version of them all, including crates that did not change. This stays so from 1.0
+([#39](https://github.com/aclater/scarletbook-rs/issues/39), owner decision of 2026-11-06).
 
 ### Minimum supported Rust version
 
