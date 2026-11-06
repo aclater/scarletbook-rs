@@ -113,9 +113,18 @@ A range past the image's last sector, formerly `Ok(false)`, is now
 `Error::SectorRangeInvalid { lsn, count, sectors }`, and leaves the buffer as it was. An empty
 buffer, formerly `InvalidArgument`, reads nothing and succeeds for any `lsn` up to the sector count.
 
-Most callers get a compile error. Code that wrote `read_sectors(..)?;` and ignored the `bool` still
-builds, and now gets the error instead of carrying on with unread data. The C library's
-`sb_disc_read_sectors` does not change.
+Code that uses the `bool` directly gets a compile error. **Code that doesn't still builds, and
+`cargo semver-checks` does not detect this, so search for every call.** For a read past the end:
+
+| Code | Before | Now |
+|---|---|---|
+| `if image.read_sectors(..)? { .. }` | builds | compile error |
+| `image.read_sectors(..)?;`, also into another error type | carries on with unread data | returns the error |
+| `image.read_sectors(..).unwrap();` | carries on with unread data | panics |
+| `.is_ok()`, `.ok().is_some()`, `matches!(_, Ok(_))` | true | false |
+| `let _ = image.read_sectors(..);` | ignored, buffer intact | ignored, buffer intact |
+
+The C library's `sb_disc_read_sectors` does not change.
 
 Before:
 

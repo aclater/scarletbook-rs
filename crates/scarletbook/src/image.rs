@@ -300,16 +300,18 @@ impl<R: Read + Seek> Image<R> {
         lsn.checked_add(count).is_some_and(|end| end <= self.sectors)
     }
 
-    /// Reads `buf.len() / 2048` logical sectors starting at `lsn` into `buf`, whole or not
-    /// at all (specification 1, 1.3). `buf.len()` must be a multiple of 2048. An empty `buf`
-    /// reads nothing and succeeds for any `lsn` up to [`Image::sector_count`], as
-    /// `sb_disc_read_sectors` does with a count of 0.
+    /// Reads `buf.len() / 2048` logical sectors starting at `lsn` into `buf`. A range that
+    /// is not all in the image is refused before anything is read (specification 1, 1.3).
+    /// `buf.len()` must be a multiple of 2048. An empty `buf` reads nothing and succeeds for
+    /// any `lsn` up to [`Image::sector_count`], as `sb_disc_read_sectors` does with a count
+    /// of 0.
     ///
     /// # Errors
     ///
     /// [`Error::SectorRangeInvalid`] if any of the sectors does not exist, with `buf` left
-    /// as it was. [`Error::InvalidArgument`] for a bad buffer length, [`Error::Io`] if the
-    /// reader fails (including a reader that is shorter than it reported).
+    /// as it was. [`Error::InvalidArgument`] for a bad buffer length. [`Error::Io`] if the
+    /// reader fails (including a reader that is shorter than it reported), after which what
+    /// `buf` holds is unspecified.
     pub fn read_sectors(&mut self, lsn: u64, buf: &mut [u8]) -> Result<(), Error> {
         if buf.len() % SECTOR_SIZE != 0 {
             return Err(Error::InvalidArgument("buffer length must be a multiple of 2048"));
