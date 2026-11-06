@@ -1483,6 +1483,24 @@ mod tests {
         assert_eq!([0, 1, 2, 3, 4, 7, 4576].map(bitlen), [0, 1, 2, 2, 3, 3, 13]);
     }
 
+    /// `core-dispatch-avx2` really runs the wrapper. This test exists only in a Miri build
+    /// with the features, and the slice requires it by name: if the slice loses its flags,
+    /// the test is gone and the slice fails; if [`Isa::detect`] comes to need a feature the
+    /// flags don't enable, this fails. (It is here because `dispatch.rs` may name
+    /// `target_feature` only on its wrapper: `tests/common/unsafe_scan.rs`.)
+    #[cfg(all(
+        miri,
+        target_feature = "avx2",
+        target_feature = "bmi1",
+        target_feature = "bmi2",
+        target_feature = "lzcnt",
+        target_feature = "movbe"
+    ))]
+    #[test]
+    fn miri_slice_selects_the_wrapper() {
+        assert_ne!(Isa::detect(), Isa::generic());
+    }
+
     #[test]
     fn round8_floors() {
         assert_eq!(round8(-5), -1);
