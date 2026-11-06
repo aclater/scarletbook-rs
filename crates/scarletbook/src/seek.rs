@@ -1880,7 +1880,9 @@ impl AreaIndex {
     }
 
     /// Takes the verdicts on provisional readings reached since the last call (see
-    /// [`AreaIndex::verify`]).
+    /// [`AreaIndex::verify`]). A verdict is held once, but a clone holds a copy of those not
+    /// yet taken: take them from one of the two. [`crate::Disc::seek_index`] gives a copy
+    /// with none, since a disc hands them to [`crate::Disc::take_seek_events`].
     pub fn take_events(&mut self) -> Vec<SeekEvent> {
         std::mem::take(&mut self.events)
     }
@@ -2330,6 +2332,35 @@ mod tests {
             Plan::At { lsn, .. } => Some(lsn),
             Plan::Start | Plan::End(_) => None,
         }
+    }
+
+    /// `merge` past the cap (#310), with real readings in the integration tests: the oldest
+    /// pending readings are settled as unverified with one event each, on the index merged
+    /// into; readings already settled and a second merge add none, and the other index's queue
+    /// is left alone.
+    #[test]
+    fn merging_past_the_cap_settles_the_oldest_once() {
+        let claims =
+            |n: usize| (0..n).map(|k| Claim::new(crate::Slot::TwoChannel, k as u32)).collect::<Vec<_>>();
+        let (mine, theirs, settled) = (claims(MAX_CLAIMS), claims(3), claims(2));
+        for c in &settled {
+            assert!(c.settle(Verdict::Confirmed));
+        }
+        let mut a = index(&[], None);
+        let mut b = index(&[], None);
+        a.claims.clone_from(&mine);
+        b.claims = settled.iter().chain(&theirs).cloned().collect();
+        a.merge(&b).unwrap();
+        assert_eq!(a.pending_claim_count(), MAX_CLAIMS);
+        let events = a.take_events();
+        let ids: Vec<u64> = events.iter().map(|e| e.claim).collect();
+        assert_eq!(ids, mine[..3].iter().map(|c| c.id).collect::<Vec<_>>());
+        assert!(events.iter().all(|e| matches!(e.speculation, Speculation::Unverified { .. })));
+        assert!(theirs.iter().chain(&mine[3..]).all(|c| c.verdict().is_none()));
+        a.merge(&b).unwrap();
+        assert_eq!(a.pending_claim_count(), MAX_CLAIMS);
+        assert!(a.take_events().is_empty(), "a second merge settles nothing");
+        assert!(b.take_events().is_empty());
     }
 
     /// Specification 4, 4.5 item 6: a checkpoint whose straight-pass `a` is above `first`

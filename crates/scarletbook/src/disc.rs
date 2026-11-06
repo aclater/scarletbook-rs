@@ -379,6 +379,9 @@ impl<R: Read + Seek> Disc<R> {
     /// key saved indexes by the image file's identity (path, size and modification time, or a
     /// content hash) as well.
     ///
+    /// Verdicts `index` holds that [`AreaIndex::take_events`] has not taken go to
+    /// [`Disc::take_seek_events`].
+    ///
     /// # Errors
     ///
     /// [`Error::NoSuchArea`], or [`Error::InvalidArgument`] if `index` is of another area
@@ -397,6 +400,8 @@ impl<R: Read + Seek> Disc<R> {
             index.frontier(),
             if index.is_complete() { ", complete" } else { "" }
         );
+        // A kept index holds no verdicts (see `extend_seek_index`).
+        self.shared.seek.push_events(slot, index.take_events());
         self.shared.seek.write(slot, |kept| *kept = Some(index));
         Ok(())
     }
@@ -467,13 +472,18 @@ impl<R: Read + Seek> Disc<R> {
         };
         let result = index.extend(&mut self.image, max_sectors);
         self.shared.seek.push_events(slot, index.take_events());
+        // A kept index holds no verdicts: a merge past the cap settles some, which go to the
+        // queue now. Left there, each later copy would queue them again.
         let merged = self.shared.seek.write(slot, |kept| match kept {
-            Some(kept) => kept.merge(&index).map(|()| kept.is_complete()),
-            None => Ok(false),
+            Some(kept) => kept.merge(&index).map(|()| (kept.is_complete(), kept.take_events())),
+            None => Ok((false, Vec::new())),
         });
         match (result, merged) {
             (Err(e), _) | (Ok(_), Err(e)) => Err(e),
-            (Ok(_), Ok(complete)) => Ok(complete),
+            (Ok(_), Ok((complete, events))) => {
+                self.shared.seek.push_events(slot, events);
+                Ok(complete)
+            }
         }
     }
 

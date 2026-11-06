@@ -1,0 +1,2 @@
+Fixed
+- A verdict held on a seek index that a disc kept reached `Disc::take_seek_events` late and more than once, and the repeats could push other verdicts out of its bounded queue. This took an index set with `Disc::set_seek_index` before `AreaIndex::take_events` took its verdicts, for example after `AreaIndex::merge` past `seek::MAX_CLAIMS`, or a merge past that limit inside `Disc::extend_seek_index` when another disc replaced the index during the call. Such verdicts now go to the queue at once, once (#310, #327).
