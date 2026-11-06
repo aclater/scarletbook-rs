@@ -1,0 +1,1 @@
+| 2026-11-06 | a provisional reading registered during the final verify pass (#310) | the seek index's verify loop, its tests and docs only; from specification 4, 4.2 items 8 and 9 and this repository's code. No new sources consulted. |
