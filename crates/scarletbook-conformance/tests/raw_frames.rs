@@ -7,7 +7,10 @@ use std::fs::File;
 use std::io::BufReader;
 
 use scarletbook::audio::{FRAME_BYTES_PER_CHANNEL, INVALID_FILL, MAX_FRAME_BYTES, MISSING_FILL};
-use scarletbook::{AudioFrame, Disc, DstDecoder, FrameContent, FrameStatus, Slot, TrackCursor, TrackFrame};
+use scarletbook::{
+    AudioFrame, CursorOptions, Disc, DstDecoder, FrameContent, FrameSpan, FrameStatus, Slot, TrackCursor,
+    TrackFrame,
+};
 use scarletbook_conformance::{corpus_dir, load_cases};
 
 #[test]
@@ -124,7 +127,7 @@ fn check_tracks(disc: &mut Disc<BufReader<File>>, slot: Slot, whole: &[TrackFram
         }
         let next = match cursor.take() {
             Some(prev) => disc.continue_track_frames(prev, slot, n).unwrap(),
-            None => disc.track_frames_cursor(slot, n).unwrap(),
+            None => disc.frames_cursor(slot, FrameSpan::Track(n), CursorOptions::new()).unwrap(),
         };
         let mut frames = disc.read_frames(next);
         let got: Vec<TrackFrame> = frames.by_ref().map(Result::unwrap).collect();

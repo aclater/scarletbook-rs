@@ -17,7 +17,8 @@ use common::hostile::S;
 use common::{PFrame, Spec, TrackSpec, pack};
 use scarletbook::seek::DEFAULT_INLINE_BUDGET;
 use scarletbook::{
-    AreaIndex, Disc, IndexOptions, ResumedFrom, SeekPolicy, Slot, Speculation, SpeculativeOptions, TrackFrame,
+    AreaIndex, CursorOptions, Disc, FrameSpan, IndexOptions, ResumedFrom, SeekPolicy, Slot, Speculation,
+    SpeculativeOptions, TrackFrame,
 };
 
 /// A reader that counts the bytes read through it and its read calls.
@@ -81,7 +82,7 @@ fn read<R: std::io::Read + std::io::Seek>(
     disc: &mut Disc<R>,
     (first, end): (u32, u32),
 ) -> (Vec<TrackFrame>, scarletbook::TrackCursor) {
-    let c = disc.range_frames_cursor(Slot::TwoChannel, first, end).unwrap();
+    let c = disc.frames_cursor(Slot::TwoChannel, FrameSpan::Range(first, end), CursorOptions::new()).unwrap();
     let mut it = disc.read_frames(c);
     let v = it.by_ref().map(Result::unwrap).collect();
     (v, it.into_cursor())
@@ -317,8 +318,14 @@ fn confirmations_need_a_disc_that_checked_the_fingerprint() {
     assert_eq!(kept, RANGES.len());
     let options = SpeculativeOptions::new().with_min_gap_sectors(64);
     let (first, end) = RANGES[1];
-    let mut cursor =
-        scarletbook::TrackCursor::for_range_speculative(&area, first, end, n, Some(&index), options).unwrap();
+    let mut cursor = scarletbook::TrackCursor::open_range(
+        &area,
+        first,
+        end,
+        n,
+        CursorOptions::new().with_index(&index).with_policy(SeekPolicy::Speculative(options)),
+    )
+    .unwrap();
     while let Some(f) = cursor.next_frame(disc_b.image_mut()) {
         f.unwrap();
     }

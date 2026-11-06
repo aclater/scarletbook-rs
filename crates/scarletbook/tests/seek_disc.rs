@@ -14,7 +14,9 @@ use std::rc::Rc;
 use common::hostile::{S, stream};
 use common::{PFrame, Spec, TrackSpec, pack};
 use proptest::prelude::*;
-use scarletbook::{AudioFrame, Disc, Error, IndexOptions, Slot, TrackAudioCursor, Warning};
+use scarletbook::{
+    AudioFrame, CursorOptions, Disc, Error, FrameSpan, IndexOptions, Slot, TrackAudioCursor, Warning,
+};
 
 fn config() -> ProptestConfig {
     if cfg!(miri) {
@@ -86,14 +88,18 @@ fn run(disc: &mut Disc<Cursor<Vec<u8>>>, playtime: u32, ops: &[Op]) -> Vec<Resul
                 let end = first + 1 + (b * f64::from(playtime - first - 1)) as u32;
                 let c = match prev.take().filter(|_| cont) {
                     Some(p) => disc.continue_range_audio(p, Slot::TwoChannel, first, end),
-                    None => disc.range_audio_cursor(Slot::TwoChannel, first, end),
+                    None => disc.audio_cursor(
+                        Slot::TwoChannel,
+                        FrameSpan::Range(first, end),
+                        CursorOptions::new(),
+                    ),
                 };
                 (c, take)
             }
             Op::Track { n, take, cont } => {
                 let c = match prev.take().filter(|_| cont) {
                     Some(p) => disc.continue_track_audio(p, Slot::TwoChannel, n),
-                    None => disc.track_audio_cursor(Slot::TwoChannel, n),
+                    None => disc.audio_cursor(Slot::TwoChannel, FrameSpan::Track(n), CursorOptions::new()),
                 };
                 (c, take)
             }
@@ -210,7 +216,7 @@ fn lazy_index_bounds_later_reads() {
         assert!(cost <= 32 + 64 + 64, "first {first}: {cost} sectors");
     }
     // A continuation from the start into a range near the end jumps through the index.
-    let c = disc.range_frames_cursor(Slot::TwoChannel, 0, 10).unwrap();
+    let c = disc.frames_cursor(Slot::TwoChannel, FrameSpan::Range(0, 10), CursorOptions::new()).unwrap();
     let mut it = disc.read_frames(c);
     it.next().unwrap().unwrap();
     let c = it.into_cursor();
@@ -231,7 +237,8 @@ fn backwards_continuation_resumes_from_the_index() {
     let mut disc = Disc::open(Counting { inner: Cursor::new(img), read: read.clone() }).unwrap();
     disc.enable_seek_index(Slot::TwoChannel, IndexOptions::new()).unwrap();
     while !disc.extend_seek_index(Slot::TwoChannel, 1000).unwrap() {}
-    let c = disc.range_audio_cursor(Slot::TwoChannel, 900, playtime).unwrap();
+    let c =
+        disc.audio_cursor(Slot::TwoChannel, FrameSpan::Range(900, playtime), CursorOptions::new()).unwrap();
     let (_, c) = {
         let mut it = disc.read_track_audio(c);
         let f = it.next().unwrap().unwrap();
@@ -306,7 +313,13 @@ fn a_callers_index() {
     let mut prev: Option<TrackAudioCursor> = None;
     for (first, end) in [(990, 1000), (100, 120), (500, 503), (40, 41), (700, playtime)] {
         let c = match prev.take() {
-            None => disc.range_audio_cursor_indexed(Slot::TwoChannel, first, end, &index).unwrap(),
+            None => disc
+                .audio_cursor(
+                    Slot::TwoChannel,
+                    FrameSpan::Range(first, end),
+                    CursorOptions::new().with_index(&index),
+                )
+                .unwrap(),
             Some(p) => {
                 let next = disc.range_continuation(Slot::TwoChannel, first, end).unwrap();
                 next.check_index(&index).unwrap();
@@ -329,7 +342,11 @@ fn a_callers_index() {
     other.audio_end_lsn -= 1;
     let foreign = scarletbook::AreaIndex::new(&other, disc.toc().sectors, IndexOptions::new()).unwrap();
     assert!(matches!(
-        disc.range_audio_cursor_indexed(Slot::TwoChannel, 0, 1, &foreign),
+        disc.audio_cursor(
+            Slot::TwoChannel,
+            FrameSpan::Range(0, 1),
+            CursorOptions::new().with_index(&foreign)
+        ),
         Err(Error::InvalidArgument(_))
     ));
 }
@@ -453,7 +470,7 @@ fn another_images_checkpoints_stay_out() {
     }
     // X reads far into its area through the cursor itself (not the disc's iterators), so
     // that the checkpoints of X it records are still in it.
-    let mut cx = x.range_audio_cursor(Slot::TwoChannel, 0, 800).unwrap();
+    let mut cx = x.audio_cursor(Slot::TwoChannel, FrameSpan::Range(0, 800), CursorOptions::new()).unwrap();
     for _ in 0..700 {
         cx.next_frame(x.image_mut()).unwrap().unwrap();
     }
@@ -465,10 +482,14 @@ fn another_images_checkpoints_stay_out() {
     assert!(got == want);
     // Y's index holds only Y's checkpoints: a read anywhere reports Y's counts.
     for first in [500, 950, playtime - 1] {
-        let c = y.range_audio_cursor(Slot::TwoChannel, first, playtime).unwrap();
+        let c = y
+            .audio_cursor(Slot::TwoChannel, FrameSpan::Range(first, playtime), CursorOptions::new())
+            .unwrap();
         let mut a = y.read_track_audio(c);
         let f = a.next().unwrap().unwrap();
-        let c = plain_y.range_audio_cursor(Slot::TwoChannel, first, playtime).unwrap();
+        let c = plain_y
+            .audio_cursor(Slot::TwoChannel, FrameSpan::Range(first, playtime), CursorOptions::new())
+            .unwrap();
         let mut b = plain_y.read_track_audio(c);
         assert_eq!(f, b.next().unwrap().unwrap());
         assert_eq!(
@@ -479,10 +500,10 @@ fn another_images_checkpoints_stay_out() {
         assert_eq!(a.malformed_sectors(), 0);
     }
     // And X's reads stay exact too.
-    let c = x.range_audio_cursor(Slot::TwoChannel, 950, 960).unwrap();
+    let c = x.audio_cursor(Slot::TwoChannel, FrameSpan::Range(950, 960), CursorOptions::new()).unwrap();
     let mut a = x.read_track_audio(c);
     let got: Vec<_> = a.by_ref().map(Result::unwrap).collect();
-    let c = plain_x.range_audio_cursor(Slot::TwoChannel, 950, 960).unwrap();
+    let c = plain_x.audio_cursor(Slot::TwoChannel, FrameSpan::Range(950, 960), CursorOptions::new()).unwrap();
     let mut b = plain_x.read_track_audio(c);
     let want: Vec<_> = b.by_ref().map(Result::unwrap).collect();
     assert!(got == want);
@@ -507,7 +528,7 @@ fn a_jump_reports_the_earlier_scans_counts_until_it_reads() {
     while !indexed.extend_seek_index(Slot::TwoChannel, 1 << 20).unwrap() {}
     let mut prevs = Vec::new();
     for d in [&mut plain, &mut indexed] {
-        let c = d.range_audio_cursor(Slot::TwoChannel, 0, 10).unwrap();
+        let c = d.audio_cursor(Slot::TwoChannel, FrameSpan::Range(0, 10), CursorOptions::new()).unwrap();
         let mut it = d.read_track_audio(c);
         it.next().unwrap().unwrap();
         prevs.push(it.into_cursor());

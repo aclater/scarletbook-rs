@@ -93,7 +93,7 @@
 //! use scarletbook::audio::{AudioFrame, TrackAudio};
 //! use scarletbook::output::{Format, OutputOptions, PositionSource};
 //! use scarletbook::seek::{IndexOptions, SeekPolicy, Speculation, SpeculativeOptions};
-//! use scarletbook::{Disc, Error, Slot, TrackAudioCursor};
+//! use scarletbook::{CursorOptions, Disc, Error, FrameSpan, Slot, TrackAudioCursor};
 //!
 //! const BUFFER: usize = 4 << 20;
 //!
@@ -134,7 +134,7 @@
 //!     let layout = disc.output_layout(slot, first, end, Format::Dsf, &OutputOptions::default())?;
 //!     let cursor = match prev {
 //!         Some(prev) => disc.continue_range_audio(prev, slot, first, end)?,
-//!         None => disc.range_audio_cursor(slot, first, end)?,
+//!         None => disc.audio_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new())?,
 //!     };
 //!     let mut source = Window { frames: disc.read_track_audio(cursor), kept: VecDeque::new() };
 //!     let mut file = File::create(dir.join(format!("{n:03}.dsf")))?;
