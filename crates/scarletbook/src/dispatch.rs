@@ -29,10 +29,10 @@
 //!
 //! That slice checks the code behind the wrapper, not the wrapper's safety contract. With the
 //! features in the build, Miri accepts a call made without detection; it reports such a call
-//! as undefined behaviour only in a build without them, which here means `core-dispatch`, on
-//! the pull requests it runs on. What stands behind the contract is the type: only
-//! [`Isa::detect`] can make the fast [`Isa`]. Miri also interprets the Rust code, not the
-//! AVX2 machine code: the native tests check what the compiler builds.
+//! as undefined behaviour only in a build without them, which here means `core-dispatch`.
+//! What stands behind the contract is the type: only [`Isa::detect`] can make the fast
+//! [`Isa`]. Miri also interprets the Rust code, not the AVX2 machine code: the native tests
+//! check what the compiler builds.
 
 #![allow(unsafe_code)]
 

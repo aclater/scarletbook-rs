@@ -129,12 +129,13 @@ jobs:
               miri -p scarletbook "${args[@]}" ;;
             # The dispatch tests run in their own slices (below).
             core-lib) miri -p scarletbook --lib -- --skip fast_loop_matches_general --skip dispatch:: ;;
-            # On pull requests that change the DST decoder or the output path (ci.yml), about 12
-            # minutes. No target features are enabled, so under Miri `Isa::detect` finds none and
-            # both sides of these tests are the generic code: this checks the safe code, and it
+            # On main and nightly, and on pull requests that change the DST decoder or the output
+            # path (ci.yml), about 12 minutes. No target features are enabled, so under Miri
+            # `Isa::detect` finds none and both sides of these tests are the generic code: this
+            # checks the safe code, and it
             # doesn't run the wrapper (#267). It is also the only slice that could report the
-            # wrapper called without detection, which is undefined behaviour only in a build
-            # without the features.
+            # core wrapper called without detection, which is undefined behaviour only in a build
+            # without the features. scarletbook-pcm has no slice like it.
             core-dispatch)
               miri -p scarletbook --lib -- --exact dispatch::tests::detected_decoder_matches_generic_simple \
                 dispatch::output_tests::detected_output_matches_generic_simple
