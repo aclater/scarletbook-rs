@@ -81,8 +81,28 @@ def host_facts():
         "smt": read("/sys/devices/system/cpu/smt/active"),
         "governor": read("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"),
         "mem_bytes": mem,
+        "page_bytes": os.sysconf("SC_PAGE_SIZE"),
         "kernel": platform.release(),
     }
+
+
+def free_by_order():
+    """Free memory in KiB by block size, summed over the zones of /proc/buddyinfo: index n is
+    blocks of 2^n pages. None where that file is missing. Which free blocks a fresh image copy
+    takes may move plain-DSD seconds (README, "Fresh copies"), so each round records this before
+    and after writing its copy."""
+    kib = os.sysconf("SC_PAGE_SIZE") // 1024
+    total = []
+    try:
+        with open("/proc/buddyinfo") as f:
+            for line in f:
+                for order, count in enumerate(line.split()[4:]):
+                    if order == len(total):
+                        total.append(0)
+                    total[order] += int(count) * (kib << order)
+    except (OSError, ValueError):
+        return None
+    return total
 
 
 def run_child(argv, keep_stdout):
@@ -299,6 +319,7 @@ def main():
             print(f"skipping {c['id']} for {build}@{label}: the kit has no {os.path.basename(c['command'][0])}", file=sys.stderr)
         image = None
         for r in range(rounds):
+            free_before = free_by_order()
             if source:
                 # A fresh copy of the image for each round, shared by the builds of the round
                 # (README, "Fresh copies"): the page-cache pages that hold one image file can
@@ -306,6 +327,7 @@ def main():
                 # copies are kept until the case ends, so that none reuses pages another
                 # just freed, which were the slow ones on lennon (#248).
                 image = stage(source, os.path.join(copies, f"{c['id']}-{r}.iso"))
+            free_after = free_by_order()
             if r == 0:
                 for build, label, kit, version in able:
                     for _ in range(warmups):
@@ -331,6 +353,8 @@ def main():
                     "sys_s": round(ru.ru_stime, 6),
                     "cpu_s": round(ru.ru_utime + ru.ru_stime, 6),
                     "max_rss_kib": ru.ru_maxrss,
+                    "free_kib_by_order_before": free_before,
+                    "free_kib_by_order_after": free_after,
                     "host": host,
                 }
                 if keep:

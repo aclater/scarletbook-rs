@@ -93,7 +93,8 @@ else has claimed; ask on the issue instead.
   denies `unsafe_code` elsewhere: calls to `#[target_feature]` builds of safe code after
   run-time feature detection, with no intrinsics or raw pointers, each call with its own
   `SAFETY:` comment, checked by the crate's `tests/unsafe_policy.rs`:
-  - `scarletbook-pcm`'s `dispatch`, the AVX2 and FMA filter kernels (#173);
+  - `scarletbook-pcm`'s `dispatch`, the AVX2 and FMA filter kernels (#173) and the loops
+    around them: `pick`, `quantise` and `interleave` (#216, #223);
   - the core crate's `dispatch`: one `#[target_feature]` wrapper (AVX2, BMI, LZCNT and
     MOVBE) with two call sites, the DST decoder (#146) and the output path, `Layout::fill`
     and `Layout::read_at` with the DSF and DSDIFF fill beneath them (#202).
