@@ -597,7 +597,8 @@ fn caller_readings(
     let options = SpeculativeOptions::new().with_min_gap_sectors(0);
     (0..count)
         .map(|_| {
-            let mut c = TrackCursor::for_range_speculative(&area, 40, 45, n, Some(&*index), options).unwrap();
+            let with = CursorOptions::new().with_index(&*index).with_policy(SeekPolicy::Speculative(options));
+            let mut c = TrackCursor::open_range(&area, 40, 45, n, with).unwrap();
             // Not through the disc's iterators, which would give the reading to the disc's index.
             while let Some(frame) = c.next_frame(disc.image_mut()) {
                 frame.unwrap();
@@ -619,7 +620,8 @@ fn caller_index(disc: &Disc<Cursor<Vec<u8>>>) -> AreaIndex {
 fn kept_readings(disc: &mut Disc<Cursor<Vec<u8>>>, count: usize) -> Vec<TrackCursor> {
     (0..count)
         .map(|_| {
-            let c = disc.range_frames_cursor(Slot::TwoChannel, 40, 45).unwrap();
+            let c =
+                disc.frames_cursor(Slot::TwoChannel, FrameSpan::Range(40, 45), CursorOptions::new()).unwrap();
             small_reading(disc, c)
         })
         .collect()
@@ -685,7 +687,8 @@ fn merging_past_the_cap_reports_every_reading_once() {
 fn a_verdict_left_on_a_set_index_is_reported_once() {
     let (_, mut disc) = small_disc();
     // Made before the pass: sure to read provisionally.
-    let made_before = disc.range_frames_cursor(Slot::TwoChannel, 40, 45).unwrap();
+    let made_before =
+        disc.frames_cursor(Slot::TwoChannel, FrameSpan::Range(40, 45), CursorOptions::new()).unwrap();
     let mut index = caller_index(&disc);
     let first = caller_readings(&mut disc, &mut index, 1);
     while !index.extend(disc.image_mut(), u64::MAX).unwrap() {}
