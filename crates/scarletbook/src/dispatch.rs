@@ -21,6 +21,18 @@
 //! The wrapper holds no other unsafe operation: no intrinsics, no raw pointers. The
 //! exception is to be revisited under #199, for a safe alternative such as struct target
 //! features (RFC 3525) or per-CPU builds.
+//!
+//! Under Miri, `is_x86_feature_detected!` reports only the features the build enabled, so
+//! a plain `cargo miri test` runs the generic code on both sides of the tests below and
+//! never reaches the wrapper. The `core-dispatch-avx2` slice (`miri.yml`, main and nightly)
+//! builds with the features, which makes Miri run the wrapper and everything it calls.
+//!
+//! That slice checks the code behind the wrapper, not the wrapper's safety contract. With the
+//! features in the build, Miri accepts a call made without detection; it reports such a call
+//! as undefined behaviour only in a build without them, which here means `core-dispatch`.
+//! What stands behind the contract is the type: only [`Isa::detect`] can make the fast
+//! [`Isa`]. Miri also interprets the Rust code, not the AVX2 machine code: the native tests
+//! check what the compiler builds.
 
 #![allow(unsafe_code)]
 
@@ -139,6 +151,32 @@ mod avx2 {
 #[cfg(test)]
 #[path = "../tests/common/dst_enc.rs"]
 mod dst_enc;
+
+#[cfg(test)]
+pub(crate) mod testutil {
+    /// Runs `f` on a thread with a stack of 16 MiB. At opt-level 0, which is what a package
+    /// built outside the workspace gets (its profiles aren't packaged), the inlined decoding
+    /// loops need a few MiB, and test threads have 2 MiB (#268).
+    pub(crate) fn with_big_stack(f: impl FnOnce() + Send) {
+        std::thread::scope(|s| {
+            std::thread::Builder::new().stack_size(16 << 20).spawn_scoped(s, f).unwrap().join().unwrap();
+        });
+    }
+
+    /// The corpus images, or `None` (the test is skipped, with a message) in an unpacked
+    /// crate, which doesn't carry `../../corpus`. In the repository the corpus is required:
+    /// a package has `Cargo.toml.orig` next to its manifest and a checkout doesn't, so a
+    /// missing corpus fails the test there and CI fails (#268).
+    pub(super) fn images() -> Option<std::path::PathBuf> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let images = root.join("../../corpus/images");
+        if !images.exists() && root.join("Cargo.toml.orig").exists() {
+            eprintln!("skipped: {} is not in the packaged crate", images.display());
+            return None;
+        }
+        Some(images)
+    }
+}
 
 #[cfg(all(test, feature = "output"))]
 #[path = "../tests/common/mod.rs"]
@@ -289,12 +327,12 @@ mod output_tests {
     #[test]
     #[cfg_attr(miri, ignore = "the corpus is too large for Miri; see detected_output_matches_generic_simple")]
     fn detected_output_matches_generic() {
+        let Some(images) = super::testutil::images() else { return };
         let mut n = 0;
         for channels in 1..=6 {
             let mut disc = synthetic(channels, 9);
             n += compare(&mut disc, Slot::TwoChannel, &[(0, 9), (1, 4), (4, 9), (2, 3)], 5000);
         }
-        let images = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/images");
         let mut paths: Vec<_> = std::fs::read_dir(images).unwrap().map(|e| e.unwrap().path()).collect();
         paths.sort();
         let mut seen = [false; 7];
@@ -317,8 +355,8 @@ mod output_tests {
     }
 
     /// The same on small synthetic areas of 1, 2, 5 and 6 channels: a range and its chain
-    /// of two files. Under Miri (the `core-dispatch` slice), 2 channels and three of the
-    /// layouts ([`layouts`]).
+    /// of two files. Under Miri (the `core-dispatch` and `core-dispatch-avx2` slices), 2
+    /// channels and three of the layouts ([`layouts`]).
     #[test]
     fn detected_output_matches_generic_simple() {
         let channels: &[u8] = if cfg!(miri) { &[2] } else { &[1, 2, 5, 6] };
@@ -361,8 +399,7 @@ mod tests {
     }
 
     /// Up to `per_track` DST frames of every track of every corpus image, by channel count.
-    fn corpus_frames(per_track: usize) -> Vec<Vec<Vec<u8>>> {
-        let images = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/images");
+    fn corpus_frames(images: &std::path::Path, per_track: usize) -> Vec<Vec<Vec<u8>>> {
         let mut pools = vec![Vec::new(); 7];
         let mut paths: Vec<_> = std::fs::read_dir(images).unwrap().map(|e| e.unwrap().path()).collect();
         paths.sort();
@@ -436,14 +473,15 @@ mod tests {
     /// The decoder chosen for this CPU gives exactly the output and results of the generic
     /// decoder on the DST frames of the corpus (1 to 6 channels), on the generated stress
     /// frames of the benchmarks (2 and 6 channels), and on damaged copies of both. (On a
-    /// CPU without the features, and under Miri, both are the generic decoder.)
+    /// CPU without the features, both are the generic decoder.)
     #[test]
     #[cfg_attr(
         miri,
         ignore = "the corpus is too large for Miri; see detected_decoder_matches_generic_simple"
     )]
     fn detected_decoder_matches_generic() {
-        let pools = corpus_frames(6);
+        let Some(images) = super::testutil::images() else { return };
+        let pools = corpus_frames(&images, 6);
         let mut seen = 0;
         for channels in 1..=6u8 {
             let pool = &pools[usize::from(channels)];
@@ -461,9 +499,14 @@ mod tests {
         assert!(seen > 100, "only {seen} frames");
     }
 
-    /// The same on small generated frames, short enough for Miri.
+    /// The same on small generated frames, short enough for Miri. (Under Miri, both are
+    /// the generic decoder unless the build enables the features: `core-dispatch-avx2`.)
     #[test]
     fn detected_decoder_matches_generic_simple() {
+        super::testutil::with_big_stack(detected_decoder_matches_generic_simple_body);
+    }
+
+    fn detected_decoder_matches_generic_simple_body() {
         let mut seed = 0x51_3C_7A_D2u64;
         let mut rnd = move || {
             seed ^= seed << 13;

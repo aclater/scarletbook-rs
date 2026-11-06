@@ -357,6 +357,8 @@ pub const MAX_LANES: usize = 4;
 ///
 /// The 1-, 3- and 4-channel choices were measured on generated frames; their output is
 /// checked by the corpus's 1-, 3- and 4-channel DST cases (sacd-spec#15).
+///
+/// [`crate::TrackAudioCursor::with_dst_lanes`] chooses another count for one cursor.
 pub fn lanes(channels: u8) -> usize {
     let avx512 = cfg!(target_feature = "avx512cd");
     match channels {
@@ -1481,6 +1483,24 @@ mod tests {
         assert_eq!([0, 1, 2, 3, 4, 7, 4576].map(bitlen), [0, 1, 2, 2, 3, 3, 13]);
     }
 
+    /// `core-dispatch-avx2` really runs the wrapper. This test exists only in a Miri build
+    /// with the features, and the slice requires it by name: if the slice loses its flags,
+    /// the test is gone and the slice fails; if [`Isa::detect`] comes to need a feature the
+    /// flags don't enable, this fails. (It is here because `dispatch.rs` may name
+    /// `target_feature` only on its wrapper: `tests/common/unsafe_scan.rs`.)
+    #[cfg(all(
+        miri,
+        target_feature = "avx2",
+        target_feature = "bmi1",
+        target_feature = "bmi2",
+        target_feature = "lzcnt",
+        target_feature = "movbe"
+    ))]
+    #[test]
+    fn miri_slice_selects_the_wrapper() {
+        assert_ne!(Isa::detect(), Isa::generic());
+    }
+
     #[test]
     fn round8_floors() {
         assert_eq!(round8(-5), -1);
@@ -1489,6 +1509,10 @@ mod tests {
 
     #[test]
     fn plain_frames() {
+        crate::dispatch::testutil::with_big_stack(plain_frames_body);
+    }
+
+    fn plain_frames_body() {
         let mut out = vec![1u8; 2 * FL];
         decode(&[0x40, 7, 8], 2, &mut out).unwrap();
         assert_eq!(&out[..3], &[7, 8, 0]);
