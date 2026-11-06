@@ -7,8 +7,9 @@ Usage:
 
 Each DIR is an unpacked scarletbook-benchkit archive. `--kit BUILD@LABEL=DIR` times kits of
 several versions in one alternation (benchmarks/compare.sh); LABEL, by default the kit's
-version, goes into each result line. A case whose program a kit lacks (an older version) is
-skipped for that kit. The runner writes the run list's images
+version, goes into each result line. A case whose program or `bench` command a kit lacks (an
+older version) is skipped for that kit, and fails the run only if no kit has it, so that a failed
+run is always a real failure. The runner writes the run list's images
 into WORK with the first kit's scarletbook-synth (the images do not depend on the build),
 runs every case's rounds, alternating the builds, and prints one JSON line per timed run on
 stdout. Progress goes to stderr. It needs Python 3.8 or later and nothing else: no network,
@@ -81,8 +82,28 @@ def host_facts():
         "smt": read("/sys/devices/system/cpu/smt/active"),
         "governor": read("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"),
         "mem_bytes": mem,
+        "page_bytes": os.sysconf("SC_PAGE_SIZE"),
         "kernel": platform.release(),
     }
+
+
+def free_by_order():
+    """Free memory in KiB by block size, summed over the zones of /proc/buddyinfo: index n is
+    blocks of 2^n pages. None where that file is missing. Which free blocks a fresh image copy
+    takes may move plain-DSD seconds (README, "Fresh copies"), so each round records this before
+    and after writing its copy."""
+    kib = os.sysconf("SC_PAGE_SIZE") // 1024
+    total = []
+    try:
+        with open("/proc/buddyinfo") as f:
+            for line in f:
+                for order, count in enumerate(line.split()[4:]):
+                    if order == len(total):
+                        total.append(0)
+                    total[order] += int(count) * (kib << order)
+    except (OSError, ValueError):
+        return None
+    return total
 
 
 def run_child(argv, keep_stdout):
@@ -101,7 +122,31 @@ def run_child(argv, keep_stdout):
 
 
 def expand(argv, kit, image, scratch):
-    return [a.replace("{kit}", kit).replace("{image}", image or "").replace("{scratch}", scratch) for a in argv]
+    return [a.replace("{kit}", kit).replace("{image}", image or "").replace("{scratch}", scratch)
+            .replace("{evict}", os.path.join(HERE, "evict.py")) for a in argv]
+
+
+def bench_commands(program):
+    """The commands in the usage message of a `bench`, or None if it lists none."""
+    run = subprocess.run([program], capture_output=True, text=True)
+    return set(re.findall(r"^(?:usage:)?\s*bench\s+(\S+)", run.stderr, re.M)) or None
+
+
+def kit_lacks(argv, known_commands):
+    """What of a case's expanded command the kit does not have, or None if it has it all.
+
+    known_commands caches bench_commands per program. A `bench` that lists no commands is run
+    anyway, so that a usage message this cannot read shows up as failed runs, not as blank cells.
+    """
+    program = argv[0]
+    if not os.path.exists(program):
+        return os.path.basename(program)
+    if os.path.basename(program) != "bench":
+        return None
+    if program not in known_commands:
+        known_commands[program] = bench_commands(program)
+    commands = known_commands[program]
+    return f"bench {argv[1]}" if commands is not None and argv[1] not in commands else None
 
 
 def smoke_synth(args):
@@ -134,6 +179,10 @@ def check(runlist):
         command = c.get("command") or [""]
         if not PROGRAM.fullmatch(command[0]):
             errors.append(f"case {c['id']!r}: the program {command[0]!r} is not {{kit}}/NAME")
+        # bench starts what --evict names: only the helper beside this runner.
+        for flag, value in zip(command, command[1:] + [""]):
+            if flag == "--evict" and value != "{evict}":
+                errors.append(f"case {c['id']!r}: --evict {value!r} is not {{evict}}")
     if errors:
         sys.exit("run list rejected:\n  " + "\n  ".join(errors))
 
@@ -285,6 +334,7 @@ def main():
                                      smoke_synth(recipe) if a.smoke else recipe, kits[0][2], scratch)
 
     failed = False
+    known_commands = {}
     for case in cases:
         c = dict(defaults, **case)
         rounds = 1 if a.smoke else c["rounds"]
@@ -293,12 +343,22 @@ def main():
         source = paths.get(c["image"])
         copies = os.path.join(scratch, "copies")
         os.makedirs(copies, exist_ok=True)
-        # Kits that have the case's program (an older version may not).
-        able = [k for k in kits if os.path.exists(expand(c["command"][:1], k[2], source, scratch)[0])]
-        for build, label, *_ in sorted(set(kits) - set(able)):
-            print(f"skipping {c['id']} for {build}@{label}: the kit has no {os.path.basename(c['command'][0])}", file=sys.stderr)
+        # Kits that have the case's program and command (an older version may not).
+        able = []
+        for k in kits:
+            lacks = kit_lacks(expand(c["command"], k[2], source, scratch), known_commands)
+            if lacks:
+                print(f"skipping {c['id']} for {k[0]}@{k[1]}: the kit has no {lacks}", file=sys.stderr)
+            else:
+                able.append(k)
+        if not able:
+            # Every kit skipping a case is a wrong run list or wrong kits, not an older version.
+            print(f"error: no kit can run {c['id']}", file=sys.stderr)
+            failed = True
+            continue
         image = None
         for r in range(rounds):
+            free_before = free_by_order()
             if source:
                 # A fresh copy of the image for each round, shared by the builds of the round
                 # (README, "Fresh copies"): the page-cache pages that hold one image file can
@@ -306,6 +366,7 @@ def main():
                 # copies are kept until the case ends, so that none reuses pages another
                 # just freed, which were the slow ones on lennon (#248).
                 image = stage(source, os.path.join(copies, f"{c['id']}-{r}.iso"))
+            free_after = free_by_order()
             if r == 0:
                 for build, label, kit, version in able:
                     for _ in range(warmups):
@@ -331,6 +392,8 @@ def main():
                     "sys_s": round(ru.ru_stime, 6),
                     "cpu_s": round(ru.ru_utime + ru.ru_stime, 6),
                     "max_rss_kib": ru.ru_maxrss,
+                    "free_kib_by_order_before": free_before,
+                    "free_kib_by_order_after": free_after,
                     "host": host,
                 }
                 if keep:
