@@ -31,6 +31,21 @@ if [[ -n "$exe" ]]; then
 else
   "$cc" "${flags[@]}" crates/scarletbook-ffi/examples/smoke.c -L"$pkg/lib" -lscarletbook_ffi \
     -Wl,-rpath,"$pkg/lib" -o smoke-shared
+  # Linked through the unversioned name, the program records the ABI's (issue #39, M8), and
+  # the runs below find the library by that name.
+  abi=$(sed -n 's/^#define SB_ABI_VERSION //p' "$pkg/include/scarletbook.h")
+  if [[ "$(uname -s)" == Darwin ]]; then
+    want=@rpath/libscarletbook_ffi.$abi.dylib
+    recorded=$(otool -L smoke-shared | awk '/libscarletbook_ffi/ { print $1 }')
+  else
+    want=libscarletbook_ffi.so.$abi
+    recorded=$(readelf -d smoke-shared | sed -n 's/.*(NEEDED).*\[\(libscarletbook_ffi[^]]*\)\].*/\1/p')
+  fi
+  echo "smoke-shared needs $recorded"
+  if [[ "$recorded" != "$want" ]]; then
+    echo "the program linked with the shared library records '$recorded', not $want" >&2
+    exit 1
+  fi
 fi
 case "$pkg" in
   *x86_64-unknown-linux-*)

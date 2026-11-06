@@ -28,7 +28,9 @@ import sys
 pkg = pathlib.Path(sys.argv[1]).resolve()
 exports = set(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8").split())
 header = (pkg / "include" / "scarletbook.h").read_text(encoding="utf-8")
-lib_path = next(p for n in ("scarletbook_ffi.dll", "libscarletbook_ffi.dylib", "libscarletbook_ffi.so")
+# The name a program loads the library by, which carries the C ABI version.
+abi = re.search(r"^#define SB_ABI_VERSION (\d+)$", header, flags=re.M).group(1)
+lib_path = next(p for n in ("scarletbook_ffi.dll", f"libscarletbook_ffi.{abi}.dylib", f"libscarletbook_ffi.so.{abi}")
                 for p in [pkg / "lib" / n] if p.exists())
 lib = C.CDLL(str(lib_path))
 print(f"loaded {lib_path}")
@@ -89,7 +91,11 @@ print(f"sb_build_info() {lib.sb_build_info().decode()}")
 readme = pathlib.Path("README.md").read_text(encoding="utf-8")
 block = re.search(r"^### Using from Python \(ctypes\)\n.*?^```python\n(.*?)^```", readme, flags=re.M | re.S).group(1)
 bindings = {}
-exec(block.replace('"/path/to/libscarletbook_ffi.so"', repr(str(lib_path))), bindings)
+# The README names the library of its own ABI: after an ABI bump, this stops until it is updated.
+readme_path = f'"/path/to/libscarletbook_ffi.so.{abi}"'
+if readme_path not in block:
+    sys.exit(f"README.md's ctypes bindings do not load {readme_path} (SB_ABI_VERSION is {abi})")
+exec(block.replace(readme_path, repr(str(lib_path))), bindings)
 check("README SB_ABI_VERSION", bindings["SB_ABI_VERSION"], int(re.search(r"^#define SB_ABI_VERSION (\d+)$", header, flags=re.M).group(1)))
 CTYPES = {"uint8_t": C.c_uint8, "uint16_t": C.c_uint16, "uint32_t": C.c_uint32, "uint64_t": C.c_uint64,
           "int32_t": C.c_int32, "int64_t": C.c_int64, "size_t": C.c_size_t, "const char *": C.c_char_p,

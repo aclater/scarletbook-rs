@@ -173,7 +173,58 @@ let config = PcmConfig::new(PcmRate::Hz176400, Cutoff::Standard, 2);
 
 ### M8. The shared library's name
 
-ABI 2 is the 1.0 ABI, so the header and the ABI do not change. The shared library's name will
-carry the ABI version on Linux and macOS.
+ABI 2 is the 1.0 ABI, so the header and the ABI do not change, and `SB_ABI_VERSION` stays 2. The
+shared library's name now carries the ABI version on Linux and macOS.
 
-Not written yet.
+#### `libscarletbook_ffi.so` is now `libscarletbook_ffi.so.2` (#294)
+
+Changed in 0.6.0, and breaking for how a program is packaged, not for its source. No C source
+changes, and neither do archive file names. In an archive's `lib/`, the versioned name is now the
+file and the unversioned name a symlink to it:
+
+| | The file, and the name a new program records | Symlink |
+|---|---|---|
+| Linux | `libscarletbook_ffi.so.2` (the SONAME) | `libscarletbook_ffi.so` |
+| macOS | `libscarletbook_ffi.2.dylib` (install name `@rpath/libscarletbook_ffi.2.dylib`, compatibility version 2.0.0) | `libscarletbook_ffi.dylib` |
+
+Static linking and Windows do not change: `scarletbook_ffi.dll` keeps its name, and
+`sb_abi_version()` is the only ABI check there.
+
+A program you **relink** still uses `-lscarletbook_ffi`, but needs the versioned file at run time.
+Shipping only a file called `libscarletbook_ffi.so` fails with `libscarletbook_ffi.so.2: cannot
+open shared object file`.
+
+Before:
+
+```sh
+cc app.c -I$PKG/include -L$PKG/lib -lscarletbook_ffi -Wl,-rpath,'$ORIGIN'
+cp $PKG/lib/libscarletbook_ffi.so "$DEST/"
+```
+
+After:
+
+```sh
+cc app.c -I$PKG/include -L$PKG/lib -lscarletbook_ffi -Wl,-rpath,'$ORIGIN'
+cp $PKG/lib/libscarletbook_ffi.so.2 "$DEST/"
+```
+
+A program you **have not relinked** recorded the unversioned name, so it needs the symlink kept next
+to the library. With only `libscarletbook_ffi.so.2` it fails with `libscarletbook_ffi.so: cannot open
+shared object file`. A program built against the 0.5.8 archive runs with file and symlink on glibc
+Linux, with the same output; musl and macOS were not tried with such a program.
+
+A program that **loads the library by path**, as with ctypes, still works under the old name while
+the symlink is there. Move to the versioned name: it is the real file, so it survives packaging
+that drops symlinks.
+
+Before:
+
+```python
+lib = ctypes.CDLL("/path/to/libscarletbook_ffi.so")
+```
+
+After:
+
+```python
+lib = ctypes.CDLL("/path/to/libscarletbook_ffi.so.2")  # libscarletbook_ffi.2.dylib on macOS
+```
