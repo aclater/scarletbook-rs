@@ -60,6 +60,7 @@ Updates:
 | 2026-11-02 | generic scope (Part of #40) | Owner instruction of 2026-11-02 ("apply logical reasoning"): the pre-2006 preference is for codec techniques; new status GENERIC for generic programming techniques that change no computed result. Reclassified, each with its basis: D13, D14, D16, D17, D18, M4, P5 (the rounding trick), P11 (the mechanical part), P12, P13, O4 (loop order), O5, R1-R4, X2. P9 stays OWN. "Still open" now lists codec techniques only. No new source; no stored file changed. |
 | 2026-11-05 | deeper review of D13 and P5 (Part of #245, #40) | Owner request of 2026-11-02 on #245. D13 stays GENERIC and P5 stays as it was (CLEARED for exact rounding and round to even, the trick GENERIC); each row now has a fuller argument and dated sources. No computed result or code changed. New in the register: `crowl1990`, `hecker1996`, `dekker1970`, `shewchuk1997`, `cuoq2013` (copies stored; 19 files appended to `MANIFEST.tsv`; all 180 earlier files re-hashed and unchanged). To append, write permission was added temporarily to the store's top directory, six subdirectories and `MANIFEST.tsv`, then removed again, so those metadata times are 2026-11-05; afterwards nothing in the store was writable, all 199 listed files matched their hashes, and the manifest's first 41048 bytes still hash to the 2026-11-01 value (the reviewer re-ran these checks), and `bentley1982`, `bentley1984` (not obtained). Stored copies of `goldberg1991`, `white1989` and `sarwate1988` re-read and their hashes re-checked. No patent, and no SACD, DST or DSD-to-PCM source or code, was opened, and no search named those topics. |
 | 2026-11-05 | owner's sign-off on that review (#245) | Owner decision on #245, "accept as recommended": both conclusions accepted as written; the P5 trick stays GENERIC; `bentley1984` is not obtained; the `hecker1996` copy stays in the private store only. No row changes. |
+| 2026-11-05 | code guardrail and the GCC message (Part of #40) | An audit found two gaps in the #245 review's record. The code guardrail now states its dated exception for `cuoq2013`'s C examples, and the GCC message of 2005-04-08 (read, not stored, not relied on) is listed under "Other web sources". No row's status changed; no technique, stored file or `MANIFEST.tsv` changed. One Wayback CDX lookup; the message itself was not reopened. |
 
 ## Scope and method
 
@@ -84,7 +85,12 @@ Updates:
   "on record" means it was read earlier (#40, CLEANROOM.md) and the copy is now hashed.
 - **Code guardrail:** program listings inside papers (for example Brent's ALGOL 60 procedures,
   the C program in Witten et al.) were not read; only the prose was used. No code-only
-  artefact was downloaded.
+  artefact was downloaded. **Exception, dated 2026-11-05 (#245):** the few-line C examples of
+  general float rounding in `cuoq2013`, a blog post read in full for P5, were read with its
+  prose. They concern no SACD, DST or DSD-to-PCM code, and `round_even`, which P5 describes,
+  dates from #130 (2026-10-31), before the read. The GCC message under "Other web sources"
+  was read in the same review; whether it holds code is not on record, and it was not
+  reopened to find out.
 - **Not to be read under the clean-room rules:** the DSF, DSDIFF and ID3 documents behind
   sacd-spec specification 8, and any SACD or DST implementation. Only their citations and
   Wayback capture dates (CDX index lookups of the exact URLs in sacd-spec `PROVENANCE.md`) are
@@ -338,7 +344,7 @@ One row per source. **Full text**: *obtained* (a copy is in the evidence store),
 
 ## Other web sources in CLEANROOM.md
 
-The #33 research survey's web sources (CLEANROOM.md "General references consulted", S4-S35; S1-S3, S6, S8 and S9 are in the register above) and the documentation pages under "Sources consulted". They support no flagged technique (performance tooling, CPU data, Rust and CI documentation, mostly after 2006); only their Wayback captures are recorded, and no copy is stored. S36 (FFmpeg `cabac_functions.h`, dav1d `msac.c`) was not fetched again: decision B forbids opening FFmpeg files, and nothing depends on either. S37 (AMD's Zen 5 guide) was never read.
+The #33 research survey's web sources (CLEANROOM.md "General references consulted", S4-S35; S1-S3, S6, S8 and S9 are in the register above) and the documentation pages under "Sources consulted". They support no flagged technique (performance tooling, CPU data, Rust and CI documentation, mostly after 2006); only their Wayback captures are recorded, and no copy is stored. S36 (FFmpeg `cabac_functions.h`, dav1d `msac.c`) was not fetched again: decision B forbids opening FFmpeg files, and nothing depends on either. S37 (AMD's Zen 5 guide) was never read. The row marked #245 is the GCC message described below the table.
 
 | Ref | URL | Wayback (latest capture) | First capture | SPN requested 2026-11-01 |
 |---|---|---|---|---|
@@ -376,6 +382,9 @@ The #33 research survey's web sources (CLEANROOM.md "General references consulte
 | SC | https://doc.rust-lang.org/nightly/rustc/platform-support.html | [capture](https://web.archive.org/web/20261021042053/https://doc.rust-lang.org/nightly/rustc/platform-support.html) | 20200911151525 | no |
 | SC | https://github.blog/changelog/2025-09-19-github-actions-macos-13-runner-image-is-closing-down/ | [capture](https://web.archive.org/web/20260913144912/https://github.blog/changelog/2025-09-19-github-actions-macos-13-runner-image-is-closing-down/) | 20250920082407 | no |
 | SC | https://github.com/actions/runner-images/blob/main/images/windows/Windows2025-Readme.md | [capture](https://web.archive.org/web/20261019203335/https://github.com/actions/runner-images/blob/main/images/windows/Windows2025-Readme.md) | 20250102181649 | no |
+| #245 | https://gcc.gnu.org/legacy-ml/gcc/2005-04/msg00375.html | [capture](https://web.archive.org/web/20220521194455/https://gcc.gnu.org/legacy-ml/gcc/2005-04/msg00375.html) | 20220521194455 | no |
+
+**The GCC message (#245).** A GCC mailing-list message of 2005-04-08, read on 2026-11-05 during the deeper review of D13 and P5 (CLEANROOM.md fragment `cleanroom.d/245-evidence-d13-p5.md`, the Log row once folded). It was not stored and is not relied on: no row cites it, and P5 does not rest on it. The capture above is the only one the Wayback CDX index lists for that URL (looked up on 2026-11-05; the capture was not opened).
 
 ## Specification 8 documents (not read)
 

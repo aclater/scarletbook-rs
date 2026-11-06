@@ -7,8 +7,9 @@ proceeds; each stage adds to the log at the end.
 ## Rules followed
 
 - The only SACD/DST material consulted is the repository `aclater/sacd-spec`
-  (specifications 0 to 7, the charset tables, the conformance corpus and its README, and its
-  `PROVENANCE.md`).
+  (specifications 0 to 8, of which specification 8 since `1517ab7` and `6db1251`, see "Update
+  to `1517ab7` and `6db1251`"; the charset tables, the conformance corpus and its README, its
+  `benchmarks/README.md`, and its `PROVENANCE.md`).
 - Not read, searched for, fetched or installed: the source of any SACD or DST
   implementation, including pysacd, sacd-ripper, `sacd_extract`, FFmpeg's DST decoder,
   sacd-rs, the dst-decoder crate and the Philips/ISO reference decoder. No web search for

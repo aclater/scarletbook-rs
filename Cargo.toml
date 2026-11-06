@@ -11,6 +11,8 @@ repository = "https://github.com/aclater/scarletbook-rs"
 readme = "README.md"
 
 [workspace.lints.rust]
+# `scarletbook-ffi` has its own lints; the dispatch modules allow it (CONTRIBUTING).
+unsafe_code = "deny"
 missing_debug_implementations = "warn"
 rust_2018_idioms = { level = "warn", priority = -1 }
 
