@@ -89,7 +89,7 @@ pub(crate) enum ReadOutcome {
 /// use scarletbook::{Image, SectorFormat, log::Log};
 /// # fn main() -> Result<(), scarletbook::Error> {
 /// let file = std::fs::File::open("disc.iso")?;
-/// let image = Image::options().format(SectorFormat::Raw2064).log(Log::none()).open(file)?;
+/// let image = Image::options().with_format(SectorFormat::Raw2064).with_log(Log::none()).open(file)?;
 /// # let _ = image;
 /// # Ok(())
 /// # }
@@ -108,13 +108,13 @@ impl ImageOptions {
 
     /// The sector format, chosen by the caller instead of detected (specification 1, 1.4
     /// item 5). The master TOC signature is then checked by the TOC parser.
-    pub fn format(mut self, format: SectorFormat) -> Self {
+    pub fn with_format(mut self, format: SectorFormat) -> Self {
         self.format = Some(format);
         self
     }
 
     /// Where to report from the start, sector format detection included (see [`crate::log`]).
-    pub fn log(mut self, log: Log) -> Self {
+    pub fn with_log(mut self, log: Log) -> Self {
         self.log = log;
         self
     }
@@ -135,7 +135,7 @@ impl ImageOptions {
 
 impl Image<()> {
     /// The options for opening an image with a sector format or log of the caller's:
-    /// `Image::options().format(f).log(l).open(reader)`.
+    /// `Image::options().with_format(f).with_log(l).open(reader)`.
     pub fn options() -> ImageOptions {
         ImageOptions::new()
     }
@@ -160,10 +160,10 @@ impl<R: Read + Seek> Image<R> {
     /// As [`Image::open`].
     #[deprecated(
         since = "0.6.0",
-        note = "use `Image::options().log(log).open(reader)`; to be removed before 1.0"
+        note = "use `Image::options().with_log(log).open(reader)`; to be removed before 1.0"
     )]
     pub fn open_with_log(reader: R, log: Log) -> Result<Self, Error> {
-        Image::options().log(log).open(reader)
+        Image::options().with_log(log).open(reader)
     }
 
     fn detect(mut reader: R, log: Log) -> Result<Self, Error> {
@@ -214,10 +214,10 @@ impl<R: Read + Seek> Image<R> {
     /// [`Error::Io`] if the reader fails.
     #[deprecated(
         since = "0.6.0",
-        note = "use `Image::options().format(format).open(reader)`; to be removed before 1.0"
+        note = "use `Image::options().with_format(format).open(reader)`; to be removed before 1.0"
     )]
     pub fn with_format(reader: R, format: SectorFormat) -> Result<Self, Error> {
-        Image::options().format(format).open(reader)
+        Image::options().with_format(format).open(reader)
     }
 
     /// Opens an image with a sector format chosen by the caller, and reports to `log`
@@ -228,10 +228,10 @@ impl<R: Read + Seek> Image<R> {
     /// As [`Image::with_format`].
     #[deprecated(
         since = "0.6.0",
-        note = "use `Image::options().format(format).log(log).open(reader)`; to be removed before 1.0"
+        note = "use `Image::options().with_format(format).with_log(log).open(reader)`; to be removed before 1.0"
     )]
     pub fn with_format_and_log(reader: R, format: SectorFormat, log: Log) -> Result<Self, Error> {
-        Image::options().format(format).log(log).open(reader)
+        Image::options().with_format(format).with_log(log).open(reader)
     }
 
     fn open_format(mut reader: R, format: SectorFormat, log: Log) -> Result<Self, Error> {
@@ -506,7 +506,7 @@ mod tests {
         let detected = Image::options().open(Cursor::new(image_with_sig(f, 511))).unwrap();
         assert_eq!(detected.format(), f);
         // Chosen: no signature is looked for, and the sector count follows the format.
-        let chosen = Image::options().format(f).open(Cursor::new(vec![0u8; 2 * 2054])).unwrap();
+        let chosen = Image::options().with_format(f).open(Cursor::new(vec![0u8; 2 * 2054])).unwrap();
         assert_eq!((chosen.format(), chosen.sector_count()), (f, 2));
         assert!(matches!(Image::options().open(Cursor::new(vec![0u8; 8])), Err(Error::NotScarletbook)));
     }
@@ -541,7 +541,7 @@ mod tests {
         v[at + 2047] = 0xCD;
         // Partial trailing sector does not count.
         v.extend_from_slice(&[0u8; 2063]);
-        let mut img = Image::options().format(f).open(Cursor::new(v)).unwrap();
+        let mut img = Image::options().with_format(f).open(Cursor::new(v)).unwrap();
         assert_eq!(img.sector_count(), 3);
         let mut buf = vec![0u8; 2048];
         assert!(img.read_sectors(2, &mut buf).unwrap());

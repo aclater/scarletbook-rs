@@ -204,7 +204,7 @@ fn a_cursor_for_a_longer_image_is_refused() {
     let area = long_disc.toc().areas[0].clone();
     let n = long_disc.toc().sectors;
     let (log, lines) = recorder(Level::Error);
-    let mut disc = Disc::options().log(log).open(Cursor::new(short.clone())).unwrap();
+    let mut disc = Disc::options().with_log(log).open(Cursor::new(short.clone())).unwrap();
     assert!(disc.toc().sectors < n);
 
     // The positions of the sectors read before the missing ones, then the refusal, then
@@ -249,7 +249,7 @@ fn unlogged_continuations_open_alike() {
     let want = plain_frames(&img, 60, 80);
     let want_audio = plain_audio(&img, 60, 80);
     let (log, lines) = recorder(Level::Trace);
-    let mut disc = Disc::options().log(log).open(Cursor::new(img.clone())).unwrap();
+    let mut disc = Disc::options().with_log(log).open(Cursor::new(img.clone())).unwrap();
     disc.enable_seek_index(SLOT, IndexOptions::new().with_interval(8)).unwrap();
 
     // Frames, continued forward from a cursor that read 0..20.
@@ -561,7 +561,7 @@ fn invalid_frames_are_counted_past_the_line_cap() {
     let fs: Vec<PFrame> = (0..n).map(|k| PFrame { number: k, dst: true, data: vec![0] }).collect();
     let img = image(&fs, n);
     let (log, lines) = recorder(Level::Warn);
-    let mut disc = Disc::options().log(log).open(Cursor::new(img)).unwrap();
+    let mut disc = Disc::options().with_log(log).open(Cursor::new(img)).unwrap();
     let mut it = disc.range_audio(SLOT, 0, n).unwrap();
     let mut count = 0;
     for f in it.by_ref() {
@@ -657,7 +657,7 @@ fn a_panic_on_the_pool_comes_back_on_the_caller() {
             panic!("sink on the pool");
         }
     });
-    let mut disc = Disc::options().log(log).open(Cursor::new(img)).unwrap();
+    let mut disc = Disc::options().with_log(log).open(Cursor::new(img)).unwrap();
     let pool = Arc::new(rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap());
     let mut c = disc.range_audio_cursor(SLOT, 0, 40).unwrap();
     c.set_decode_on(scarletbook::DecodeOn::Pool(pool));
@@ -708,7 +708,7 @@ fn a_sink_may_decode_on_the_same_pool() {
         let c = disc.range_audio_cursor(SLOT, 0, 60).unwrap();
         *out.lock().unwrap() = decoded(&mut disc, c);
     });
-    let mut disc = Disc::options().log(log).open(Cursor::new(img)).unwrap();
+    let mut disc = Disc::options().with_log(log).open(Cursor::new(img)).unwrap();
     let pool = Arc::new(rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap());
     let mut c = disc.range_audio_cursor(SLOT, 0, 60).unwrap();
     c.set_decode_on(scarletbook::DecodeOn::Pool(pool));

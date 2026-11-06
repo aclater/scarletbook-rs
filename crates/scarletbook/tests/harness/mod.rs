@@ -460,7 +460,7 @@ pub fn seek_area() -> (scarletbook::Image<std::io::Cursor<Vec<u8>>>, scarletbook
         }
     }
     let image = scarletbook::Image::options()
-        .format(scarletbook::SectorFormat::Plain)
+        .with_format(scarletbook::SectorFormat::Plain)
         .open(std::io::Cursor::new(bytes))
         .unwrap();
     let area = scarletbook::Area {

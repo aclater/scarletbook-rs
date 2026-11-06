@@ -1043,7 +1043,7 @@ unsafe fn open_reader(
         return Err(Failure::arg("NULL output pointer"));
     }
     let DiscLog(log, target) = log;
-    let disc = match Disc::options().log(log).open(reader) {
+    let disc = match Disc::options().with_log(log).open(reader) {
         Ok(disc) => disc,
         Err(e) => {
             if let Some(t) = target {

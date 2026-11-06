@@ -2670,8 +2670,12 @@ pub enum Stored {
 }
 
 impl Stored {
-    /// The old name of [`Stored::Dsd`]. It still works in expressions and patterns; `use
-    /// Stored::Plain` does not.
+    /// The old name of [`Stored::Dsd`]. It still works in expressions and in patterns
+    /// written `Stored::Plain` on a `Stored` value; `use Stored::Plain` does not.
+    ///
+    /// **Under `use Stored::*`, a pattern `Plain` is not this constant.** It is a new binding
+    /// that matches every value, so that arm also takes `Dst` and `Missing`, with only
+    /// warnings (`unreachable_patterns`, `unused_variables`). Write `Dsd`.
     #[deprecated(since = "0.6.0", note = "renamed `Stored::Dsd`; to be removed before 1.0")]
     #[allow(non_upper_case_globals)]
     pub const Plain: Stored = Stored::Dsd;
@@ -3773,8 +3777,10 @@ pub(crate) mod tests {
         for (i, s) in bytes.chunks_exact_mut(SECTOR_SIZE).enumerate() {
             fill(i, s);
         }
-        let image =
-            Image::options().format(crate::SectorFormat::Plain).open(std::io::Cursor::new(bytes)).unwrap();
+        let image = Image::options()
+            .with_format(crate::SectorFormat::Plain)
+            .open(std::io::Cursor::new(bytes))
+            .unwrap();
         let playtime = Timecode {
             minutes: (frames / 4500) as u8,
             seconds: (frames / 75 % 60) as u8,

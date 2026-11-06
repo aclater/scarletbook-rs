@@ -493,7 +493,7 @@ Where the two interfaces name the same thing differently:
 |---|---|
 | Stored frames: `TrackCursor`, `TrackFrames`, `Disc::track_frames`, `Disc::range_frames` | Raw frames: `SbRawFrames`, `sb_raw_frames_*` |
 | `Disc::stored_frame_list` | `sb_stored_frame_list_open`, which returns an `SbRawFrames` |
-| `Disc::share`, `Disc::share_with_log` (a new reader) | `sb_disc_clone_callbacks` (new read and seek callbacks) |
+| `Disc::share`, `Disc::share_with_log` (a new reader) | `sb_disc_clone_callbacks`, `sb_disc_clone_callbacks_with_log` (new read and seek callbacks) |
 | `claim()` on a cursor, `None` for exact positions | `SbSpeculation.claim`, 0 for exact positions |
 | `claim_lsn()` on a cursor, `None` before the start is chosen and for exact positions | `SbSpeculation.lsn`, 0 in those cases |
 | `Stored::Dsd`, `FrameKind::Dsd`, `FrameStatus::Dsd` | `SB_FRAME_KIND_DSD` |

@@ -133,18 +133,34 @@ let d = Image::with_format(reader, format)?;
 After:
 
 ```rust
-let a = Disc::options().log(log).open(reader)?;
-let b = Disc::options().format(format).open(reader)?;
-let c = Disc::options().format(format).log(log).open(reader)?;
-let d = Image::options().format(format).open(reader)?;
+let a = Disc::options().with_log(log).open(reader)?;
+let b = Disc::options().with_format(format).open(reader)?;
+let c = Disc::options().with_format(format).with_log(log).open(reader)?;
+let d = Image::options().with_format(format).open(reader)?;
 ```
 
 #### `Stored::Plain` is now `Stored::Dsd` (#300)
 
+**Check this first: a match can silently take the wrong branch.** Under `use Stored::*`, a pattern
+`Plain` no longer names a variant. It becomes a new binding that matches every value, so that arm
+also takes `Dst` and `Missing`. The code still builds, with only warnings (`unreachable_patterns`,
+`unused_variables`, `non_snake_case`). To find it, search for the glob, then change each such
+pattern to `Dsd`:
+
+```sh
+grep -rnE 'Stored::\*' --include='*.rs' .
+```
+
+While migrating, also build with those warnings as errors:
+`RUSTFLAGS="-D unreachable_patterns -D unused_variables" cargo build --all-targets`. Removing the
+old name before 1.0 won't change this: it comes from the rename, and only a path written
+`Stored::Plain` gives an error then.
+
 Deprecated in 0.6.0 and removed before 1.0: the old name stays as a constant, so expressions and
-patterns on a `Stored` value still build, with a warning. What stops building now is `use
-Stored::Plain` and `Stored::Plain` in a pattern on a `&Stored`, and `{:?}` of the value prints `Dsd`.
-Its meaning does not change.
+patterns written `Stored::Plain` on a `Stored` value still build, with a warning. What stops building
+now is `use Stored::Plain`, and `Stored::Plain` in a pattern through a reference: on a `&Stored`, as
+`Some(Stored::Plain)` on an `Option<&Stored>`, or inside a tuple of references. `{:?}` of the value
+prints `Dsd`. Its meaning does not change.
 
 Before:
 

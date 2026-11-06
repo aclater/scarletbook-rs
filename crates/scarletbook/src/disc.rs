@@ -123,7 +123,7 @@ struct DiscShared {
 /// use scarletbook::{Disc, SectorFormat, log::Log};
 /// # fn main() -> Result<(), scarletbook::Error> {
 /// let file = std::fs::File::open("disc.iso")?;
-/// let disc = Disc::options().format(SectorFormat::Raw2064).log(Log::none()).open(file)?;
+/// let disc = Disc::options().with_format(SectorFormat::Raw2064).with_log(Log::none()).open(file)?;
 /// # let _ = disc;
 /// # Ok(())
 /// # }
@@ -140,15 +140,15 @@ impl DiscOptions {
     }
 
     /// The sector format, chosen by the caller instead of detected
-    /// ([`ImageOptions::format`]).
-    pub fn format(mut self, format: SectorFormat) -> Self {
-        self.image = self.image.format(format);
+    /// ([`ImageOptions::with_format`]).
+    pub fn with_format(mut self, format: SectorFormat) -> Self {
+        self.image = self.image.with_format(format);
         self
     }
 
     /// Where to report from the start, sector format detection included (see [`crate::log`]).
-    pub fn log(mut self, log: Log) -> Self {
-        self.image = self.image.log(log);
+    pub fn with_log(mut self, log: Log) -> Self {
+        self.image = self.image.with_log(log);
         self
     }
 
@@ -164,7 +164,7 @@ impl DiscOptions {
 
 impl Disc<()> {
     /// The options for opening a disc with a sector format or log of the caller's:
-    /// `Disc::options().format(f).log(l).open(reader)`.
+    /// `Disc::options().with_format(f).with_log(l).open(reader)`.
     pub fn options() -> DiscOptions {
         DiscOptions::new()
     }
@@ -189,10 +189,10 @@ impl<R: Read + Seek> Disc<R> {
     /// As [`Disc::open`].
     #[deprecated(
         since = "0.6.0",
-        note = "use `Disc::options().log(log).open(reader)`; to be removed before 1.0"
+        note = "use `Disc::options().with_log(log).open(reader)`; to be removed before 1.0"
     )]
     pub fn open_with_log(reader: R, log: Log) -> Result<Self, Error> {
-        Disc::options().log(log).open(reader)
+        Disc::options().with_log(log).open(reader)
     }
 
     /// Opens a disc image in a sector format chosen by the caller.
@@ -202,10 +202,10 @@ impl<R: Read + Seek> Disc<R> {
     /// As [`Disc::open`].
     #[deprecated(
         since = "0.6.0",
-        note = "use `Disc::options().format(format).open(reader)`; to be removed before 1.0"
+        note = "use `Disc::options().with_format(format).open(reader)`; to be removed before 1.0"
     )]
     pub fn open_with_format(reader: R, format: SectorFormat) -> Result<Self, Error> {
-        Disc::options().format(format).open(reader)
+        Disc::options().with_format(format).open(reader)
     }
 
     /// Opens a disc image in a sector format chosen by the caller, and reports to `log`
@@ -216,10 +216,10 @@ impl<R: Read + Seek> Disc<R> {
     /// As [`Disc::open`].
     #[deprecated(
         since = "0.6.0",
-        note = "use `Disc::options().format(format).log(log).open(reader)`; to be removed before 1.0"
+        note = "use `Disc::options().with_format(format).with_log(log).open(reader)`; to be removed before 1.0"
     )]
     pub fn open_with_format_and_log(reader: R, format: SectorFormat, log: Log) -> Result<Self, Error> {
-        Disc::options().format(format).log(log).open(reader)
+        Disc::options().with_format(format).with_log(log).open(reader)
     }
 
     /// Parses the TOC of an image, reporting to the image's log ([`Image::set_log`]).
