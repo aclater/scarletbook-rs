@@ -583,8 +583,10 @@ impl AreaIndex {
         }
         self.prune_provisional();
         // An area without existing audio sectors has its frontier at its end from the
-        // start: completeness is then all there is to take.
-        if other.frontier() <= self.frontier() && (self.is_complete() || !other.is_complete()) {
+        // start: completeness is then all there is to take. Checkpoints are counted, not
+        // frontiers compared: no checkpoint and one have the same frontier, and a pass of a
+        // small budget must not lose its first (#310).
+        if self.is_complete() || (!other.is_complete() && other.checkpoints.len() <= self.checkpoints.len()) {
             return Ok(());
         }
         for j in self.checkpoints.len()..other.checkpoints.len() {
