@@ -698,6 +698,11 @@ impl Failure {
     fn arg(msg: &str) -> Self {
         Failure(SbStatus::InvalidArgument, msg.to_owned())
     }
+
+    /// `Error::NoSuchTrack`, whose variant only the core crate can build, and its message.
+    fn no_such_track(slot: Slot, track: u32) -> Self {
+        Failure(SbStatus::NoSuchTrack, format!("no track {track} in area {slot}"))
+    }
 }
 
 impl From<Error> for Failure {
@@ -2299,7 +2304,7 @@ pub unsafe extern "C" fn sb_track_info(
         // SAFETY: forwarded contract.
         let d = unsafe { disc_handle(disc) }?.get()?;
         let area = find_area(&d, slot)?;
-        let t = area.track(number).ok_or(Error::NoSuchTrack { slot: area.slot, track: number })?;
+        let t = area.track(number).ok_or_else(|| Failure::no_such_track(area.slot, number))?;
         // SAFETY: forwarded contract.
         unsafe { write_out(out, track_info(t)) }?;
         Ok(SbStatus::Ok)
@@ -2325,7 +2330,7 @@ pub unsafe extern "C" fn sb_track_string(
         // SAFETY: forwarded contract.
         let d = unsafe { disc_handle(disc) }?.get()?;
         let area = find_area(&d, slot)?;
-        let t = area.track(number).ok_or(Error::NoSuchTrack { slot: area.slot, track: number })?;
+        let t = area.track(number).ok_or_else(|| Failure::no_such_track(area.slot, number))?;
         let s = track_string(t, field)?;
         // SAFETY: forwarded contract.
         unsafe { copy_string(s, buf, cap, len) }
@@ -4554,12 +4559,12 @@ impl SbSpeculation {
         let claim = claim.unwrap_or(0);
         let none = u32::MAX;
         let (state, lsn, first, last_returned, exact_from) = match s {
-            Speculation::Pending { lsn, first } => (SB_SPECULATION_PENDING, lsn, first, none, 0),
-            Speculation::Confirmed { lsn, first } => (SB_SPECULATION_CONFIRMED, lsn, first, none, 0),
-            Speculation::Refuted { lsn, first, last_returned, exact_from } => {
+            Speculation::Pending { lsn, first, .. } => (SB_SPECULATION_PENDING, lsn, first, none, 0),
+            Speculation::Confirmed { lsn, first, .. } => (SB_SPECULATION_CONFIRMED, lsn, first, none, 0),
+            Speculation::Refuted { lsn, first, last_returned, exact_from, .. } => {
                 (SB_SPECULATION_REFUTED, lsn, first, last_returned.unwrap_or(none), exact_from)
             }
-            Speculation::Unverified { lsn, first } => (SB_SPECULATION_UNVERIFIED, lsn, first, none, 0),
+            Speculation::Unverified { lsn, first, .. } => (SB_SPECULATION_UNVERIFIED, lsn, first, none, 0),
             Speculation::Exact => (SB_SPECULATION_EXACT, 0, 0, none, 0),
             // A state this interface does not know yet is never reported as exact.
             _ => (SB_SPECULATION_UNVERIFIED, 0, 0, none, 0),

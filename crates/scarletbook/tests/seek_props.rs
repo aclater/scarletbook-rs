@@ -223,7 +223,7 @@ fn long_frames_under_assembly_are_stored_or_replayed() {
             }
             if first == 2 {
                 // Resumed at the last checkpoint before frame 2's sector, inside frame 1.
-                let ResumedFrom::Checkpoint { lsn, replay_from } = c.resumed_from() else { panic!() };
+                let ResumedFrom::Checkpoint { lsn, replay_from, .. } = c.resumed_from() else { panic!() };
                 assert!(lsn - replay_from <= REPLAY_SECTORS || budget == 0);
                 if budget == 0 {
                     assert_eq!(replay_from, common::AUDIO_LSN as u64 + 1);

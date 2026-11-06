@@ -486,6 +486,7 @@ fn hostile_arguments() {
     assert_eq!(area(disc, 7).0, SbStatus::InvalidArgument);
     assert_eq!(track(disc, 9, 1).0, SbStatus::InvalidArgument);
     assert_eq!(track(disc, 0, 99).0, SbStatus::NoSuchTrack);
+    assert_eq!(last_error(), "no track 99 in area 2ch");
     let mut buf = [0 as c_char; 64];
     // SAFETY: `disc` is a live handle; `buf` is valid for 64 bytes; a NULL `len` is
     // rejected.

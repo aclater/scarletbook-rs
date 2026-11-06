@@ -48,6 +48,7 @@ pub enum Error {
     MasterTocTruncated,
     /// The master TOC version major number is above 1 (`master-toc-version-unsupported`).
     #[error("master TOC version {major}.{minor} is not supported")]
+    #[non_exhaustive]
     MasterTocVersionUnsupported {
         /// Stored major version.
         major: u8,
@@ -59,6 +60,7 @@ pub enum Error {
     NoAudioAreas,
     /// The area's channel count is not 1 to 6 (`channel-count-unsupported`).
     #[error("track refused: the area has {channels} channels, only 1 to 6 are supported")]
+    #[non_exhaustive]
     ChannelCountUnsupported {
         /// The area's stored channel count.
         channels: u8,
@@ -69,6 +71,7 @@ pub enum Error {
     /// The track (or frame range) ends beyond 7 frames per existing audio sector
     /// (`track-exceeds-capacity`).
     #[error("refused: it ends at frame {end_frame}, beyond the area capacity of {capacity} frames")]
+    #[non_exhaustive]
     TrackExceedsCapacity {
         /// The track's (or range's) end frame number.
         end_frame: u32,
@@ -80,6 +83,7 @@ pub enum Error {
     NoSuchArea(Slot),
     /// The requested track does not exist in the area.
     #[error("no track {track} in area {slot}")]
+    #[non_exhaustive]
     NoSuchTrack {
         /// The area's slot.
         slot: Slot,
@@ -90,6 +94,7 @@ pub enum Error {
     /// time: it must satisfy `first <= end <= playtime` (specification 4, 4.7.1 item 3, a
     /// caller error). An empty range is [`Error::TrackEmpty`].
     #[error("frame range [{first}, {end}) is not within the area's timeline [0, {playtime})")]
+    #[non_exhaustive]
     FrameRangeInvalid {
         /// The range's first frame number.
         first: u32,

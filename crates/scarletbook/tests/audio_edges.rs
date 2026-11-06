@@ -105,13 +105,15 @@ fn track_frames_report_a_provisional_reading() {
     let mut it = disc.range_frames(SLOT, 500, 520).unwrap();
     assert_eq!(it.range(), (500, 520));
     assert!(
-        matches!(it.speculation(), Speculation::Pending { lsn: 0, first: 500 }),
+        matches!(it.speculation(), Speculation::Pending { lsn: 0, first: 500, .. }),
         "chosen on the first read"
     );
     let first = it.next().unwrap().unwrap();
     assert_eq!(first, want[0]);
     assert_eq!(it.range(), (501, 520));
-    let Speculation::Pending { lsn, first: 500 } = it.speculation() else { panic!("{:?}", it.speculation()) };
+    let Speculation::Pending { lsn, first: 500, .. } = it.speculation() else {
+        panic!("{:?}", it.speculation())
+    };
     assert!(lsn > 0);
     assert_eq!(it.counts_from(), Some(lsn));
     assert_eq!(it.suspect(), None, "a well-formed area read in increasing order");
@@ -159,7 +161,9 @@ fn track_audio_reports_a_suspect_reading() {
     let mut it = disc.read_track_audio(c);
     let got: Vec<AudioFrame> = it.by_ref().map(Result::unwrap).collect();
     assert_eq!(got, want);
-    let Speculation::Pending { lsn, first: 990 } = it.speculation() else { panic!("{:?}", it.speculation()) };
+    let Speculation::Pending { lsn, first: 990, .. } = it.speculation() else {
+        panic!("{:?}", it.speculation())
+    };
     assert_eq!(it.suspect(), Some(Suspect::AreaLayout));
     assert_eq!(it.counts_from(), Some(lsn));
     let id = it.speculation_id().unwrap();
@@ -187,7 +191,7 @@ fn track_audio_reports_a_suspect_reading() {
     // A range outside the play range is a caller error (4.7.1 item 3).
     assert!(matches!(
         TrackAudioCursor::for_range_speculative(&area, 990, 1001, n, None, options()),
-        Err(Error::FrameRangeInvalid { first: 990, end: 1001, playtime: 1000 })
+        Err(Error::FrameRangeInvalid { first: 990, end: 1001, playtime: 1000, .. })
     ));
 }
 
@@ -336,7 +340,7 @@ fn cursors_continue_over_tracks_and_ranges() {
     assert_eq!(drain(&mut c, &mut disc), plain_frames(&img, 5, 15));
     assert!(matches!(
         c.continue_to_range(&area, 15, 5, n),
-        Err(Error::FrameRangeInvalid { first: 15, end: 5, playtime: 60 })
+        Err(Error::FrameRangeInvalid { first: 15, end: 5, playtime: 60, .. })
     ));
 
     // Decoded audio, likewise; an empty range is skipped as `track-empty` (4.7.1 item 4).
@@ -488,11 +492,11 @@ fn provisional_checkpoints_serve_without_hints() {
         for first in [560, 620, 690] {
             let c = disc.range_frames_cursor(SLOT, first, first + 5).unwrap();
             let (got, c) = read(&mut disc, c);
-            let ResumedFrom::Speculative { lsn, probes: 0 } = c.resumed_from() else {
+            let ResumedFrom::Speculative { lsn, probes: 0, .. } = c.resumed_from() else {
                 panic!("cut {cut} first {first}: {:?}", c.resumed_from())
             };
             assert!(
-                matches!(c.speculation(), Speculation::Pending { lsn: l, first: f } if l == lsn && f == first)
+                matches!(c.speculation(), Speculation::Pending { lsn: l, first: f, .. } if l == lsn && f == first)
             );
             assert_eq!(c.suspect(), suspect, "cut {cut} first {first}");
             assert_eq!(got, plain_frames(&img, first, first + 5), "cut {cut} first {first}");
@@ -532,7 +536,7 @@ fn a_foreign_checkpoint_at_l_does_not_confirm() {
     // A start at a provisional checkpoint: `L` lies on the checkpoint grid.
     let c = b.range_frames_cursor(SLOT, 620, 625).unwrap();
     let (_, c) = read(&mut b, c);
-    let ResumedFrom::Speculative { lsn, probes: 0 } = c.resumed_from() else {
+    let ResumedFrom::Speculative { lsn, probes: 0, .. } = c.resumed_from() else {
         panic!("{:?}", c.resumed_from())
     };
     assert_eq!((lsn - u64::from(area.audio_start_lsn)) % 16, 0);

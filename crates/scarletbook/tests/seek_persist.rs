@@ -292,7 +292,7 @@ fn checkpoints_share_one_frame_buffer() {
     assert!(index.memory() < 2 * 70_000 + 40 * index.checkpoints(), "{}", index.memory());
     let c = TrackCursor::for_range_indexed(&area, 1, playtime, n, &index).unwrap();
     let (got, c) = frames(&mut d, c);
-    let ResumedFrom::Checkpoint { lsn, replay_from } = c.resumed_from() else {
+    let ResumedFrom::Checkpoint { lsn, replay_from, .. } = c.resumed_from() else {
         panic!("{:?}", c.resumed_from())
     };
     assert!(lsn > common::AUDIO_LSN as u64 + 300, "{lsn}");
@@ -308,7 +308,7 @@ fn checkpoints_share_one_frame_buffer() {
     assert!(small.memory() < index.memory());
     let c = TrackCursor::for_range_indexed(&area, 1, playtime, n, &small).unwrap();
     let (got, c) = frames(&mut d, c);
-    let ResumedFrom::Checkpoint { lsn, replay_from } = c.resumed_from() else { panic!() };
+    let ResumedFrom::Checkpoint { lsn, replay_from, .. } = c.resumed_from() else { panic!() };
     assert!(replay_from < lsn, "replayed");
     assert_eq!(got, straight(&mut d, 1, playtime));
     assert!(index.to_bytes().len() < 70_000 + 60 * index.checkpoints());
@@ -359,7 +359,7 @@ fn a_read_error_during_replay_counts_nothing_twice() {
     let limit = (s0 + 10 + 32) * 2048 + 1;
     let mut failing = Disc::open(FailsPast { inner: Cursor::new(img), limit }).unwrap();
     let c = TrackCursor::for_range_indexed(&area, 1, playtime, n, &index).unwrap();
-    let ResumedFrom::Checkpoint { lsn, replay_from } = c.resumed_from() else { panic!() };
+    let ResumedFrom::Checkpoint { lsn, replay_from, .. } = c.resumed_from() else { panic!() };
     assert_eq!((lsn - s0, replay_from - s0), (80, 10));
     let mut it = failing.read_frames(c);
     assert!(matches!(it.next(), Some(Err(Error::Io(_)))));
