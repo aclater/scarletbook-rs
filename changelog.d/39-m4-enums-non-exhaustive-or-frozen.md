@@ -1,0 +1,22 @@
+Changed
+- **Breaking:** six enums are now `#[non_exhaustive]`, so that later variants are not breaking changes: `audio::FrameStatus`, `audio::DecodeOn` (`parallel` feature), `SectorFormat`, `toc::LoudspeakerLayout`, `toc::Speaker` and `toc::TrackTextItem`. Outside the crate, a `match` on one of them needs a wildcard arm. The other exhaustive enums are now documented as frozen, each with its reason, and a new test holds them to it, so a `match` on them keeps working with no wildcard arm: `Slot`, `toc::AreaKind`, `toc::DiscTextItem`, `toc::AreaTextItem`, `audio::FrameKind`, `audio::FrameContent`, `audio::Stored`, `text::Charset` and `log::Level` (#39).
+
+  Before:
+
+  ```rust
+  let good = match frame.status {
+      FrameStatus::Dsd | FrameStatus::Decoded => true,
+      FrameStatus::Missing | FrameStatus::Invalid(_) => false,
+  };
+  ```
+
+  After:
+
+  ```rust
+  let good = match frame.status {
+      FrameStatus::Dsd | FrameStatus::Decoded => true,
+      FrameStatus::Missing | FrameStatus::Invalid(_) => false,
+      // A later outcome: decide what it should mean for this program.
+      _ => false,
+  };
+  ```

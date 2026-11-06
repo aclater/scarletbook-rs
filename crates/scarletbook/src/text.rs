@@ -11,6 +11,9 @@ use std::sync::OnceLock;
 pub const MAX_STRING_BYTES: usize = 4096;
 
 /// A character set code's decoding (specification 2, 2.6.2), from its low 3 bits.
+///
+/// Frozen: exhaustive on purpose, so a `match` needs no wildcard arm. The 3-bit code has 8
+/// values, and [`Charset::from_code`] already gives each of them a decoding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Charset {
     /// Codes 0, 1, 2 and 7: every byte maps to U+0000 to U+00FF.

@@ -169,7 +169,7 @@ impl AreaPointer {
 
 macro_rules! text_struct {
     (
-        $(#[$meta:meta])* $name:ident, $item:ident { $($(#[$fmeta:meta])* $field:ident = $key:literal => $variant:ident),* $(,)? }
+        $(#[$meta:meta])* $name:ident, $(#[$imeta:meta])* $item:ident { $($(#[$fmeta:meta])* $field:ident = $key:literal => $variant:ident),* $(,)? }
     ) => {
         $(#[$meta])*
         #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -178,6 +178,7 @@ macro_rules! text_struct {
         }
 
         /// Identifies one text item.
+        $(#[$imeta])*
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         pub enum $item {
             $($(#[$fmeta])* $variant,)*
@@ -218,7 +219,12 @@ macro_rules! text_struct {
 
 text_struct! {
     /// Disc text: the 16 items of the first text channel (specification 2, 2.5.4).
-    DiscText, DiscTextItem {
+    DiscText,
+    ///
+    /// Frozen: exhaustive on purpose, so a `match` needs no wildcard arm. The disc text
+    /// sector has exactly these 16 string offsets, in fixed places (specification 2, 2.5.4),
+    /// with no room for another.
+    DiscTextItem {
         /// Album title.
         album_title = "album_title" => AlbumTitle,
         /// Album artist.
@@ -256,7 +262,11 @@ text_struct! {
 
 text_struct! {
     /// Area text (specification 3, 3.6).
-    AreaText, AreaTextItem {
+    AreaText,
+    ///
+    /// Frozen: exhaustive on purpose, so a `match` needs no wildcard arm. The area TOC has
+    /// exactly these four string offsets, in fixed places (specification 3, 3.3 and 3.6).
+    AreaTextItem {
         /// Area description.
         description = "description" => Description,
         /// Area copyright.
@@ -270,7 +280,9 @@ text_struct! {
 
 text_struct! {
     /// Track text (specification 3, 3.8).
-    TrackText, TrackTextItem {
+    TrackText,
+    #[non_exhaustive]
+    TrackTextItem {
         /// Title (type 0x01).
         title = "title" => Title,
         /// Performer (type 0x02).
@@ -374,6 +386,9 @@ impl MasterToc {
 }
 
 /// An area's kind, from its TOC signature (specification 3, 3.3).
+///
+/// Frozen: exhaustive on purpose, so a `match` needs no wildcard arm. An area TOC has one of
+/// exactly two signatures, one for each area slot ([`Slot`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AreaKind {
     /// `TWOCHTOC`.
@@ -481,6 +496,7 @@ impl Area {
 /// | 5 | 3 | [`ThreeTwo`](LoudspeakerLayout::ThreeTwo) |
 /// | 6 | 4 | [`FivePointOne`](LoudspeakerLayout::FivePointOne) |
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum LoudspeakerLayout {
     /// Stereo: 2 channels, configuration 0.
     Stereo,
@@ -534,6 +550,7 @@ impl LoudspeakerLayout {
     ///             Speaker::LowFrequencyEffects => 0x8,
     ///             Speaker::SurroundLeft => 0x10,
     ///             Speaker::SurroundRight => 0x20,
+    ///             _ => 0,
     ///         })
     ///         .fold(0, |mask, bit| mask | bit)
     /// }
@@ -560,6 +577,7 @@ impl LoudspeakerLayout {
 
 /// A loudspeaker of a defined layout (specification 3, 3.4.1 item 2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Speaker {
     /// Front left; "left" in stereo.
     FrontLeft,
