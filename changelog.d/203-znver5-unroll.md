@@ -1,0 +1,2 @@
+Fixed
+- Builds with AVX-512 enabled at compile time, such as the `znver5` benchmark program, decode 5-channel DST in 2 frames through the unrolled loop again, as 0.5.8 did. On Zen 5, 0.5.9's `znver5` program was 1.9x slower than 0.5.8's on one thread and 1.26x slower at 32 threads on a consumer's images. The output, and the generated code of generic and x86-64-v3 builds, do not change (#203, #329)
