@@ -1078,6 +1078,33 @@ fn whole_area_range_is_tracks_plus_pauses() {
     free(disc);
 }
 
+/// What C callers get for the errors only the core crate can build (#302): the rest are in
+/// `every_error_keeps_its_status_and_message`, in the library's unit tests.
+#[test]
+fn refusals_keep_their_status_and_message() {
+    // One byte of the tiny image makes each refusal that depends on what is on the disc.
+    let mut img = tiny_image();
+    img[510 * 2048 + 8] = 2;
+    assert_eq!(open(&img).unwrap_err(), SbStatus::MasterTocVersionUnsupported);
+    assert_eq!(last_error(), "master TOC version 2.0 is not supported");
+
+    let mut img = tiny_image();
+    img[540 * 2048 + 32] = 7;
+    let disc = open(&img).unwrap();
+    assert_eq!(list_open(disc, 0).unwrap_err(), SbStatus::ChannelCountUnsupported);
+    assert_eq!(last_error(), "track refused: the area has 7 channels, only 1 to 6 are supported");
+    free(disc);
+
+    let disc = open(&tiny_image()).unwrap();
+    assert_eq!(range_check(disc, 0, 0, 10), SbStatus::TrackExceedsCapacity);
+    assert_eq!(last_error(), "refused: it ends at frame 10, beyond the area capacity of 7 frames");
+    assert_eq!(audio_open(disc, 0, 99).unwrap_err(), SbStatus::NoSuchTrack);
+    assert_eq!(last_error(), "no track 99 in area 2ch");
+    assert_eq!(range_check(disc, 0, 0, 11), SbStatus::FrameRangeInvalid);
+    assert_eq!(last_error(), "frame range [0, 11) is not within the area's timeline [0, 10)");
+    free(disc);
+}
+
 #[test]
 fn range_refusals() {
     // The tiny image: one 2-channel area of 10 frames' play time and 1 audio sector
