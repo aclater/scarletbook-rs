@@ -128,12 +128,25 @@ jobs:
       - name: Check the install name and the minimum macOS version
         if: runner.os == 'macOS'
         run: |
-          lib=$(echo dist/*/lib/libscarletbook_ffi.dylib)
-          # A program linked against it looks for it on its rpath, not at the build path.
+          abi=$(sed -n 's/^#define SB_ABI_VERSION //p' crates/scarletbook-ffi/include/scarletbook.h)
+          lib=$(echo dist/*/lib/"libscarletbook_ffi.$abi.dylib")
+          # A program linked against it looks for it on its rpath, not at the build path, by
+          # a name that carries the C ABI version (issue #39, M8).
           install_name=$(otool -D "$lib" | tail -n 1)
           echo "install name: $install_name"
-          if [[ "$install_name" != @rpath/libscarletbook_ffi.dylib ]]; then
+          if [[ "$install_name" != "@rpath/libscarletbook_ffi.$abi.dylib" ]]; then
             echo "::error::install name is $install_name"
+            exit 1
+          fi
+          # otool -L lists the library's own name and versions first.
+          own=$(otool -L "$lib" | sed -n 2p)
+          echo "$own"
+          if [[ "$own" != *"compatibility version $abi.0.0, current version $abi.0.0"* ]]; then
+            echo "::error::the library's versions are not $abi.0.0: $own"
+            exit 1
+          fi
+          if [[ "$(readlink "$(dirname "$lib")/libscarletbook_ffi.dylib")" != "libscarletbook_ffi.$abi.dylib" ]]; then
+            echo "::error::libscarletbook_ffi.dylib is not a link to libscarletbook_ffi.$abi.dylib"
             exit 1
           fi
           # LC_BUILD_VERSION (minos) from macOS 10.14 on, LC_VERSION_MIN_MACOSX (version) before.

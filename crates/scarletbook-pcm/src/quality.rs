@@ -195,7 +195,7 @@ fn sines_have_the_level_and_phase_of_the_response() {
 #[test]
 fn sweep_follows_the_response() {
     for (rate, cutoff) in [
-        (PcmRate::Hz176400, Cutoff::Default),
+        (PcmRate::Hz176400, Cutoff::Standard),
         (PcmRate::Hz352800, Cutoff::Wide),
         (PcmRate::Hz88200, Cutoff::Low),
     ] {
@@ -226,7 +226,7 @@ fn sweep_follows_the_response() {
 #[test]
 fn dc_has_its_level_and_gain() {
     for (rate, cutoff) in [
-        (PcmRate::Hz176400, Cutoff::Default),
+        (PcmRate::Hz176400, Cutoff::Standard),
         (PcmRate::Hz88200, Cutoff::Low),
         (PcmRate::Hz352800, Cutoff::Wide),
     ] {
@@ -312,7 +312,7 @@ fn impulse_is_exactly_symmetric() {
 fn full_scale() {
     for rate in PcmRate::ALL {
         let frame = vec![0xFFu8; FRAME_BYTES_PER_CHANNEL];
-        let mut conv = Converter::new(PcmConfig::new(rate, Cutoff::Default, 1)).unwrap();
+        let mut conv = Converter::new(PcmConfig::new(rate, Cutoff::Standard, 1)).unwrap();
         let mut out = vec![0i32; conv.samples_per_frame()];
         let run = FrameRun::new(&frame).with_before(Some(&frame)).with_after(Some(&frame));
         let stats = conv.convert_run(run, &mut out).unwrap();

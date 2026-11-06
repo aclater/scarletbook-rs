@@ -133,6 +133,10 @@ impl std::fmt::Display for Malformed {
 /// ptables' probability tables (8 KiB each), and a 9 KiB copy of each channel's, about
 /// 0.9 MB. A cursor's own decoder, and each pool thread's, holds up to
 /// [`crate::dst::lanes`] lanes of them.
+///
+/// [`TrackAudioCursor::with_dst_lanes`] replaces [`crate::dst::lanes`] throughout this
+/// description, for that cursor; a chosen count of up to [`crate::dst::MAX_LANES`] keeps every
+/// bound above.
 pub const MAX_PARALLEL_BATCH: usize = 512;
 
 /// Positions held ahead per pool thread with the `parallel` feature (see
@@ -142,6 +146,10 @@ pub const PARALLEL_FRAMES_PER_THREAD: usize = 16;
 /// Where a [`TrackAudioCursor`] decodes its DST frames, with the `parallel` feature
 /// ([`TrackAudioCursor::set_decode_on`]). Whichever is chosen, the frames returned, their
 /// order, counts and log lines are the same; only the threads that decode differ.
+///
+/// By a stated decision (#39), [`DecodeOn::Pool`] makes rayon 1 part of this crate's public
+/// API rather than hiding it behind a wrapper: rayon 1 is stable, and a rayon 2 would need
+/// a new major version of this crate.
 #[cfg(feature = "parallel")]
 #[derive(Clone, Debug, Default)]
 pub enum DecodeOn {
@@ -182,6 +190,7 @@ pub enum FrameKind {
 
 /// A frame accepted onto an area's timeline (specification 4, 4.5).
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct AreaFrame {
     /// Its frame number (timeline position).
     pub number: u32,
@@ -1824,11 +1833,29 @@ impl FrameContent {
 
 /// One timeline position of a track or frame range.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct TrackFrame {
     /// The frame number.
     pub number: u32,
     /// Its content.
     pub content: FrameContent,
+}
+
+impl TrackFrame {
+    /// A timeline position holding `content`, for a caller that decodes frames it saved
+    /// ([`decode_frame`]).
+    ///
+    /// ```
+    /// use scarletbook::{DstDecoder, FrameContent, FrameStatus, TrackFrame, audio::decode_frame};
+    ///
+    /// let frame = TrackFrame::new(7, FrameContent::Missing);
+    /// let audio = decode_frame(&mut DstDecoder::new(), frame, 2).unwrap();
+    /// assert_eq!((audio.number, audio.status), (7, FrameStatus::Missing));
+    /// assert_eq!(audio.data, vec![0x69; 2 * 4704]);
+    /// ```
+    pub fn new(number: u32, content: FrameContent) -> Self {
+        TrackFrame { number, content }
+    }
 }
 
 /// The reading state of one track's timeline positions (specification 4, 4.7),
@@ -2509,6 +2536,7 @@ pub enum FrameStatus {
 
 /// One decoded timeline position: `C x 4704` bytes in interleaved layout.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct AudioFrame {
     /// The frame number.
     pub number: u32,
@@ -2669,6 +2697,9 @@ pub struct TrackAudioCursor {
     /// Where DST frames are decoded; kept by continuations.
     #[cfg(feature = "parallel")]
     decode_on: DecodeOn,
+    /// How many DST frames to decode together, if chosen
+    /// ([`TrackAudioCursor::with_dst_lanes`]); kept by continuations.
+    dst_lanes: Option<usize>,
     /// Decodes on the calling thread: always without `parallel`; with it, the positions
     /// that are not DST frames, and everything on a pool of one thread.
     decoder: DstDecoder,
@@ -2881,6 +2912,7 @@ impl TrackAudioCursor {
         {
             next.decode_on = self.decode_on;
         }
+        next.dst_lanes = self.dst_lanes;
         next.stored = self.stored.map(|_| VecDeque::new());
         next
     }
@@ -2890,6 +2922,7 @@ impl TrackAudioCursor {
             frames,
             #[cfg(feature = "parallel")]
             decode_on: DecodeOn::default(),
+            dst_lanes: None,
             decoder: DstDecoder::new(),
             ahead: VecDeque::new(),
             ready: VecDeque::new(),
@@ -2954,11 +2987,46 @@ impl TrackAudioCursor {
         self.decode_on = on;
     }
 
+    /// This cursor, decoding `lanes` DST frames together on each thread
+    /// ([`crate::dst::DstDecoder::decode_many`]) instead of the [`crate::dst::lanes`] for
+    /// its channel count, on the calling thread and on a pool alike; continuations
+    /// ([`TrackAudioCursor::continue_to`] and the like) keep the choice.
+    ///
+    /// It changes speed and memory only: the frames returned, their order, counts and
+    /// `Warn` log lines are the same for every value, whenever this is called. Positions
+    /// are read ahead in groups of this size too (see [`MAX_PARALLEL_BATCH`]), and the
+    /// `Trace` lines naming each group follow it. This is for measuring: which count is
+    /// fastest depends on the processor and the pool. Without this call the cursor uses
+    /// [`crate::dst::lanes`], whose values are tuning: the default can change in any release,
+    /// per build and per CPU, while a count chosen here stays as chosen.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::DstLanesInvalid`] unless `lanes` is from 1 to [`crate::dst::MAX_LANES`]; the
+    /// cursor is dropped with the call.
+    pub fn with_dst_lanes(mut self, lanes: usize) -> Result<Self, Error> {
+        if !(1..=crate::dst::MAX_LANES).contains(&lanes) {
+            return Err(Error::DstLanesInvalid { lanes });
+        }
+        self.dst_lanes = Some(lanes);
+        Ok(self)
+    }
+
+    /// The count chosen with [`TrackAudioCursor::with_dst_lanes`], if any.
+    pub fn dst_lanes(&self) -> Option<usize> {
+        self.dst_lanes
+    }
+
+    /// How many frames of `channels` channels to decode together.
+    fn group(&self, channels: u8) -> usize {
+        self.dst_lanes.unwrap_or_else(|| crate::dst::lanes(channels))
+    }
+
     /// Most positions held ahead of the caller, the one being returned included: one group
     /// of frames decoded together on the calling thread (see [`MAX_PARALLEL_BATCH`]) or,
     /// with `parallel` on a pool of more than one thread, many.
     fn window(&self, channels: u8) -> usize {
-        let group = crate::dst::lanes(channels);
+        let group = self.group(channels);
         #[cfg(feature = "parallel")]
         {
             let threads = match &self.decode_on {
@@ -2988,7 +3056,7 @@ impl TrackAudioCursor {
     fn fill<R: Read + Seek>(&mut self, image: &mut Image<R>) -> bool {
         let channels = self.channels();
         let window = self.window(channels);
-        let group = crate::dst::lanes(channels);
+        let group = self.group(channels);
         let held = self.ahead.len() + self.ready.len();
         if self.pending_error.is_some() || (held > 0 && held + group > window) {
             return false;
@@ -3166,7 +3234,8 @@ impl TrackAudioCursor {
                     if matches!(f.content, FrameContent::Dst(_)) {
                         // This frame and the DST frames waiting behind it, together.
                         let mut run = vec![f];
-                        while run.len() < crate::dst::lanes(channels) {
+                        let group = self.group(channels);
+                        while run.len() < group {
                             match self.ahead.front() {
                                 Some(Pending::Here(TrackFrame { content: FrameContent::Dst(_), .. })) => {
                                     if let Some(Pending::Here(g)) = self.ahead.pop_front() {

@@ -99,12 +99,12 @@ fn check_list(disc: &mut Disc<BufReader<File>>, slot: Slot, range: &[TrackFrame]
     let listed: Vec<TrackFrame> = frames
         .iter()
         .filter(|f| f.number < playtime)
-        .map(|f| TrackFrame {
-            number: f.number,
-            content: match f.kind {
+        .map(|f| {
+            let content = match f.kind {
                 scarletbook::FrameKind::Dst => FrameContent::Dst(f.data.clone()),
                 scarletbook::FrameKind::Dsd => FrameContent::Dsd(f.data.clone()),
-            },
+            };
+            TrackFrame::new(f.number, content)
         })
         .collect();
     assert_eq!(listed, in_range, "{id} {slot}");
