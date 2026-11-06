@@ -1062,6 +1062,9 @@ impl Layout {
     ///
     /// The errors of `source`, and [`Error::InvalidArgument`] if it gives content of the
     /// wrong size. `out` is then partly filled.
+    ///
+    /// A DSF read asks for every position of the rows it touches ([`Layout::positions_for`]),
+    /// so it fails if any of them fails, also one that holds none of the bytes read.
     pub fn fill(&self, offset: u64, out: &mut [u8], source: &mut dyn PositionSource) -> Result<usize, Error> {
         self.fill_with(Isa::detect(), offset, out, source)
     }
