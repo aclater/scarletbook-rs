@@ -1043,7 +1043,14 @@ fn rows<const NCH: usize, const U: usize, const FROM: usize>(
 /// byte; beyond, the loop body would outgrow the instruction caches (inferred: no front-end
 /// counters were taken). Measured on Zen 2 (#203): at 10, 5 channels in 2 frames run fewer
 /// instructions unrolled but take more cycles.
-const UNROLL_BYTE: usize = 9;
+///
+/// Builds with AVX-512 (`avx512cd`) keep 10, which only moves 2 frames x 5 channels. Tuned for
+/// Zen 4 or Zen 5 (`-C target-cpu`), the compiler pairs the steps of 2 frames into vector
+/// operations in the loop that does not unroll the bit position; 0.5.9's `znver5` program, the
+/// first with that loop for 5 channels, was 1.9x slower than 0.5.8's on Zen 5 on one thread
+/// (#203). Unrolled, the steps stay scalar. `cfg` cannot see the tuning, so other AVX-512
+/// builds take this limit too, where the steps are scalar either way (not measured).
+const UNROLL_BYTE: usize = if cfg!(target_feature = "avx512cd") { 10 } else { 9 };
 
 /// A row on the stack of [`run`], aligned so that no vector access of it splits a cache line.
 #[derive(Clone, Copy)]

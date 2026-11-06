@@ -1,0 +1,1 @@
+| 2026-11-06 | #203: the unrolling limit on AVX-512 builds, from a consumer's Zen 5 timings and disassembly of this project's released programs | No new sources consulted. Worked from this crate, its release assets and measurements reported on #203. |
