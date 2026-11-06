@@ -604,10 +604,11 @@ The shared library's name carries the C ABI version, `SB_ABI_VERSION`, not the c
 
 `-lscarletbook_ffi` finds the unversioned link and the program records the versioned name, so
 **the versioned file is the one to ship**, found through the program's rpath
-(`-Wl,-rpath,@loader_path` on macOS). Copy it under that name; the link is not needed at run
-time. A library loaded by path, as with ctypes, loads under either name. A program linked
-against an older release recorded the unversioned name, and finds the library through the link
-until it is relinked.
+(`-Wl,-rpath,@loader_path` on macOS). Copy it under that name; such a program does not need the
+link at run time. A program linked against a release before 0.6.0 recorded the unversioned name,
+so it does need the link, next to the library, until it is relinked. A library loaded by path, as
+with ctypes, loads under either name while the link is there. See
+[Migrating to 0.6.0](docs/migrating-0.6.md#m8-the-shared-librarys-name).
 
 Windows has no SONAME: a program records the DLL's file name. `scarletbook_ffi.dll` keeps its
 name, because integrators ship it next to their program, so `sb_abi_version()` is the only
@@ -977,8 +978,8 @@ Linux and macOS the shared library is named after this number (see "Linking"), s
 
 The ABI is everything `scarletbook.h` declares (functions and their signatures, struct
 layouts, enum names and values, macros) and the behaviour the header documents.
-`SB_ABI_VERSION` in the header, and `sb_abi_version()` in the library, number its breaking
-changes:
+`SB_ABI_VERSION` in the header, `sb_abi_version()` in the library and the number in the shared
+library's name on Linux and macOS all number its breaking changes:
 
 - **Additions keep `SB_ABI_VERSION`**: new functions, new types, new enum values (status
   codes included: treat a status you do not know as a failure) and new macros. A program
