@@ -46,7 +46,7 @@ requests working on different items do not touch the same lines.
 
 Preparing the 0.6.0 release needs every section filled in, so `grep -c '^Not written yet\.$'
 docs/migrating-0.6.md` must give 0. The release preparation then removes this part and the
-skeleton note above, and links this page from the README.
+skeleton note above.
 
 ## Rust API
 
