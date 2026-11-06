@@ -121,7 +121,8 @@ def run_child(argv, keep_stdout):
 
 
 def expand(argv, kit, image, scratch):
-    return [a.replace("{kit}", kit).replace("{image}", image or "").replace("{scratch}", scratch) for a in argv]
+    return [a.replace("{kit}", kit).replace("{image}", image or "").replace("{scratch}", scratch)
+            .replace("{evict}", os.path.join(HERE, "evict.py")) for a in argv]
 
 
 def smoke_synth(args):
@@ -154,6 +155,10 @@ def check(runlist):
         command = c.get("command") or [""]
         if not PROGRAM.fullmatch(command[0]):
             errors.append(f"case {c['id']!r}: the program {command[0]!r} is not {{kit}}/NAME")
+        # bench starts what --evict names: only the helper beside this runner.
+        for flag, value in zip(command, command[1:] + [""]):
+            if flag == "--evict" and value != "{evict}":
+                errors.append(f"case {c['id']!r}: --evict {value!r} is not {{evict}}")
     if errors:
         sys.exit("run list rejected:\n  " + "\n  ".join(errors))
 

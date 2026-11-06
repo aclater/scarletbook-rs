@@ -30,12 +30,13 @@ An archive holds one directory:
 
 | File | What it is |
 |---|---|
-| `bench` | the benchmark program (`bench --version`, `bench decode`, `bench dsf`, `bench realtime`; see `crates/scarletbook-bench`) |
+| `bench` | the benchmark program (`bench --version`, `bench decode`, `bench dsf`, `bench realtime`, `bench open`, `bench first`; see `crates/scarletbook-bench`) |
 | `scarletbook-synth` | writes the synthetic images of the run list |
 | `callpattern` | the scarletbook-pcm `callpattern` example: DSD64 stereo to 176.4 kHz 24-bit, generated input |
 | `runlist.json` | the cases (below) |
 | `corpus/` | the two corpus images `scarletbook-synth` takes DST frames from (CC0, `corpus/LICENSE`) |
 | `run.py` | the reference runner (below) |
+| `evict.py` | evicts an image from the page cache for the cold cases, and checks that it left (below) |
 | `table.py` | prints the Markdown table of `RESULTS.md` from the runner's output |
 | `README.txt`, `README.md`, `LICENSE-*` | version, commit and build; this file; the licences |
 
@@ -56,22 +57,24 @@ generic one also runs the AVX2 DST decoder and PCM kernels on CPUs that have the
   flags a build needs. A runner skips a build whose flags the CPU lacks and says so.
 - `images`: each image's `scarletbook-synth` arguments after the output path. The images are
   deterministic (DST frames from the generated stress set, or from the corpus images in the
-  kit), so any kit writes the same bytes; `approx_bytes` is for disk planning (about 8.3 GB in all).
+  kit), so any kit writes the same bytes; `approx_bytes` is for disk planning (about 8.6 GB in all).
 - `defaults` and `cases`. Each case has an `id`, the `path` of #224 it measures, an `image`
   (or `null`), a `command` with placeholders, and, unless the default applies:
   - `rounds` (default 5): timed runs per build;
   - `alternation` (default `abba`): in each round every build runs once, in list order on even
     rounds and reversed on odd ones, so drift over time falls on both builds alike;
   - `cache` (default `warm`): the image is read once before the case, so it is in the page
-    cache; `cold` is not used yet;
+    cache; `cold` is not used yet (the cold cases below evict inside the run);
   - `warmup_runs` (default 1): untimed runs per build before the rounds;
   - `stdout` (default `discard`): `keep` sends the program's stdout back (callpattern prints
     its own CPU time per second of audio, per call size, and an output checksum);
-  - `frames`: the area's frames, for frames per second.
+  - `frames`: the area's frames, for frames per second;
+  - `figure`: the `name<TAB>value` line of the program's stdout that is the case's result, for
+    cases timed inside the process; `table.py` shows it instead of wall and CPU time.
 - `missing`: the #224 paths the kit cannot time yet, and why.
 
 Placeholders: `{kit}` the unpacked directory of the build being timed, `{image}` the case's
-image file, `{scratch}` a writable directory. Threads `0` mean one per logical CPU.
+image file, `{scratch}` a writable directory, `{evict}` the eviction helper beside the runner. Threads `0` mean one per logical CPU.
 
 | Case | #224 path | Image |
 |---|---|---|
@@ -84,15 +87,40 @@ image file, `{scratch}` a writable directory. Threads `0` mean one per logical C
 | `dsf-plain-5ch` | plain-DSD area to DSF, 5 ch, one thread (to `/dev/null`) | 30 min 5 ch plain DSD |
 | `dsf-dst-2ch-tall` | DST area to DSF, all threads (to `/dev/null`) | 50 min 2 ch DST |
 | `pcm-callpattern` | DSD to PCM, one thread | none (generated in memory) |
+| `open-warm`, `open-cold` | open to parsed TOC | 5 min 2 ch DST, 1-minute tracks |
+| `first-plain-2ch-warm`, `-cold` | first 128 KiB, 2 ch plain DSD | 5 min 2 ch plain DSD, 1-minute tracks |
+| `first-dst-2ch-t1-warm`, `-cold` | first 128 KiB, 2 ch DST, one thread | 5 min 2 ch DST, 1-minute tracks |
+| `first-dst-2ch-tall-warm`, `-cold` | first 128 KiB, 2 ch DST, all threads | 5 min 2 ch DST, 1-minute tracks |
 
-Not in the kit yet (`missing`): TOC open and the first 128 KiB (no `bench` command for either),
-cold runs (no eviction step), the C interface (`bench` uses the Rust API), and DSD to PCM from
-an image.
+Not in the kit yet (`missing`): the first 128 KiB of 5 or 6 channels or without a seek index,
+cold runs of the whole-area cases, the C interface (`bench` uses the Rust API), and DSD to PCM
+from an image.
+
+### Open and first 128 KiB
+
+These last microseconds, far less than starting a process, so `bench open` and `bench first` time
+them inside the process, print the median, and the case's `figure` is that median. The wall and
+CPU time of such a run say nothing about them. `first` reads the middle track of the area, on a
+disc already open, with a complete seek index built untimed: it is a seek, not a scan. A cursor
+without an index scans the area from its start, which is a different figure.
+
+**Cold.** With `--evict`, `bench` runs `evict.py IMAGE` before each iteration, untimed: `fsync`,
+then `posix_fadvise(POSIX_FADV_DONTNEED)`. No root is needed. `bench` is `forbid(unsafe_code)` and
+the Rust standard library has no such call, so the helper is Python, like the runner. The kernel
+can ignore the advice, as on tmpfs, so the helper then counts the file's cached pages with
+`mincore`, and fails the run if any remain: a cold figure on a cached file would look like a very
+fast disc. So keep `--work` on a disk-backed filesystem, and own the image files, as the runner's
+copies are. (`RWF_NOWAIT` reads are no substitute for that check: on the Zen 2 benchmark host,
+Linux 7.1 on btrfs, such reads of an evicted file put about one page per read back in the cache.)
+
+**What cold does not cover.** Only the file's data pages are evicted. The kernel's dentry, inode and
+filesystem metadata caches stay warm (dropping those takes root), and a drive's own cache may
+still hold the sectors just read.
 
 ## The sandboxed-runner contract
 
 **Inputs:** one or both kit archives of one release, verified and unpacked; about 26 GB of free
-disk: 8.3 GB for the images, 0.85 GB for the self-check, and the per-round copies of one case's
+disk: 8.6 GB for the images, 0.85 GB for the self-check, and the per-round copies of one case's
 image (up to 5 × 3.3 GB); nothing else. **Network:** none, after the download and verification.
 **Privileges:** none.
 
@@ -277,7 +305,7 @@ python3 -I $g/run.py --kit generic=$g --kit v3=$g-v3 --work work > results.jsonl
 
 `--case ID` (repeatable) selects cases; `--smoke` runs every case once on tiny images, which
 is what `benchkit.yml` does to check each kit (with the self-check in a non-blocking step). A full run of two builds takes about 10 minutes
-on a 16-core Zen 2 machine and writes about 8.3 GB of images. `--kit BUILD@LABEL=DIR` times kits
+on a 16-core Zen 2 machine and writes about 8.6 GB of images. `--kit BUILD@LABEL=DIR` times kits
 of several versions in one alternation; `python3 -I table.py results.jsonl` prints the medians
 as a Markdown table.
 

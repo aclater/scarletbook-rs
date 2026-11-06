@@ -29,7 +29,7 @@ and time under `lennon.sh bench`):
 
 ```sh
 benchmarks/compare.sh build ../cmp 3eb96dc v0.5.6   # git revisions or source directories
-benchmarks/compare.sh run ../cmp > table.md         # about 20 minutes on lennon, about 8.3 GB of images
+benchmarks/compare.sh run ../cmp > table.md         # about 20 minutes on the Zen 2 benchmark host, about 8.6 GB of images
 ```
 
 `compare.sh run` passes extra options to `run.py`, for example `--case dst-decode-2ch-t1`.
@@ -38,13 +38,17 @@ benchmarks/compare.sh run ../cmp > table.md         # about 20 minutes on lennon
 
 Not in the run list yet, so not in these tables:
 
-- **TOC open** (open to parsed TOC, page cache and evicted): `bench` has no command for it.
-  The criterion benchmark `toc_read` measures it in development builds.
-- **First 128 KiB** of a track (seek), page cache and evicted: no `bench` command.
-- **Cold runs** (image evicted from the page cache) of any case.
+- **Cold runs** (image evicted from the page cache) of the whole-area cases.
+- **The first 128 KiB** of 5 or 6 channels, or without a complete seek index.
 - **The C interface:** `bench` calls the Rust API.
 - **DSD to PCM from an image** (`callpattern` converts generated DSD in memory) and DST areas
   to PCM.
+
+In the run list, but not in every table:
+
+- **TOC open** and the **first 128 KiB** of a track, stereo, through a complete seek index: from
+  `bench open` and `bench first` (#224), so for versions from 0.5.9. Earlier sections do not have
+  them.
 - Released versions before 0.5.6 have no `bench dsf` and no `callpattern`, so their cells for
   DSF and DSD to PCM are blank, unless an equivalent revision is compared instead (0.5.6
   below uses `3eb96dc` for 0.5.5).
