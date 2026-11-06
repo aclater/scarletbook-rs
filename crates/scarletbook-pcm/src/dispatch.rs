@@ -240,14 +240,4 @@ mod tests {
             }
         }
     }
-
-    /// `pcm-dispatch-avx2` really runs the wrappers. This test exists only in a Miri build
-    /// with the features, and the slice requires it by name: if the slice loses its flags,
-    /// the test is gone and the slice fails; if [`Isa::detect`] comes to need a feature the
-    /// flags don't enable, this fails.
-    #[cfg(all(miri, target_feature = "avx2", target_feature = "fma"))]
-    #[test]
-    fn miri_slice_selects_the_wrappers() {
-        assert_eq!(Isa::detect(), Isa(Level::Avx2Fma));
-    }
 }

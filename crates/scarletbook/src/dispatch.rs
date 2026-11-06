@@ -478,21 +478,4 @@ mod tests {
             assert_same(&pool, nch, "generated");
         }
     }
-
-    /// `core-dispatch-avx2` really runs the wrapper. This test exists only in a Miri build
-    /// with the features, and the slice requires it by name: if the slice loses its flags,
-    /// the test is gone and the slice fails; if [`Isa::detect`] comes to need a feature the
-    /// flags don't enable, this fails.
-    #[cfg(all(
-        miri,
-        target_feature = "avx2",
-        target_feature = "bmi1",
-        target_feature = "bmi2",
-        target_feature = "lzcnt",
-        target_feature = "movbe"
-    ))]
-    #[test]
-    fn miri_slice_selects_the_wrapper() {
-        assert_eq!(Isa::detect(), Isa(Level::Avx2Bmi));
-    }
 }

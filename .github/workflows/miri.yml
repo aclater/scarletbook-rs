@@ -149,13 +149,13 @@ jobs:
             # detection. The type stands behind that: only `Isa::detect` makes the fast `Isa`.
             core-dispatch-avx2)
               RUSTFLAGS="-C target-feature=+avx2,+bmi1,+bmi2,+lzcnt,+movbe" miri -p scarletbook --lib -- --exact \
-                dispatch::tests::miri_slice_selects_the_wrapper \
+                dst::tests::miri_slice_selects_the_wrapper \
                 dispatch::tests::detected_decoder_matches_generic_simple \
                 dispatch::output_tests::detected_output_matches_generic_simple
               named 3 ;;
             pcm-dispatch-avx2)
               RUSTFLAGS="-C target-feature=+avx2,+fma" miri -p scarletbook-pcm --lib -- --exact \
-                dispatch::tests::miri_slice_selects_the_wrappers \
+                kernel::tests::miri_slice_selects_the_wrappers \
                 dispatch::tests::detected_kernels_match_generic
               named 2 ;;
             lanes-1-2)

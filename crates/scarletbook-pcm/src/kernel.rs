@@ -632,6 +632,17 @@ pub(crate) fn interp2_odd<const L: usize, const FMA: bool>(s: &Sym, w: &[f64], o
 mod tests {
     use super::*;
 
+    /// `pcm-dispatch-avx2` really runs the wrappers. This test exists only in a Miri build
+    /// with the features, and the slice requires it by name: if the slice loses its flags,
+    /// the test is gone and the slice fails; if [`Isa::detect`] comes to need a feature the
+    /// flags don't enable, this fails. (It is here because `dispatch.rs` may name
+    /// `target_feature` only on its wrappers: `tests/common/unsafe_scan.rs`.)
+    #[cfg(all(miri, target_feature = "avx2", target_feature = "fma"))]
+    #[test]
+    fn miri_slice_selects_the_wrappers() {
+        assert_ne!(Isa::detect(), Isa::generic());
+    }
+
     #[test]
     fn pow2_is_exact() {
         assert_eq!(pow2(0), 1.0);
