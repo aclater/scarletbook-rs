@@ -698,6 +698,11 @@ impl Failure {
     fn arg(msg: &str) -> Self {
         Failure(SbStatus::InvalidArgument, msg.to_owned())
     }
+
+    /// `Error::NoSuchTrack`, whose variant only the core crate can build, and its message.
+    fn no_such_track(slot: Slot, track: u32) -> Self {
+        Failure(SbStatus::NoSuchTrack, format!("no track {track} in area {slot}"))
+    }
 }
 
 /// The status of an error that has no arm of its own in the conversion below: the first
@@ -2319,7 +2324,7 @@ pub unsafe extern "C" fn sb_track_info(
         // SAFETY: forwarded contract.
         let d = unsafe { disc_handle(disc) }?.get()?;
         let area = find_area(&d, slot)?;
-        let t = area.track(number).ok_or(Error::NoSuchTrack { slot: area.slot, track: number })?;
+        let t = area.track(number).ok_or_else(|| Failure::no_such_track(area.slot, number))?;
         // SAFETY: forwarded contract.
         unsafe { write_out(out, track_info(t)) }?;
         Ok(SbStatus::Ok)
@@ -2345,7 +2350,7 @@ pub unsafe extern "C" fn sb_track_string(
         // SAFETY: forwarded contract.
         let d = unsafe { disc_handle(disc) }?.get()?;
         let area = find_area(&d, slot)?;
-        let t = area.track(number).ok_or(Error::NoSuchTrack { slot: area.slot, track: number })?;
+        let t = area.track(number).ok_or_else(|| Failure::no_such_track(area.slot, number))?;
         let s = track_string(t, field)?;
         // SAFETY: forwarded contract.
         unsafe { copy_string(s, buf, cap, len) }
@@ -4580,12 +4585,12 @@ impl SbSpeculation {
         let claim = claim.unwrap_or(0);
         let none = u32::MAX;
         let (state, lsn, first, last_returned, exact_from) = match s {
-            Speculation::Pending { lsn, first } => (SB_SPECULATION_PENDING, lsn, first, none, 0),
-            Speculation::Confirmed { lsn, first } => (SB_SPECULATION_CONFIRMED, lsn, first, none, 0),
-            Speculation::Refuted { lsn, first, last_returned, exact_from } => {
+            Speculation::Pending { lsn, first, .. } => (SB_SPECULATION_PENDING, lsn, first, none, 0),
+            Speculation::Confirmed { lsn, first, .. } => (SB_SPECULATION_CONFIRMED, lsn, first, none, 0),
+            Speculation::Refuted { lsn, first, last_returned, exact_from, .. } => {
                 (SB_SPECULATION_REFUTED, lsn, first, last_returned.unwrap_or(none), exact_from)
             }
-            Speculation::Unverified { lsn, first } => (SB_SPECULATION_UNVERIFIED, lsn, first, none, 0),
+            Speculation::Unverified { lsn, first, .. } => (SB_SPECULATION_UNVERIFIED, lsn, first, none, 0),
             Speculation::Exact => (SB_SPECULATION_EXACT, 0, 0, none, 0),
             // A state this interface does not know yet is never reported as exact.
             _ => (SB_SPECULATION_UNVERIFIED, 0, 0, none, 0),
@@ -5908,7 +5913,9 @@ mod tests {
     }
 
     /// What C callers get for each error, as of #308. `OutputRefusal::UnspecifiedLayout`
-    /// can't be built here: `tests/output.rs` pins it, through the C call.
+    /// can't be built here: `tests/output.rs` pins it, through the C call. Nor can the
+    /// `#[non_exhaustive]` variants: `refusals_keep_their_status_and_message` in `tests/ffi.rs`
+    /// pins those, through the C calls.
     #[test]
     fn every_error_keeps_its_status_and_message() {
         use scarletbook::{EditedMasterCheck, OutputRefusal};
@@ -5923,34 +5930,9 @@ mod tests {
                 SbStatus::MasterTocTruncated,
                 "master TOC truncated: the image ends before LSN 519",
             ),
-            (
-                Error::MasterTocVersionUnsupported { major: 2, minor: 0 },
-                SbStatus::MasterTocVersionUnsupported,
-                "master TOC version 2.0 is not supported",
-            ),
             (Error::NoAudioAreas, SbStatus::NoAudioAreas, "no readable audio area"),
-            (
-                Error::ChannelCountUnsupported { channels: 7 },
-                SbStatus::ChannelCountUnsupported,
-                "track refused: the area has 7 channels, only 1 to 6 are supported",
-            ),
             (Error::TrackEmpty, SbStatus::TrackEmpty, "track skipped: its duration is 0 frames"),
-            (
-                Error::TrackExceedsCapacity { end_frame: 9, capacity: 7 },
-                SbStatus::TrackExceedsCapacity,
-                "refused: it ends at frame 9, beyond the area capacity of 7 frames",
-            ),
             (Error::NoSuchArea(Slot::Multichannel), SbStatus::NoSuchArea, "no area in slot multichannel"),
-            (
-                Error::NoSuchTrack { slot: Slot::TwoChannel, track: 3 },
-                SbStatus::NoSuchTrack,
-                "no track 3 in area 2ch",
-            ),
-            (
-                Error::FrameRangeInvalid { first: 1, end: 2, playtime: 3 },
-                SbStatus::FrameRangeInvalid,
-                "frame range [1, 2) is not within the area's timeline [0, 3)",
-            ),
             (Error::InvalidArgument("x"), SbStatus::InvalidArgument, "invalid argument: x"),
             (Error::Io(io::Error::other("gone")), SbStatus::Io, "I/O error: gone"),
             (Error::Cancelled, SbStatus::Cancelled, "cancelled"),

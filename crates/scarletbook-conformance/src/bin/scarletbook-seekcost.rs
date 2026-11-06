@@ -245,7 +245,7 @@ fn run(args: &Args) -> Result<(), String> {
             ncalls = calls.get() - c0;
             sectors = (read.get() - r0) / 2048;
             start = match cursor.resumed_from() {
-                ResumedFrom::Speculative { lsn, probes } => {
+                ResumedFrom::Speculative { lsn, probes, .. } => {
                     format!("provisional at LSN {lsn}, {probes} probes")
                 }
                 other => format!("{other:?}"),

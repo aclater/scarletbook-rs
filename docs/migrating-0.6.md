@@ -109,7 +109,36 @@ let AudioFrame { number, status, data, .. } = decode_frame(&mut decoder, frame, 
 
 `seek::Speculation`, `seek::ResumedFrom` and the `Error` variants with fields.
 
-Not written yet.
+#### Patterns on twelve variants need `..`, and the variants can't be built (#302)
+
+Changed in 0.6.0, with no deprecation first. The variants are
+`Speculation::{Pending, Confirmed, Refuted, Unverified}`,
+`ResumedFrom::{Checkpoint, Discarded, Speculative}` and
+`Error::{MasterTocVersionUnsupported, ChannelCountUnsupported, TrackExceedsCapacity, NoSuchTrack, FrameRangeInvalid}`.
+A pattern needs `..` even when it names every field. A program that made one of these `Error`s
+itself needs its own error type or variant for that case.
+
+Before:
+
+```rust
+match cursor.speculation() {
+    Speculation::Refuted { lsn, first, last_returned, exact_from } => redo(first, exact_from),
+    Speculation::Confirmed { lsn, first } => keep(lsn, first),
+    _ => {}
+}
+if let Err(Error::NoSuchTrack { slot, track }) = result { report(slot, track) }
+```
+
+After:
+
+```rust
+match cursor.speculation() {
+    Speculation::Refuted { first, exact_from, .. } => redo(first, exact_from),
+    Speculation::Confirmed { lsn, first, .. } => keep(lsn, first),
+    _ => {}
+}
+if let Err(Error::NoSuchTrack { slot, track, .. }) = result { report(slot, track) }
+```
 
 ### M4. Enums: non-exhaustive or frozen
 

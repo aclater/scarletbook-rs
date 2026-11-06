@@ -115,11 +115,11 @@ fn well_formed_areas_read_provisionally_alike() {
         assert!(matches!(c.speculation(), Speculation::Pending { lsn: 0, .. }), "chosen on the first read");
         let (got, c) = read(&mut disc, c);
         assert_eq!(got, want, "first {first}");
-        let ResumedFrom::Speculative { lsn, probes } = c.resumed_from() else {
+        let ResumedFrom::Speculative { lsn, probes, .. } = c.resumed_from() else {
             panic!("first {first}: {:?}", c.resumed_from())
         };
         assert!(
-            matches!(c.speculation(), Speculation::Pending { lsn: l, first: f } if l == lsn && f == first)
+            matches!(c.speculation(), Speculation::Pending { lsn: l, first: f, .. } if l == lsn && f == first)
         );
         assert_eq!(c.claim_lsn(), Some(lsn));
         let sectors = (bytes.get() - b0) / S as u64;

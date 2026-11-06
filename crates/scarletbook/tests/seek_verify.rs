@@ -75,7 +75,9 @@ fn well_formed_readings_are_confirmed() {
     for first in [250, 600, 950] {
         let c = disc.range_frames_cursor(Slot::TwoChannel, first, first + 10).unwrap();
         let (_, c) = read(&mut disc, c);
-        assert!(matches!(c.speculation(), Speculation::Pending { lsn, first: f } if lsn > 0 && f == first));
+        assert!(
+            matches!(c.speculation(), Speculation::Pending { lsn, first: f, .. } if lsn > 0 && f == first)
+        );
         cursors.push(c);
     }
     // Each reading begins at the sector its search found (#123), not on a checkpoint
@@ -193,7 +195,9 @@ fn provisional_checkpoints_of_another_reading_are_not_used() {
     let mut c = it.into_cursor();
     let p = plain.range_frames_cursor(Slot::TwoChannel, 500, 505).unwrap();
     assert_eq!(got, read(&mut plain, p).0);
-    let ResumedFrom::Speculative { lsn, probes } = c.resumed_from() else { panic!("{:?}", c.resumed_from()) };
+    let ResumedFrom::Speculative { lsn, probes, .. } = c.resumed_from() else {
+        panic!("{:?}", c.resumed_from())
+    };
     assert!(probes > 0, "searched, not started from the first reading's checkpoints (LSN {lsn})");
     // A bounded read: the search and the range, not the 2000 sectors from frame 120 on.
     assert!(c.progress().get().0 < 400, "{} sectors", c.progress().get().0);

@@ -177,6 +177,7 @@ pub enum ResumedFrom {
     Start,
     /// At the checkpoint at sector `lsn`, after replaying the sectors from `replay_from`
     /// (equal to `lsn` when nothing was replayed) to rebuild the frame under assembly.
+    #[non_exhaustive]
     Checkpoint {
         /// The checkpoint's LSN.
         lsn: u64,
@@ -189,6 +190,7 @@ pub enum ResumedFrom {
     /// At the area's first audio sector, after finding that the index does not hold
     /// sector `lsn` as the image has it (its digest differs): a stale index, or one of
     /// another image of the same size. The index was not used; the cursor records nothing.
+    #[non_exhaustive]
     Discarded {
         /// The checkpoint whose sector differs.
         lsn: u64,
@@ -198,6 +200,7 @@ pub enum ResumedFrom {
     /// frame number, after `probes` reads that chose `lsn` (see [`SeekPolicy`]). The
     /// positions are provisional ([`Speculation`]). Both are 0 until the cursor first
     /// reads, which is when it chooses.
+    #[non_exhaustive]
     Speculative {
         /// The sector the provisional reading began at, `L`.
         lsn: u64,
@@ -359,6 +362,7 @@ pub enum Speculation {
     Exact,
     /// A provisional reading from sector `lsn` for positions `first` or more, not yet
     /// established or refuted (`lsn` is 0 until the cursor first reads).
+    #[non_exhaustive]
     Pending {
         /// `L`.
         lsn: u64,
@@ -367,6 +371,7 @@ pub enum Speculation {
     },
     /// A provisional reading whose conditions (a) and (b) a pass from the first sector has
     /// established: its positions are this specification's (4.2 item 8).
+    #[non_exhaustive]
     Confirmed {
         /// `L`.
         lsn: u64,
@@ -379,6 +384,7 @@ pub enum Speculation {
     /// `exact_from` is at least the specification's `a*` (the next acceptable frame number
     /// of a reader from the first sector just after it delivered or discarded the frame
     /// under assembly at `L`): the larger of `a_L` and one more than that frame's number.
+    #[non_exhaustive]
     Refuted {
         /// `L`.
         lsn: u64,
@@ -392,6 +398,7 @@ pub enum Speculation {
     /// A provisional reading that will not be checked: dropped past the limit of
     /// pending readings per index, or found to be of an index that does not
     /// match the image. Its positions stay provisional.
+    #[non_exhaustive]
     Unverified {
         /// `L`.
         lsn: u64,
