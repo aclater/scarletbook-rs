@@ -97,6 +97,10 @@ const USAGE: &str = "usage: bench --version
 /// Bytes per `Layout::fill` or `Layout::read_at` call of `dsf`, by default.
 const DSF_CHUNK: usize = 4 << 20;
 
+/// The largest `--chunk`: each of `dsf`'s calls, and each of `--via parallel`'s workers, holds
+/// a buffer of that size.
+const MAX_CHUNK: usize = 256 << 20;
+
 /// Frames per second of DSD64 audio, and so the frames of `realtime`'s sliding window.
 const FRAMES_PER_SECOND: usize = 75;
 
@@ -108,6 +112,9 @@ const ITERATIONS: usize = 100;
 
 /// The most timed iterations of `open` and `first`: their times are kept in memory.
 const MAX_ITERATIONS: usize = 1_000_000;
+
+/// The most `realtime` seeks: their times are kept in memory.
+const MAX_SEEKS: usize = 1_000_000;
 
 /// The bytes of decoded audio `first` times, by default.
 const FIRST_BYTES: usize = 128 << 10;
@@ -223,12 +230,16 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Args>, String>
                 chunk = v
                     .parse::<usize>()
                     .ok()
-                    .filter(|&n| n > 0)
-                    .ok_or_else(|| format!("--chunk must be a positive number, not {v}"))?;
+                    .filter(|n| (1..=MAX_CHUNK).contains(n))
+                    .ok_or_else(|| format!("--chunk must be from 1 to {MAX_CHUNK}, not {v}"))?;
             }
             "--seeks" if realtime => {
                 let v = value()?;
-                seeks = v.parse::<usize>().map_err(|_| format!("--seeks must be a number, not {v}"))?;
+                seeks = v
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|&n| n <= MAX_SEEKS)
+                    .ok_or_else(|| format!("--seeks must be from 0 to {MAX_SEEKS}, not {v}"))?;
             }
             "--iterations" if opening || first => {
                 let v = value()?;
@@ -1092,6 +1103,9 @@ mod tests {
         assert!(args("dsf x.iso --area 2ch --threads 1 --sink null").is_err());
         assert!(args("decode x.iso --area 2ch --threads 1 --out f.dsf").is_err());
         assert!(args("dsf x.iso --area 2ch --threads 1 --out f.dsf --chunk 0").is_err());
+        assert!(args("dsf x.iso --area 2ch --threads 1 --out f.dsf --chunk 268435457").is_err());
+        assert!(args("realtime x.iso --area 2ch --seeks 1000001").is_err());
+        assert!(args("realtime x.iso --area 2ch --seeks 1000000").is_ok());
         assert!(args("decode x.iso --area 5ch --threads 1 --sink null").is_err());
         assert!(args("decode x.iso --area 2ch --sink null").is_err());
         assert!(args("decode x.iso --area 2ch --threads x --sink null").is_err());
