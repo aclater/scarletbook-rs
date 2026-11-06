@@ -10,7 +10,7 @@ use crate::audio::{
 };
 use crate::control::CancelToken;
 use crate::error::{Error, Slot, Warning};
-use crate::image::{Image, SectorFormat};
+use crate::image::{Image, ImageOptions, SectorFormat};
 use crate::log::{Log, sb_log};
 use crate::read_at::{ReadAt, ReadAtReader};
 use crate::seek::{AreaIndex, IndexOptions, SeekIndexes, SeekPolicy, Speculation};
@@ -116,14 +116,69 @@ struct DiscShared {
     seek: SeekIndexes,
 }
 
+/// How to open a [`Disc`]: [`Disc::options`], then what differs from the default, then
+/// [`DiscOptions::open`].
+///
+/// ```no_run
+/// use scarletbook::{Disc, SectorFormat, log::Log};
+/// # fn main() -> Result<(), scarletbook::Error> {
+/// let file = std::fs::File::open("disc.iso")?;
+/// let disc = Disc::options().with_format(SectorFormat::Raw2064).with_log(Log::none()).open(file)?;
+/// # let _ = disc;
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Clone, Debug, Default)]
+pub struct DiscOptions {
+    image: ImageOptions,
+}
+
+impl DiscOptions {
+    /// The default: the sector format is detected, and nothing is logged.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The sector format, chosen by the caller instead of detected
+    /// ([`ImageOptions::with_format`]).
+    pub fn with_format(mut self, format: SectorFormat) -> Self {
+        self.image = self.image.with_format(format);
+        self
+    }
+
+    /// Where to report from the start, sector format detection included (see [`crate::log`]).
+    pub fn with_log(mut self, log: Log) -> Self {
+        self.image = self.image.with_log(log);
+        self
+    }
+
+    /// Opens the disc image and parses its TOC.
+    ///
+    /// # Errors
+    ///
+    /// One of the rejections of specification 7, 7.7.1, or [`Error::Io`].
+    pub fn open<R: Read + Seek>(self, reader: R) -> Result<Disc<R>, Error> {
+        Disc::from_image(self.image.open(reader)?)
+    }
+}
+
+impl Disc<()> {
+    /// The options for opening a disc with a sector format or log of the caller's:
+    /// `Disc::options().with_format(f).with_log(l).open(reader)`.
+    pub fn options() -> DiscOptions {
+        DiscOptions::new()
+    }
+}
+
 impl<R: Read + Seek> Disc<R> {
-    /// Opens a disc image, detecting its sector format.
+    /// Opens a disc image, detecting its sector format, logging nothing. [`Disc::options`]
+    /// chooses a format or a log.
     ///
     /// # Errors
     ///
     /// One of the rejections of specification 7, 7.7.1, or [`Error::Io`].
     pub fn open(reader: R) -> Result<Self, Error> {
-        Self::from_image(Image::open(reader)?)
+        Disc::options().open(reader)
     }
 
     /// Opens a disc image, detecting its sector format, and reports to `log` from the
@@ -132,8 +187,12 @@ impl<R: Read + Seek> Disc<R> {
     /// # Errors
     ///
     /// As [`Disc::open`].
+    #[deprecated(
+        since = "0.6.0",
+        note = "use `Disc::options().with_log(log).open(reader)`; to be removed before 1.0"
+    )]
     pub fn open_with_log(reader: R, log: Log) -> Result<Self, Error> {
-        Self::from_image(Image::open_with_log(reader, log)?)
+        Disc::options().with_log(log).open(reader)
     }
 
     /// Opens a disc image in a sector format chosen by the caller.
@@ -141,8 +200,12 @@ impl<R: Read + Seek> Disc<R> {
     /// # Errors
     ///
     /// As [`Disc::open`].
+    #[deprecated(
+        since = "0.6.0",
+        note = "use `Disc::options().with_format(format).open(reader)`; to be removed before 1.0"
+    )]
     pub fn open_with_format(reader: R, format: SectorFormat) -> Result<Self, Error> {
-        Self::from_image(Image::with_format(reader, format)?)
+        Disc::options().with_format(format).open(reader)
     }
 
     /// Opens a disc image in a sector format chosen by the caller, and reports to `log`
@@ -151,8 +214,12 @@ impl<R: Read + Seek> Disc<R> {
     /// # Errors
     ///
     /// As [`Disc::open`].
+    #[deprecated(
+        since = "0.6.0",
+        note = "use `Disc::options().with_format(format).with_log(log).open(reader)`; to be removed before 1.0"
+    )]
     pub fn open_with_format_and_log(reader: R, format: SectorFormat, log: Log) -> Result<Self, Error> {
-        Self::from_image(Image::with_format_and_log(reader, format, log)?)
+        Disc::options().with_format(format).with_log(log).open(reader)
     }
 
     /// Parses the TOC of an image, reporting to the image's log ([`Image::set_log`]).

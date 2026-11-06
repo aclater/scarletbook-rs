@@ -89,7 +89,7 @@ fn the_default_policy_is_exact() {
         let (_, c) = read(&mut disc, c);
         assert_eq!(c.speculation(), Speculation::Exact);
         assert!(!matches!(c.resumed_from(), ResumedFrom::Speculative { .. }));
-        assert_eq!(c.counts_from(), None);
+        assert_eq!(c.claim_lsn(), None);
     }
 }
 
@@ -121,7 +121,7 @@ fn well_formed_areas_read_provisionally_alike() {
         assert!(
             matches!(c.speculation(), Speculation::Pending { lsn: l, first: f } if l == lsn && f == first)
         );
-        assert_eq!(c.counts_from(), Some(lsn));
+        assert_eq!(c.claim_lsn(), Some(lsn));
         let sectors = (bytes.get() - b0) / S as u64;
         costs.push((first, probes, calls.get() - c0, sectors));
         // Probes of at most 32 sectors, then the range's own sectors and a chunk.
@@ -179,7 +179,7 @@ fn counts_begin_at_l() {
     assert_eq!(got, want);
     assert_eq!((p.malformed_sectors(), p.warnings().len()), (3, 3));
     assert_eq!((c.malformed_sectors(), c.warnings().len()), (0, 0));
-    assert!(c.counts_from().is_some());
+    assert!(c.claim_lsn().is_some());
 }
 
 /// The policy is per handle: a clone starts with a copy, and changing one leaves the
@@ -323,11 +323,11 @@ fn an_exact_continuation_of_a_provisional_cursor_takes_no_counts() {
     while !disc.extend_seek_index(Slot::TwoChannel, 1 << 20).unwrap() {}
     let next = disc.continue_range_frames(prev, Slot::TwoChannel, 900, 910).unwrap();
     assert_eq!(next.speculation(), Speculation::Exact);
-    assert_eq!(next.counts_from(), None);
+    assert_eq!(next.claim_lsn(), None);
     assert_eq!((next.malformed_sectors(), next.warnings().len()), (0, 0));
     // Once it reads, the counts of a scan from the first sector.
     let (_, next) = read(&mut disc, next);
-    assert_eq!((next.malformed_sectors(), next.counts_from()), (1, None));
+    assert_eq!((next.malformed_sectors(), next.claim_lsn()), (1, None));
 }
 
 /// Frame numbers that decrease between the sectors a search reads make its provisional

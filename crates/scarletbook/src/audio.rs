@@ -899,14 +899,26 @@ impl AreaCursor {
 
     /// The number of this cursor's provisional reading, as events name it
     /// ([`crate::seek::SeekEvent::claim`]); `None` for an exact cursor.
-    pub fn speculation_id(&self) -> Option<u64> {
+    pub fn claim(&self) -> Option<u64> {
         self.claim.as_ref().map(|c| c.id)
+    }
+
+    /// The old name of [`Self::claim`].
+    #[deprecated(since = "0.6.0", note = "renamed `claim`; to be removed before 1.0")]
+    pub fn speculation_id(&self) -> Option<u64> {
+        self.claim()
     }
 
     /// The sector the malformed count and warnings begin at: `None` for the area's first
     /// sector, `Some(L)` for a provisional reading (specification 4, 4.4.5 item 5).
-    pub fn counts_from(&self) -> Option<u64> {
+    pub fn claim_lsn(&self) -> Option<u64> {
         self.claim.as_ref().map(|c| c.lsn()).filter(|&l| l > 0)
+    }
+
+    /// The old name of [`Self::claim_lsn`].
+    #[deprecated(since = "0.6.0", note = "renamed `claim_lsn`; to be removed before 1.0")]
+    pub fn counts_from(&self) -> Option<u64> {
+        self.claim_lsn()
     }
 
     /// The provisional reading, the first time it is asked for once `L` is chosen.
@@ -2223,15 +2235,27 @@ impl TrackCursor {
         self.area.suspect()
     }
 
-    /// Where its malformed count and warnings begin (see [`AreaCursor::counts_from`]).
+    /// Where its malformed count and warnings begin (see [`AreaCursor::claim_lsn`]).
+    pub fn claim_lsn(&self) -> Option<u64> {
+        self.area.claim_lsn()
+    }
+
+    /// The old name of [`Self::claim_lsn`].
+    #[deprecated(since = "0.6.0", note = "renamed `claim_lsn`; to be removed before 1.0")]
     pub fn counts_from(&self) -> Option<u64> {
-        self.area.counts_from()
+        self.claim_lsn()
     }
 
     /// The number of the provisional reading, as events name it ([`crate::SeekEvent`]);
     /// `None` for exact positions.
+    pub fn claim(&self) -> Option<u64> {
+        self.area.claim()
+    }
+
+    /// The old name of [`Self::claim`].
+    #[deprecated(since = "0.6.0", note = "renamed `claim`; to be removed before 1.0")]
     pub fn speculation_id(&self) -> Option<u64> {
-        self.area.speculation_id()
+        self.claim()
     }
 
     /// Where this cursor's scan started (see [`ResumedFrom`]); continued cursors keep it.
@@ -2572,15 +2596,27 @@ impl<'a, R: Read + Seek> TrackFrames<'a, R> {
         self.cursor.suspect()
     }
 
-    /// Where the malformed count and warnings begin (see [`AreaCursor::counts_from`]).
+    /// Where the malformed count and warnings begin (see [`AreaCursor::claim_lsn`]).
+    pub fn claim_lsn(&self) -> Option<u64> {
+        self.cursor.claim_lsn()
+    }
+
+    /// The old name of [`Self::claim_lsn`].
+    #[deprecated(since = "0.6.0", note = "renamed `claim_lsn`; to be removed before 1.0")]
     pub fn counts_from(&self) -> Option<u64> {
-        self.cursor.counts_from()
+        self.claim_lsn()
     }
 
     /// The number of the provisional reading, as events name it ([`crate::SeekEvent`]);
     /// `None` for exact positions.
+    pub fn claim(&self) -> Option<u64> {
+        self.cursor.claim()
+    }
+
+    /// The old name of [`Self::claim`].
+    #[deprecated(since = "0.6.0", note = "renamed `claim`; to be removed before 1.0")]
     pub fn speculation_id(&self) -> Option<u64> {
-        self.cursor.speculation_id()
+        self.claim()
     }
 
     /// The progress of the reading, readable from other threads (see [`Progress`]).
@@ -2740,18 +2776,28 @@ pub enum Stored {
     Dst(Vec<u8>),
     /// A plain DSD frame: its stored bytes are the [`AudioFrame`]'s data, unchanged
     /// (status [`FrameStatus::Dsd`]).
-    Plain,
+    Dsd,
     /// No accepted frame fills the position.
     Missing,
 }
 
 impl Stored {
+    /// The old name of [`Stored::Dsd`]. It still works in expressions and in patterns
+    /// written `Stored::Plain` on a `Stored` value; `use Stored::Plain` does not.
+    ///
+    /// **Under `use Stored::*`, a pattern `Plain` is not this constant.** It is a new binding
+    /// that matches every value, so that arm also takes `Dst` and `Missing`, with only
+    /// warnings (`unreachable_patterns`, `unused_variables`). Write `Dsd`.
+    #[deprecated(since = "0.6.0", note = "renamed `Stored::Dsd`; to be removed before 1.0")]
+    #[allow(non_upper_case_globals)]
+    pub const Plain: Stored = Stored::Dsd;
+
     /// The position's [`FrameContent`], given its decoded `frame` (which a plain one's
     /// bytes are copied from).
     pub fn content(&self, frame: &AudioFrame) -> FrameContent {
         match self {
             Stored::Dst(bytes) => FrameContent::Dst(bytes.clone()),
-            Stored::Plain => FrameContent::Dsd(frame.data.clone()),
+            Stored::Dsd => FrameContent::Dsd(frame.data.clone()),
             Stored::Missing => FrameContent::Missing,
         }
     }
@@ -2761,7 +2807,7 @@ impl Stored {
     pub fn bytes<'a>(&'a self, frame: &'a AudioFrame) -> &'a [u8] {
         match self {
             Stored::Dst(bytes) => bytes,
-            Stored::Plain => &frame.data,
+            Stored::Dsd => &frame.data,
             Stored::Missing => &[],
         }
     }
@@ -2902,15 +2948,27 @@ impl TrackAudioCursor {
         self.frames.suspect()
     }
 
-    /// Where its malformed count and warnings begin (see [`AreaCursor::counts_from`]).
+    /// Where its malformed count and warnings begin (see [`AreaCursor::claim_lsn`]).
+    pub fn claim_lsn(&self) -> Option<u64> {
+        self.frames.claim_lsn()
+    }
+
+    /// The old name of [`Self::claim_lsn`].
+    #[deprecated(since = "0.6.0", note = "renamed `claim_lsn`; to be removed before 1.0")]
     pub fn counts_from(&self) -> Option<u64> {
-        self.frames.counts_from()
+        self.claim_lsn()
     }
 
     /// The number of the provisional reading, as events name it ([`crate::SeekEvent`]);
     /// `None` for exact positions.
+    pub fn claim(&self) -> Option<u64> {
+        self.frames.claim()
+    }
+
+    /// The old name of [`Self::claim`].
+    #[deprecated(since = "0.6.0", note = "renamed `claim`; to be removed before 1.0")]
     pub fn speculation_id(&self) -> Option<u64> {
-        self.frames.speculation_id()
+        self.claim()
     }
 
     /// A cursor at the start of `track`, continuing this one's reading state where that
@@ -3157,7 +3215,7 @@ impl TrackAudioCursor {
                     // A copy: the frame itself goes on to its decoding, wherever that runs.
                     FrameContent::Dst(bytes) => Stored::Dst(bytes.clone()),
                     // Returned unchanged as the decoded data: nothing to copy.
-                    FrameContent::Dsd(_) => Stored::Plain,
+                    FrameContent::Dsd(_) => Stored::Dsd,
                     FrameContent::Missing => Stored::Missing,
                 });
             }
@@ -3628,15 +3686,27 @@ impl<'a, R: Read + Seek> TrackAudio<'a, R> {
         self.cursor.suspect()
     }
 
-    /// Where the malformed count and warnings begin (see [`AreaCursor::counts_from`]).
+    /// Where the malformed count and warnings begin (see [`AreaCursor::claim_lsn`]).
+    pub fn claim_lsn(&self) -> Option<u64> {
+        self.cursor.claim_lsn()
+    }
+
+    /// The old name of [`Self::claim_lsn`].
+    #[deprecated(since = "0.6.0", note = "renamed `claim_lsn`; to be removed before 1.0")]
     pub fn counts_from(&self) -> Option<u64> {
-        self.cursor.counts_from()
+        self.claim_lsn()
     }
 
     /// The number of the provisional reading, as events name it ([`crate::SeekEvent`]);
     /// `None` for exact positions.
+    pub fn claim(&self) -> Option<u64> {
+        self.cursor.claim()
+    }
+
+    /// The old name of [`Self::claim`].
+    #[deprecated(since = "0.6.0", note = "renamed `claim`; to be removed before 1.0")]
     pub fn speculation_id(&self) -> Option<u64> {
-        self.cursor.speculation_id()
+        self.claim()
     }
 
     /// The progress of the reading, readable from other threads (see [`Progress`]).
@@ -3723,6 +3793,20 @@ pub(crate) mod tests_support {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// The deprecated name `Stored::Plain` is `Stored::Dsd`, in expressions and patterns.
+    #[test]
+    #[allow(deprecated)]
+    fn old_stored_name_is_the_new_one() {
+        assert_eq!(Stored::Plain, Stored::Dsd);
+        // Exhaustive with the old name in place of the variant.
+        let name = |s: Stored| match s {
+            Stored::Dst(_) => "dst",
+            Stored::Plain => "dsd",
+            Stored::Missing => "missing",
+        };
+        assert_eq!(name(Stored::Dsd), "dsd");
+    }
 
     fn sector(header: u8, packets: &[(bool, u8, u16)], records: &[[u8; 4]], dst: bool) -> [u8; 2048] {
         let mut s = [0u8; 2048];
@@ -3847,7 +3931,10 @@ pub(crate) mod tests {
         for (i, s) in bytes.chunks_exact_mut(SECTOR_SIZE).enumerate() {
             fill(i, s);
         }
-        let image = Image::with_format(std::io::Cursor::new(bytes), crate::SectorFormat::Plain).unwrap();
+        let image = Image::options()
+            .with_format(crate::SectorFormat::Plain)
+            .open(std::io::Cursor::new(bytes))
+            .unwrap();
         let playtime = Timecode {
             minutes: (frames / 4500) as u8,
             seconds: (frames / 75 % 60) as u8,

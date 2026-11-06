@@ -459,9 +459,10 @@ pub fn seek_area() -> (scarletbook::Image<std::io::Cursor<Vec<u8>>>, scarletbook
             }
         }
     }
-    let image =
-        scarletbook::Image::with_format(std::io::Cursor::new(bytes), scarletbook::SectorFormat::Plain)
-            .unwrap();
+    let image = scarletbook::Image::options()
+        .with_format(scarletbook::SectorFormat::Plain)
+        .open(std::io::Cursor::new(bytes))
+        .unwrap();
     // `Area` can't be built by literal outside the crate: start from a parsed one and set
     // every field, so that this area does not depend on the disc it came from.
     static PARSED: std::sync::OnceLock<scarletbook::Area> = std::sync::OnceLock::new();

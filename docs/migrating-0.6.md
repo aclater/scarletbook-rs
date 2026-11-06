@@ -273,7 +273,91 @@ Not written yet.
 
 The provisional-reading id, the start sector, the `*with_format*` constructors, and `Stored::Plain`.
 
-Not written yet.
+#### `speculation_id()` is now `claim()`, and `counts_from()` is now `claim_lsn()` (#300)
+
+Deprecated in 0.6.0 and removed before 1.0, on `AreaCursor`, `TrackCursor`, `TrackFrames`,
+`TrackAudioCursor` and `TrackAudio`. They return the same values. Nothing stops building until the
+removal, except in builds that deny warnings.
+
+Before:
+
+```rust
+let (id, from) = (cursor.speculation_id(), cursor.counts_from());
+```
+
+After:
+
+```rust
+let (id, from) = (cursor.claim(), cursor.claim_lsn());
+```
+
+#### The `*with_log` and `*with_format*` constructors give way to `options()` (#300)
+
+Deprecated in 0.6.0 and removed before 1.0: `Image::open_with_log`, `Image::with_format`,
+`Image::with_format_and_log`, `Disc::open_with_log`, `Disc::open_with_format` and
+`Disc::open_with_format_and_log`. They behave the same. Nothing stops building until the removal,
+except in builds that deny warnings. `open`, `from_image`, `share` and `share_with_log` stay.
+
+Before:
+
+```rust
+let a = Disc::open_with_log(reader, log)?;
+let b = Disc::open_with_format(reader, format)?;
+let c = Disc::open_with_format_and_log(reader, format, log)?;
+let d = Image::with_format(reader, format)?;
+```
+
+After:
+
+```rust
+let a = Disc::options().with_log(log).open(reader)?;
+let b = Disc::options().with_format(format).open(reader)?;
+let c = Disc::options().with_format(format).with_log(log).open(reader)?;
+let d = Image::options().with_format(format).open(reader)?;
+```
+
+#### `Stored::Plain` is now `Stored::Dsd` (#300)
+
+**Check this first: a match can silently take the wrong branch.** Under `use Stored::*`, a pattern
+`Plain` no longer names a variant. It becomes a new binding that matches every value, so that arm
+also takes `Dst` and `Missing`. The code still builds, with only warnings (`unreachable_patterns`,
+`unused_variables`, `non_snake_case`). To find it, search for the glob, then change each such
+pattern to `Dsd`:
+
+```sh
+grep -rnE 'Stored::\*' --include='*.rs' .
+```
+
+While migrating, also build with those warnings as errors:
+`RUSTFLAGS="-D unreachable_patterns -D unused_variables" cargo build --all-targets`. Removing the
+old name before 1.0 won't change this: it comes from the rename, and only a path written
+`Stored::Plain` gives an error then.
+
+Deprecated in 0.6.0 and removed before 1.0: the old name stays as a constant, so expressions and
+patterns written `Stored::Plain` on a `Stored` value still build, with a warning. What stops building
+now is `use Stored::Plain`, and `Stored::Plain` in a pattern through a reference: on a `&Stored`, as
+`Some(Stored::Plain)` on an `Option<&Stored>`, or inside a tuple of references. `{:?}` of the value
+prints `Dsd`. Its meaning does not change.
+
+Before:
+
+```rust
+match stored {
+    Stored::Dst(bytes) => write(&bytes),
+    Stored::Plain => write(&frame.data),
+    Stored::Missing => {}
+}
+```
+
+After:
+
+```rust
+match stored {
+    Stored::Dst(bytes) => write(&bytes),
+    Stored::Dsd => write(&frame.data),
+    Stored::Missing => {}
+}
+```
 
 ### S2. Count methods
 

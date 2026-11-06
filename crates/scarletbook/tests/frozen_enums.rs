@@ -27,11 +27,8 @@ fn frozen_enums_match_without_a_wildcard() {
     match FrameContent::Missing {
         FrameContent::Dsd(_) | FrameContent::Dst(_) | FrameContent::Missing => (),
     }
-    // `Stored::Plain` may be the variant or a deprecated constant of the renamed one (#300): the
-    // match is exhaustive either way, and `allow` keeps it building under `-D warnings`.
-    #[allow(deprecated)]
     match Stored::Missing {
-        Stored::Dst(_) | Stored::Plain | Stored::Missing => (),
+        Stored::Dst(_) | Stored::Dsd | Stored::Missing => (),
     }
 
     assert_eq!(Level::ALL.len(), 5);

@@ -61,7 +61,7 @@ type Trail = (Vec<(Level, String)>, Vec<(Slot, AudioFrame)>, Disc<Cursor<Vec<u8>
 /// The log lines and frames of decoding every track of an image, and the disc.
 fn trail(id: &str, level: Level) -> Trail {
     let (log, lines) = recorder(level);
-    let mut disc = Disc::open_with_log(Cursor::new(image(id)), log).unwrap();
+    let mut disc = Disc::options().with_log(log).open(Cursor::new(image(id))).unwrap();
     let frames = decode_all(&mut disc);
     let lines = lines.lock().unwrap().clone();
     (lines, frames, disc)
@@ -166,12 +166,11 @@ fn sector_formats_and_toc_copies() {
 
     // A format chosen by the caller: no probes, the same TOC trail.
     let (log, chosen) = recorder(Level::Info);
-    Disc::open_with_format_and_log(
-        Cursor::new(image("layout-2064")),
-        scarletbook::SectorFormat::Raw2064,
-        log,
-    )
-    .unwrap();
+    Disc::options()
+        .with_format(scarletbook::SectorFormat::Raw2064)
+        .with_log(log)
+        .open(Cursor::new(image("layout-2064")))
+        .unwrap();
     let chosen = chosen.lock().unwrap();
     assert_eq!(
         chosen.first().map(|(_, m)| m.as_str()),
@@ -211,7 +210,7 @@ fn sector_formats_and_toc_copies() {
 
     // A rejected image says why.
     let (log, lines) = recorder(Level::Debug);
-    assert!(Disc::open_with_log(Cursor::new(vec![0u8; 600 * 2048]), log).is_err());
+    assert!(Disc::options().with_log(log).open(Cursor::new(vec![0u8; 600 * 2048])).is_err());
     let lines = lines.lock().unwrap();
     assert!(has(&lines, Level::Debug, "format Raw2054: no signature at byte 1047546"));
     assert!(has(&lines, Level::Info, "no sector format matches: not a Scarletbook image"));
@@ -300,7 +299,7 @@ fn no_sink_or_a_quiet_level_changes_nothing() {
     let quiet = Log::new(Level::Error, move |_, _| {
         counter.fetch_add(1, Ordering::Relaxed);
     });
-    let mut logged = Disc::open_with_log(Cursor::new(image(id)), quiet).unwrap();
+    let mut logged = Disc::options().with_log(quiet).open(Cursor::new(image(id))).unwrap();
     let mut plain = Disc::open(Cursor::new(image(id))).unwrap();
     assert_eq!(decode_all(&mut logged), decode_all(&mut plain));
     assert_eq!(calls.load(Ordering::Relaxed), 0, "no error on this image: no call at all");
@@ -345,7 +344,7 @@ fn parallel_decoding_logs_from_the_pool_in_order() {
             .build()
             .unwrap();
         let (caller, frames) = pool.install(|| {
-            let mut disc = Disc::open_with_log(Cursor::new(image(id)), log).unwrap();
+            let mut disc = Disc::options().with_log(log).open(Cursor::new(image(id))).unwrap();
             (std::thread::current().name().unwrap_or("").to_owned(), decode_all(&mut disc))
         });
         assert_eq!(frames, serial_frames, "{id}");
@@ -394,7 +393,7 @@ fn a_cursor_decodes_on_the_pool_it_is_given() {
         let lines: Arc<Mutex<Named>> = Arc::default();
         let sink = Arc::clone(&lines);
         let log = Log::new(Level::Trace, move |l, m| sink.lock().unwrap().push((name(), l, m.to_string())));
-        let mut disc = Disc::open_with_log(Cursor::new(image(id)), log).unwrap();
+        let mut disc = Disc::options().with_log(log).open(Cursor::new(image(id))).unwrap();
         let count = disc.toc().area(Slot::TwoChannel).unwrap().tracks.len() as u32;
         let (mut frames, mut cursor) = (Vec::new(), None);
         for n in 1..=count {
@@ -478,7 +477,7 @@ fn every_corpus_image_logs_what_it_returns() {
     assert!(ids.len() >= 136, "{}", ids.len());
     for id in &ids {
         let (log, lines) = recorder(Level::Trace);
-        let Ok(mut disc) = Disc::open_with_log(Cursor::new(image(id)), log) else {
+        let Ok(mut disc) = Disc::options().with_log(log).open(Cursor::new(image(id))) else {
             let lines = lines.lock().unwrap();
             assert!(lines.iter().all(|(l, _)| *l != Level::Error), "{id}");
             assert!(
@@ -496,5 +495,23 @@ fn every_corpus_image_logs_what_it_returns() {
         assert_eq!(frame_lines(&lines, Level::Warn), expected, "{id}");
         assert_eq!(frame_lines(&lines, Level::Trace).len(), frames.len() - expected.len(), "{id}");
         assert!(lines.iter().all(|(l, _)| *l != Level::Error), "{id}");
+    }
+}
+
+/// The deprecated constructors still open a disc. Under Miri,
+/// `image::tests::old_constructors_still_work` covers what they delegate to.
+#[test]
+#[cfg_attr(miri, ignore = "three opens of a 1.4 MB image; the image module's test covers the delegates")]
+#[allow(deprecated)]
+fn old_constructors_still_work() {
+    let f = scarletbook::SectorFormat::Raw2064;
+    let img = image("layout-2064");
+    let reader = || Cursor::new(img.clone());
+    for disc in [
+        Disc::open_with_log(reader(), Log::none()),
+        Disc::open_with_format(reader(), f),
+        Disc::open_with_format_and_log(reader(), f, Log::none()),
+    ] {
+        assert_eq!(disc.unwrap().image_mut().format(), f);
     }
 }

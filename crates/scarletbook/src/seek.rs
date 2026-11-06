@@ -253,7 +253,7 @@ pub enum ResumedFrom {
 /// reading returns is a complete frame of the image, in increasing frame number order.
 ///
 /// The malformed sectors and warnings of a provisional reading cover the sectors it
-/// processes from `L` only (4.4.5 item 5); [`crate::TrackCursor::counts_from`] says so.
+/// processes from `L` only (4.4.5 item 5); [`crate::TrackCursor::claim_lsn`] says so.
 /// Its missing and invalid counts are provisional too (4.7.1 item 6).
 ///
 /// # Not serving positions that will be refuted
@@ -451,7 +451,7 @@ pub struct SeekEvent {
     /// The area.
     pub slot: crate::Slot,
     /// The provisional reading, as the cursors that made it number it
-    /// ([`crate::TrackCursor::speculation_id`]).
+    /// ([`crate::TrackCursor::claim`]).
     pub claim: u64,
     /// Its verdict: [`Speculation::Confirmed`], [`Speculation::Refuted`] or
     /// [`Speculation::Unverified`].
