@@ -190,7 +190,78 @@ assert!(matches!(cursor.resumed_from(), ResumedFrom::Discarded { lsn: 16, .. }))
 The FFI-only methods of `audio::Continuation`, the decoder and scheduler tuning constants, and
 the low-level `text` helpers.
 
-Not written yet.
+#### Plumbing, tuning values and text helpers are hidden (#297)
+
+Hidden in 0.6.0 with `#[doc(hidden)]`, and out of the semver promise: each may change or go in any
+release, with no deprecation first. Calls still compile, and output and the C ABI do not change.
+Code that uses only documented items has nothing to do.
+
+**`Continuation`:** `log_audio`, `audio_unlogged`, `audio_as`, `log_frames`, `frames_unlogged`,
+`frames_as`, `check_index`, `log_audio_indexed`, `audio_indexed_unlogged`, `audio_indexed_as`,
+`log_frames_indexed`, `frames_indexed_unlogged`, `frames_indexed_as`, `log_fresh_frames`,
+`fresh_frames`, and the enum `Opening`. `Continuation::{range, audio, frames}` stay.
+
+Before:
+
+```rust
+let opening = next.log_audio(&prev);
+let cursor = next.audio_as(prev, opening);
+```
+
+After:
+
+```rust
+let cursor = next.audio(prev);
+```
+
+The `*_indexed_*` methods continued a cursor from an index the caller keeps. They have no public
+form of their own. Give the index to the disc, or take what the cursor recorded and open a new
+cursor from the index (`audio_cursor` is in section M6). The new cursor starts from the index
+instead of going on with the earlier scan, and gives the same frames.
+
+Before:
+
+```rust
+let next = disc.range_continuation(slot, first, end)?;
+next.check_index(&index)?;
+let opening = next.log_audio_indexed(&prev, &index);
+let cursor = next.audio_indexed_as(prev, &mut index, opening);
+```
+
+After, with the disc keeping the index:
+
+```rust
+disc.set_seek_index(slot, index)?;
+let cursor = disc.continue_range_audio(prev, slot, first, end)?;
+```
+
+Or, with the caller keeping it:
+
+```rust
+index.absorb(&mut prev)?;
+let span = FrameSpan::Range(first, end);
+let cursor = disc.audio_cursor(slot, span, CursorOptions::new().with_index(&index))?;
+```
+
+**Tuning:** `audio::MAX_PARALLEL_BATCH`, `audio::PARALLEL_FRAMES_PER_THREAD`,
+`seek::MAX_CLAIMS`, `seek::MAX_EVENTS`, `seek::HINT_REACH` and `seek::REPLAY_SECTORS`. They have no
+replacement: code that reads one should stop sizing anything by it. `dst::lanes` stays public and
+documented, as the best number of frames to pass to `DstDecoder::decode_many` at once. The function
+is stable, but the number it returns is a tuning value: it may change in any release, and may
+differ per build, per CPU and with any setting that affects decoding. `dst::MAX_LANES` also stays
+public, as the limit of `TrackAudioCursor::with_dst_lanes`; its value may change in any release too.
+
+**Text:** `text::{decode, decode_string, fixed_bytes, fixed_text, language, string_bytes,
+text_string}` and `text::Charset`, which only they take. `Locale.charset` stays a `u8`, and
+`text::MAX_STRING_BYTES` stays public.
+
+Before:
+
+```rust
+let title = scarletbook::text::text_string(buf, offset, charset);
+```
+
+After: the decoded fields of `Toc`, `Area` and `Track` and their text, instead of parsing TOC bytes.
 
 ### M6. One entry point per concept
 
