@@ -90,7 +90,7 @@ Not written yet.
 
 The range, track and stored-frame entry points of `Disc`, `TrackAudioCursor` and `TrackCursor`.
 
-#### The cursor twins of `Disc` become `audio_cursor` and `frames_cursor` (#000)
+#### The cursor twins of `Disc` become `audio_cursor` and `frames_cursor` (#305)
 
 Deprecated in 0.6.0 and removed before 1.0. The old names still work and give the same frames,
 errors and log lines; each call warns. `Disc::{track_audio, range_audio, track_frames, range_frames,
@@ -122,7 +122,7 @@ let d = disc.frames_cursor(slot, FrameSpan::Range(first, end), CursorOptions::ne
 let a = disc.track_audio(slot, n)?.into_cursor();
 ```
 
-#### The caller's index moves to `CursorOptions` (#000)
+#### The caller's index moves to `CursorOptions` (#305)
 
 Deprecated in 0.6.0 and removed before 1.0.
 
@@ -141,7 +141,7 @@ let a = disc.audio_cursor(slot, span, CursorOptions::new().with_index(&index))?;
 let f = disc.frames_cursor(slot, span, CursorOptions::new().with_index(&index))?;
 ```
 
-#### `for_range`, `for_range_indexed` and `for_range_speculative` become `open_range` (#000)
+#### `for_range`, `for_range_indexed` and `for_range_speculative` become `open_range` (#305)
 
 Deprecated in 0.6.0 and removed before 1.0, on `TrackCursor` and `TrackAudioCursor` alike. For
 cursors without a `Disc`. The defaults are no index and `SeekPolicy::Exact`.
@@ -164,7 +164,7 @@ let with = CursorOptions::new().with_index(&index).with_policy(SeekPolicy::Specu
 let c = TrackCursor::open_range(&area, first, end, n, with)?;
 ```
 
-#### `continue_to` and `continue_to_range` give way to `Disc::continue_*` (#000)
+#### `continue_to` and `continue_to_range` give way to `Disc::continue_*` (#305)
 
 Deprecated in 0.6.0 and removed before 1.0, on `TrackCursor` and `TrackAudioCursor` alike. There is
 no form without a disc. The `Disc` form also tells two images of the same size apart and scans
