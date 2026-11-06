@@ -27,6 +27,11 @@ bench = false
 # Not part of the main workspace: cargo-fuzz needs nightly and its own profile.
 [workspace]
 
+# So the workspace lints do not reach here. Unsafe calls go in `scarletbook-ffi`'s `fuzzing`
+# feature (CONTRIBUTING).
+[lints.rust]
+unsafe_code = "deny"
+
 [[bin]]
 name = "demux"
 path = "fuzz_targets/demux.rs"
