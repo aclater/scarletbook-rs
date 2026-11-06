@@ -182,6 +182,7 @@ pub enum FrameKind {
 
 /// A frame accepted onto an area's timeline (specification 4, 4.5).
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct AreaFrame {
     /// Its frame number (timeline position).
     pub number: u32,
@@ -1824,11 +1825,29 @@ impl FrameContent {
 
 /// One timeline position of a track or frame range.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct TrackFrame {
     /// The frame number.
     pub number: u32,
     /// Its content.
     pub content: FrameContent,
+}
+
+impl TrackFrame {
+    /// A timeline position holding `content`, for a caller that decodes frames it saved
+    /// ([`decode_frame`]).
+    ///
+    /// ```
+    /// use scarletbook::{DstDecoder, FrameContent, FrameStatus, TrackFrame, audio::decode_frame};
+    ///
+    /// let frame = TrackFrame::new(7, FrameContent::Missing);
+    /// let audio = decode_frame(&mut DstDecoder::new(), frame, 2).unwrap();
+    /// assert_eq!((audio.number, audio.status), (7, FrameStatus::Missing));
+    /// assert_eq!(audio.data, vec![0x69; 2 * 4704]);
+    /// ```
+    pub fn new(number: u32, content: FrameContent) -> Self {
+        TrackFrame { number, content }
+    }
 }
 
 /// The reading state of one track's timeline positions (specification 4, 4.7),
@@ -2509,6 +2528,7 @@ pub enum FrameStatus {
 
 /// One decoded timeline position: `C x 4704` bytes in interleaved layout.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct AudioFrame {
     /// The frame number.
     pub number: u32,

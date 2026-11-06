@@ -556,7 +556,7 @@ impl RawFrames {
                         FrameKind::Dst => FrameContent::Dst(f.data),
                         FrameKind::Dsd => FrameContent::Dsd(f.data),
                     };
-                    TrackFrame { number: f.number, content }
+                    TrackFrame::new(f.number, content)
                 })
             }),
         }
