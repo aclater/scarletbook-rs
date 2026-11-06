@@ -123,7 +123,7 @@ jobs:
               exit 1
             fi
           done
-          cp benchmarks/runlist.json benchmarks/run.py benchmarks/table.py benchmarks/README.md LICENSE-MIT LICENSE-APACHE "dist/$name/"
+          cp benchmarks/runlist.json benchmarks/run.py benchmarks/evict.py benchmarks/table.py benchmarks/README.md LICENSE-MIT LICENSE-APACHE "dist/$name/"
           # The corpus images scarletbook-synth takes DST frames from (CC0, corpus/LICENSE).
           mkdir -p "dist/$name/corpus/images"
           cp corpus/LICENSE "dist/$name/corpus/"
