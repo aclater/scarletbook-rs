@@ -10,6 +10,48 @@ from 0.5.8).
 
 ## [Unreleased]
 
+## [0.5.9] - 2026-11-06
+
+### Added
+
+- `bench dsf --via tracks|tracks-scan|tracks-speculative|tracks-unverified`: one DSF file per track from the public `Layout` API, in order or from N workers, to measure a per-track writer (#202, #306).
+- The `scarletbook::output` documentation and the README give a recipe for writing an area's tracks as separate DSF files: one after another with `Disc::continue_range_audio`, or from workers, and which forms establish exactness under specification 4, 4.2 item 8 (#202, #309).
+- `TrackAudioCursor::with_dst_lanes` sets how many DST frames decode together on each thread, for measuring on your own CPU, and `bench decode --lanes K` exposes it in the benchmark kit. The default and the decoded output are unchanged; an out-of-range count is the new `Error::DstLanesInvalid` (#203, #318)
+- `bench open` (open to parsed TOC) and `bench first` (first bytes of a track from a seek), timed inside the process, in the page cache or, with `--evict`, with the image evicted before each iteration. `benchmarks/evict.py` evicts without root and fails if any page stays cached; the run list gains warm and cold cases for both, and `table.py` shows their medians in microseconds (#224, #281).
+- `scarletbook-synth --dst-frames stress` now writes 5-channel areas, and `--dst-order N` writes stress frames of one filter order, to time one history-byte branch of the DST decoder. The 2- and 6-channel images and the `dst_frames` benchmark's frames are unchanged (#264, #276).
+- `docs/migrating-0.6.md`, a skeleton for moving to 0.6.0, is on `main` and **not finished**: most of its sections still say "Not written yet", it has no entry to act on for 0.5.x, and each breaking change adds its before-and-after when it lands (#39).
+- A "Threads" section in the documentation of `scarletbook` and `scarletbook-pcm` says which public types are `Send` and `Sync` and what that means for reading, and compile-time assertions in both crates now hold them to it. No type changed (#39).
+- A "Stability" section in the README states the version policies: semantic versioning of the Rust API and the C ABI from 1.0 and what it does not cover, the version the crates share, and when the minimum supported Rust version can rise (#39).
+
+### Changed
+
+- DSF output fills the rows that a read only touches, at the ends of each `Layout::fill` or `Layout::read_at` call, whole in a scratch row and copies from it, instead of a byte at a time. The output is unchanged.
+  - **A good read can now fail because of a bad neighbour.** A read of part of a row now asks for all of that row's positions, which `Layout::positions_for` always allowed. If one of them fails, the read fails, even when its own bytes lie in another position or are only pad: on damaged media, a read that used to succeed can now return an I/O error. A `Layout::fill` source that errors only on the extra position fails it the same way, and an `sb_output_layout_fill` call that supplies fewer positions than `sb_output_layout_positions` lists now gets `SB_STATUS_INVALID_ARGUMENT`.
+  - **Reads under 4 KiB from a DST area do more work.** With `Layout::read_at`, stereo: 1 KiB calls fetch 15 % more frames and take 1.6 % longer, 512-byte calls 22 % more frames and 5.1 % longer. 6 channels at 1 KiB: 12 % more frames, time not measured. At 4 KiB and above frames rise by at most 0.3 % and no time gets worse.
+  - **Gains, on plain-DSD areas.** Reading in order (`Layout::fill`): 2 to 5 % at 4 MiB calls, 28 to 51 % at 128 KiB. `Layout::read_at`: about 2 % at 4 MiB, 11 to 28 % at 128 KiB, 7 to 10 % at 4 KiB. On DST areas, `Layout::read_at` from 4 KiB up gains 0 to 3 % (#202, #287).
+- DST decoding on one thread is faster for 5 and 6 channels (and slightly for stereo), with the same output: fewer instructions per symbol, and 5 channels in 2 frames use the smaller loop body. Measured on Zen 2 only: AVX-512 builds (the `znver5` benchmark build) and Zen 5 are not measured (#203, #288)
+- `scarletbook-pcm`: the conversion to 24-bit integers vectorises on AVX2. Output is byte-identical (#224, #286).
+- `scarletbook-pcm`: the first filter stage reads its input window as 64-bit words instead of one byte at a time. Output is byte-identical (#224, #285).
+- `benchmarks/run.py` records free memory by block size before and after each round's image copy (`free_kib_by_order_before`, `free_kib_by_order_after`) and the host's `page_bytes`. `benchmarks/README.md` reports that free-memory state changes plain-DSD seconds between byte-identical image copies; it is a candidate for the gap between tables, not an established cause (#259, #289).
+- Correction to the 0.5.8 notes: "no row moves by more than 1 %" does not hold for plain-DSD rows, where differences under about 2 % are unresolved (#259, #289).
+- `benchmarks/table.py` lists under the table any cell whose rounds differ by more than 5 % in wall time, with its range: byte-identical fresh copies of an image can differ by 12 % on the plain-DSD cases, which a median of a few rounds does not even out. `benchmarks/README.md` says to judge changes on ratios and to compare seconds only as ranges (#259).
+- `CONTRIBUTING.md` and the crate comments describe what the two `dispatch` modules cover today: in `scarletbook-pcm` also `pick`, `quantise` and `interleave`, in the core crate also the output path. No code changes (#269).
+- `unsafe_code` is now denied in every target outside `scarletbook-ffi`, through the workspace lints and the `scarletbook-conformance` and fuzz manifests, not only in the core and PCM libraries and the `bench` binary: their integration tests, benches and examples could otherwise add `unsafe` unnoticed. No code changes; nothing was using it (#269).
+- A comment in `bench dsf --via tracks*` states that its speculative verified mode makes one `verify_speculation` call and checks events, so a reading with no verdict passes silently (#310, #317).
+- The documentation of `DecodeOn` and the README now state that, with the `parallel` feature, rayon 1 is part of the public Rust API by decision: `DecodeOn::Pool` keeps taking an `Arc<rayon::ThreadPool>`, and a rayon 2 would need a new major version of `scarletbook`. Documentation only: nothing breaks and no code changes (#39, #292).
+
+### Fixed
+
+- `bench realtime --seeks` and `bench dsf --chunk` are limited (1,000,000 seeks, 256 MiB) and give a `usage-error` beyond it, instead of sizing an allocation from an unbounded number (#255, #316).
+- Tests now fail if run-time CPU detection stops choosing the AVX2 code on a capable CPU, in `scarletbook` and `scarletbook-pcm`, or if a new `DstDecoder` or `Converter` stops using it; the bit-identity tests would still have passed (#267, #282).
+- Miri now runs the dispatched AVX2 code. Until now it ran only the generic code on both sides of the dispatch tests, because `is_x86_feature_detected!` under Miri reports only what the build enabled. The `core-dispatch-avx2` and `pcm-dispatch-avx2` slices of the main and nightly Miri run build with the target features, and fail if those flags are lost; `scarletbook-pcm`'s dispatch test was in no slice before. Pull request CI is unchanged (#267, #283).
+- The `scarletbook` package includes `tests/common/`, which the unit tests load with `#[path]`; before, `cargo test --lib` on the unpacked crates.io tarball failed to compile (#268, #270).
+- `cargo test --lib` of the packaged `scarletbook` crate passes: the two dispatch tests that read the corpus are skipped, with a message, when it is absent (only in an unpacked crate; in the repository a missing corpus still fails), and the decoding tests that need more than the 2 MiB default stack at opt-level 0 run on a larger one. Tests only (#268, #315).
+- `benchmarks/run.py` skips a case for a kit whose `bench` has no such command, as it does for a missing program, instead of counting quick usage errors as failed runs, which could hide a real failure when comparing an older version. A case no kit can run fails the run (#290, #296).
+- C interface: a core `Error` with no status of its own would have reached C callers as `SB_STATUS_PANIC`. It now gets a status of its class, and a test fails until every variant has its own. No error that exists today changes status or message (#308, #311).
+- `Disc::verify_speculation` and C `sb_disc_seek_verify` could report complete while a provisional reading registered by another disc during the call had no verdict and no event. Code relying on the old promise may have seen an unverified reading treated as complete. They now report not complete until a later call has checked it, so existing `while !verify_speculation(..)` loops finish the job; each call still makes one round within its `max_sectors`. Complete covers the readings the index held at the call's last look: one that joins later has no verdict until a later call, so a caller that must have every verdict runs the loop once more after its readers finish and checks each reading. `extend_seek_index` still reports only whether the index is complete. No delivered frame changes (#310, #313).
+- `Disc::extend_seek_index`, `Disc::verify_speculation` and their C forms made no progress from an empty kept index when `max_sectors` was at most the index's interval: `AreaIndex::merge` dropped the first checkpoint, so a loop over them never ended. Every call now adds a checkpoint, as documented, including at `max_sectors` 0 (#310, #313).
+
 ## [0.5.8] - 2026-11-05
 
 **A seek-index fix, a real-time report in `bench`, a corrected benchmark runner, and the first
@@ -811,7 +853,8 @@ First release: a clean-room reader for SACD images, written from sacd-spec, pass
 - DST decoding about 3.8 times faster on one thread, and parallel decoding that overlaps
   demultiplexing with decoding within a bounded memory (#16, #17, #19).
 
-[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v0.5.8...HEAD
+[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v0.5.9...HEAD
+[0.5.9]: https://github.com/aclater/scarletbook-rs/compare/v0.5.8...v0.5.9
 [0.5.8]: https://github.com/aclater/scarletbook-rs/compare/v0.5.7...v0.5.8
 [0.5.7]: https://github.com/aclater/scarletbook-rs/compare/v0.5.6...v0.5.7
 [0.5.6]: https://github.com/aclater/scarletbook-rs/compare/v0.5.5...v0.5.6
