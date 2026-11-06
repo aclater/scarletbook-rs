@@ -1,0 +1,2 @@
+Changed
+- **Breaking:** the TOC model is `#[non_exhaustive]`, so that fields the specification defines can be exposed later without another break: `toc::Toc`, `MasterToc`, `Area`, `Track`, `Locale`, `DiscText`, `AreaText` and `TrackText`. Field access is unchanged. Outside the crate, struct patterns need `..`, and struct literals no longer compile: take an `Area` or `Track` from a parsed `Toc` (its fields stay public and assignable), and make a text struct from `Default` (#39, #298). Migration: `docs/migrating-0.6.md`, M1.

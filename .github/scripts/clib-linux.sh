@@ -56,12 +56,23 @@ esac
 bash .github/scripts/clib-package.sh "$target" "$platform" "$variant"
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
 pkg="dist/scarletbook-ffi-$version-$target${variant:+-$variant}"
-so="$pkg/lib/libscarletbook_ffi.so"
+abi=$(sed -n 's/^#define SB_ABI_VERSION //p' "$pkg/include/scarletbook.h")
+so="$pkg/lib/libscarletbook_ffi.so.$abi"
 
 echo "Shared library dependencies:"
-readelf -d "$so" | grep -E 'NEEDED|SONAME'
-if ! readelf -d "$so" | grep -q 'SONAME.*\[libscarletbook_ffi\.so\]'; then
-  echo "the shared library's SONAME is not libscarletbook_ffi.so" >&2
+dynamic=$(readelf -d "$so")
+grep -E 'NEEDED|SONAME' <<< "$dynamic"
+if ! grep -q "SONAME.*\[libscarletbook_ffi\.so\.$abi\]" <<< "$dynamic"; then
+  echo "the shared library's SONAME is not libscarletbook_ffi.so.$abi (SB_ABI_VERSION is $abi)" >&2
+  exit 1
+fi
+# The versioned name is the file and the unversioned one a link to it, in the archive too.
+listing=$(tar -tzvf "$pkg.tar.gz")
+if [[ -L "$so" || "$(readlink "$pkg/lib/libscarletbook_ffi.so")" != "libscarletbook_ffi.so.$abi" ]] \
+  || ! grep -Eq "^-.*/lib/libscarletbook_ffi\.so\.$abi\$" <<< "$listing" \
+  || ! grep -Eq "^l.*/lib/libscarletbook_ffi\.so -> libscarletbook_ffi\.so\.$abi\$" <<< "$listing"; then
+  echo "lib/libscarletbook_ffi.so must be a link to the file libscarletbook_ffi.so.$abi, in the archive too:" >&2
+  grep 'libscarletbook_ffi\.so' <<< "$listing" >&2
   exit 1
 fi
 case "$target" in

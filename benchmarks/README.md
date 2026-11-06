@@ -96,6 +96,11 @@ Not in the kit yet (`missing`): the first 128 KiB of 5 or 6 channels or without 
 cold runs of the whole-area cases, the C interface (`bench` uses the Rust API), and DSD to PCM
 from an image.
 
+**DST lanes.** `bench decode ... --lanes K` (1 to 4) decodes `K` DST frames together on each
+thread instead of the library's default for the channel count (`TrackAudioCursor::with_dst_lanes`,
+#203). The output is the same, so `--sink hash` must not change. It is not in the run list: time
+the commands yourself, with fresh copies, alternating (see "Fresh copies").
+
 ### Open and first 128 KiB
 
 These last microseconds, far less than starting a process, so `bench open` and `bench first` time

@@ -57,14 +57,53 @@ The audit's item numbers are in
 
 `toc::Toc`, `MasterToc`, `Area`, `Track`, `Locale`, `DiscText`, `AreaText` and `TrackText`.
 
-Not written yet.
+#### The TOC structs can't be built by literal or destructured without `..` (#298)
+
+Changed in 0.6.0, with no deprecation first. This affects code outside the crate that uses struct
+patterns or struct literals on these types. Reading a field works as before, and the fields stay
+public and assignable. Take an `Area` or `Track` from a parsed `Toc`, and make a text struct from
+`Default`.
+
+Before:
+
+```rust
+let Locale { language, language_code, charset } = locale;
+let text = TrackText { title: Some(title), ..TrackText::default() };
+```
+
+After:
+
+```rust
+let Locale { language, language_code, charset, .. } = locale;
+let mut text = TrackText::default();
+text.title = Some(title);
+```
 
 ### M2. Result structs are `#[non_exhaustive]`
 
 `error::Warning`, `audio::AreaFrame`, `TrackFrame` and `AudioFrame`, and the new
 `TrackFrame::new`.
 
-Not written yet.
+#### `TrackFrame` is built with `TrackFrame::new`, and patterns need `..` (#301)
+
+Changed in 0.6.0, with no deprecation first. This affects code outside the crate that uses struct
+patterns or struct literals on `Warning`, `AreaFrame`, `TrackFrame` or `AudioFrame`. Reading a field
+works as before. Only `TrackFrame` has a constructor, for frames a program saved and hands to
+`audio::decode_frame`; the library alone produces the other three.
+
+Before:
+
+```rust
+let frame = TrackFrame { number, content: FrameContent::Dst(saved) };
+let AudioFrame { number, status, data } = decode_frame(&mut decoder, frame, channels)?;
+```
+
+After:
+
+```rust
+let frame = TrackFrame::new(number, FrameContent::Dst(saved));
+let AudioFrame { number, status, data, .. } = decode_frame(&mut decoder, frame, channels)?;
+```
 
 ### M3. Enum variants with fields are `#[non_exhaustive]`
 
@@ -179,17 +218,119 @@ Not written yet.
 
 `MAX_CHANNELS`, `dst::FL` and `audio::FRAME_BYTES_PER_CHANNEL`.
 
-Not written yet.
+#### `dst::MAX_CHANNELS` and `dst::FL` give way to the `audio` constants (#293)
+
+Deprecated in 0.6.0 and removed before 1.0. `audio::MAX_CHANNELS` is a `u8`, where
+`dst::MAX_CHANNELS` was a `usize`, so a size needs a conversion. The values do not change. Nothing
+stops building until the removal, except in builds that deny warnings.
+`scarletbook_pcm::MAX_CHANNELS` and `scarletbook_pcm::FRAME_BYTES_PER_CHANNEL` stay, because that
+crate does not depend on `scarletbook`.
+
+Before:
+
+```rust
+let buf = vec![0u8; dst::FL * dst::MAX_CHANNELS];
+```
+
+After:
+
+```rust
+let buf = vec![0u8; audio::FRAME_BYTES_PER_CHANNEL * usize::from(audio::MAX_CHANNELS)];
+```
 
 ### N5. `Cutoff::Default`
 
-Not written yet.
+#### `Cutoff::Default` is now `Cutoff::Standard` (#291)
+
+**Check this first: a match can silently take the wrong branch.** Under `use Cutoff::*`, a pattern
+`Default` no longer names a filter. It becomes a new binding that matches every filter, so that arm
+also takes `Low` and `Wide`. The code still builds, with only warnings (`unreachable_patterns`,
+`unused_variables`, `non_snake_case`). To find it, search for the glob, then change each such
+pattern to `Standard`:
+
+```sh
+grep -rnE 'Cutoff::\*' --include='*.rs' .
+```
+
+While migrating, also build with those warnings as errors:
+`RUSTFLAGS="-D unreachable_patterns -D unused_variables" cargo build --all-targets`. Removing the
+old name before 1.0 won't change this: it comes from the rename, and only a path written
+`Cutoff::Default` gives an error then.
+
+Deprecated in 0.6.0 and removed before 1.0: the old name stays as a constant, so expressions and
+patterns written `Cutoff::Default` on a `Cutoff` value still build, with a warning. What stops building now is `use
+Cutoff::Default` and `Cutoff::Default` in a pattern on a `&Cutoff`, and `{:?}` of the filter prints
+`Standard`. The filter and its output bytes do not change, `Cutoff::default()` is still this filter,
+and the C constant `SB_PCM_CUTOFF_DEFAULT` keeps its name and value.
+
+Before:
+
+```rust
+let config = PcmConfig::new(PcmRate::Hz176400, Cutoff::Default, 2);
+```
+
+After:
+
+```rust
+let config = PcmConfig::new(PcmRate::Hz176400, Cutoff::Standard, 2);
+```
 
 ## C library
 
 ### M8. The shared library's name
 
-ABI 2 is the 1.0 ABI, so the header and the ABI do not change. The shared library's name will
-carry the ABI version on Linux and macOS.
+ABI 2 is the 1.0 ABI, so the header and the ABI do not change, and `SB_ABI_VERSION` stays 2. The
+shared library's name now carries the ABI version on Linux and macOS.
 
-Not written yet.
+#### `libscarletbook_ffi.so` is now `libscarletbook_ffi.so.2` (#294)
+
+Changed in 0.6.0, and breaking for how a program is packaged, not for its source. No C source
+changes, and neither do archive file names. In an archive's `lib/`, the versioned name is now the
+file and the unversioned name a symlink to it:
+
+| | The file, and the name a new program records | Symlink |
+|---|---|---|
+| Linux | `libscarletbook_ffi.so.2` (the SONAME) | `libscarletbook_ffi.so` |
+| macOS | `libscarletbook_ffi.2.dylib` (install name `@rpath/libscarletbook_ffi.2.dylib`, compatibility version 2.0.0) | `libscarletbook_ffi.dylib` |
+
+Static linking and Windows do not change: `scarletbook_ffi.dll` keeps its name, and
+`sb_abi_version()` is the only ABI check there.
+
+A program you **relink** still uses `-lscarletbook_ffi`, but needs the versioned file at run time.
+Shipping only a file called `libscarletbook_ffi.so` fails with `libscarletbook_ffi.so.2: cannot
+open shared object file`.
+
+Before:
+
+```sh
+cc app.c -I$PKG/include -L$PKG/lib -lscarletbook_ffi -Wl,-rpath,'$ORIGIN'
+cp $PKG/lib/libscarletbook_ffi.so "$DEST/"
+```
+
+After:
+
+```sh
+cc app.c -I$PKG/include -L$PKG/lib -lscarletbook_ffi -Wl,-rpath,'$ORIGIN'
+cp $PKG/lib/libscarletbook_ffi.so.2 "$DEST/"
+```
+
+A program you **have not relinked** recorded the unversioned name, so it needs the symlink kept next
+to the library. With only `libscarletbook_ffi.so.2` it fails with `libscarletbook_ffi.so: cannot open
+shared object file`. A program built against the 0.5.8 archive runs with file and symlink on glibc
+Linux, with the same output; musl and macOS were not tried with such a program.
+
+A program that **loads the library by path**, as with ctypes, still works under the old name while
+the symlink is there. Move to the versioned name: it is the real file, so it survives packaging
+that drops symlinks.
+
+Before:
+
+```python
+lib = ctypes.CDLL("/path/to/libscarletbook_ffi.so")
+```
+
+After:
+
+```python
+lib = ctypes.CDLL("/path/to/libscarletbook_ffi.so.2")  # libscarletbook_ffi.2.dylib on macOS
+```
