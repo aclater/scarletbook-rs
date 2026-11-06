@@ -57,7 +57,27 @@ The audit's item numbers are in
 
 `toc::Toc`, `MasterToc`, `Area`, `Track`, `Locale`, `DiscText`, `AreaText` and `TrackText`.
 
-Not written yet.
+#### The TOC structs can't be built by literal or destructured without `..` (#298)
+
+Changed in 0.6.0, with no deprecation first. This affects code outside the crate that uses struct
+patterns or struct literals on these types. Reading a field works as before, and the fields stay
+public and assignable. Take an `Area` or `Track` from a parsed `Toc`, and make a text struct from
+`Default`.
+
+Before:
+
+```rust
+let Locale { language, language_code, charset } = locale;
+let text = TrackText { title: Some(title), ..TrackText::default() };
+```
+
+After:
+
+```rust
+let Locale { language, language_code, charset, .. } = locale;
+let mut text = TrackText::default();
+text.title = Some(title);
+```
 
 ### M2. Result structs are `#[non_exhaustive]`
 
