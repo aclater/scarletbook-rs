@@ -957,6 +957,25 @@ impl Arith<'_> {
         u32::from(!zero)
     }
 
+    /// [`Arith::decode`] with Q from `q`, a [`QTable`] the caller reaches without another
+    /// register. The same to the bit.
+    #[inline(always)]
+    fn decode_table(&mut self, p: u32, q: &QTable) -> u32 {
+        // A is 2048 to 4095, so its top 5 bits are below 32. Nothing wraps; see `decode`.
+        let a = self.a;
+        let w0 = q[(a >> 59) as usize].wrapping_mul(u64::from(p));
+        let w1 = a.wrapping_sub(w0);
+        let zero = self.x >= w1;
+        // C - W1 if that does not wrap, else C: the smaller of the two.
+        let x = self.x.wrapping_sub(w1).min(self.x);
+        let a = if zero { w0 } else { w1 };
+        let k = a.leading_zeros();
+        self.a = a.wrapping_shl(k);
+        self.x = x.wrapping_shl(k);
+        self.code.skip(k);
+        u32::from(!zero)
+    }
+
     /// [`Arith::decode`] with `p` given x 2^52 (a [`ScaledLut`] entry), the same to the
     /// bit: Q x p is one multiply from the top 5 bits of A.
     #[inline(always)]
@@ -1120,7 +1139,7 @@ fn run_inline<const K: usize, const NCH: usize, const U: usize>(lanes: &mut [Lan
                     let spred = base[$l][$ch].0[$r].wrapping_add(probe.partial[idx]);
                     let y = if const { byte_lut(NCH) } {
                         let (p, sign) = probability(spred, &probe.lut);
-                        sign ^ ar[$l].decode(p)
+                        sign ^ ar[$l].decode_table(p, &probes[$l][0].q)
                     } else {
                         let (p, sign) = probability_scaled(spred, &probe.scaled);
                         sign ^ ar[$l].decode_scaled(p)
@@ -1161,7 +1180,7 @@ fn run_inline<const K: usize, const NCH: usize, const U: usize>(lanes: &mut [Lan
                     let spred = base[$l][$ch].0[$r].wrapping_add(probe.partial[idx]);
                     let y = if const { byte_lut(NCH) } {
                         let (p, sign) = probability(spred, &probe.lut);
-                        sign ^ ar[$l].decode(p)
+                        sign ^ ar[$l].decode_table(p, &probes[$l][0].q)
                     } else {
                         let (p, sign) = probability_scaled(spred, &probe.scaled);
                         sign ^ ar[$l].decode_scaled(p)
@@ -1273,6 +1292,24 @@ type Lut = [u8; LUT_LEN];
 /// `min(|Spred| / 8, 63)` ([`probability_scaled`]).
 type ScaledLut = [u64; MAX_PTABLE_LEN];
 
+/// Q (5.5.7) x 2^52, the scale of [`Arith`], indexed by the top 5 bits of A x 2^52: with
+/// t = floor(A / 128), Q is floor(t / 2) with bit 0 ORed with bit 0 of t.
+///
+/// One load and no shift instead of four shifts and logic operations and a shift. Measured on
+/// Zen 2 (#203), where the 2-channel loop is bound by its integer operations rather than by
+/// the arithmetic decoder's chain, which this lengthens.
+type QTable = [u64; 32];
+
+const fn q_table() -> QTable {
+    let mut q = [0; 32];
+    let mut t = 0;
+    while t < 32 {
+        q[t] = (((t >> 1) | (t & 1)) as u64) << 52;
+        t += 1;
+    }
+    q
+}
+
 /// Whether [`run`] decodes `nch` channels with [`Lut`]s and [`Arith::decode`] (true) or with
 /// [`ScaledLut`]s and [`Arith::decode_scaled`]. The output is the same; the speed is not, and
 /// not monotonically in `nch`. The scaled form has the shorter multiply but adds the clamp
@@ -1287,12 +1324,14 @@ const fn byte_lut(nch: usize) -> bool {
 /// The partial shares (see [`Lane::partial`]) and probability table of one channel of a
 /// chunk, copied together so that [`run`] reaches both from one address per frame, with
 /// the channel's offset a constant, and holds fewer addresses in registers. Only the table
-/// [`byte_lut`] chooses for the frame's channel count is filled.
+/// [`byte_lut`] chooses for the frame's channel count is filled. `q` never changes; [`run`]
+/// reads channel 0's for every channel, so that only one is in the cache.
 #[derive(Clone, Debug)]
 #[repr(C, align(64))]
 struct Probe {
     partial: [i16; 256],
     scaled: ScaledLut,
+    q: QTable,
     lut: Lut,
 }
 
@@ -1310,7 +1349,8 @@ impl Probe {
     }
 }
 
-const NO_PROBE: Probe = Probe { partial: [0; 256], scaled: [128 << 52; MAX_PTABLE_LEN], lut: [128; LUT_LEN] };
+const NO_PROBE: Probe =
+    Probe { partial: [0; 256], scaled: [128 << 52; MAX_PTABLE_LEN], q: q_table(), lut: [128; LUT_LEN] };
 
 /// The probes of the channels that are not decoded.
 static NO_PROBES: [Probe; MAX_NCH] = [NO_PROBE; MAX_NCH];
@@ -1728,5 +1768,24 @@ mod tests {
         assert_eq!(b.pos, 1);
         let mut b = Bits::new(&[0u8]);
         assert_eq!(b.rice(0), Err(DstError::HeaderTruncated));
+    }
+
+    /// `decode_table` steps as `decode` does, for C on both sides of the decision: every A and
+    /// p, fewer under Miri.
+    #[test]
+    fn q_table_step_matches_decode() {
+        let (a_step, p_step) = if cfg!(miri) { (97, 13) } else { (1, 1) };
+        let q = q_table();
+        for a in (2048u64..4096).step_by(a_step) {
+            for p in (1u32..=128).step_by(p_step) {
+                let w1 = a - ((a >> 8) | ((a >> 7) & 1)) * u64::from(p);
+                for c in [0, w1 - 1, w1, a - 1] {
+                    let arith = Arith { a: a << 52, x: c << 52, code: CodeBits { bytes: &[], pos: 0 } };
+                    let (mut one, mut two) = (arith, arith);
+                    assert_eq!(one.decode(p), two.decode_table(p, &q));
+                    assert_eq!((one.a, one.x, one.code.pos), (two.a, two.x, two.code.pos));
+                }
+            }
+        }
     }
 }
