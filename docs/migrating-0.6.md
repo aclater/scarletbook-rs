@@ -164,36 +164,12 @@ let with = CursorOptions::new().with_index(&index).with_policy(SeekPolicy::Specu
 let c = TrackCursor::open_range(&area, first, end, n, with)?;
 ```
 
-#### `continue_to` and `continue_to_range` give way to `Disc::continue_*` (#305)
+#### `continue_to` and `continue_to_range` keep working, for callers without a `Disc` (#305)
 
-Deprecated in 0.6.0 and removed before 1.0, on `TrackCursor` and `TrackAudioCursor` alike. There is
-no form without a disc.
-
-The `Disc` form behaves differently, so check these when you move:
-
-- **Seek policy:** the old methods always open exact. The `Disc` form uses the disc's seek policy,
-  so on a disc with `SeekPolicy::Speculative`, an opening that can't reuse the cursor's state may
-  start provisionally. Check `speculation()`, or keep the disc on `SeekPolicy::Exact`.
-- **Seek index:** the old methods use none. The `Disc` form starts from the disc's index when it
-  can't reuse the cursor's state, and takes what the cursor recorded into that index.
-- **Log:** the old methods log nothing. The `Disc` form logs each opening.
-- **Other images:** the `Disc` form tells two images of the same size apart and scans afresh, where
-  the old methods left a cursor that refuses to read the other image.
-
-Before:
-
-```rust
-let cursor = cursor.continue_to(&area, &track, n)?;
-let cursor = cursor.continue_to_range(&area, first, end, n)?;
-```
-
-After, for a `TrackAudioCursor`; `continue_track_frames` and `continue_range_frames` for a
-`TrackCursor`:
-
-```rust
-let cursor = disc.continue_track_audio(cursor, slot, number)?;
-let cursor = disc.continue_range_audio(cursor, slot, first, end)?;
-```
+Not deprecated, so there is nothing to migrate. `TrackCursor::new`, `TrackAudioCursor::new` and
+`AreaCursor::new` stay as well. With a `Disc`, `Disc::continue_*` is the usual form. It isn't the
+same call: it uses the disc's seek index and policy, logs each opening, and tells two images of the
+same size apart, while `continue_to` always opens exact, with no index and no log.
 
 ### S1. Names and constructors
 

@@ -430,7 +430,6 @@ fn continuation_after_a_read_error_rescans() {
 
 #[test]
 #[cfg_attr(miri, ignore = "decodes several tracks")]
-#[allow(deprecated)] // `continue_to`, tested until it goes (#39).
 fn a_cursor_never_reads_another_image() {
     // Two discs with the same layout but different audio.
     let make = |fill: u8| {

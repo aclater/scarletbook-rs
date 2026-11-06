@@ -331,7 +331,6 @@ fn unlogged_continuations_open_alike() {
 /// they cannot continue into is refused as 4.7.1 items 3 and 4 say.
 #[test]
 #[cfg_attr(miri, ignore = "reads hundreds of sectors")]
-#[allow(deprecated)] // `continue_to` and `continue_to_range`, tested until they go (#39).
 fn cursors_continue_over_tracks_and_ranges() {
     let fs = frames(60);
     let tracks = vec![TrackSpec { start: 0, duration: 20 }, TrackSpec { start: 20, duration: 40 }];

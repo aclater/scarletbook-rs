@@ -2252,7 +2252,6 @@ impl TrackCursor {
     /// # Errors
     ///
     /// As [`check_track`].
-    #[deprecated(since = "0.6.0", note = "use `Disc::continue_track_frames`")]
     pub fn continue_to(self, area: &Area, track: &Track, image_sectors: u64) -> Result<Self, Error> {
         check_track(area, track, image_sectors)?;
         Ok(self.continue_in(area, track.start_frame, track.end_frame(), (image_sectors, None), None))
@@ -2266,7 +2265,6 @@ impl TrackCursor {
     /// # Errors
     ///
     /// As [`check_range`].
-    #[deprecated(since = "0.6.0", note = "use `Disc::continue_range_frames`")]
     pub fn continue_to_range(
         self,
         area: &Area,
@@ -2278,7 +2276,7 @@ impl TrackCursor {
         Ok(self.continue_in(area, first, end, (image_sectors, None), None))
     }
 
-    /// As [`crate::Disc::continue_range_frames`] for a range already checked, also starting
+    /// As [`TrackCursor::continue_to_range`] for a range already checked, also starting
     /// afresh when this cursor has read an image other than `image_id`, and from `index`
     /// (of `area`) when that is given and the state is not reused.
     pub(crate) fn continue_in(
@@ -2905,7 +2903,6 @@ impl TrackAudioCursor {
     /// # Errors
     ///
     /// As [`check_track`].
-    #[deprecated(since = "0.6.0", note = "use `Disc::continue_track_audio`")]
     pub fn continue_to(self, area: &Area, track: &Track, image_sectors: u64) -> Result<Self, Error> {
         check_track(area, track, image_sectors)?;
         Ok(self.continue_in(area, track.start_frame, track.end_frame(), (image_sectors, None), None))
@@ -2919,7 +2916,6 @@ impl TrackAudioCursor {
     /// # Errors
     ///
     /// As [`check_range`].
-    #[deprecated(since = "0.6.0", note = "use `Disc::continue_range_audio`")]
     pub fn continue_to_range(
         self,
         area: &Area,
@@ -2931,7 +2927,7 @@ impl TrackAudioCursor {
         Ok(self.continue_in(area, first, end, (image_sectors, None), None))
     }
 
-    /// As [`crate::Disc::continue_range_audio`] for a range already checked (see
+    /// As [`TrackAudioCursor::continue_to_range`] for a range already checked (see
     /// [`TrackCursor::continue_in`]).
     pub(crate) fn continue_in(
         self,
@@ -3735,7 +3731,6 @@ pub(crate) mod tests {
     #[cfg(feature = "parallel")]
     #[test]
     #[cfg_attr(miri, ignore = "starts 67 threads")]
-    #[allow(deprecated)] // `continue_to` until it goes (#39).
     fn parallel_window_is_capped() {
         let (_, area, track) = malformed_area(1, 1);
         let mut cursor = TrackAudioCursor::new(&area, &track, 1).unwrap();

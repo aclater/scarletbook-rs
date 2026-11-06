@@ -39,6 +39,10 @@ use crate::toc::{self, Timecode, Toc, TocDigests, TocStored};
 /// another seek policy for that one cursor, use [`CursorOptions`]. [`Disc::area_frames`] is
 /// the diagnostic form of [`Disc::stored_frame_list`].
 ///
+/// Without a `Disc`, use [`TrackAudioCursor::new`] or [`TrackCursor::new`] for a track,
+/// [`TrackAudioCursor::open_range`] or [`TrackCursor::open_range`] for a range,
+/// [`AreaCursor::new`] for an area, and `continue_to` and `continue_to_range` to go on.
+///
 /// # Several readers
 ///
 /// A disc reads through one reader with one position, so its reads take `&mut self`. For
