@@ -91,6 +91,9 @@ const SEEKS: usize = 200;
 /// Timed iterations of `open` and `first`, by default.
 const ITERATIONS: usize = 100;
 
+/// The most timed iterations of `open` and `first`: their times are kept in memory.
+const MAX_ITERATIONS: usize = 1_000_000;
+
 /// The bytes of decoded audio `first` times, by default.
 const FIRST_BYTES: usize = 128 << 10;
 
@@ -205,8 +208,8 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Args>, String>
                 iterations = v
                     .parse::<usize>()
                     .ok()
-                    .filter(|&n| n > 0)
-                    .ok_or_else(|| format!("--iterations must be a positive number, not {v}"))?;
+                    .filter(|n| (1..=MAX_ITERATIONS).contains(n))
+                    .ok_or_else(|| format!("--iterations must be from 1 to {MAX_ITERATIONS}, not {v}"))?;
             }
             "--evict" if opening || first => evict = Some(PathBuf::from(value()?)),
             "--track" if first => {
@@ -659,8 +662,12 @@ fn first_times(
 ) -> Result<(), Failure> {
     let mut base = open(path)?;
     let area = base.toc().area(slot).ok_or(Error::NoSuchArea(slot))?;
+    let usage = |message: String| Failure { class: "usage-error", message };
     let middle = area.tracks.get(area.tracks.len() / 2).map(|t| u32::from(t.number));
-    let number = track.or(middle).ok_or(Error::InvalidArgument("an area without tracks"))?;
+    let number = track.or(middle).ok_or_else(|| usage("the area has no tracks".into()))?;
+    if !area.tracks.iter().any(|t| u32::from(t.number) == number) {
+        return Err(usage(format!("--track {number}: the area has no such track")));
+    }
     base.check_track(slot, number)?;
     base.enable_seek_index(slot, IndexOptions::new())?;
     while !base.extend_seek_index(slot, 1 << 20)? {}
@@ -672,7 +679,10 @@ fn first_times(
         let mut frames = disc.track_audio(slot, number)?;
         let mut got = 0;
         while got < bytes {
-            let frame = frames.next().ok_or(Error::InvalidArgument("--bytes is past the track's end"))??;
+            let Some(frame) = frames.next() else {
+                return Err(usage(format!("--bytes {bytes}: past the end of track {number}")));
+            };
+            let frame = frame?;
             got += frame.data.len();
             black_box(&frame.data);
         }
@@ -943,6 +953,8 @@ mod tests {
         ));
         assert!(args("open x.iso --area 2ch").is_err());
         assert!(args("open x.iso --iterations 0").is_err());
+        assert!(args("open x.iso --iterations 1000000").is_ok());
+        assert!(args("open x.iso --iterations 1000001").is_err());
         assert!(args("open x.iso --track 1").is_err());
         let a = args("first x.iso --area mc --threads 0 --track 3 --bytes 4096").unwrap().unwrap();
         assert_eq!((a.slot, a.threads), (Slot::Multichannel, 0));

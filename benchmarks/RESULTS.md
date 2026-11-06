@@ -38,13 +38,17 @@ benchmarks/compare.sh run ../cmp > table.md         # about 20 minutes on the Ze
 
 Not in the run list yet, so not in these tables:
 
-- **TOC open** and the **first 128 KiB** of a track: in the run list since `bench open` and `bench
-  first` (#224), for versions from 0.5.9; earlier sections do not have them. Stereo only, through a
-  complete seek index: other channel counts and index-less reads are not in the run list.
 - **Cold runs** (image evicted from the page cache) of the whole-area cases.
+- **The first 128 KiB** of 5 or 6 channels, or without a complete seek index.
 - **The C interface:** `bench` calls the Rust API.
 - **DSD to PCM from an image** (`callpattern` converts generated DSD in memory) and DST areas
   to PCM.
+
+In the run list, but not in every table:
+
+- **TOC open** and the **first 128 KiB** of a track, stereo, through a complete seek index: from
+  `bench open` and `bench first` (#224), so for versions from 0.5.9. Earlier sections do not have
+  them.
 - Released versions before 0.5.6 have no `bench dsf` and no `callpattern`, so their cells for
   DSF and DSD to PCM are blank, unless an equivalent revision is compared instead (0.5.6
   below uses `3eb96dc` for 0.5.5).

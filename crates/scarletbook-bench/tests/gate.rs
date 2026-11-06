@@ -237,7 +237,16 @@ fn open_and_first_print_figures() {
         assert!(!out.status.success(), "{args:?}");
         assert_eq!(String::from_utf8_lossy(&out.stderr).lines().next(), Some("io-error"), "{args:?}");
     }
-    // Asking for more than the track holds is an error, not a short figure.
-    let out = bench(&["first", &img, "--area", "2ch", "--threads", "1", "--bytes", "4000000000"]);
-    assert!(!out.status.success());
+    // Asking for more than the track holds is an error, not a short figure. These, and a track
+    // the area lacks and more iterations than `bench` keeps, are usage errors, and none panics.
+    for args in [
+        &["first", &img, "--area", "2ch", "--threads", "1", "--bytes", "4000000000"][..],
+        &["first", &img, "--area", "2ch", "--threads", "1", "--track", "99"][..],
+        &["first", &img, "--area", "2ch", "--threads", "1", "--iterations", "18446744073709551615"][..],
+        &["open", &img, "--iterations", "18446744073709551615"][..],
+    ] {
+        let out = bench(args);
+        assert!(!out.status.success(), "{args:?}");
+        assert_eq!(String::from_utf8_lossy(&out.stderr).lines().next(), Some("usage-error"), "{args:?}");
+    }
 }

@@ -10,7 +10,7 @@ the figures are its own: the median over rounds of its CPU milliseconds per seco
 at 1, 8 and 256 frames per call. A case with a `figure` shows that line of its stdout instead of
 wall and CPU time, the median over rounds, in microseconds: what it times is far shorter than
 starting a process. Failed runs are left out and counted under the table. So is any
-cell whose rounds differ by more than SPREAD_LISTED in wall time, with its range: each round reads
+cell whose rounds differ by more than SPREAD_LISTED in what it shows, with its range: each round reads
 its own copy of the image, and byte-identical copies can differ by more than a median of a few
 rounds evens out (README.md, "Fresh copies"). The builds of a round read the same copy; the printed
 ratio is of the medians over the rounds, which on such cases can differ slightly from a per-round ratio.
@@ -140,7 +140,7 @@ def main():
                     spread.append(f"{paths.get(case, case)}, {build}, {label}: {unit}")
     if spread:
         print("\nSpread between rounds above "
-              f"{(SPREAD_LISTED - 1) * 100:.0f} %, so read these seconds as a range: " + "; ".join(spread) + ".")
+              f"{(SPREAD_LISTED - 1) * 100:.0f} %, so read these figures as a range: " + "; ".join(spread) + ".")
     missing = runlist.get("missing", [])
     if missing:
         print("\nNot measured: " + "; ".join(f"{m['path']} ({m['reason']})" for m in missing) + ".")
