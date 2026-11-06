@@ -989,6 +989,13 @@ fn write_dsf_tracks(
         }
         Ok(())
     };
+    // The prototype's speculative verified mode makes one `verify_speculation` call, and the
+    // check below reads events. `verify_speculation` makes one round and returns `false` if
+    // it is not done, and a reading that has no verdict has no event, so such a reading
+    // passes silently here. The recipe in `scarletbook::output` loops (`while
+    // !disc.verify_speculation(..)? {}`), runs it once more on the root after the workers
+    // have finished, and checks each reading's own `speculation()`. Kept as it is so that
+    // what is measured does not change (#310, #313).
     let verify = || -> Result<(), Failure> {
         let mut disc = root.share(BufReader::new(File::open(path)?))?;
         disc.verify_speculation(slot, u64::MAX)?;
