@@ -21,7 +21,7 @@
 //! # Building one
 //!
 //! An index is built by reading: a cursor made from an index
-//! ([`crate::TrackCursor::for_range_indexed`], [`crate::TrackAudioCursor::for_range_indexed`])
+//! ([`crate::CursorOptions::with_index`])
 //! records a checkpoint each time its scan crosses a boundary past the index's frontier,
 //! and [`AreaIndex::absorb`] takes those checkpoints into the index. Each audio sector is
 //! then read at most once per index for building it, and once the frontier lies past a
@@ -1205,8 +1205,8 @@ const _: () = {
 /// Saved confirmations are used and kept only by an index whose TOC fingerprint a disc of
 /// this process has checked against its own TOC ([`crate::Disc::enable_seek_index`],
 /// [`crate::Disc::set_seek_index`]; not saved): an index loaded with
-/// [`AreaIndex::from_bytes`] and used directly (`for_range_speculative`,
-/// `for_range_indexed`, [`AreaIndex::extend`]) keeps its readings provisional and records
+/// [`AreaIndex::from_bytes`] and used directly ([`crate::CursorOptions::with_index`],
+/// [`AreaIndex::extend`]) keeps its readings provisional and records
 /// no confirmation, whatever image it reads.
 ///
 /// When verification ([`AreaIndex::verify`]) confirms a provisional reading from `L` for

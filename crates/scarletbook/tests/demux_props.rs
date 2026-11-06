@@ -14,7 +14,7 @@ use std::io::Cursor;
 use common::{PFrame, Spec, TrackSpec, pack};
 use proptest::prelude::*;
 use scarletbook::audio::FRAME_BYTES_PER_CHANNEL;
-use scarletbook::{Demuxer, Disc, FrameContent, FrameKind, Slot};
+use scarletbook::{CursorOptions, Demuxer, Disc, FrameContent, FrameKind, FrameSpan, Slot};
 
 fn config() -> ProptestConfig {
     if cfg!(miri) {
@@ -197,7 +197,7 @@ fn continuing_reads_each_audio_sector_once() {
     let start = read.get();
     let mut fresh = Vec::new();
     for n in 1..=3 {
-        let c = disc.track_audio_cursor(Slot::TwoChannel, n).unwrap();
+        let c = disc.audio_cursor(Slot::TwoChannel, FrameSpan::Track(n), CursorOptions::new()).unwrap();
         fresh.push(decode_all(&mut disc, c).0);
     }
     let fresh_bytes = read.get() - start;
@@ -205,7 +205,7 @@ fn continuing_reads_each_audio_sector_once() {
     // One cursor continued from track to track.
     let start = read.get();
     let mut continued = Vec::new();
-    let mut cursor = disc.track_audio_cursor(Slot::TwoChannel, 1).unwrap();
+    let mut cursor = disc.audio_cursor(Slot::TwoChannel, FrameSpan::Track(1), CursorOptions::new()).unwrap();
     for n in 1..=3 {
         if n > 1 {
             cursor = disc.continue_track_audio(cursor, Slot::TwoChannel, n).unwrap();
@@ -227,12 +227,12 @@ fn continuing_reads_each_audio_sector_once() {
 fn continuing_backwards_rescans_with_the_same_result() {
     let (img, _) = three_track_disc();
     let mut disc = Disc::open(Cursor::new(img)).unwrap();
-    let c3 = disc.track_audio_cursor(Slot::TwoChannel, 3).unwrap();
+    let c3 = disc.audio_cursor(Slot::TwoChannel, FrameSpan::Track(3), CursorOptions::new()).unwrap();
     let (_, after3) = decode_all(&mut disc, c3);
     // Track 1 starts before the cursor's position: a fresh scan, same frames.
     let c1 = disc.continue_track_audio(after3, Slot::TwoChannel, 1).unwrap();
     let (back, _) = decode_all(&mut disc, c1);
-    let fresh1 = disc.track_audio_cursor(Slot::TwoChannel, 1).unwrap();
+    let fresh1 = disc.audio_cursor(Slot::TwoChannel, FrameSpan::Track(1), CursorOptions::new()).unwrap();
     assert_eq!(back, decode_all(&mut disc, fresh1).0);
 }
 
@@ -346,11 +346,11 @@ proptest! {
             if disc.check_track(Slot::TwoChannel, i).is_err() {
                 continue;
             }
-            let fresh_cursor = disc.track_audio_cursor(Slot::TwoChannel, i).unwrap();
+            let fresh_cursor = disc.audio_cursor(Slot::TwoChannel, FrameSpan::Track(i), CursorOptions::new()).unwrap();
             let (fresh, _) = take_frames(&mut disc, fresh_cursor, stop);
             let next = match cursor.take() {
                 Some(prev) => disc.continue_track_audio(prev, Slot::TwoChannel, i).unwrap(),
-                None => disc.track_audio_cursor(Slot::TwoChannel, i).unwrap(),
+                None => disc.audio_cursor(Slot::TwoChannel, FrameSpan::Track(i), CursorOptions::new()).unwrap(),
             };
             let (continued, back) = take_frames(&mut disc, next, stop);
             prop_assert_eq!(continued, fresh, "track {}", i);
@@ -374,13 +374,13 @@ fn continuation_into_another_area_rescans() {
     }
     let mut disc = Disc::open(Cursor::new(img)).unwrap();
     assert_eq!(disc.toc().areas.len(), 2);
-    let c = disc.track_audio_cursor(Slot::TwoChannel, 2).unwrap();
+    let c = disc.audio_cursor(Slot::TwoChannel, FrameSpan::Track(2), CursorOptions::new()).unwrap();
     let (_, after) = take_frames(&mut disc, c, None);
     // Track 1 of the other slot starts at frame 0, before the cursor: but even a later
     // start in another area must not reuse the state; compare with a fresh cursor.
     let continued = disc.continue_track_audio(after, Slot::Multichannel, 1).unwrap();
     let (got, _) = take_frames(&mut disc, continued, None);
-    let fresh = disc.track_audio_cursor(Slot::Multichannel, 1).unwrap();
+    let fresh = disc.audio_cursor(Slot::Multichannel, FrameSpan::Track(1), CursorOptions::new()).unwrap();
     assert_eq!(got, take_frames(&mut disc, fresh, None).0);
 }
 
@@ -414,7 +414,7 @@ fn continuation_after_a_read_error_rescans() {
     let fail = std::rc::Rc::new(std::cell::Cell::new(false));
     let img = timeline_disc(&fs, &[(0, 4), (4, 4)]);
     let mut disc = Disc::open(Flaky { inner: Cursor::new(img), fail: fail.clone() }).unwrap();
-    let c = disc.track_audio_cursor(Slot::TwoChannel, 1).unwrap();
+    let c = disc.audio_cursor(Slot::TwoChannel, FrameSpan::Track(1), CursorOptions::new()).unwrap();
     fail.set(true);
     let mut audio = disc.read_track_audio(c);
     assert!(matches!(audio.next(), Some(Err(scarletbook::Error::Io(_)))));
@@ -422,7 +422,7 @@ fn continuation_after_a_read_error_rescans() {
     fail.set(false);
     let continued = disc.continue_track_audio(failed, Slot::TwoChannel, 2).unwrap();
     let (got, _) = take_frames(&mut disc, continued, None);
-    let fresh = disc.track_audio_cursor(Slot::TwoChannel, 2).unwrap();
+    let fresh = disc.audio_cursor(Slot::TwoChannel, FrameSpan::Track(2), CursorOptions::new()).unwrap();
     let (want, _) = take_frames(&mut disc, fresh, None);
     assert_eq!(got, want);
     assert!(got.iter().all(|f| f.status == scarletbook::FrameStatus::Dsd));
@@ -430,6 +430,7 @@ fn continuation_after_a_read_error_rescans() {
 
 #[test]
 #[cfg_attr(miri, ignore = "decodes several tracks")]
+#[allow(deprecated)] // `continue_to`, tested until it goes (#39).
 fn a_cursor_never_reads_another_image() {
     // Two discs with the same layout but different audio.
     let make = |fill: u8| {
@@ -443,15 +444,15 @@ fn a_cursor_never_reads_another_image() {
         Disc::open(Cursor::new(timeline_disc(&fs, &[(0, 4), (4, 4)]))).unwrap()
     };
     let (mut x, mut y) = (make(0x10), make(0x20));
-    let cx = x.track_audio_cursor(Slot::TwoChannel, 1).unwrap();
+    let cx = x.audio_cursor(Slot::TwoChannel, FrameSpan::Track(1), CursorOptions::new()).unwrap();
     let (_, after) = take_frames(&mut x, cx, None);
     // Through Disc: the other disc is detected and scanned afresh.
     let continued = y.continue_track_audio(after, Slot::TwoChannel, 2).unwrap();
     let (got, _) = take_frames(&mut y, continued, None);
-    let fresh = y.track_audio_cursor(Slot::TwoChannel, 2).unwrap();
+    let fresh = y.audio_cursor(Slot::TwoChannel, FrameSpan::Track(2), CursorOptions::new()).unwrap();
     assert_eq!(got, take_frames(&mut y, fresh, None).0);
     // Through the cursor alone (which cannot see images): reading another image is refused.
-    let cx = x.track_audio_cursor(Slot::TwoChannel, 1).unwrap();
+    let cx = x.audio_cursor(Slot::TwoChannel, FrameSpan::Track(1), CursorOptions::new()).unwrap();
     let (_, after) = take_frames(&mut x, cx, None);
     let area = y.toc().areas[0].clone();
     let raw = after.continue_to(&area, &area.tracks[1], y.toc().sectors).unwrap();
@@ -515,11 +516,11 @@ proptest! {
                 if disc.check_track(Slot::TwoChannel, i).is_err() {
                     continue;
                 }
-                let fresh_cursor = disc.track_audio_cursor(Slot::TwoChannel, i).unwrap();
+                let fresh_cursor = disc.audio_cursor(Slot::TwoChannel, FrameSpan::Track(i), CursorOptions::new()).unwrap();
                 let (fresh, _) = take_frames(&mut disc, fresh_cursor, stop);
                 let next = match cursor.take() {
                     Some(prev) => disc.continue_track_audio(prev, Slot::TwoChannel, i).unwrap(),
-                    None => disc.track_audio_cursor(Slot::TwoChannel, i).unwrap(),
+                    None => disc.audio_cursor(Slot::TwoChannel, FrameSpan::Track(i), CursorOptions::new()).unwrap(),
                 };
                 let (continued, back) = take_frames(&mut disc, next, stop);
                 prop_assert_eq!(continued, fresh, "track {}", i);

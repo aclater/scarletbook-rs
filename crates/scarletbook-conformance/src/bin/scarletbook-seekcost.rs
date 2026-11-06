@@ -40,8 +40,8 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use scarletbook::{
-    AreaIndex, AudioFrame, Disc, IndexOptions, ResumedFrom, SeekPolicy, Slot, SpeculativeOptions,
-    TrackAudioCursor,
+    AreaIndex, AudioFrame, CursorOptions, Disc, FrameSpan, IndexOptions, ResumedFrom, SeekPolicy, Slot,
+    SpeculativeOptions, TrackAudioCursor,
 };
 
 const USAGE: &str = "usage: scarletbook-seekcost IMAGE [--slot 2ch|mc] [--interval K] [--frames N] [--repeat R] \
@@ -195,10 +195,12 @@ fn run(args: &Args) -> Result<(), String> {
         let end = (first + args.frames).min(p);
         let slot = args.slot;
         let plain = measure(&mut disc, &read, args.repeat, &|d| {
-            d.range_audio_cursor(slot, first, end).map_err(|e| e.to_string())
+            d.audio_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new())
+                .map_err(|e| e.to_string())
         })?;
         let indexed = measure(&mut disc, &read, args.repeat, &|d| {
-            d.range_audio_cursor_indexed(slot, first, end, &index).map_err(|e| e.to_string())
+            d.audio_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new().with_index(&index))
+                .map_err(|e| e.to_string())
         })?;
         if plain.2 != indexed.2 {
             return Err(format!("frames {first}..{end} differ with the index"));
@@ -236,7 +238,9 @@ fn run(args: &Args) -> Result<(), String> {
         for _ in 0..args.repeat {
             let (r0, c0) = (read.get(), calls.get());
             let t = Instant::now();
-            let cursor = cold.range_audio_cursor(slot, first, end).map_err(|e| e.to_string())?;
+            let cursor = cold
+                .audio_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new())
+                .map_err(|e| e.to_string())?;
             let mut audio = cold.read_track_audio(cursor);
             let got: Vec<AudioFrame> =
                 audio.by_ref().map(|f| f.map_err(|e| e.to_string())).collect::<Result<_, _>>()?;
@@ -292,7 +296,9 @@ fn warm(args: &Args, exact: &mut Image, complete: &AreaIndex, p: u32) -> Result<
         .enable_seek_index(slot, IndexOptions::new().with_interval(args.interval))
         .map_err(|e| e.to_string())?;
     for &(a, b) in &ranges {
-        let cursor = first.range_frames_cursor(slot, a, b).map_err(|e| e.to_string())?;
+        let cursor = first
+            .frames_cursor(slot, FrameSpan::Range(a, b), CursorOptions::new())
+            .map_err(|e| e.to_string())?;
         first.read_frames(cursor).try_for_each(|f| f.map(drop)).map_err(|e| e.to_string())?;
     }
     let hinted = first.seek_index(slot).ok_or("no index")?.to_bytes();
@@ -341,7 +347,9 @@ fn warm(args: &Args, exact: &mut Image, complete: &AreaIndex, p: u32) -> Result<
             disc.set_seek_index(slot, index).map_err(|e| e.to_string())?;
             disc.set_seek_policy(slot, policy).map_err(|e| e.to_string())?;
             let (r0, c0) = (read.get(), calls.get());
-            let cursor = disc.range_audio_cursor(slot, a, b).map_err(|e| e.to_string())?;
+            let cursor = disc
+                .audio_cursor(slot, FrameSpan::Range(a, b), CursorOptions::new())
+                .map_err(|e| e.to_string())?;
             let mut audio = disc.read_track_audio(cursor);
             let got: Vec<AudioFrame> =
                 audio.by_ref().map(|f| f.map_err(|e| e.to_string())).collect::<Result<_, _>>()?;
@@ -352,7 +360,9 @@ fn warm(args: &Args, exact: &mut Image, complete: &AreaIndex, p: u32) -> Result<
             }
             calls_v.push((calls.get() - c0) as f64);
             kib_v.push((read.get() - r0) as f64 / 1024.0);
-            let cursor = exact.range_audio_cursor_indexed(slot, a, b, complete).map_err(|e| e.to_string())?;
+            let cursor = exact
+                .audio_cursor(slot, FrameSpan::Range(a, b), CursorOptions::new().with_index(complete))
+                .map_err(|e| e.to_string())?;
             if got == decode(exact, cursor)? {
                 equal += 1;
             }
@@ -407,7 +417,9 @@ fn fresh(args: &Args, exact: &mut Image, index: &AreaIndex, p: u32) -> Result<()
     for (first, end) in positions(args, p) {
         // Up to the first stored frame.
         let (mut disc, read, calls) = open_cold(args)?;
-        let cursor = disc.range_frames_cursor(slot, first, end).map_err(|e| e.to_string())?;
+        let cursor = disc
+            .frames_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new())
+            .map_err(|e| e.to_string())?;
         let mut frames = disc.read_frames(cursor);
         frames.next().transpose().map_err(|e| e.to_string())?;
         let kind = match frames.into_cursor().resumed_from() {
@@ -421,13 +433,17 @@ fn fresh(args: &Args, exact: &mut Image, index: &AreaIndex, p: u32) -> Result<()
         let (first_calls, first_kib) = (calls.get() as f64, read.get() as f64 / 1024.0);
         // The whole range, decoded.
         let (mut disc, read, calls) = open_cold(args)?;
-        let cursor = disc.range_audio_cursor(slot, first, end).map_err(|e| e.to_string())?;
+        let cursor = disc
+            .audio_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new())
+            .map_err(|e| e.to_string())?;
         let got = decode(&mut disc, cursor)?;
         let row = [first_calls, first_kib, calls.get() as f64, read.get() as f64 / 1024.0];
         for (v, c) in costs[kind].iter_mut().zip(row) {
             v.push(c);
         }
-        let cursor = exact.range_audio_cursor_indexed(slot, first, end, index).map_err(|e| e.to_string())?;
+        let cursor = exact
+            .audio_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new().with_index(index))
+            .map_err(|e| e.to_string())?;
         if got == decode(exact, cursor)? {
             equal += 1;
         }

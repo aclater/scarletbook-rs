@@ -52,7 +52,7 @@ use std::time::Instant;
 use scarletbook::audio::{AudioFrame, FRAME_BYTES_PER_CHANNEL, TrackAudio};
 use scarletbook::output::{Format, OutputOptions, PositionSource, RegionKind};
 use scarletbook::seek::IndexOptions;
-use scarletbook::{Disc, Error, Slot};
+use scarletbook::{CursorOptions, Disc, Error, FrameSpan, Slot};
 use sha2::{Digest, Sha256};
 
 const USAGE: &str = "usage: bench --version
@@ -393,7 +393,7 @@ fn decode_area(path: &Path, slot: Slot, out: &mut dyn Output) -> Result<(), Fail
         }
         let next = match cursor.take() {
             Some(prev) => disc.continue_track_audio(prev, slot, n)?,
-            None => disc.track_audio_cursor(slot, n)?,
+            None => disc.audio_cursor(slot, FrameSpan::Track(n), CursorOptions::new())?,
         };
         let mut track = disc.read_track_audio(next);
         out.start_track(n, track.channels())?;

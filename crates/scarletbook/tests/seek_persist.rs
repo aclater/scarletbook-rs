@@ -12,7 +12,10 @@ use std::io::Cursor;
 
 use common::{PFrame, Spec, TrackSpec, pack};
 use proptest::prelude::*;
-use scarletbook::{AreaIndex, Disc, Error, IndexOptions, ResumedFrom, Slot, TrackCursor, TrackFrame};
+use scarletbook::{
+    AreaIndex, CursorOptions, Disc, Error, FrameSpan, IndexOptions, ResumedFrom, Slot, TrackCursor,
+    TrackFrame,
+};
 
 fn config() -> ProptestConfig {
     if cfg!(miri) {
@@ -54,7 +57,7 @@ fn frames(disc: &mut Disc<Cursor<Vec<u8>>>, cursor: TrackCursor) -> (Vec<TrackFr
 }
 
 fn straight(disc: &mut Disc<Cursor<Vec<u8>>>, first: u32, end: u32) -> Vec<TrackFrame> {
-    let c = disc.range_frames_cursor(Slot::TwoChannel, first, end).unwrap();
+    let c = disc.frames_cursor(Slot::TwoChannel, FrameSpan::Range(first, end), CursorOptions::new()).unwrap();
     frames(disc, c).0
 }
 
@@ -71,7 +74,8 @@ fn saved_index_round_trips_and_reads_alike() {
         assert_eq!(loaded, index);
         assert_eq!(loaded.to_bytes(), bytes);
         for first in [0, 17, 100, 199] {
-            let c = TrackCursor::for_range_indexed(&area, first, p, n, &loaded).unwrap();
+            let c = TrackCursor::open_range(&area, first, p, n, CursorOptions::new().with_index(&loaded))
+                .unwrap();
             assert_eq!(frames(&mut d, c).0, straight(&mut d, first, p), "K {k}, first {first}");
         }
         // Every truncation is refused.
@@ -117,7 +121,7 @@ fn a_stale_index_is_discarded() {
         sink.lock().unwrap().push(m.to_string());
     }));
     for first in [30, 150] {
-        let c = TrackCursor::for_range_indexed(&area, first, p, n, &index).unwrap();
+        let c = TrackCursor::open_range(&area, first, p, n, CursorOptions::new().with_index(&index)).unwrap();
         let (got, mut c) = frames(&mut b, c);
         assert!(matches!(c.resumed_from(), ResumedFrom::Discarded { .. }), "{:?}", c.resumed_from());
         assert_eq!(got, straight(&mut b, first, p));
@@ -210,7 +214,7 @@ fn small_round_trip() {
     let loaded = AreaIndex::from_bytes(&area, n, &index.to_bytes(), usize::MAX).unwrap();
     assert_eq!(loaded, index);
     // Frame 4 starts at sector 16, where `a` is 3 (frame 3 is delivered there).
-    let mut c = TrackCursor::for_range_indexed(&area, 4, 5, n, &loaded).unwrap();
+    let mut c = TrackCursor::open_range(&area, 4, 5, n, CursorOptions::new().with_index(&loaded)).unwrap();
     let f = c.next_frame(&mut image).unwrap().unwrap();
     assert_eq!(f.number, 4);
     assert!(matches!(f.content, scarletbook::FrameContent::Dst(_)), "{f:?}");
@@ -290,7 +294,7 @@ fn checkpoints_share_one_frame_buffer() {
     let mut index = AreaIndex::new(&area, n, options).unwrap();
     while !index.extend(d.image_mut(), 1000).unwrap() {}
     assert!(index.memory() < 2 * 70_000 + 40 * index.checkpoints(), "{}", index.memory());
-    let c = TrackCursor::for_range_indexed(&area, 1, playtime, n, &index).unwrap();
+    let c = TrackCursor::open_range(&area, 1, playtime, n, CursorOptions::new().with_index(&index)).unwrap();
     let (got, c) = frames(&mut d, c);
     let ResumedFrom::Checkpoint { lsn, replay_from } = c.resumed_from() else {
         panic!("{:?}", c.resumed_from())
@@ -306,7 +310,7 @@ fn checkpoints_share_one_frame_buffer() {
     let small = AreaIndex::from_bytes(&area, n, &index.to_bytes(), 1000).unwrap();
     assert_eq!(small.options().inline_budget, 1000);
     assert!(small.memory() < index.memory());
-    let c = TrackCursor::for_range_indexed(&area, 1, playtime, n, &small).unwrap();
+    let c = TrackCursor::open_range(&area, 1, playtime, n, CursorOptions::new().with_index(&small)).unwrap();
     let (got, c) = frames(&mut d, c);
     let ResumedFrom::Checkpoint { lsn, replay_from } = c.resumed_from() else { panic!() };
     assert!(replay_from < lsn, "replayed");
@@ -358,7 +362,7 @@ fn a_read_error_during_replay_counts_nothing_twice() {
     // The second read chunk of the replay fails.
     let limit = (s0 + 10 + 32) * 2048 + 1;
     let mut failing = Disc::open(FailsPast { inner: Cursor::new(img), limit }).unwrap();
-    let c = TrackCursor::for_range_indexed(&area, 1, playtime, n, &index).unwrap();
+    let c = TrackCursor::open_range(&area, 1, playtime, n, CursorOptions::new().with_index(&index)).unwrap();
     let ResumedFrom::Checkpoint { lsn, replay_from } = c.resumed_from() else { panic!() };
     assert_eq!((lsn - s0, replay_from - s0), (80, 10));
     let mut it = failing.read_frames(c);
@@ -386,7 +390,7 @@ fn an_index_is_of_one_image() {
     // check stops it), read through Y and absorbed: refused, and it stops recording
     // (absorbing it again does nothing).
     let empty = AreaIndex::new(&area, n, options).unwrap();
-    let mut c = TrackCursor::for_range_indexed(&area, 150, p, n, &empty).unwrap();
+    let mut c = TrackCursor::open_range(&area, 150, p, n, CursorOptions::new().with_index(&empty)).unwrap();
     while let Some(f) = c.next_frame(y.image_mut()) {
         f.unwrap();
     }
@@ -405,7 +409,7 @@ fn an_index_is_of_one_image() {
     assert!(matches!(merged.merge(&of_y), Err(Error::InvalidArgument(_))));
     assert_eq!(merged, index);
     // X's own cursors and reads go on.
-    let mut c = TrackCursor::for_range_indexed(&area, 0, p, n, &index).unwrap();
+    let mut c = TrackCursor::open_range(&area, 0, p, n, CursorOptions::new().with_index(&index)).unwrap();
     while let Some(f) = c.next_frame(x.image_mut()) {
         f.unwrap();
     }
@@ -415,14 +419,26 @@ fn an_index_is_of_one_image() {
     // it is of that one.
     let mut loaded = AreaIndex::from_bytes(&area, n, &index.to_bytes(), usize::MAX).unwrap();
     assert_eq!(loaded, index, "the image is not part of the saved state");
-    let mut c =
-        TrackCursor::for_range_indexed(&area, 0, 1, n, &AreaIndex::new(&area, n, options).unwrap()).unwrap();
+    let mut c = TrackCursor::open_range(
+        &area,
+        0,
+        1,
+        n,
+        CursorOptions::new().with_index(&AreaIndex::new(&area, n, options).unwrap()),
+    )
+    .unwrap();
     while let Some(f) = c.next_frame(y.image_mut()) {
         f.unwrap();
     }
     loaded.absorb(&mut c).unwrap();
-    let mut cx =
-        TrackCursor::for_range_indexed(&area, 0, 1, n, &AreaIndex::new(&area, n, options).unwrap()).unwrap();
+    let mut cx = TrackCursor::open_range(
+        &area,
+        0,
+        1,
+        n,
+        CursorOptions::new().with_index(&AreaIndex::new(&area, n, options).unwrap()),
+    )
+    .unwrap();
     while let Some(f) = cx.next_frame(x.image_mut()) {
         f.unwrap();
     }
@@ -445,7 +461,7 @@ fn shares_feed_one_index() {
     let mut index = AreaIndex::new(&area, n, IndexOptions::new().with_interval(8)).unwrap();
     index.extend(a.image_mut(), 30).unwrap();
     index.extend(b.image_mut(), 30).unwrap();
-    let mut c = TrackCursor::for_range_indexed(&area, 100, p, n, &index).unwrap();
+    let mut c = TrackCursor::open_range(&area, 100, p, n, CursorOptions::new().with_index(&index)).unwrap();
     while let Some(f) = c.next_frame(s.image_mut()) {
         f.unwrap();
     }

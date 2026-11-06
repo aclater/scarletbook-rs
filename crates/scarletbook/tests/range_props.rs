@@ -11,7 +11,7 @@ use std::io::Cursor;
 use common::{PFrame, Spec, TrackSpec, pack};
 use proptest::prelude::*;
 use scarletbook::audio::FRAME_BYTES_PER_CHANNEL;
-use scarletbook::{AudioFrame, Disc, Error, FrameStatus, Slot, TrackAudioCursor};
+use scarletbook::{AudioFrame, CursorOptions, Disc, Error, FrameSpan, FrameStatus, Slot, TrackAudioCursor};
 
 fn config() -> ProptestConfig {
     if cfg!(miri) {
@@ -107,7 +107,9 @@ fn range_bounds_and_errors() {
     {
         let e = d.check_range(Slot::TwoChannel, first, end).unwrap_err();
         assert!(invalid(e), "[{first}, {end})");
-        assert!(d.range_audio_cursor(Slot::TwoChannel, first, end).is_err());
+        assert!(
+            d.audio_cursor(Slot::TwoChannel, FrameSpan::Range(first, end), CursorOptions::new()).is_err()
+        );
     }
     // An empty range in the play range is skipped as an empty track is (4.7.1 item 4).
     for (first, end) in [(0, 0), (7, 7), (PLAYTIME, PLAYTIME)] {
@@ -139,9 +141,9 @@ fn range_bounds_and_errors() {
     assert!(matches!(e, Error::TrackExceedsCapacity { end_frame: 15, capacity: 14 }), "{e:?}");
     assert_eq!(e.code(), Some("track-exceeds-capacity"));
     // A range that fails its checks consumes the cursor; a good one continues it.
-    let c = small.range_audio_cursor(Slot::TwoChannel, 0, 2).unwrap();
+    let c = small.audio_cursor(Slot::TwoChannel, FrameSpan::Range(0, 2), CursorOptions::new()).unwrap();
     assert!(small.continue_range_audio(c, Slot::TwoChannel, 0, 15).is_err());
-    let c = small.range_audio_cursor(Slot::TwoChannel, 0, 2).unwrap();
+    let c = small.audio_cursor(Slot::TwoChannel, FrameSpan::Range(0, 2), CursorOptions::new()).unwrap();
     let (got, c) = read_all(&mut small, c);
     assert_eq!(got.len(), 2);
     let c = small.continue_range_audio(c, Slot::TwoChannel, 2, 14).unwrap();
@@ -194,7 +196,7 @@ proptest! {
             prop_assert_eq!(&fresh[..], &whole[first as usize..end as usize]);
             let next = match cursor.take() {
                 Some(prev) => d.continue_range_audio(prev, Slot::TwoChannel, first, end).unwrap(),
-                None => d.range_audio_cursor(Slot::TwoChannel, first, end).unwrap(),
+                None => d.audio_cursor(Slot::TwoChannel, FrameSpan::Range(first, end), CursorOptions::new()).unwrap(),
             };
             let mut audio = d.read_track_audio(next);
             let got: Vec<AudioFrame> = audio.by_ref().take(stop.unwrap_or(usize::MAX)).map(Result::unwrap).collect();
@@ -322,11 +324,11 @@ fn continuing_across_slots() {
     ];
     let mut cursor: Option<TrackAudioCursor> = None;
     for (slot, first, end) in steps {
-        let fresh = d.range_audio_cursor(slot, first, end).unwrap();
+        let fresh = d.audio_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new()).unwrap();
         let (expected, _) = read_all(&mut d, fresh);
         let next = match cursor.take() {
             Some(prev) => d.continue_range_audio(prev, slot, first, end).unwrap(),
-            None => d.range_audio_cursor(slot, first, end).unwrap(),
+            None => d.audio_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new()).unwrap(),
         };
         let (got, back) = read_all(&mut d, next);
         assert_eq!(got, expected, "{slot} [{first}, {end})");

@@ -15,8 +15,8 @@ use common::hostile::S;
 use common::{PFrame, Spec, TrackSpec, pack};
 use proptest::prelude::*;
 use scarletbook::{
-    AreaIndex, Disc, IndexOptions, ResumedFrom, SeekPolicy, Slot, Speculation, SpeculativeOptions,
-    TrackCursor, TrackFrame,
+    AreaIndex, CursorOptions, Disc, FrameSpan, IndexOptions, ResumedFrom, SeekPolicy, Slot, Speculation,
+    SpeculativeOptions, TrackCursor, TrackFrame,
 };
 
 fn config() -> ProptestConfig {
@@ -73,7 +73,9 @@ fn well_formed_readings_are_confirmed() {
     let mut disc = speculative_disc(image(&frames(1000), 1000), 64);
     let mut cursors = Vec::new();
     for first in [250, 600, 950] {
-        let c = disc.range_frames_cursor(Slot::TwoChannel, first, first + 10).unwrap();
+        let c = disc
+            .frames_cursor(Slot::TwoChannel, FrameSpan::Range(first, first + 10), CursorOptions::new())
+            .unwrap();
         let (_, c) = read(&mut disc, c);
         assert!(matches!(c.speculation(), Speculation::Pending { lsn, first: f } if lsn > 0 && f == first));
         cursors.push(c);
@@ -117,9 +119,9 @@ fn a_broken_condition_is_refuted() {
     disc.set_log(scarletbook::log::Log::new(scarletbook::log::Level::Warn, move |_, m| {
         sink.lock().unwrap().push(m.to_string());
     }));
-    let c = plain.range_frames_cursor(Slot::TwoChannel, 300, 600).unwrap();
+    let c = plain.frames_cursor(Slot::TwoChannel, FrameSpan::Range(300, 600), CursorOptions::new()).unwrap();
     let (want, _) = read(&mut plain, c);
-    let c = disc.range_frames_cursor(Slot::TwoChannel, 300, 600).unwrap();
+    let c = disc.frames_cursor(Slot::TwoChannel, FrameSpan::Range(300, 600), CursorOptions::new()).unwrap();
     let (got, c) = read(&mut disc, c);
     let s0 = u64::from(disc.toc().area(Slot::TwoChannel).unwrap().audio_start_lsn);
     assert!(
@@ -142,7 +144,7 @@ fn a_broken_condition_is_refuted() {
     assert!(lines.lock().unwrap().iter().any(|l| l.contains("possibly different")));
     // An exact re-read is now cheap and gives the specification's positions.
     disc.set_seek_policy(Slot::TwoChannel, SeekPolicy::Exact).unwrap();
-    let c = disc.range_frames_cursor(Slot::TwoChannel, 300, 600).unwrap();
+    let c = disc.frames_cursor(Slot::TwoChannel, FrameSpan::Range(300, 600), CursorOptions::new()).unwrap();
     assert_eq!(read(&mut disc, c).0, want);
 }
 
@@ -154,18 +156,22 @@ fn provisional_checkpoints_serve_later_starts() {
     let img = image(&frames(1000), 1000);
     let mut plain = Disc::open(Cursor::new(img.clone())).unwrap();
     let mut disc = speculative_disc(img, 16);
-    let c = disc.range_frames_cursor(Slot::TwoChannel, 500, 700).unwrap();
+    let c = disc.frames_cursor(Slot::TwoChannel, FrameSpan::Range(500, 700), CursorOptions::new()).unwrap();
     let (_, c) = read(&mut disc, c);
     assert!(matches!(c.resumed_from(), ResumedFrom::Speculative { probes, .. } if probes > 0));
     for first in [560, 620, 690] {
-        let c = disc.range_frames_cursor(Slot::TwoChannel, first, first + 5).unwrap();
+        let c = disc
+            .frames_cursor(Slot::TwoChannel, FrameSpan::Range(first, first + 5), CursorOptions::new())
+            .unwrap();
         let (got, c) = read(&mut disc, c);
         assert!(
             matches!(c.resumed_from(), ResumedFrom::Speculative { probes: 0, .. }),
             "{:?}",
             c.resumed_from()
         );
-        let p = plain.range_frames_cursor(Slot::TwoChannel, first, first + 5).unwrap();
+        let p = plain
+            .frames_cursor(Slot::TwoChannel, FrameSpan::Range(first, first + 5), CursorOptions::new())
+            .unwrap();
         assert_eq!(got, read(&mut plain, p).0, "first {first}");
     }
     // They are checked like any other.
@@ -184,14 +190,16 @@ fn provisional_checkpoints_of_another_reading_are_not_used() {
     let mut plain = Disc::open(Cursor::new(img.clone())).unwrap();
     let mut disc = speculative_disc(img, 16);
     for first in [100, 900] {
-        let c = disc.range_frames_cursor(Slot::TwoChannel, first, first + 20).unwrap();
+        let c = disc
+            .frames_cursor(Slot::TwoChannel, FrameSpan::Range(first, first + 20), CursorOptions::new())
+            .unwrap();
         read(&mut disc, c);
     }
-    let c = disc.range_frames_cursor(Slot::TwoChannel, 500, 505).unwrap();
+    let c = disc.frames_cursor(Slot::TwoChannel, FrameSpan::Range(500, 505), CursorOptions::new()).unwrap();
     let mut it = disc.read_frames(c);
     let got: Vec<TrackFrame> = it.by_ref().map(Result::unwrap).collect();
     let mut c = it.into_cursor();
-    let p = plain.range_frames_cursor(Slot::TwoChannel, 500, 505).unwrap();
+    let p = plain.frames_cursor(Slot::TwoChannel, FrameSpan::Range(500, 505), CursorOptions::new()).unwrap();
     assert_eq!(got, read(&mut plain, p).0);
     let ResumedFrom::Speculative { lsn, probes } = c.resumed_from() else { panic!("{:?}", c.resumed_from()) };
     assert!(probes > 0, "searched, not started from the first reading's checkpoints (LSN {lsn})");
@@ -208,7 +216,7 @@ fn clones_share_verdicts() {
     disc.enable_seek_index(Slot::TwoChannel, IndexOptions::new()).unwrap();
     disc.set_seek_policy(Slot::TwoChannel, SeekPolicy::Speculative(options())).unwrap();
     let mut clone = disc.clone();
-    let c = disc.range_frames_cursor(Slot::TwoChannel, 800, 810).unwrap();
+    let c = disc.frames_cursor(Slot::TwoChannel, FrameSpan::Range(800, 810), CursorOptions::new()).unwrap();
     let (_, c) = read(&mut disc, c);
     std::thread::scope(|s| {
         s.spawn(|| while !clone.verify_speculation(Slot::TwoChannel, 1 << 20).unwrap() {});
@@ -225,7 +233,14 @@ fn caller_kept_index_checks_readings() {
     let area = disc.toc().areas[0].clone();
     let n = disc.toc().sectors;
     let mut index = AreaIndex::new(&area, n, IndexOptions::new()).unwrap();
-    let c = TrackCursor::for_range_speculative(&area, 700, 710, n, Some(&index), options()).unwrap();
+    let c = TrackCursor::open_range(
+        &area,
+        700,
+        710,
+        n,
+        CursorOptions::new().with_index(&index).with_policy(SeekPolicy::Speculative(options())),
+    )
+    .unwrap();
     let (_, mut c) = read(&mut disc, c);
     index.absorb(&mut c).unwrap();
     assert_eq!(index.pending_claims(), 1);
@@ -245,7 +260,14 @@ fn the_pending_readings_are_capped() {
     let n = disc.toc().sectors;
     let mut index = AreaIndex::new(&area, n, IndexOptions::new()).unwrap();
     for _ in 0..scarletbook::seek::MAX_CLAIMS + 3 {
-        let c = TrackCursor::for_range_speculative(&area, 700, 701, n, Some(&index), options()).unwrap();
+        let c = TrackCursor::open_range(
+            &area,
+            700,
+            701,
+            n,
+            CursorOptions::new().with_index(&index).with_policy(SeekPolicy::Speculative(options())),
+        )
+        .unwrap();
         let (_, mut c) = read(&mut disc, c);
         index.absorb(&mut c).unwrap();
     }
@@ -277,9 +299,9 @@ proptest! {
         let options = SpeculativeOptions::new().with_min_gap_sectors(0);
         disc.set_seek_policy(Slot::TwoChannel, SeekPolicy::Speculative(options)).unwrap();
         let first = (a * f64::from(playtime - 1)) as u32;
-        let c = plain.range_frames_cursor(Slot::TwoChannel, first, playtime).unwrap();
+        let c = plain.frames_cursor(Slot::TwoChannel, FrameSpan::Range(first, playtime), CursorOptions::new()).unwrap();
         let (want, _) = read(&mut plain, c);
-        let c = disc.range_frames_cursor(Slot::TwoChannel, first, playtime).unwrap();
+        let c = disc.frames_cursor(Slot::TwoChannel, FrameSpan::Range(first, playtime), CursorOptions::new()).unwrap();
         let (got, c) = read(&mut disc, c);
         while !disc.verify_speculation(Slot::TwoChannel, 1 << 20).unwrap() {}
         match c.speculation() {
@@ -311,7 +333,7 @@ fn a_foreign_index_does_not_confirm() {
     let n = b.toc().sectors;
     assert_eq!((area.clone(), n), (a.toc().areas[0].clone(), a.toc().sectors), "same key");
     // A provisional reading of B, waiting in B's (empty) index.
-    let c = b.range_frames_cursor(Slot::TwoChannel, 800, 810).unwrap();
+    let c = b.frames_cursor(Slot::TwoChannel, FrameSpan::Range(800, 810), CursorOptions::new()).unwrap();
     let (_, c) = read(&mut b, c);
     assert!(matches!(c.speculation(), Speculation::Pending { .. }));
     // A's complete index, saved and loaded, merged in, and set back on B.
@@ -349,7 +371,14 @@ fn a_caller_kept_index_does_not_check_against_another_image() {
     let n = a.toc().sectors;
     assert_eq!((area.clone(), n), (b.toc().areas[0].clone(), b.toc().sectors), "same key");
     let mut index = AreaIndex::new(&area, n, IndexOptions::new()).unwrap();
-    let c = TrackCursor::for_range_speculative(&area, 700, 710, n, Some(&index), options()).unwrap();
+    let c = TrackCursor::open_range(
+        &area,
+        700,
+        710,
+        n,
+        CursorOptions::new().with_index(&index).with_policy(SeekPolicy::Speculative(options())),
+    )
+    .unwrap();
     let (_, mut c) = read(&mut a, c);
     assert!(matches!(c.speculation(), Speculation::Pending { .. }));
     index.absorb(&mut c).unwrap();
@@ -370,7 +399,7 @@ fn a_caller_kept_index_does_not_check_against_another_image() {
 fn a_reading_moves_to_another_disc_unverified() {
     let mut a = speculative_disc(image(&frames(1000), 1000), 64);
     let mut b = Disc::open(Cursor::new(image(&other_pressing(1000), 1000))).unwrap();
-    let c = a.range_frames_cursor(Slot::TwoChannel, 800, 810).unwrap();
+    let c = a.frames_cursor(Slot::TwoChannel, FrameSpan::Range(800, 810), CursorOptions::new()).unwrap();
     let (_, c) = read(&mut a, c);
     let kept = a.take_seek_index(Slot::TwoChannel).unwrap();
     assert_eq!(kept.pending_claims(), 1);

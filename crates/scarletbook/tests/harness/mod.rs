@@ -9,7 +9,7 @@ use std::io::{self, Read, Seek, SeekFrom};
 
 use scarletbook::audio::{FRAME_BYTES_PER_CHANNEL, MAX_FRAME_BYTES};
 use scarletbook::dst::FL;
-use scarletbook::{AreaIndex, Demuxer, Disc, DstDecoder, FrameKind};
+use scarletbook::{AreaIndex, CursorOptions, Demuxer, Disc, DstDecoder, FrameKind, FrameSpan, SeekPolicy};
 use scarletbook_pcm::{ConvertStats, Converter, Cutoff, FrameRun, Gain, PcmConfig, PcmError, PcmRate};
 
 pub mod output;
@@ -518,7 +518,9 @@ pub fn seek_index_seeds() -> Vec<Vec<u8>> {
         if k == 4 {
             // Seek hints (format version 2): those of a read through the index.
             let p = area.playtime_frames();
-            let mut cursor = scarletbook::TrackCursor::for_range_indexed(&area, 0, p, n, &index).unwrap();
+            let mut cursor =
+                scarletbook::TrackCursor::open_range(&area, 0, p, n, CursorOptions::new().with_index(&index))
+                    .unwrap();
             while let Some(Ok(_)) = cursor.next_frame(&mut image) {}
             index.absorb(&mut cursor).unwrap();
         }
@@ -573,7 +575,14 @@ pub fn seek_index(data: &[u8]) {
         let p = area.playtime_frames();
         let mut copy = index.clone();
         for first in [0, p / 2, p - 1] {
-            let mut cursor = scarletbook::TrackCursor::for_range_indexed(&area, first, p, n, &index).unwrap();
+            let mut cursor = scarletbook::TrackCursor::open_range(
+                &area,
+                first,
+                p,
+                n,
+                CursorOptions::new().with_index(&index),
+            )
+            .unwrap();
             while let Some(Ok(_)) = cursor.next_frame(&mut image) {}
             let _ = copy.absorb(&mut cursor);
         }
@@ -582,9 +591,14 @@ pub fn seek_index(data: &[u8]) {
         for (first, gap) in [(p / 2, 0), (p - 1, 4)] {
             let options =
                 scarletbook::SpeculativeOptions::new().with_min_gap_sectors(gap).with_probe_sectors(2);
-            let mut cursor =
-                scarletbook::TrackCursor::for_range_speculative(&area, first, p, n, Some(&index), options)
-                    .unwrap();
+            let mut cursor = scarletbook::TrackCursor::open_range(
+                &area,
+                first,
+                p,
+                n,
+                CursorOptions::new().with_index(&index).with_policy(SeekPolicy::Speculative(options)),
+            )
+            .unwrap();
             while let Some(Ok(_)) = cursor.next_frame(&mut image) {}
             let _ = copy.absorb(&mut cursor);
         }
@@ -697,7 +711,9 @@ fn disc_read<R: Read + Seek>(
     disc: &mut Disc<R>,
     (first, end): (u32, u32),
 ) -> (Vec<scarletbook::TrackFrame>, scarletbook::TrackCursor) {
-    let c = disc.range_frames_cursor(scarletbook::Slot::TwoChannel, first, end).unwrap();
+    let c = disc
+        .frames_cursor(scarletbook::Slot::TwoChannel, FrameSpan::Range(first, end), CursorOptions::new())
+        .unwrap();
     let mut it = disc.read_frames(c);
     let frames = it.by_ref().map_while(Result::ok).collect();
     (frames, it.into_cursor())

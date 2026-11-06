@@ -20,9 +20,9 @@ use common::{PFrame, S, Spec, TrackSpec, pack};
 use scarletbook::audio::{FRAME_BYTES_PER_CHANNEL, MAX_PROBLEM_LINES};
 use scarletbook::log::{Level, Log};
 use scarletbook::{
-    AreaCursor, AreaIndex, AudioFrame, Disc, Error, FrameContent, FrameStatus, IndexOptions, Opening,
-    ResumedFrom, SeekPolicy, Slot, Speculation, SpeculativeOptions, Stored, Suspect, TrackAudioCursor,
-    TrackCursor, TrackFrame,
+    AreaCursor, AreaIndex, AudioFrame, CursorOptions, Disc, Error, FrameContent, FrameSpan, FrameStatus,
+    IndexOptions, Opening, ResumedFrom, SeekPolicy, Slot, Speculation, SpeculativeOptions, Stored, Suspect,
+    TrackAudioCursor, TrackCursor, TrackFrame,
 };
 
 const SLOT: Slot = Slot::TwoChannel;
@@ -63,13 +63,13 @@ fn decoded<R: Read + Seek>(disc: &mut Disc<R>, cursor: TrackAudioCursor) -> Vec<
 
 fn plain_frames(img: &[u8], first: u32, end: u32) -> Vec<TrackFrame> {
     let mut disc = Disc::open(Cursor::new(img.to_vec())).unwrap();
-    let c = disc.range_frames_cursor(SLOT, first, end).unwrap();
+    let c = disc.frames_cursor(SLOT, FrameSpan::Range(first, end), CursorOptions::new()).unwrap();
     read(&mut disc, c).0
 }
 
 fn plain_audio(img: &[u8], first: u32, end: u32) -> Vec<AudioFrame> {
     let mut disc = Disc::open(Cursor::new(img.to_vec())).unwrap();
-    let c = disc.range_audio_cursor(SLOT, first, end).unwrap();
+    let c = disc.audio_cursor(SLOT, FrameSpan::Range(first, end), CursorOptions::new()).unwrap();
     decoded(&mut disc, c)
 }
 
@@ -154,7 +154,7 @@ fn track_audio_reports_a_suspect_reading() {
     let want = plain_audio(&img, 990, 1000);
     assert!(want.iter().any(|f| f.status == FrameStatus::Missing), "frames of the missing sectors");
     disc.set_seek_policy(SLOT, SeekPolicy::Speculative(options())).unwrap();
-    let c = disc.range_audio_cursor(SLOT, 990, 1000).unwrap();
+    let c = disc.audio_cursor(SLOT, FrameSpan::Range(990, 1000), CursorOptions::new()).unwrap();
     assert_eq!(c.slot(), SLOT);
     let mut it = disc.read_track_audio(c);
     let got: Vec<AudioFrame> = it.by_ref().map(Result::unwrap).collect();
@@ -175,9 +175,23 @@ fn track_audio_reports_a_suspect_reading() {
 
     // Without a disc, a cursor checks the end of the image itself.
     let n = disc.toc().sectors;
-    let c = TrackAudioCursor::for_range_speculative(&area, 990, 1000, n, None, options()).unwrap();
+    let c = TrackAudioCursor::open_range(
+        &area,
+        990,
+        1000,
+        n,
+        CursorOptions::new().with_policy(SeekPolicy::Speculative(options())),
+    )
+    .unwrap();
     assert_eq!(decoded(&mut disc, c), want);
-    let mut c = TrackAudioCursor::for_range_speculative(&area, 990, 1000, n, None, options()).unwrap();
+    let mut c = TrackAudioCursor::open_range(
+        &area,
+        990,
+        1000,
+        n,
+        CursorOptions::new().with_policy(SeekPolicy::Speculative(options())),
+    )
+    .unwrap();
     let mut got = Vec::new();
     while let Some(f) = c.next_frame(disc.image_mut()) {
         got.push(f.unwrap());
@@ -186,7 +200,13 @@ fn track_audio_reports_a_suspect_reading() {
     assert_eq!(c.suspect(), Some(Suspect::AreaLayout));
     // A range outside the play range is a caller error (4.7.1 item 3).
     assert!(matches!(
-        TrackAudioCursor::for_range_speculative(&area, 990, 1001, n, None, options()),
+        TrackAudioCursor::open_range(
+            &area,
+            990,
+            1001,
+            n,
+            CursorOptions::new().with_policy(SeekPolicy::Speculative(options()))
+        ),
         Err(Error::FrameRangeInvalid { first: 990, end: 1001, playtime: 1000 })
     ));
 }
@@ -209,7 +229,7 @@ fn a_cursor_for_a_longer_image_is_refused() {
 
     // The positions of the sectors read before the missing ones, then the refusal, then
     // the end.
-    let mut c = TrackCursor::for_range(&area, 0, 40, n).unwrap();
+    let mut c = TrackCursor::open_range(&area, 0, 40, n, CursorOptions::new()).unwrap();
     let results: Vec<_> = std::iter::from_fn(|| c.next_frame(disc.image_mut())).collect();
     let (last, before) = results.split_last().unwrap();
     assert!(matches!(last, Err(Error::InvalidArgument(_))), "{last:?}");
@@ -253,7 +273,7 @@ fn unlogged_continuations_open_alike() {
     disc.enable_seek_index(SLOT, IndexOptions::new().with_interval(8)).unwrap();
 
     // Frames, continued forward from a cursor that read 0..20.
-    let c = disc.range_frames_cursor(SLOT, 0, 20).unwrap();
+    let c = disc.frames_cursor(SLOT, FrameSpan::Range(0, 20), CursorOptions::new()).unwrap();
     let (_, prev) = read(&mut disc, c);
     let cont = disc.range_continuation(SLOT, 60, 80).unwrap();
     assert_eq!(cont.range(), (60, 80));
@@ -263,7 +283,7 @@ fn unlogged_continuations_open_alike() {
     assert_eq!(read(&mut disc, next).0, want);
 
     // Decoded audio, likewise.
-    let c = disc.range_audio_cursor(SLOT, 0, 20).unwrap();
+    let c = disc.audio_cursor(SLOT, FrameSpan::Range(0, 20), CursorOptions::new()).unwrap();
     let mut it = disc.read_track_audio(c);
     it.by_ref().for_each(|f| drop(f.unwrap()));
     let prev = it.into_cursor();
@@ -287,7 +307,7 @@ fn unlogged_continuations_open_alike() {
     let area = disc.toc().areas[0].clone();
     let n = disc.toc().sectors;
     let mut index = AreaIndex::new(&area, n, IndexOptions::new().with_interval(8)).unwrap();
-    let mut prev = TrackCursor::for_range_indexed(&area, 0, 50, n, &index).unwrap();
+    let mut prev = TrackCursor::open_range(&area, 0, 50, n, CursorOptions::new().with_index(&index)).unwrap();
     while let Some(f) = prev.next_frame(disc.image_mut()) {
         f.unwrap();
     }
@@ -311,6 +331,7 @@ fn unlogged_continuations_open_alike() {
 /// they cannot continue into is refused as 4.7.1 items 3 and 4 say.
 #[test]
 #[cfg_attr(miri, ignore = "reads hundreds of sectors")]
+#[allow(deprecated)] // `continue_to` and `continue_to_range`, tested until they go (#39).
 fn cursors_continue_over_tracks_and_ranges() {
     let fs = frames(60);
     let tracks = vec![TrackSpec { start: 0, duration: 20 }, TrackSpec { start: 20, duration: 40 }];
@@ -340,16 +361,19 @@ fn cursors_continue_over_tracks_and_ranges() {
     ));
 
     // Decoded audio, likewise; an empty range is skipped as `track-empty` (4.7.1 item 4).
-    let c = TrackAudioCursor::for_range(&area, 10, 30, n).unwrap();
+    let c = TrackAudioCursor::open_range(&area, 10, 30, n, CursorOptions::new()).unwrap();
     let mut it = disc.read_track_audio(c);
     let got: Vec<AudioFrame> = it.by_ref().map(Result::unwrap).collect();
     assert_eq!(got, plain_audio(&img, 10, 30));
     let c = it.into_cursor();
     let c = c.continue_to_range(&area, 40, 50, n).unwrap();
     assert_eq!(decoded(&mut disc, c), plain_audio(&img, 40, 50));
-    let c = TrackAudioCursor::for_range(&area, 0, 1, n).unwrap();
+    let c = TrackAudioCursor::open_range(&area, 0, 1, n, CursorOptions::new()).unwrap();
     assert!(matches!(c.continue_to_range(&area, 7, 7, n), Err(Error::TrackEmpty)));
-    assert!(matches!(TrackAudioCursor::for_range(&area, 0, 61, n), Err(Error::FrameRangeInvalid { .. })));
+    assert!(matches!(
+        TrackAudioCursor::open_range(&area, 0, 61, n, CursorOptions::new()),
+        Err(Error::FrameRangeInvalid { .. })
+    ));
 }
 
 /// A plain frame, a DST frame and a missing position (specification 4, 4.6.1 item 1),
@@ -363,7 +387,7 @@ fn stored_bytes_of_each_kind() {
     let img = image(&fs, 4);
     let want = plain_frames(&img, 0, 4);
     let mut disc = Disc::open(Cursor::new(img)).unwrap();
-    let mut c = disc.range_audio_cursor(SLOT, 0, 4).unwrap();
+    let mut c = disc.audio_cursor(SLOT, FrameSpan::Range(0, 4), CursorOptions::new()).unwrap();
     c.keep_stored().unwrap();
     let mut kinds = Vec::new();
     for w in &want {
@@ -432,7 +456,7 @@ fn a_failed_read_is_not_continued() {
         if with_index {
             disc.enable_seek_index(SLOT, IndexOptions::new()).unwrap();
         }
-        let mut c = disc.range_audio_cursor(SLOT, 0, 6).unwrap();
+        let mut c = disc.audio_cursor(SLOT, FrameSpan::Range(0, 6), CursorOptions::new()).unwrap();
         #[cfg(feature = "parallel")]
         c.set_decode_on(scarletbook::DecodeOn::CallingThread);
         c.keep_stored().unwrap();
@@ -451,7 +475,8 @@ fn a_failed_read_is_not_continued() {
         );
         // The error itself comes next, as a cursor read the same way shows.
         let area = disc.toc().areas[0].clone();
-        let mut probe = TrackAudioCursor::for_range(&area, 0, 6, disc.toc().sectors).unwrap();
+        let mut probe =
+            TrackAudioCursor::open_range(&area, 0, 6, disc.toc().sectors, CursorOptions::new()).unwrap();
         #[cfg(feature = "parallel")]
         probe.set_decode_on(scarletbook::DecodeOn::CallingThread);
         probe.keep_stored().unwrap();
@@ -480,13 +505,14 @@ fn provisional_checkpoints_serve_without_hints() {
         let mut disc = Disc::open(Cursor::new(img.clone())).unwrap();
         disc.enable_seek_index(SLOT, IndexOptions::new().with_interval(16).with_hints(0, 0)).unwrap();
         disc.set_seek_policy(SLOT, SeekPolicy::Speculative(options())).unwrap();
-        let c = disc.range_frames_cursor(SLOT, 500, 700).unwrap();
+        let c = disc.frames_cursor(SLOT, FrameSpan::Range(500, 700), CursorOptions::new()).unwrap();
         let (_, c) = read(&mut disc, c);
         assert!(matches!(c.resumed_from(), ResumedFrom::Speculative { probes, .. } if probes > 0));
         assert_eq!(disc.seek_index(SLOT).unwrap().hints(), 0);
         let suspect = (cut > 0).then_some(Suspect::AreaLayout);
         for first in [560, 620, 690] {
-            let c = disc.range_frames_cursor(SLOT, first, first + 5).unwrap();
+            let c =
+                disc.frames_cursor(SLOT, FrameSpan::Range(first, first + 5), CursorOptions::new()).unwrap();
             let (got, c) = read(&mut disc, c);
             let ResumedFrom::Speculative { lsn, probes: 0 } = c.resumed_from() else {
                 panic!("cut {cut} first {first}: {:?}", c.resumed_from())
@@ -527,10 +553,10 @@ fn a_foreign_checkpoint_at_l_does_not_confirm() {
     let opts = IndexOptions::new().with_interval(16).with_hints(0, 0);
     b.enable_seek_index(SLOT, opts).unwrap();
     b.set_seek_policy(SLOT, SeekPolicy::Speculative(options())).unwrap();
-    let c = b.range_frames_cursor(SLOT, 500, 700).unwrap();
+    let c = b.frames_cursor(SLOT, FrameSpan::Range(500, 700), CursorOptions::new()).unwrap();
     read(&mut b, c);
     // A start at a provisional checkpoint: `L` lies on the checkpoint grid.
-    let c = b.range_frames_cursor(SLOT, 620, 625).unwrap();
+    let c = b.frames_cursor(SLOT, FrameSpan::Range(620, 625), CursorOptions::new()).unwrap();
     let (_, c) = read(&mut b, c);
     let ResumedFrom::Speculative { lsn, probes: 0 } = c.resumed_from() else {
         panic!("{:?}", c.resumed_from())
@@ -596,7 +622,7 @@ fn checkpoints_are_absorbed_from_every_cursor() {
     let frontier = |disc: &Disc<Cursor<Vec<u8>>>| disc.seek_index(SLOT).unwrap().frontier();
     let start = frontier(&disc);
 
-    let mut c = disc.range_frames_cursor(SLOT, 0, 50).unwrap();
+    let mut c = disc.frames_cursor(SLOT, FrameSpan::Range(0, 50), CursorOptions::new()).unwrap();
     while let Some(f) = c.next_frame(disc.image_mut()) {
         f.unwrap();
     }
@@ -605,7 +631,7 @@ fn checkpoints_are_absorbed_from_every_cursor() {
     let after_frames = frontier(&disc);
     assert!(after_frames > start);
 
-    let mut c = disc.range_audio_cursor(SLOT, 0, 150).unwrap();
+    let mut c = disc.audio_cursor(SLOT, FrameSpan::Range(0, 150), CursorOptions::new()).unwrap();
     while let Some(f) = c.next_frame(disc.image_mut()) {
         f.unwrap();
     }
@@ -662,7 +688,7 @@ fn a_panic_on_the_pool_comes_back_on_the_caller() {
     });
     let mut disc = Disc::open_with_log(Cursor::new(img), log).unwrap();
     let pool = Arc::new(rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap());
-    let mut c = disc.range_audio_cursor(SLOT, 0, 40).unwrap();
+    let mut c = disc.audio_cursor(SLOT, FrameSpan::Range(0, 40), CursorOptions::new()).unwrap();
     c.set_decode_on(scarletbook::DecodeOn::Pool(pool));
     let mut outcomes = Vec::new();
     loop {
@@ -708,12 +734,12 @@ fn a_sink_may_decode_on_the_same_pool() {
         }
         let mut disc = disc_in.lock().unwrap().take().unwrap();
         // Decoded on the current pool (the default): the one this job runs on.
-        let c = disc.range_audio_cursor(SLOT, 0, 60).unwrap();
+        let c = disc.audio_cursor(SLOT, FrameSpan::Range(0, 60), CursorOptions::new()).unwrap();
         *out.lock().unwrap() = decoded(&mut disc, c);
     });
     let mut disc = Disc::open_with_log(Cursor::new(img), log).unwrap();
     let pool = Arc::new(rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap());
-    let mut c = disc.range_audio_cursor(SLOT, 0, 60).unwrap();
+    let mut c = disc.audio_cursor(SLOT, FrameSpan::Range(0, 60), CursorOptions::new()).unwrap();
     c.set_decode_on(scarletbook::DecodeOn::Pool(pool));
     assert_eq!(decoded(&mut disc, c), want);
     assert!(fired.load(Ordering::SeqCst));
@@ -754,7 +780,7 @@ fn a_cancelled_search_starts_again() {
     let want = plain_frames(&img, 700, 710);
     let mut quiet = Disc::open(Cursor::new(img.clone())).unwrap();
     quiet.set_seek_policy(SLOT, SeekPolicy::Speculative(options())).unwrap();
-    let c = quiet.range_frames_cursor(SLOT, 700, 710).unwrap();
+    let c = quiet.frames_cursor(SLOT, FrameSpan::Range(700, 710), CursorOptions::new()).unwrap();
     let (_, c) = read(&mut quiet, c);
     let uncancelled = c.resumed_from();
     let ResumedFrom::Speculative { probes, .. } = uncancelled else { panic!("{uncancelled:?}") };
@@ -765,7 +791,7 @@ fn a_cancelled_search_starts_again() {
     let mut disc = Disc::open(reader).unwrap();
     token.set(disc.cancel_token()).unwrap();
     disc.set_seek_policy(SLOT, SeekPolicy::Speculative(options())).unwrap();
-    let c = disc.range_frames_cursor(SLOT, 700, 710).unwrap();
+    let c = disc.frames_cursor(SLOT, FrameSpan::Range(700, 710), CursorOptions::new()).unwrap();
     let mut it = disc.read_frames(c);
     armed.set(true);
     assert!(matches!(it.next(), Some(Err(Error::Cancelled))));

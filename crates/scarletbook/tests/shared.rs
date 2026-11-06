@@ -14,7 +14,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use common::{PFrame, Spec, TrackSpec, pack};
 use scarletbook::audio::FRAME_BYTES_PER_CHANNEL;
-use scarletbook::{Disc, Error, ReadAt, ReadAtReader, SectorFormat, Slot, TrackFrame, Warning};
+use scarletbook::{
+    CursorOptions, Disc, Error, FrameSpan, ReadAt, ReadAtReader, SectorFormat, Slot, TrackFrame, Warning,
+};
 
 // Discs of a shared source may be sent to and shared between threads.
 const _: () = {
@@ -34,7 +36,8 @@ struct Outcome {
 }
 
 fn read_track<R: Read + Seek>(disc: &mut Disc<R>, slot: Slot, n: u32) -> Result<Outcome, String> {
-    let cursor = disc.track_frames_cursor(slot, n).map_err(|e| e.to_string())?;
+    let cursor =
+        disc.frames_cursor(slot, FrameSpan::Track(n), CursorOptions::new()).map_err(|e| e.to_string())?;
     let mut frames = disc.read_frames(cursor);
     let list = frames.by_ref().map(|f| f.map_err(|e| e.to_string())).collect();
     let c = frames.into_cursor();
@@ -278,7 +281,7 @@ fn a_cursor_reads_through_any_disc_of_the_image() {
     let mut b = a.clone();
     let mut c = a.share(Cursor::new(bytes.clone())).unwrap();
     // Positions alternate between the three discs.
-    let mut cursor = a.track_frames_cursor(Slot::TwoChannel, 2).unwrap();
+    let mut cursor = a.frames_cursor(Slot::TwoChannel, FrameSpan::Track(2), CursorOptions::new()).unwrap();
     let mut got = Vec::new();
     for i in 0.. {
         let f = match i % 3 {
@@ -324,7 +327,7 @@ fn shares_have_their_originals_identifier_and_others_do_not() {
     let mut c = a.share(ReadAtReader::new(Arc::clone(&source))).unwrap();
     let mut other = Disc::open(ReadAtReader::new(Arc::clone(&source))).unwrap();
     for (onto_share, rereads) in [(true, false), (false, true)] {
-        let mut track = a.track_frames_cursor(Slot::TwoChannel, 1).unwrap();
+        let mut track = a.frames_cursor(Slot::TwoChannel, FrameSpan::Track(1), CursorOptions::new()).unwrap();
         assert!(track.next_frame(a.image_mut()).unwrap().is_ok());
         let before = source.read.load(Ordering::Relaxed);
         let (disc, next) = if onto_share {
@@ -367,7 +370,7 @@ fn a_continuation_across_discs_of_the_image_reads_each_sector_once() {
                 }
                 let next = match cursor.take() {
                     Some(prev) => disc.continue_track_frames(prev, area.slot, n).unwrap(),
-                    None => disc.track_frames_cursor(area.slot, n).unwrap(),
+                    None => disc.frames_cursor(area.slot, FrameSpan::Track(n), CursorOptions::new()).unwrap(),
                 };
                 let mut frames = disc.read_frames(next);
                 frames.by_ref().for_each(|f| drop(f.unwrap()));
@@ -433,13 +436,13 @@ fn a_share_reports_to_its_own_log() {
     let mut share = disc.share_with_log(Cursor::new(&bytes[..]), lines(&second)).unwrap();
     assert_eq!(first.lock().unwrap().len(), opened, "nothing reported to the original's log");
     assert!(second.lock().unwrap().iter().any(|l| l.contains("shared reader checked")));
-    let cursor = share.track_frames_cursor(Slot::TwoChannel, 1).unwrap();
+    let cursor = share.frames_cursor(Slot::TwoChannel, FrameSpan::Track(1), CursorOptions::new()).unwrap();
     share.read_frames(cursor).for_each(drop);
     assert_eq!(first.lock().unwrap().len(), opened);
     // A clone keeps its original's log until it is given another.
     let mut clone = disc.clone();
     clone.set_log(Log::none());
-    let cursor = clone.track_frames_cursor(Slot::TwoChannel, 1).unwrap();
+    let cursor = clone.frames_cursor(Slot::TwoChannel, FrameSpan::Track(1), CursorOptions::new()).unwrap();
     clone.read_frames(cursor).for_each(drop);
     assert_eq!(first.lock().unwrap().len(), opened);
 }

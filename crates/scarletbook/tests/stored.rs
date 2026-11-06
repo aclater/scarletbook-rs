@@ -15,7 +15,9 @@ use std::rc::Rc;
 
 use common::{PFrame, Spec, TrackSpec, pack};
 use scarletbook::audio::FRAME_BYTES_PER_CHANNEL;
-use scarletbook::{AudioFrame, Disc, Error, FrameContent, Slot, TrackFrame, Warning};
+use scarletbook::{
+    AudioFrame, CursorOptions, Disc, Error, FrameContent, FrameSpan, Slot, TrackFrame, Warning,
+};
 
 fn corpus() -> Vec<(String, Vec<u8>)> {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../corpus/images");
@@ -84,7 +86,7 @@ fn three<R: Read + Seek>(
     #[cfg(feature = "parallel")] pool: Option<&std::sync::Arc<rayon::ThreadPool>>,
 ) -> (Read2<AudioFrame>, Read2<TrackFrame>, Read2<AudioFrame>, Read2<TrackFrame>) {
     #[allow(unused_mut)]
-    let mut c = disc.range_audio_cursor(slot, first, end).unwrap();
+    let mut c = disc.audio_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new()).unwrap();
     #[cfg(feature = "parallel")]
     on(&mut c, pool);
     let mut it = disc.read_track_audio(c);
@@ -95,7 +97,7 @@ fn three<R: Read + Seek>(
         counts: (c.missing_frames(), c.invalid_dst_frames(), c.malformed_sectors()),
         warnings: c.warnings().to_vec(),
     };
-    let c = disc.range_frames_cursor(slot, first, end).unwrap();
+    let c = disc.frames_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new()).unwrap();
     let mut it = disc.read_frames(c);
     let items = it.by_ref().map(|f| f.map_err(|e| e.to_string())).collect();
     let c = it.into_cursor();
@@ -105,7 +107,7 @@ fn three<R: Read + Seek>(
         warnings: c.warnings().to_vec(),
     };
     #[allow(unused_mut)]
-    let mut c = disc.range_audio_cursor(slot, first, end).unwrap();
+    let mut c = disc.audio_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new()).unwrap();
     #[cfg(feature = "parallel")]
     on(&mut c, pool);
     c.keep_stored().unwrap();
@@ -191,15 +193,15 @@ fn reads_each_sector_once() {
     let mut disc = Disc::open(Counting { inner: Cursor::new(img), bytes: Rc::clone(&bytes) }).unwrap();
     let n = disc.toc().area(Slot::TwoChannel).unwrap().playtime_frames();
     let b0 = bytes.get();
-    let c = disc.range_audio_cursor(Slot::TwoChannel, 0, n).unwrap();
+    let c = disc.audio_cursor(Slot::TwoChannel, FrameSpan::Range(0, n), CursorOptions::new()).unwrap();
     let decoded: Vec<_> = disc.read_track_audio(c).map(Result::unwrap).collect();
     let once = bytes.get() - b0;
     let b0 = bytes.get();
-    let c = disc.range_frames_cursor(Slot::TwoChannel, 0, n).unwrap();
+    let c = disc.frames_cursor(Slot::TwoChannel, FrameSpan::Range(0, n), CursorOptions::new()).unwrap();
     let stored: Vec<_> = disc.read_frames(c).map(Result::unwrap).collect();
     assert_eq!(bytes.get() - b0, once);
     let b0 = bytes.get();
-    let mut c = disc.range_audio_cursor(Slot::TwoChannel, 0, n).unwrap();
+    let mut c = disc.audio_cursor(Slot::TwoChannel, FrameSpan::Range(0, n), CursorOptions::new()).unwrap();
     c.keep_stored().unwrap();
     assert!(c.keeps_stored());
     let mut it = disc.read_track_audio(c);
@@ -251,7 +253,7 @@ fn reads_each_sector_once() {
 fn when_it_can_be_asked_for() {
     let img = image(if cfg!(miri) { 12 } else { 120 });
     let mut disc = Disc::open(Cursor::new(img)).unwrap();
-    let c = disc.track_audio_cursor(Slot::TwoChannel, 1).unwrap();
+    let c = disc.audio_cursor(Slot::TwoChannel, FrameSpan::Track(1), CursorOptions::new()).unwrap();
     let mut it = disc.read_track_audio(c);
     assert!(matches!(it.next_with_stored(), Some(Err(Error::InvalidArgument(_)))));
     it.next().unwrap().unwrap();
