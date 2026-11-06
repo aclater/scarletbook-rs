@@ -573,7 +573,7 @@ pub(crate) mod tests {
 
     /// The response of the converter's cascade at `f` Hz (input frequency), relative to
     /// full scale: the product of the stage responses (noble identities). For 352.8 kHz
-    /// output of `Default` and `Low`, it includes the interpolator's response at `f`.
+    /// output of `Standard` and `Low`, it includes the interpolator's response at `f`.
     pub(crate) fn response(rate: PcmRate, cutoff: Cutoff, f: f64) -> f64 {
         let (r352, r176) = (FS / 8.0, FS / 16.0);
         if cutoff == Cutoff::Wide {

@@ -160,6 +160,7 @@ pub const PARALLEL_FRAMES_PER_THREAD: usize = 16;
 /// a new major version of this crate.
 #[cfg(feature = "parallel")]
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub enum DecodeOn {
     /// The rayon pool current at each call: the pool of the calling thread if it is one of
     /// a pool's threads (inside [`rayon::ThreadPool::install`]), rayon's global pool
@@ -188,6 +189,9 @@ pub enum DecodeOn {
 pub const FRAMES_PER_SECTOR: u64 = 7;
 
 /// How a frame is coded, fixed by the DST flag of the sector it starts in.
+///
+/// Frozen: exhaustive on purpose, so a `match` needs no wildcard arm. The DST flag is one bit
+/// of the sector header (specification 4, 4.3.1), so there are exactly two kinds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum FrameKind {
     /// DST-coded (specification 5).
@@ -198,6 +202,7 @@ pub enum FrameKind {
 
 /// A frame accepted onto an area's timeline (specification 4, 4.5).
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct AreaFrame {
     /// Its frame number (timeline position).
     pub number: u32,
@@ -1851,6 +1856,10 @@ pub(crate) fn log_open(
 }
 
 /// What a timeline position holds (specification 4, 4.6), before DST decoding.
+///
+/// Frozen: exhaustive on purpose, so a `match` needs no wildcard arm. A position's stored
+/// content is a DST frame, a plain frame or none (specification 4, 4.6.1 item 1), and a frame
+/// is one [`FrameKind`] or the other.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FrameContent {
     /// A plain DSD frame: `C x 4704` bytes in interleaved layout, used unchanged.
@@ -1904,11 +1913,29 @@ impl FrameContent {
 
 /// One timeline position of a track or frame range.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct TrackFrame {
     /// The frame number.
     pub number: u32,
     /// Its content.
     pub content: FrameContent,
+}
+
+impl TrackFrame {
+    /// A timeline position holding `content`, for a caller that decodes frames it saved
+    /// ([`decode_frame`]).
+    ///
+    /// ```
+    /// use scarletbook::{DstDecoder, FrameContent, FrameStatus, TrackFrame, audio::decode_frame};
+    ///
+    /// let frame = TrackFrame::new(7, FrameContent::Missing);
+    /// let audio = decode_frame(&mut DstDecoder::new(), frame, 2).unwrap();
+    /// assert_eq!((audio.number, audio.status), (7, FrameStatus::Missing));
+    /// assert_eq!(audio.data, vec![0x69; 2 * 4704]);
+    /// ```
+    pub fn new(number: u32, content: FrameContent) -> Self {
+        TrackFrame { number, content }
+    }
 }
 
 /// The reading state of one track's timeline positions (specification 4, 4.7),
@@ -2576,6 +2603,7 @@ impl<R: Read + Seek> Iterator for TrackFrames<'_, R> {
 
 /// How a decoded timeline position was produced (specification 4, 4.6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum FrameStatus {
     /// A plain DSD frame, passed through unchanged.
     Dsd,
@@ -2589,6 +2617,7 @@ pub enum FrameStatus {
 
 /// One decoded timeline position: `C x 4704` bytes in interleaved layout.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct AudioFrame {
     /// The frame number.
     pub number: u32,
@@ -2702,6 +2731,9 @@ fn decode_dst_run(
 /// A position's stored content (specification 4, 4.6.1 item 2) next to its decoded audio
 /// ([`TrackAudioCursor::next_frame_with_stored`]): what [`TrackCursor::next_frame`] gives
 /// for it, without a second copy of a plain frame.
+///
+/// Frozen: exhaustive on purpose, so a `match` needs no wildcard arm, for the reason given at
+/// [`FrameContent`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stored {
     /// A DST frame's bytes as stored (its decoding is the [`AudioFrame`]'s data).

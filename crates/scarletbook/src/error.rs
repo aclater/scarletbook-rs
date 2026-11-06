@@ -6,6 +6,9 @@ use std::fmt;
 use std::io;
 
 /// A master TOC area slot (specification 3, 3.1).
+///
+/// Frozen: exhaustive on purpose, so a `match` needs no wildcard arm. The master TOC has
+/// exactly two area slots, in fixed places; a third would be another format.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Slot {
     /// The 2-channel slot (master TOC offsets 64, 68 and 84).
@@ -329,6 +332,7 @@ impl fmt::Display for WarningCode {
 
 /// A warning: a code with the slot, track and LSN it concerns, where they apply.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct Warning {
     /// The diagnostic code.
     pub code: WarningCode,

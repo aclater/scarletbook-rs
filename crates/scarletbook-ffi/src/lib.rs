@@ -556,7 +556,7 @@ impl RawFrames {
                         FrameKind::Dst => FrameContent::Dst(f.data),
                         FrameKind::Dsd => FrameContent::Dsd(f.data),
                     };
-                    TrackFrame { number: f.number, content }
+                    TrackFrame::new(f.number, content)
                 })
             }),
         }
@@ -938,6 +938,8 @@ fn layout_value(a: &Area) -> u32 {
         LoudspeakerLayout::ThreeTwo => SB_LAYOUT_THREE_TWO,
         LoudspeakerLayout::FivePointOne => SB_LAYOUT_FIVE_POINT_ONE,
         LoudspeakerLayout::Unspecified { .. } => SB_LAYOUT_UNSPECIFIED,
+        // A layout this interface has no value for yet has none it can name.
+        _ => SB_LAYOUT_UNSPECIFIED,
     }
 }
 
@@ -952,6 +954,8 @@ fn speaker_value(a: &Area, index: usize) -> u32 {
         Some(Speaker::LowFrequencyEffects) => SB_SPEAKER_LOW_FREQUENCY_EFFECTS,
         Some(Speaker::SurroundLeft) => SB_SPEAKER_SURROUND_LEFT,
         Some(Speaker::SurroundRight) => SB_SPEAKER_SURROUND_RIGHT,
+        // A loudspeaker this interface has no value for yet.
+        Some(_) => SB_SPEAKER_UNSPECIFIED,
     }
 }
 
@@ -2405,6 +2409,10 @@ pub const SB_SECTOR_SIZE: u32 = 2048;
 
 const _: () = assert!(SB_SECTOR_SIZE as usize == scarletbook::SECTOR_SIZE);
 
+// scarletbook-pcm does not depend on scarletbook, so it keeps its own copies of these (#39).
+const _: () = assert!(MAX_CHANNELS == scarletbook::audio::MAX_CHANNELS);
+const _: () = assert!(FRAME_BYTES_PER_CHANNEL == scarletbook::audio::FRAME_BYTES_PER_CHANNEL);
+
 /// Copies the user data of the logical sectors `[lsn, lsn + count)` into `buf`, 2048
 /// bytes (`SB_SECTOR_SIZE`) per sector in order, whatever the image's stored sector size
 /// (`SbDiscInfo.sector_size`): the data a 2048-byte-sector image holds at those sectors.
@@ -2839,6 +2847,8 @@ fn decoded_info(frame: &AudioFrame, size: usize) -> SbFrameInfo {
         FrameStatus::Decoded => (SbFrameStatus::Decoded, 0),
         FrameStatus::Missing => (SbFrameStatus::Missing, 0),
         FrameStatus::Invalid(e) => (SbFrameStatus::Invalid, u32::from(e.rule())),
+        // An outcome this interface does not know yet is never reported as good audio.
+        _ => (SbFrameStatus::Invalid, 0),
     };
     // At most size = channels x 4704, so it fits.
     let n = frame.data.len().min(size);
@@ -3681,7 +3691,7 @@ pub unsafe extern "C" fn sb_dst_decode(
     guard(|| {
         let ch = u8::try_from(channels).ok().filter(|c| (1..=6).contains(c));
         let Some(ch) = ch else { return Err(Failure::arg("channels must be 1 to 6")) };
-        let need = usize::from(ch) * scarletbook::dst::FL;
+        let need = usize::from(ch) * scarletbook::audio::FRAME_BYTES_PER_CHANNEL;
         if out.is_null() || out_len < need {
             return Err(Failure(SbStatus::BufferTooSmall, format!("the output needs {need} bytes")));
         }
@@ -3793,7 +3803,7 @@ pub unsafe extern "C" fn sb_pcm_converter_new(
             Failure::arg(&format!("rate_hz must be 88200, 176400 or 352800, not {rate_hz}"))
         })?;
         let cutoff = match cutoff {
-            SB_PCM_CUTOFF_DEFAULT => Cutoff::Default,
+            SB_PCM_CUTOFF_DEFAULT => Cutoff::Standard,
             SB_PCM_CUTOFF_LOW => Cutoff::Low,
             SB_PCM_CUTOFF_WIDE => Cutoff::Wide,
             c => return Err(Failure::arg(&format!("unknown cutoff {c}"))),
@@ -5767,7 +5777,7 @@ pub fn fuzz_pcm_convert_run(
     let config = (|| {
         let rate = PcmRate::from_hz(rate_hz)?;
         let cutoff =
-            [Cutoff::Default, Cutoff::Low, Cutoff::Wide].get(usize::try_from(cutoff).ok()?).copied()?;
+            [Cutoff::Standard, Cutoff::Low, Cutoff::Wide].get(usize::try_from(cutoff).ok()?).copied()?;
         let channels = u8::try_from(channels).ok()?;
         let gain = Gain::from_db(gain_db).ok()?;
         Some(PcmConfig::new(rate, cutoff, channels).with_gain(gain))
