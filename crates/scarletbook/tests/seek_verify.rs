@@ -551,3 +551,209 @@ fn no_budget_still_finishes() {
     assert!(calls > 1, "a call of no budget does not do the whole pass: {calls} calls");
     assert!(matches!(reading.speculation(), Speculation::Confirmed { .. }), "{:?}", reading.speculation());
 }
+
+/// A caller-kept index with `count` more provisional readings of frames 40 to 44 of `disc`.
+fn caller_readings(
+    disc: &mut Disc<Cursor<Vec<u8>>>,
+    index: &mut AreaIndex,
+    count: usize,
+) -> Vec<TrackCursor> {
+    let area = disc.toc().area(Slot::TwoChannel).unwrap().clone();
+    let n = disc.toc().sectors;
+    let options = SpeculativeOptions::new().with_min_gap_sectors(0);
+    (0..count)
+        .map(|_| {
+            let mut c = TrackCursor::for_range_speculative(&area, 40, 45, n, Some(&*index), options).unwrap();
+            // Not through the disc's iterators, which would give the reading to the disc's index.
+            while let Some(frame) = c.next_frame(disc.image_mut()) {
+                frame.unwrap();
+            }
+            assert!(matches!(c.speculation(), Speculation::Pending { .. }), "{:?}", c.speculation());
+            index.absorb(&mut c).unwrap();
+            c
+        })
+        .collect()
+}
+
+/// An empty caller-kept index that merges with `disc`'s.
+fn caller_index(disc: &Disc<Cursor<Vec<u8>>>) -> AreaIndex {
+    let area = disc.toc().area(Slot::TwoChannel).unwrap();
+    AreaIndex::new(area, disc.toc().sectors, IndexOptions::new().with_interval(4)).unwrap()
+}
+
+/// `count` more provisional readings of frames 40 to 44, held by `disc`'s own index.
+fn kept_readings(disc: &mut Disc<Cursor<Vec<u8>>>, count: usize) -> Vec<TrackCursor> {
+    (0..count)
+        .map(|_| {
+            let c = disc.range_frames_cursor(Slot::TwoChannel, 40, 45).unwrap();
+            small_reading(disc, c)
+        })
+        .collect()
+}
+
+/// Each of `readings` has exactly one event in `events`, which says what its cursor says, and
+/// there are no others.
+fn assert_each_once(events: &[scarletbook::SeekEvent], readings: &[TrackCursor]) {
+    assert_eq!(events.len(), readings.len());
+    for c in readings {
+        let id = c.claim().unwrap();
+        let mine: Vec<_> = events.iter().filter(|e| e.claim == id).collect();
+        assert_eq!(mine.len(), 1, "reading {id}");
+        assert_eq!(mine[0].speculation, c.speculation());
+    }
+}
+
+/// `AreaIndex::merge` past the cap with pending and already settled readings (#310): the oldest
+/// pending ones are settled as unverified, each with one event on the index merged into, and
+/// nothing is reported again by a second merge, by the other index, or by the check.
+#[test]
+#[cfg_attr(miri, ignore = "covered by the library's merging_past_the_cap_settles_the_oldest_once")]
+fn merging_past_the_cap_reports_every_reading_once() {
+    const MINE: usize = 200;
+    const SETTLED: usize = 40;
+    const THEIRS: usize = 160;
+    let (_, mut disc) = small_disc();
+    let mut a = caller_index(&disc);
+    let mut b = caller_index(&disc);
+    let mine = caller_readings(&mut disc, &mut a, MINE);
+    let settled = caller_readings(&mut disc, &mut b, SETTLED);
+    // A copy of B settles B's first readings: they are shared.
+    let mut copy = b.clone();
+    while !copy.extend(disc.image_mut(), u64::MAX).unwrap() {}
+    let copy_events = copy.take_events();
+    assert_each_once(&copy_events, &settled);
+    let theirs = caller_readings(&mut disc, &mut b, THEIRS);
+
+    a.merge(&b).unwrap();
+    let dropped = MINE + THEIRS - scarletbook::seek::MAX_CLAIMS;
+    assert_eq!(a.pending_claim_count(), scarletbook::seek::MAX_CLAIMS);
+    let early = a.take_events();
+    assert_each_once(&early, &mine[..dropped]);
+    assert!(early.iter().all(|e| matches!(e.speculation, Speculation::Unverified { .. })));
+    a.merge(&b).unwrap();
+    assert!(a.take_events().is_empty(), "a second merge settles nothing");
+    assert!(b.take_events().is_empty(), "merging leaves the other index's queue alone");
+
+    while !a.extend(disc.image_mut(), u64::MAX).unwrap() {}
+    while !b.extend(disc.image_mut(), u64::MAX).unwrap() {}
+    assert!(b.take_events().is_empty(), "A settled all that B held");
+    let mut seen = copy_events;
+    seen.extend(early);
+    seen.extend(a.take_events());
+    let every: Vec<_> = mine.into_iter().chain(settled).chain(theirs).collect();
+    assert_each_once(&seen, &every);
+}
+
+/// A verdict still on an index when a disc takes it over (#310) goes to the disc's queue at once
+/// and only once. It used to stay on the kept index, so that it did not reach the queue until
+/// the next `extend_seek_index`, which queued it from its copy, as did each later one.
+#[test]
+fn a_verdict_left_on_a_set_index_is_reported_once() {
+    let (_, mut disc) = small_disc();
+    // Made before the pass: sure to read provisionally.
+    let made_before = disc.range_frames_cursor(Slot::TwoChannel, 40, 45).unwrap();
+    let mut index = caller_index(&disc);
+    let first = caller_readings(&mut disc, &mut index, 1);
+    while !index.extend(disc.image_mut(), u64::MAX).unwrap() {}
+    disc.set_seek_index(Slot::TwoChannel, index).unwrap();
+    let mut seen = disc.take_seek_events(Slot::TwoChannel);
+    assert_each_once(&seen, &first);
+    assert!(disc.seek_index(Slot::TwoChannel).unwrap().take_events().is_empty(), "nor on a copy");
+    assert!(disc.verify_speculation(Slot::TwoChannel, u64::MAX).unwrap());
+    let second = small_reading(&mut disc, made_before);
+    assert!(disc.verify_speculation(Slot::TwoChannel, u64::MAX).unwrap());
+    assert!(disc.verify_speculation(Slot::TwoChannel, u64::MAX).unwrap());
+    seen.extend(disc.take_seek_events(Slot::TwoChannel));
+    let every: Vec<_> = first.into_iter().chain([second]).collect();
+    assert_each_once(&seen, &every);
+}
+
+/// The same past the cap: a disc's index taken, merged with a caller's past the cap and set back
+/// without taking its events. The repeats also used to crowd real verdicts out of the queue
+/// ([`scarletbook::seek::MAX_EVENTS`]), here 256 of the 400, for a caller taking them at the end.
+#[test]
+#[cfg_attr(miri, ignore = "covered by a_verdict_left_on_a_set_index_is_reported_once")]
+fn a_merge_past_the_cap_set_on_a_disc_reports_every_reading_once() {
+    const EACH: usize = 200;
+    let (_, mut disc) = small_disc();
+    let kept = kept_readings(&mut disc, EACH);
+    let mut other = caller_index(&disc);
+    let caller = caller_readings(&mut disc, &mut other, EACH);
+    let mut index = disc.take_seek_index(Slot::TwoChannel).unwrap();
+    index.merge(&other).unwrap();
+    disc.set_seek_index(Slot::TwoChannel, index).unwrap();
+    while !disc.verify_speculation(Slot::TwoChannel, 8).unwrap() {}
+    for _ in 0..8 {
+        assert!(disc.verify_speculation(Slot::TwoChannel, 8).unwrap());
+    }
+    let seen = disc.take_seek_events(Slot::TwoChannel);
+    let dropped = 2 * EACH - scarletbook::seek::MAX_CLAIMS;
+    let unverified = seen.iter().filter(|e| matches!(e.speculation, Speculation::Unverified { .. }));
+    assert_eq!(unverified.count(), dropped);
+    let every: Vec<_> = kept.into_iter().chain(caller).collect();
+    assert_each_once(&seen, &every);
+}
+
+/// `extend_seek_index` merging past the cap: possible only when another disc replaces the index
+/// during the pass, so that the copy's readings are not all in the index it merges into (#310).
+/// The call that dropped them hands their events over, once.
+#[test]
+#[cfg_attr(miri, ignore = "covered by a_verdict_left_on_a_set_index_is_reported_once")]
+fn a_merge_past_the_cap_during_a_pass_reports_every_reading_once() {
+    const EACH: usize = 200;
+    let (img, mut disc) = small_disc();
+    let kept = kept_readings(&mut disc, EACH);
+    let mut replacement = caller_index(&disc);
+    let caller = caller_readings(&mut disc, &mut replacement, EACH);
+    let mut replacement = Some(replacement);
+    let mut other = disc.share(Cursor::new(img.clone())).unwrap();
+    let armed = std::cell::Cell::new(false);
+    let hook = |_| {
+        if armed.replace(false) {
+            other.set_seek_index(Slot::TwoChannel, replacement.take().unwrap()).unwrap();
+        }
+    };
+    let mut verifier = disc.share(Hooked { inner: Cursor::new(img), farthest: 0, hook }).unwrap();
+    armed.set(true);
+    // No budget: the pass does not reach the readings, so that the copy's stay pending.
+    assert!(!verifier.verify_speculation(Slot::TwoChannel, 0).unwrap());
+    assert!(!armed.get());
+    let index = disc.seek_index(Slot::TwoChannel).unwrap();
+    assert_eq!(index.pending_claim_count(), scarletbook::seek::MAX_CLAIMS);
+    let mut seen = disc.take_seek_events(Slot::TwoChannel);
+    assert_eq!(seen.len(), 2 * EACH - scarletbook::seek::MAX_CLAIMS);
+    assert!(seen.iter().all(|e| matches!(e.speculation, Speculation::Unverified { .. })));
+    while !verifier.verify_speculation(Slot::TwoChannel, u64::MAX).unwrap() {}
+    assert!(verifier.verify_speculation(Slot::TwoChannel, u64::MAX).unwrap());
+    seen.extend(disc.take_seek_events(Slot::TwoChannel));
+    let every: Vec<_> = kept.into_iter().chain(caller).collect();
+    assert_each_once(&seen, &every);
+}
+
+/// With the index itself in place, the merge of `extend_seek_index` never passes the cap: what
+/// the copy holds pending the index holds too, or has settled (here: past the cap, while the
+/// pass reads). Those events are the index's own, handed over when the reading registers.
+#[test]
+#[cfg_attr(miri, ignore = "covered by the library's merging_past_the_cap_settles_the_oldest_once")]
+fn a_full_index_does_not_pass_the_cap_during_a_pass() {
+    const MORE: usize = 3;
+    let (img, mut disc) = small_disc();
+    let kept = kept_readings(&mut disc, scarletbook::seek::MAX_CLAIMS);
+    let mut other = disc.share(Cursor::new(img.clone())).unwrap();
+    let during = std::cell::RefCell::new(Vec::new());
+    let armed = std::cell::Cell::new(false);
+    let hook = |_| {
+        if armed.replace(false) {
+            during.replace(kept_readings(&mut other, MORE));
+        }
+    };
+    let mut verifier = disc.share(Hooked { inner: Cursor::new(img), farthest: 0, hook }).unwrap();
+    armed.set(true);
+    assert!(!verifier.verify_speculation(Slot::TwoChannel, 0).unwrap());
+    let mut seen = disc.take_seek_events(Slot::TwoChannel);
+    assert_each_once(&seen, &kept[..MORE]);
+    while !verifier.verify_speculation(Slot::TwoChannel, u64::MAX).unwrap() {}
+    seen.extend(disc.take_seek_events(Slot::TwoChannel));
+    let every: Vec<_> = kept.into_iter().chain(during.take()).collect();
+    assert_each_once(&seen, &every);
+}
