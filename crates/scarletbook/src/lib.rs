@@ -58,7 +58,7 @@
 //! of its own (`DecodeOn`) uses rayon's current pool, by default its global one.
 
 // `unsafe` is denied everywhere except in `dispatch`, which calls the AVX2 build of the
-// DST decoder after checking for its features (CONTRIBUTING).
+// DST decoder and of the output path after checking for its features (CONTRIBUTING).
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]

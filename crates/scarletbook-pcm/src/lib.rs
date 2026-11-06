@@ -102,7 +102,8 @@
 //! too high. Output samples are rounded half to even and are not dithered.
 
 // `unsafe` is denied everywhere except in `dispatch`, which calls the AVX2 and FMA build of
-// the filter kernels after checking for those features (CONTRIBUTING).
+// the filter kernels and the loops around them (taking a channel out of the input, rounding
+// to 24 bits, interleaving the output) after checking for those features (CONTRIBUTING).
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
