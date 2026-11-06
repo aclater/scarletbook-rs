@@ -1,0 +1,1 @@
+| 2026-11-06 | `Image::read_sectors` returns `Result<(), Error>` with `Error::SectorRangeInvalid` (#39, #303) | specification 1, 1.3 (already implemented); this repository's own interface otherwise. No new sources consulted. |

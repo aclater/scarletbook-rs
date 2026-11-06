@@ -18,7 +18,7 @@ use common::{PFrame, Spec, TrackSpec, pack};
 use scarletbook::audio::{FRAME_BYTES_PER_CHANNEL, TrackAudioCursor};
 use scarletbook::dst::{self, MAX_LANES};
 use scarletbook::log::{Level, Log};
-use scarletbook::{AudioFrame, Disc, Error, ErrorClass, FrameStatus, Slot};
+use scarletbook::{AudioFrame, CursorOptions, Disc, Error, ErrorClass, FrameSpan, FrameStatus, Slot};
 
 /// Where a read decodes: on the calling thread (`None`) or on a pool of this many threads.
 type Threads = Option<usize>;
@@ -73,7 +73,10 @@ fn read(image: &[u8], lanes: Option<usize>, threads: Threads) -> (Read, Vec<usiz
             let next = match cursor.take() {
                 Some(prev) => disc.continue_track_audio(prev, slot, n).unwrap(),
                 None => {
-                    let c = place(disc.track_audio_cursor(slot, n).unwrap(), threads);
+                    let c = place(
+                        disc.audio_cursor(slot, FrameSpan::Track(n), CursorOptions::new()).unwrap(),
+                        threads,
+                    );
                     match lanes {
                         Some(k) => c.with_dst_lanes(k).unwrap(),
                         None => c,
@@ -223,7 +226,10 @@ fn choosing_during_a_read_gives_the_same_positions() {
     for threads in places() {
         for k in 1..=MAX_LANES {
             let mut disc = Disc::open(Cursor::new(img.clone())).unwrap();
-            let c = place(disc.track_audio_cursor(Slot::TwoChannel, 1).unwrap(), threads);
+            let c = place(
+                disc.audio_cursor(Slot::TwoChannel, FrameSpan::Track(1), CursorOptions::new()).unwrap(),
+                threads,
+            );
             let mut audio = disc.read_track_audio(c);
             let mut frames: Vec<AudioFrame> = audio.by_ref().take(3).map(Result::unwrap).collect();
             let c = audio.into_cursor().with_dst_lanes(k).unwrap();
@@ -237,16 +243,23 @@ fn choosing_during_a_read_gives_the_same_positions() {
 #[test]
 fn out_of_range_is_refused() {
     let disc = Disc::open(Cursor::new(Spec::simple().build())).unwrap();
-    assert_eq!(disc.track_audio_cursor(Slot::TwoChannel, 1).unwrap().dst_lanes(), None);
+    assert_eq!(
+        disc.audio_cursor(Slot::TwoChannel, FrameSpan::Track(1), CursorOptions::new()).unwrap().dst_lanes(),
+        None
+    );
     for k in [0, MAX_LANES + 1, usize::MAX] {
-        let c = disc.track_audio_cursor(Slot::TwoChannel, 1).unwrap();
+        let c = disc.audio_cursor(Slot::TwoChannel, FrameSpan::Track(1), CursorOptions::new()).unwrap();
         let e = c.with_dst_lanes(k).unwrap_err();
         assert!(matches!(e, Error::DstLanesInvalid { lanes, .. } if lanes == k), "{e}");
         assert_eq!(e.class(), ErrorClass::Usage);
         assert_eq!(e.code(), None);
     }
     for k in 1..=MAX_LANES {
-        let c = disc.track_audio_cursor(Slot::TwoChannel, 1).unwrap().with_dst_lanes(k).unwrap();
+        let c = disc
+            .audio_cursor(Slot::TwoChannel, FrameSpan::Track(1), CursorOptions::new())
+            .unwrap()
+            .with_dst_lanes(k)
+            .unwrap();
         assert_eq!(c.dst_lanes(), Some(k));
         let c = disc.continue_track_audio(c, Slot::TwoChannel, 2).unwrap();
         assert_eq!(c.dst_lanes(), Some(k));
