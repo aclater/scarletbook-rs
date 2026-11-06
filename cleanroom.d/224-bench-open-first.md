@@ -1,1 +1,0 @@
-| 2026-11-05 | benchmark commands for open and first 128 KiB (#224) | the benchmark program and scripts only; it calls the library's public API, and no technique in a codec or format path changes. No new sources consulted. |

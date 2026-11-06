@@ -6,7 +6,9 @@
 #
 #   scarletbook-ffi-VERSION-TARGET[-VARIANT]/
 #     include/scarletbook.h
-#     lib/        shared library, static library (and the DLL import library on Windows)
+#     lib/        shared library (named after the C ABI on Linux and macOS, with an
+#                 unversioned link for the linker), static library (and the DLL import
+#                 library on Windows)
 #     native-static-libs.txt   what to link after the static library
 #     README.txt, LICENSE-MIT, LICENSE-APACHE
 #
@@ -39,10 +41,28 @@ esac
 pkg="dist/$name"
 
 # The shared library's name as a program records it, instead of the build path (macOS)
-# or the path it was linked by (Linux).
+# or the path it was linked by (Linux). It carries the C ABI version, not the crate's
+# (issue #39, M8), so a program built for one ABI does not find a library of another, and
+# additions, which keep SB_ABI_VERSION, keep the name. dyld compares compatibility
+# versions only as "at least", so on macOS the name is what separates ABIs, and the
+# version numbers just agree with it. Windows records the DLL's file name in the program's
+# import table and has no such field: the DLL keeps its name.
+abi=$(sed -n 's/^#define SB_ABI_VERSION //p' crates/scarletbook-ffi/include/scarletbook.h | tr -d '\r')
+if ! [[ "$abi" =~ ^[0-9]+$ ]]; then
+  echo "no SB_ABI_VERSION in the header (got '$abi')" >&2
+  exit 1
+fi
+built= versioned=
 case "$target" in
-  *-apple-*) link=(-C link-arg=-Wl,-install_name,@rpath/libscarletbook_ffi.dylib) ;;
-  *-linux-*) link=(-C link-arg=-Wl,-soname,libscarletbook_ffi.so) ;;
+  *-apple-*)
+    built=libscarletbook_ffi.dylib versioned=libscarletbook_ffi.$abi.dylib
+    link=(-C "link-arg=-Wl,-install_name,@rpath/$versioned"
+      -C "link-arg=-Wl,-compatibility_version,$abi.0.0" -C "link-arg=-Wl,-current_version,$abi.0.0")
+    ;;
+  *-linux-*)
+    built=libscarletbook_ffi.so versioned=libscarletbook_ffi.so.$abi
+    link=(-C "link-arg=-Wl,-soname,$versioned")
+    ;;
   *) link=() ;;
 esac
 # x86-64 Linux: mark the libraries compatible with the CET shadow stack (SHSTK), the CET
@@ -72,14 +92,19 @@ out="${CARGO_TARGET_DIR:-target}/$target/dist"
 rm -rf "$pkg"
 mkdir -p "$pkg/include" "$pkg/lib"
 cp crates/scarletbook-ffi/include/scarletbook.h "$pkg/include/"
-case "$target" in
-  *-windows-*) shared=(scarletbook_ffi.dll libscarletbook_ffi.dll.a) ;;
-  *-apple-*) shared=(libscarletbook_ffi.dylib) ;;
-  *) shared=(libscarletbook_ffi.so) ;;
-esac
-for f in "${shared[@]}" libscarletbook_ffi.a; do
-  cp "$out/$f" "$pkg/lib/"
-done
+if [[ -n "$versioned" ]]; then
+  # The file a program needs at run time, and the link -lscarletbook_ffi finds at link time.
+  cp "$out/$built" "$pkg/lib/$versioned"
+  ln -s "$versioned" "$pkg/lib/$built"
+  shared=("$versioned" "$built")
+  shared_use="Shared linking: -Llib -lscarletbook_ffi. The program then needs $versioned at run time, so ship
+that file with it ($built only links to it, for the linker)."
+else
+  shared=(scarletbook_ffi.dll libscarletbook_ffi.dll.a)
+  cp "$out/${shared[0]}" "$out/${shared[1]}" "$pkg/lib/"
+  shared_use="Shared linking: -Llib -lscarletbook_ffi, and ship the shared library with the program."
+fi
+cp "$out/libscarletbook_ffi.a" "$pkg/lib/"
 if [[ -n "$shstk" ]]; then
   # The linker ANDs the property over every object it pulls from the static library, so
   # each member needs it (rustc cannot emit it on stable).
@@ -90,14 +115,14 @@ cp LICENSE-MIT LICENSE-APACHE "$pkg/"
 cat > "$pkg/README.txt" <<EOF
 scarletbook C library $version for $target${variant:+ ($variant)}, built from ${GITHUB_SHA:-a local checkout}.
 Runs on: $platform.
-C ABI version (SB_ABI_VERSION, sb_abi_version()): $(sed -n 's/^#define SB_ABI_VERSION //p' crates/scarletbook-ffi/include/scarletbook.h).
+C ABI version (SB_ABI_VERSION, sb_abi_version()): $abi.
 
 include/scarletbook.h   the header; its top comment states the calling conventions
 lib/                    ${shared[*]} (shared), libscarletbook_ffi.a (static)
 
 Static linking: after libscarletbook_ffi.a, link the system libraries in native-static-libs.txt:
   $native
-Shared linking: -Llib -lscarletbook_ffi, and ship the shared library with the program.
+$shared_use
 
 Compatibility policy and verification of this archive (SHA-256, build provenance):
 https://github.com/aclater/scarletbook-rs#c-library

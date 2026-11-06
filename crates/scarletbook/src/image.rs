@@ -18,6 +18,7 @@ pub const MASTER_TOC_LSN: u32 = 510;
 
 /// How logical sectors are stored in an image file (specification 1, 1.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum SectorFormat {
     /// 2048 bytes per stored sector, data at offset 0.
     Plain,

@@ -43,6 +43,10 @@ use std::sync::Arc;
 
 /// The severity of a message, most severe first. The values are those of the C
 /// interface's `SB_LOG_*` constants.
+///
+/// Frozen: exhaustive on purpose, so a `match` needs no wildcard arm. These are the five
+/// levels of the `log` crate's convention, which leaves nothing to add, and each one is a
+/// value of the C interface.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Level {
     /// The reader failed, or decoding stopped on an internal error.

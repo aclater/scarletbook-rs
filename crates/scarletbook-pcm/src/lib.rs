@@ -13,7 +13,7 @@
 //! use scarletbook_pcm::{Converter, Cutoff, FrameRun, PcmConfig, PcmRate, FRAME_BYTES_PER_CHANNEL};
 //!
 //! # fn main() -> Result<(), scarletbook_pcm::PcmError> {
-//! let mut conv = Converter::new(PcmConfig::new(PcmRate::Hz176400, Cutoff::Default, 2))?;
+//! let mut conv = Converter::new(PcmConfig::new(PcmRate::Hz176400, Cutoff::Standard, 2))?;
 //! // Three frames of a 2-channel area, the whole area: no neighbours.
 //! let frames = vec![0x69u8; 3 * 2 * FRAME_BYTES_PER_CHANNEL];
 //! let mut pcm = vec![0i32; 3 * conv.samples_per_frame() * 2];
@@ -26,7 +26,7 @@
 //!
 //! | [`Cutoff`] | Passband | Stopband from | Rates |
 //! |---|---|---|---|
-//! | `Default` | 40 kHz | 48 kHz | all three |
+//! | `Standard` | 40 kHz | 48 kHz | all three |
 //! | `Low` | 30 kHz | 36 kHz | all three |
 //! | `Wide` | 80 kHz | 88.2 kHz at 176.4 kHz, 96 kHz at 352.8 kHz | 176.4 and 352.8 kHz |
 //!
@@ -36,8 +36,8 @@
 //! there is no delay to compensate. The crate README publishes the measured response.
 //!
 //! The 88.2 kHz output is the 176.4 kHz output with every other sample dropped, and the
-//! 352.8 kHz output of `Default` and `Low` is the 176.4 kHz output interpolated by 2 (its
-//! even samples are the 176.4 kHz samples). So `Default` and `Low` each have one frequency
+//! 352.8 kHz output of `Standard` and `Low` is the 176.4 kHz output interpolated by 2 (its
+//! even samples are the 176.4 kHz samples). So `Standard` and `Low` each have one frequency
 //! response at all rates. `Wide` has its own filter at each rate: at 176.4 kHz its stopband
 //! starts at that rate's Nyquist frequency, so that nothing folds back below it.
 //!
@@ -58,7 +58,7 @@
 //! use scarletbook_pcm::{Converter, Cutoff, PcmConfig, PcmOut, PcmRate, Run, FRAME_BYTES_PER_CHANNEL};
 //!
 //! # fn main() -> Result<(), scarletbook_pcm::PcmError> {
-//! let mut conv = Converter::new(PcmConfig::new(PcmRate::Hz176400, Cutoff::Default, 2))?;
+//! let mut conv = Converter::new(PcmConfig::new(PcmRate::Hz176400, Cutoff::Standard, 2))?;
 //! // Frames 1 and 2 of an area, each in its own buffer, with frames 0 and 3 around them.
 //! let area: Vec<Vec<u8>> = (0..4).map(|_| vec![0x69u8; 2 * FRAME_BYTES_PER_CHANNEL]).collect();
 //! let frames = [&area[1][..], &area[2][..]];
@@ -122,10 +122,11 @@ use std::fmt;
 
 use kernel::Plan;
 
-/// Bytes of one channel in one frame: 37 632 one-bit samples.
+/// Bytes of one channel in one frame: 37 632 one-bit samples. This crate does not depend on
+/// `scarletbook`, so it holds its own copy of `scarletbook::audio::FRAME_BYTES_PER_CHANNEL`.
 pub const FRAME_BYTES_PER_CHANNEL: usize = 4704;
 
-/// The highest channel count of an area.
+/// The highest channel count of an area: this crate's copy of `scarletbook::audio::MAX_CHANNELS`.
 pub const MAX_CHANNELS: u8 = 6;
 
 /// An output sample rate.
@@ -179,9 +180,10 @@ impl fmt::Display for PcmRate {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Cutoff {
-    /// Passband to 40 kHz, stopband from 48 kHz.
+    /// Passband to 40 kHz, stopband from 48 kHz. The default, and `SB_PCM_CUTOFF_DEFAULT`
+    /// in the C interface.
     #[default]
-    Default,
+    Standard,
     /// Passband to 30 kHz, stopband from 36 kHz.
     Low,
     /// Passband to 80 kHz, stopband from 88.2 kHz at 176.4 kHz and from 96 kHz at
@@ -190,13 +192,24 @@ pub enum Cutoff {
 }
 
 impl Cutoff {
+    /// The old name of [`Cutoff::Standard`]: the same filter and the same output. It still
+    /// works in expressions and in patterns written `Cutoff::Default`; `use Cutoff::Default`
+    /// does not.
+    ///
+    /// **Under `use Cutoff::*`, a pattern `Default` is not this constant.** It is a new
+    /// binding that matches every filter, so that arm also takes `Low` and `Wide`, with only
+    /// warnings (`unreachable_patterns`, `unused_variables`). Write `Standard`.
+    #[deprecated(since = "0.6.0", note = "renamed `Cutoff::Standard`; to be removed before 1.0")]
+    #[allow(non_upper_case_globals)]
+    pub const Default: Cutoff = Cutoff::Standard;
+
     /// Every cutoff.
-    pub const ALL: [Cutoff; 3] = [Cutoff::Default, Cutoff::Low, Cutoff::Wide];
+    pub const ALL: [Cutoff; 3] = [Cutoff::Standard, Cutoff::Low, Cutoff::Wide];
 
     /// The passband edge in Hz.
     pub fn passband_hz(self) -> u32 {
         match self {
-            Cutoff::Default => 40_000,
+            Cutoff::Standard => 40_000,
             Cutoff::Low => 30_000,
             Cutoff::Wide => 80_000,
         }
@@ -206,7 +219,7 @@ impl Cutoff {
     /// [`stopband_hz_at`](Cutoff::stopband_hz_at).
     pub fn stopband_hz(self) -> u32 {
         match self {
-            Cutoff::Default => 48_000,
+            Cutoff::Standard => 48_000,
             Cutoff::Low => 36_000,
             Cutoff::Wide => 96_000,
         }

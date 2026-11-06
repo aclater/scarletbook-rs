@@ -6,6 +6,9 @@ use std::fmt;
 use std::io;
 
 /// A master TOC area slot (specification 3, 3.1).
+///
+/// Frozen: exhaustive on purpose, so a `match` needs no wildcard arm. The master TOC has
+/// exactly two area slots, in fixed places; a third would be another format.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Slot {
     /// The 2-channel slot (master TOC offsets 64, 68 and 84).
@@ -97,6 +100,14 @@ pub enum Error {
         end: u32,
         /// The area's play time in frames.
         playtime: u32,
+    },
+    /// A DST lane count is not from 1 to [`crate::dst::MAX_LANES`]
+    /// ([`crate::TrackAudioCursor::with_dst_lanes`]).
+    #[error("{lanes} DST lanes: must be from 1 to {max}", max = crate::dst::MAX_LANES)]
+    #[non_exhaustive]
+    DstLanesInvalid {
+        /// The count asked for.
+        lanes: usize,
     },
     /// A caller-supplied argument is invalid (for example a buffer of the wrong size).
     #[error("invalid argument: {0}")]
@@ -198,6 +209,7 @@ impl Error {
             Error::NoSuchArea(_)
             | Error::NoSuchTrack { .. }
             | Error::FrameRangeInvalid { .. }
+            | Error::DstLanesInvalid { .. }
             | Error::InvalidArgument(_)
             | Error::Io(_)
             | Error::Cancelled
@@ -221,6 +233,7 @@ impl Error {
             Error::NoSuchArea(_)
             | Error::NoSuchTrack { .. }
             | Error::FrameRangeInvalid { .. }
+            | Error::DstLanesInvalid { .. }
             | Error::InvalidArgument(_)
             | Error::OutputRefused(_) => ErrorClass::Usage,
             Error::Io(_) => ErrorClass::Io,
@@ -319,6 +332,7 @@ impl fmt::Display for WarningCode {
 
 /// A warning: a code with the slot, track and LSN it concerns, where they apply.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct Warning {
     /// The diagnostic code.
     pub code: WarningCode,

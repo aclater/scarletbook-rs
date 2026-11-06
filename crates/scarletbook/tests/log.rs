@@ -239,7 +239,7 @@ fn expected_frame_line(slot: Slot, f: &AudioFrame) -> Option<String> {
             f.number,
             e.rule()
         )),
-        FrameStatus::Dsd | FrameStatus::Decoded => None,
+        _ => None,
     }
 }
 

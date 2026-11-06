@@ -54,7 +54,7 @@ fixed by the specification. Cargo treats `0.5.y` as compatible with `0.5.x`, so 
 same PCM bytes across builds (stored hashes, reproducible files) pins the exact version:
 
 ```toml
-scarletbook-pcm = "=0.5.8"
+scarletbook-pcm = "=0.5.9"
 ```
 
 ## Layout
@@ -164,6 +164,22 @@ size counting its pad byte; D2, text as ISO 8859-1) are made only when named, in
 `OutputOptions::dsdiff_departures` or with `SB_OUTPUT_OPTION_DSDIFF_DEPARTURE_D1` and `_D2`.
 A file written with one is not a conforming DSDIFF file.
 
+**An area's tracks as separate files** take no writer of their own, only a loop over these
+calls: use `Disc::continue_range_audio` from track to track, since a plain `range_audio` per
+track rescans the area (more than 2x slower measured on a 16-track stereo area). That
+sequential loop gains nothing over one file. Workers gain on real storage, in two forms:
+
+- **Seek index first:** the bytes are exact.
+- **Speculative with a verifying pass:** the bytes are provisional when written (specification
+  4, 4.2 item 8). They are exact only once the pass is complete and every reading is exact or
+  confirmed, and any other reading's file is rewritten.
+
+Workers reading speculatively with no verifying pass are a speed figure only: nothing
+establishes their bytes, and matching hashes on some images don't. The `scarletbook::output`
+documentation has the code for each form. The figures are on
+[#202](https://github.com/aclater/scarletbook-rs/issues/202): they come from one machine, so
+measure on yours.
+
 ### Seeking within an area
 
 A range far into an area normally costs a scan of the area up to it: which frames a range
@@ -245,6 +261,11 @@ Features: `parallel` decodes DST frames on rayon's thread pool, ahead of the cal
 current pool by default, or the pool chosen for a cursor with
 `TrackAudioCursor::set_decode_on(DecodeOn::Pool(pool))`, whichever thread reads it
 (`DecodeOn::CallingThread` keeps a cursor off every pool).
+
+With `parallel`, rayon 1 is part of the public Rust API, and that is a stated decision (#39):
+`DecodeOn::Pool` takes an `Arc<rayon::ThreadPool>`, not a wrapper of this library's. rayon 1 is
+stable, and a wrapper would add interface for a problem that may never come. The cost is that a
+rayon 2 would need a new major version of `scarletbook`. A program's pool must come from rayon 1.
 
 ## C library
 
@@ -576,8 +597,10 @@ An archive unpacks to:
 scarletbook-ffi-<version>-<target>/   (scarletbook-ffi-<version>-<target>-v3/ for a -v3 archive)
   include/scarletbook.h
   lib/libscarletbook_ffi.a           static library (every target)
-  lib/libscarletbook_ffi.so          shared library (Linux)
-  lib/libscarletbook_ffi.dylib       shared library (macOS)
+  lib/libscarletbook_ffi.so.2        shared library (Linux) ...
+  lib/libscarletbook_ffi.so          ... and a link to it, for the linker
+  lib/libscarletbook_ffi.2.dylib     shared library (macOS) ...
+  lib/libscarletbook_ffi.dylib       ... and a link to it, for the linker
   lib/scarletbook_ffi.dll            shared library (Windows) ...
   lib/libscarletbook_ffi.dll.a       ... and its import library
   native-static-libs.txt             system libraries to link after the static library
@@ -600,17 +623,38 @@ published without one.
 ```sh
 # Static: the archive, then the system libraries it needs.
 cc app.c -I$PKG/include $PKG/lib/libscarletbook_ffi.a $(cat $PKG/native-static-libs.txt)
-# Shared: ship the library next to the program, or set an rpath.
+# Shared: ship libscarletbook_ffi.so.2 next to the program, or set an rpath.
 cc app.c -I$PKG/include -L$PKG/lib -lscarletbook_ffi -Wl,-rpath,'$ORIGIN'
 ```
 
-The Linux shared library has the SONAME `libscarletbook_ffi.so` and the macOS one the
-install name `@rpath/libscarletbook_ffi.dylib`, so a program finds them through its rpath
-(`-Wl,-rpath,@loader_path` on macOS). The SONAME is unversioned, since integrators ship the
-library with their program; to be revisited at 1.0. With MinGW-w64 GCC,
-`-lscarletbook_ffi` picks the import library (`.dll.a`), so the program needs
-`scarletbook_ffi.dll` at run time; link the static library by its path instead to avoid
-that.
+The shared library's name carries the C ABI version, `SB_ABI_VERSION`, not the crate version
+(see "ABI compatibility"):
+
+| | Name a program records | The file | Link for the linker |
+|---|---|---|---|
+| Linux | SONAME `libscarletbook_ffi.so.2` | `libscarletbook_ffi.so.2` | `libscarletbook_ffi.so` |
+| macOS | install name `@rpath/libscarletbook_ffi.2.dylib`, compatibility version 2.0.0 | `libscarletbook_ffi.2.dylib` | `libscarletbook_ffi.dylib` |
+| Windows | `scarletbook_ffi.dll` (not versioned) | `scarletbook_ffi.dll` | `libscarletbook_ffi.dll.a` (import library) |
+
+`-lscarletbook_ffi` finds the unversioned link and the program records the versioned name, so
+**the versioned file is the one to ship**, found through the program's rpath
+(`-Wl,-rpath,@loader_path` on macOS). Copy it under that name; such a program does not need the
+link at run time. A program linked against a release before 0.6.0 recorded the unversioned name,
+so it does need the link, next to the library, until it is relinked. A library loaded by path, as
+with ctypes, loads under either name while the link is there. See
+[Migrating to 0.6.0](docs/migrating-0.6.md#m8-the-shared-librarys-name).
+
+Windows has no SONAME: a program records the DLL's file name. `scarletbook_ffi.dll` keeps its
+name, because integrators ship it next to their program, so `sb_abi_version()` is the only
+check there. With MinGW-w64 GCC, `-lscarletbook_ffi` picks the import library (`.dll.a`), so
+the program needs `scarletbook_ffi.dll` at run time; link the static library by its path
+instead to avoid that.
+
+Only the release archives are named this way, by `.github/scripts/clib-package.sh`. A plain
+`cargo build` makes `libscarletbook_ffi.so` with no SONAME at all. To build one with the SONAME
+from source, for example for a system package, add what the script adds and install it under
+that name:
+`cargo rustc --release -p scarletbook-ffi --lib -- -C link-arg=-Wl,-soname,libscarletbook_ffi.so.2`.
 
 ### Using from Python (ctypes)
 
@@ -623,7 +667,7 @@ without them ctypes passes and returns C `int`, which truncates pointers and 64-
 ```python
 import ctypes as C
 
-lib = C.CDLL("/path/to/libscarletbook_ffi.so")  # .dylib on macOS, scarletbook_ffi.dll on Windows
+lib = C.CDLL("/path/to/libscarletbook_ffi.so.2")  # libscarletbook_ffi.2.dylib on macOS, scarletbook_ffi.dll on Windows
 
 SB_ABI_VERSION = 2  # the SB_ABI_VERSION of the header these bindings follow
 lib.sb_abi_version.argtypes, lib.sb_abi_version.restype = [], C.c_uint32
@@ -960,10 +1004,16 @@ offset)` reads the same fields at the offsets documented in `scarletbook.h`.
 
 ### ABI compatibility
 
+**ABI 2 is the 1.0 ABI** ([#39](https://github.com/aclater/scarletbook-rs/issues/39), owner
+decision of 2026-11-06). 1.0.0 will have `SB_ABI_VERSION` 2, and no ABI 3 is planned: no planned
+work needs an ABI 2 struct to grow, because new data comes through new functions and types. On
+Linux and macOS the shared library is named after this number (see "Linking"), so
+`libscarletbook_ffi.so.2` and `libscarletbook_ffi.2.dylib` are the 1.0 names too.
+
 The ABI is everything `scarletbook.h` declares (functions and their signatures, struct
 layouts, enum names and values, macros) and the behaviour the header documents.
-`SB_ABI_VERSION` in the header, and `sb_abi_version()` in the library, number its breaking
-changes:
+`SB_ABI_VERSION` in the header, `sb_abi_version()` in the library and the number in the shared
+library's name on Linux and macOS all number its breaking changes:
 
 - **Additions keep `SB_ABI_VERSION`**: new functions, new types, new enum values (status
   codes included: treat a status you do not know as a failure) and new macros. A program
@@ -979,13 +1029,14 @@ Releases follow this:
 
 - a **patch** release (`x.y.Z`) does not change the ABI;
 - a **minor** release (`x.Y.0`) may add to it, never break it;
-- only a **major** release (`X.0.0`) may break it, and then increments `SB_ABI_VERSION`.
+- only a **major** release (`X.0.0`) may break it, and then increments `SB_ABI_VERSION` and,
+  with it, the number in the library's name, so libraries of two ABIs can sit side by side.
 
 While the version is `0.y.z`, as in Cargo, the `y` step is the major one and the `z` step
 the minor one, so there are no patch releases before 1.0.
 
 The `-v3` archives of a release carry the same ABI as its baseline archives, at the same
-`SB_ABI_VERSION` and `sb_version()`; they differ only in the instruction set (see
+`SB_ABI_VERSION`, library name and `sb_version()`; they differ only in the instruction set (see
 "Release assets"), which the ABI does not cover. A program can switch between the two
 without rebuilding, but must check the CPU before it loads the `-v3` library.
 
@@ -997,7 +1048,7 @@ that loads the library at run time can look the symbol up instead.
 | `SB_ABI_VERSION` | First release |
 |---|---|
 | 1 | 0.1.0 to 0.3.0 (additions only in 0.3.0) |
-| 2 | 0.4.0 (additions in 0.4.1, 0.5.0, 0.5.1, 0.5.2, 0.5.3 and 0.5.4) |
+| 2 | 0.4.0 (additions in 0.4.1, 0.5.0, 0.5.1, 0.5.2, 0.5.3 and 0.5.4); the 1.0 ABI |
 
 CI enforces this. `crates/scarletbook-ffi/abi/abi-N.txt` is the baseline of ABI version N:
 the header's declarations without comments or layout. `.github/scripts/abi-check.py`

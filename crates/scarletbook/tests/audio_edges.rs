@@ -291,13 +291,13 @@ fn unlogged_continuations_open_alike() {
     while let Some(f) = prev.next_frame(disc.image_mut()) {
         f.unwrap();
     }
-    assert_eq!(index.checkpoints(), 0);
+    assert_eq!(index.checkpoint_count(), 0);
     let cont = disc.range_continuation(SLOT, 10, 30).unwrap();
     assert_eq!(cont.log_frames_indexed(&prev, &index), Opening::FromIndex, "a range behind the cursor");
     let before = lines.lock().unwrap().len();
     let mut next = cont.frames_indexed_unlogged(prev, &mut index);
     assert_eq!(lines.lock().unwrap().len(), before, "no line logged");
-    assert!(index.checkpoints() > 0, "the earlier cursor's checkpoints joined the index");
+    assert!(index.checkpoint_count() > 0, "the earlier cursor's checkpoints joined the index");
     assert!(matches!(next.resumed_from(), ResumedFrom::Checkpoint { .. }), "{:?}", next.resumed_from());
     let mut got = Vec::new();
     while let Some(f) = next.next_frame(disc.image_mut()) {
@@ -480,7 +480,7 @@ fn provisional_checkpoints_serve_without_hints() {
         let c = disc.range_frames_cursor(SLOT, 500, 700).unwrap();
         let (_, c) = read(&mut disc, c);
         assert!(matches!(c.resumed_from(), ResumedFrom::Speculative { probes, .. } if probes > 0));
-        assert_eq!(disc.seek_index(SLOT).unwrap().hints(), 0);
+        assert_eq!(disc.seek_index(SLOT).unwrap().hint_count(), 0);
         let suspect = (cut > 0).then_some(Suspect::AreaLayout);
         for first in [560, 620, 690] {
             let c = disc.range_frames_cursor(SLOT, first, first + 5).unwrap();
@@ -539,7 +539,7 @@ fn a_foreign_checkpoint_at_l_does_not_confirm() {
     let bytes = a.seek_index(SLOT).unwrap().to_bytes();
     let loaded = AreaIndex::from_bytes(&area, n, &bytes, usize::MAX).unwrap();
     let mut kept = b.take_seek_index(SLOT).unwrap();
-    assert_eq!(kept.pending_claims(), 2);
+    assert_eq!(kept.pending_claim_count(), 2);
     kept.merge(&loaded).unwrap();
     b.set_seek_index(SLOT, kept).unwrap();
     while !b.verify_speculation(SLOT, 1 << 20).unwrap() {}
@@ -619,7 +619,7 @@ fn checkpoints_are_absorbed_from_every_cursor() {
     assert_eq!(frontier(&disc), before);
     let mut index = AreaIndex::new(&area, disc.toc().sectors, IndexOptions::new()).unwrap();
     index.absorb(&mut c).unwrap();
-    assert_eq!(index.checkpoints(), 0);
+    assert_eq!(index.checkpoint_count(), 0);
 }
 
 /// The message of a caught panic.

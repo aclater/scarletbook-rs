@@ -133,17 +133,34 @@ impl std::fmt::Display for Malformed {
 /// ptables' probability tables (8 KiB each), and a 9 KiB copy of each channel's, about
 /// 0.9 MB. A cursor's own decoder, and each pool thread's, holds up to
 /// [`crate::dst::lanes`] lanes of them.
+///
+/// [`TrackAudioCursor::with_dst_lanes`] replaces [`crate::dst::lanes`] throughout this
+/// description, for that cursor; a chosen count of up to [`crate::dst::MAX_LANES`] keeps every
+/// bound above.
+///
+/// Not part of the public API: a tuning value of the `parallel` decoder, not covered by semantic
+/// versioning. It may change or go in any release.
+#[doc(hidden)]
 pub const MAX_PARALLEL_BATCH: usize = 512;
 
 /// Positions held ahead per pool thread with the `parallel` feature (see
 /// [`MAX_PARALLEL_BATCH`]).
+///
+/// Not part of the public API: a tuning value of the `parallel` decoder, not covered by semantic
+/// versioning. It may change or go in any release.
+#[doc(hidden)]
 pub const PARALLEL_FRAMES_PER_THREAD: usize = 16;
 
 /// Where a [`TrackAudioCursor`] decodes its DST frames, with the `parallel` feature
 /// ([`TrackAudioCursor::set_decode_on`]). Whichever is chosen, the frames returned, their
 /// order, counts and log lines are the same; only the threads that decode differ.
+///
+/// By a stated decision (#39), [`DecodeOn::Pool`] makes rayon 1 part of this crate's public
+/// API rather than hiding it behind a wrapper: rayon 1 is stable, and a rayon 2 would need
+/// a new major version of this crate.
 #[cfg(feature = "parallel")]
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub enum DecodeOn {
     /// The rayon pool current at each call: the pool of the calling thread if it is one of
     /// a pool's threads (inside [`rayon::ThreadPool::install`]), rayon's global pool
@@ -172,6 +189,9 @@ pub enum DecodeOn {
 pub const FRAMES_PER_SECTOR: u64 = 7;
 
 /// How a frame is coded, fixed by the DST flag of the sector it starts in.
+///
+/// Frozen: exhaustive on purpose, so a `match` needs no wildcard arm. The DST flag is one bit
+/// of the sector header (specification 4, 4.3.1), so there are exactly two kinds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum FrameKind {
     /// DST-coded (specification 5).
@@ -182,6 +202,7 @@ pub enum FrameKind {
 
 /// A frame accepted onto an area's timeline (specification 4, 4.5).
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct AreaFrame {
     /// Its frame number (timeline position).
     pub number: u32,
@@ -1093,9 +1114,9 @@ impl AreaCursor {
     /// Number of malformed sectors processed so far by this cursor's scan of its area. The
     /// scan starts at the area's first audio sector, not at the track, and a continued
     /// cursor keeps counting from where the earlier tracks left off.
-    /// Track cursors read ahead of the frames they return (a group of
-    /// [`crate::dst::lanes`] frames, or with `parallel` up to [`MAX_PARALLEL_BATCH`]
-    /// positions), so this may count sectors of frames not yet returned.
+    /// Track cursors read ahead of the frames they return (a group of a few frames,
+    /// or with `parallel` a window of bounded size), so this may count sectors of frames
+    /// not yet returned.
     pub fn malformed_sectors(&self) -> u64 {
         // A cursor started from a seek index holds the counts of the sectors before its
         // checkpoint, which a scan from the first sector reports only once it has read.
@@ -1370,9 +1391,9 @@ impl<'a, R: Read + Seek> AreaFrames<'a, R> {
     /// Number of malformed sectors processed so far by this cursor's scan of its area. The
     /// scan starts at the area's first audio sector, not at the track, and a continued
     /// cursor keeps counting from where the earlier tracks left off.
-    /// Track cursors read ahead of the frames they return (a group of
-    /// [`crate::dst::lanes`] frames, or with `parallel` up to [`MAX_PARALLEL_BATCH`]
-    /// positions), so this may count sectors of frames not yet returned.
+    /// Track cursors read ahead of the frames they return (a group of a few frames,
+    /// or with `parallel` a window of bounded size), so this may count sectors of frames
+    /// not yet returned.
     pub fn malformed_sectors(&self) -> u64 {
         self.cursor.malformed_sectors()
     }
@@ -1480,6 +1501,10 @@ pub fn track_range_with_pause(area: &Area, number: u32) -> Option<(u32, u32)> {
 }
 
 /// How a continuation opens its range ([`Continuation::log_audio`]).
+///
+/// Not part of the public API: plumbing of the C interface, not covered by semantic
+/// versioning. It may change or go in any release.
+#[doc(hidden)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Opening {
@@ -1563,7 +1588,7 @@ impl<'a> Continuation<'a> {
 
     /// `prev` continued into this range (see [`TrackAudioCursor::continue_to_range`]),
     /// or a fresh cursor when its state cannot be reused, or a start from the disc's seek
-    /// index. Logs the opening first ([`Continuation::log_audio`]).
+    /// index. Logs the opening first.
     pub fn audio(self, prev: TrackAudioCursor) -> TrackAudioCursor {
         let opening = self.log_audio(&prev);
         self.audio_as(prev, opening)
@@ -1572,6 +1597,10 @@ impl<'a> Continuation<'a> {
     /// How this range's audio opens from `prev`, decided once: logged (at
     /// [`Level::Info`]) and returned, for [`Continuation::audio_as`] to open it so.
     /// [`Continuation::audio`] does both.
+    ///
+    /// Not part of the public API: plumbing of the C interface, not covered by semantic
+    /// versioning. It may change or go in any release.
+    #[doc(hidden)]
     pub fn log_audio(&self, prev: &TrackAudioCursor) -> Opening {
         let opening = self.with_index(|index| {
             prev.opening(self.area, self.first, (self.image_sectors, self.image_id), index)
@@ -1585,6 +1614,10 @@ impl<'a> Continuation<'a> {
     /// callbacks could otherwise reach a handle being consumed); it calls
     /// [`Continuation::log_audio`] first, while `prev` is still guarded, then
     /// [`Continuation::audio_as`] with its answer.
+    ///
+    /// Not part of the public API: plumbing of the C interface, not covered by semantic
+    /// versioning. It may change or go in any release.
+    #[doc(hidden)]
     pub fn audio_unlogged(self, prev: TrackAudioCursor) -> TrackAudioCursor {
         let opening = self.with_index(|index| {
             prev.opening(self.area, self.first, (self.image_sectors, self.image_id), index)
@@ -1595,6 +1628,10 @@ impl<'a> Continuation<'a> {
     /// Opens this range's audio from `prev` as `opening` says (from
     /// [`Continuation::log_audio`]), so that the log and the cursor agree; first takes
     /// what `prev` recorded into the disc's index. No log sink runs.
+    ///
+    /// Not part of the public API: plumbing of the C interface, not covered by semantic
+    /// versioning. It may change or go in any release.
+    #[doc(hidden)]
     pub fn audio_as(self, mut prev: TrackAudioCursor, opening: Opening) -> TrackAudioCursor {
         self.absorb(&mut prev.frames.area);
         self.with_index(|index| {
@@ -1620,6 +1657,10 @@ impl<'a> Continuation<'a> {
     }
 
     /// How this range's frames open from `prev` (see [`Continuation::log_audio`]).
+    ///
+    /// Not part of the public API: plumbing of the C interface, not covered by semantic
+    /// versioning. It may change or go in any release.
+    #[doc(hidden)]
     pub fn log_frames(&self, prev: &TrackCursor) -> Opening {
         let opening = self.with_index(|index| {
             prev.opening(self.area, self.first, self.image_sectors, self.image_id, index)
@@ -1629,6 +1670,10 @@ impl<'a> Continuation<'a> {
     }
 
     /// [`Continuation::frames`] without logging (see [`Continuation::audio_unlogged`]).
+    ///
+    /// Not part of the public API: plumbing of the C interface, not covered by semantic
+    /// versioning. It may change or go in any release.
+    #[doc(hidden)]
     pub fn frames_unlogged(self, prev: TrackCursor) -> TrackCursor {
         let opening = self.with_index(|index| {
             prev.opening(self.area, self.first, self.image_sectors, self.image_id, index)
@@ -1638,6 +1683,10 @@ impl<'a> Continuation<'a> {
 
     /// Opens this range's frames from `prev` as `opening` says (see
     /// [`Continuation::audio_as`]).
+    ///
+    /// Not part of the public API: plumbing of the C interface, not covered by semantic
+    /// versioning. It may change or go in any release.
+    #[doc(hidden)]
     pub fn frames_as(self, mut prev: TrackCursor, opening: Opening) -> TrackCursor {
         self.absorb(&mut prev.area);
         self.with_index(|index| {
@@ -1661,12 +1710,20 @@ impl<'a> Continuation<'a> {
     /// # Errors
     ///
     /// [`Error::InvalidArgument`] if it is not.
+    ///
+    /// Not part of the public API: plumbing of the C interface, not covered by semantic
+    /// versioning. It may change or go in any release.
+    #[doc(hidden)]
     pub fn check_index(&self, index: &AreaIndex) -> Result<(), Error> {
         index.check_key(self.area, self.image_sectors)
     }
 
     /// How this range's audio opens from `prev` with the caller's seek `index` in place of
     /// the disc's: logged and returned, for [`Continuation::audio_indexed_as`].
+    ///
+    /// Not part of the public API: plumbing of the C interface, not covered by semantic
+    /// versioning. It may change or go in any release.
+    #[doc(hidden)]
     pub fn log_audio_indexed(&self, prev: &TrackAudioCursor, index: &AreaIndex) -> Opening {
         let index = Some(index).filter(|i| self.check_index(i).is_ok());
         let opening = prev.opening(self.area, self.first, (self.image_sectors, self.image_id), index);
@@ -1678,6 +1735,10 @@ impl<'a> Continuation<'a> {
     /// area, [`Continuation::check_index`]) in place of the disc's: first takes what
     /// `prev` recorded into it, then continues `prev` or starts from it. An index of
     /// another area is not used.
+    ///
+    /// Not part of the public API: plumbing of the C interface, not covered by semantic
+    /// versioning. It may change or go in any release.
+    #[doc(hidden)]
     pub fn audio_indexed_unlogged(self, prev: TrackAudioCursor, index: &mut AreaIndex) -> TrackAudioCursor {
         let opening = {
             let index = Some(&*index).filter(|i| self.check_index(i).is_ok());
@@ -1687,6 +1748,10 @@ impl<'a> Continuation<'a> {
     }
 
     /// [`Continuation::audio_as`] with the caller's seek `index`.
+    ///
+    /// Not part of the public API: plumbing of the C interface, not covered by semantic
+    /// versioning. It may change or go in any release.
+    #[doc(hidden)]
     pub fn audio_indexed_as(
         self,
         mut prev: TrackAudioCursor,
@@ -1706,6 +1771,10 @@ impl<'a> Continuation<'a> {
 
     /// How this range's frames open from `prev` with the caller's `index` (see
     /// [`Continuation::log_audio_indexed`]).
+    ///
+    /// Not part of the public API: plumbing of the C interface, not covered by semantic
+    /// versioning. It may change or go in any release.
+    #[doc(hidden)]
     pub fn log_frames_indexed(&self, prev: &TrackCursor, index: &AreaIndex) -> Opening {
         let index = Some(index).filter(|i| self.check_index(i).is_ok());
         let opening = prev.opening(self.area, self.first, self.image_sectors, self.image_id, index);
@@ -1715,6 +1784,10 @@ impl<'a> Continuation<'a> {
 
     /// [`Continuation::frames_unlogged`] with the caller's seek `index` (see
     /// [`Continuation::audio_indexed_unlogged`]).
+    ///
+    /// Not part of the public API: plumbing of the C interface, not covered by semantic
+    /// versioning. It may change or go in any release.
+    #[doc(hidden)]
     pub fn frames_indexed_unlogged(self, prev: TrackCursor, index: &mut AreaIndex) -> TrackCursor {
         let opening = {
             let index = Some(&*index).filter(|i| self.check_index(i).is_ok());
@@ -1724,6 +1797,10 @@ impl<'a> Continuation<'a> {
     }
 
     /// [`Continuation::frames_as`] with the caller's seek `index`.
+    ///
+    /// Not part of the public API: plumbing of the C interface, not covered by semantic
+    /// versioning. It may change or go in any release.
+    #[doc(hidden)]
     pub fn frames_indexed_as(
         self,
         mut prev: TrackCursor,
@@ -1743,12 +1820,20 @@ impl<'a> Continuation<'a> {
 
     /// Logs (at [`Level::Info`]) the opening of this range's frames on a new scan, as
     /// [`Continuation::fresh_frames`] does not.
+    ///
+    /// Not part of the public API: plumbing of the C interface, not covered by semantic
+    /// versioning. It may change or go in any release.
+    #[doc(hidden)]
     pub fn log_fresh_frames(&self) {
         self.log_how("frames", Opening::Fresh);
     }
 
     /// A fresh cursor of this range's positions (see [`TrackCursor::for_range`]), without
     /// logging (see [`Continuation::log_fresh_frames`]).
+    ///
+    /// Not part of the public API: plumbing of the C interface, not covered by semantic
+    /// versioning. It may change or go in any release.
+    #[doc(hidden)]
     pub fn fresh_frames(self) -> TrackCursor {
         self.seek.read(self.area.slot, |index| {
             let index = index.filter(|i| i.check_key(self.area, self.image_sectors).is_ok());
@@ -1783,6 +1868,10 @@ pub(crate) fn log_open(
 }
 
 /// What a timeline position holds (specification 4, 4.6), before DST decoding.
+///
+/// Frozen: exhaustive on purpose, so a `match` needs no wildcard arm. A position's stored
+/// content is a DST frame, a plain frame or none (specification 4, 4.6.1 item 1), and a frame
+/// is one [`FrameKind`] or the other.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FrameContent {
     /// A plain DSD frame: `C x 4704` bytes in interleaved layout, used unchanged.
@@ -1836,11 +1925,29 @@ impl FrameContent {
 
 /// One timeline position of a track or frame range.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct TrackFrame {
     /// The frame number.
     pub number: u32,
     /// Its content.
     pub content: FrameContent,
+}
+
+impl TrackFrame {
+    /// A timeline position holding `content`, for a caller that decodes frames it saved
+    /// ([`decode_frame`]).
+    ///
+    /// ```
+    /// use scarletbook::{DstDecoder, FrameContent, FrameStatus, TrackFrame, audio::decode_frame};
+    ///
+    /// let frame = TrackFrame::new(7, FrameContent::Missing);
+    /// let audio = decode_frame(&mut DstDecoder::new(), frame, 2).unwrap();
+    /// assert_eq!((audio.number, audio.status), (7, FrameStatus::Missing));
+    /// assert_eq!(audio.data, vec![0x69; 2 * 4704]);
+    /// ```
+    pub fn new(number: u32, content: FrameContent) -> Self {
+        TrackFrame { number, content }
+    }
 }
 
 /// The reading state of one track's timeline positions (specification 4, 4.7),
@@ -2345,9 +2452,9 @@ impl TrackCursor {
     /// Number of malformed sectors processed so far by this cursor's scan of its area. The
     /// scan starts at the area's first audio sector, not at the track, and a continued
     /// cursor keeps counting from where the earlier tracks left off.
-    /// Track cursors read ahead of the frames they return (a group of
-    /// [`crate::dst::lanes`] frames, or with `parallel` up to [`MAX_PARALLEL_BATCH`]
-    /// positions), so this may count sectors of frames not yet returned.
+    /// Track cursors read ahead of the frames they return (a group of a few frames,
+    /// or with `parallel` a window of bounded size), so this may count sectors of frames
+    /// not yet returned.
     pub fn malformed_sectors(&self) -> u64 {
         self.area.malformed_sectors()
     }
@@ -2466,9 +2573,9 @@ impl<'a, R: Read + Seek> TrackFrames<'a, R> {
     /// Number of malformed sectors processed so far by this cursor's scan of its area. The
     /// scan starts at the area's first audio sector, not at the track, and a continued
     /// cursor keeps counting from where the earlier tracks left off.
-    /// Track cursors read ahead of the frames they return (a group of
-    /// [`crate::dst::lanes`] frames, or with `parallel` up to [`MAX_PARALLEL_BATCH`]
-    /// positions), so this may count sectors of frames not yet returned.
+    /// Track cursors read ahead of the frames they return (a group of a few frames,
+    /// or with `parallel` a window of bounded size), so this may count sectors of frames
+    /// not yet returned.
     pub fn malformed_sectors(&self) -> u64 {
         self.cursor.malformed_sectors()
     }
@@ -2532,6 +2639,7 @@ impl<R: Read + Seek> Iterator for TrackFrames<'_, R> {
 
 /// How a decoded timeline position was produced (specification 4, 4.6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum FrameStatus {
     /// A plain DSD frame, passed through unchanged.
     Dsd,
@@ -2545,6 +2653,7 @@ pub enum FrameStatus {
 
 /// One decoded timeline position: `C x 4704` bytes in interleaved layout.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct AudioFrame {
     /// The frame number.
     pub number: u32,
@@ -2658,6 +2767,9 @@ fn decode_dst_run(
 /// A position's stored content (specification 4, 4.6.1 item 2) next to its decoded audio
 /// ([`TrackAudioCursor::next_frame_with_stored`]): what [`TrackCursor::next_frame`] gives
 /// for it, without a second copy of a plain frame.
+///
+/// Frozen: exhaustive on purpose, so a `match` needs no wildcard arm, for the reason given at
+/// [`FrameContent`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stored {
     /// A DST frame's bytes as stored (its decoding is the [`AudioFrame`]'s data).
@@ -2707,7 +2819,8 @@ impl Stored {
 ///
 /// With the `parallel` feature, DST frames are decoded on a rayon thread pool ahead of
 /// the caller, while the calling thread demultiplexes and consumes; memory stays bounded
-/// (see [`MAX_PARALLEL_BATCH`]). The pool is the current one unless
+/// (a cursor holds at most about 48 MB of frames ahead, whatever the host, plus its decoder
+/// tables and read buffer). The pool is the current one unless
 /// [`TrackAudioCursor::set_decode_on`] says otherwise.
 #[derive(Debug)]
 pub struct TrackAudioCursor {
@@ -2715,6 +2828,9 @@ pub struct TrackAudioCursor {
     /// Where DST frames are decoded; kept by continuations.
     #[cfg(feature = "parallel")]
     decode_on: DecodeOn,
+    /// How many DST frames to decode together, if chosen
+    /// ([`TrackAudioCursor::with_dst_lanes`]); kept by continuations.
+    dst_lanes: Option<usize>,
     /// Decodes on the calling thread: always without `parallel`; with it, the positions
     /// that are not DST frames, and everything on a pool of one thread.
     decoder: DstDecoder,
@@ -2858,8 +2974,8 @@ impl TrackAudioCursor {
     /// A cursor at the start of `track`, continuing this one's reading state where that
     /// gives the same result (see [`TrackCursor::continue_to`]). Frames of this cursor
     /// not yet returned are dropped; the counts start again at 0. With `parallel`, DST
-    /// frames of this cursor still queued on the pool are then not decoded (see
-    /// [`MAX_PARALLEL_BATCH`] for the frames being decoded at that moment).
+    /// frames of this cursor still queued on the pool are then not decoded (frames being
+    /// decoded at that moment run to their end, and are then freed).
     ///
     /// # Errors
     ///
@@ -2939,6 +3055,7 @@ impl TrackAudioCursor {
         {
             next.decode_on = self.decode_on;
         }
+        next.dst_lanes = self.dst_lanes;
         next.stored = self.stored.map(|_| VecDeque::new());
         next
     }
@@ -2948,6 +3065,7 @@ impl TrackAudioCursor {
             frames,
             #[cfg(feature = "parallel")]
             decode_on: DecodeOn::default(),
+            dst_lanes: None,
             decoder: DstDecoder::new(),
             ahead: VecDeque::new(),
             ready: VecDeque::new(),
@@ -2978,9 +3096,9 @@ impl TrackAudioCursor {
     /// Number of malformed sectors processed so far by this cursor's scan of its area. The
     /// scan starts at the area's first audio sector, not at the track, and a continued
     /// cursor keeps counting from where the earlier tracks left off.
-    /// Track cursors read ahead of the frames they return (a group of
-    /// [`crate::dst::lanes`] frames, or with `parallel` up to [`MAX_PARALLEL_BATCH`]
-    /// positions), so this may count sectors of frames not yet returned.
+    /// Track cursors read ahead of the frames they return (a group of a few frames,
+    /// or with `parallel` a window of bounded size), so this may count sectors of frames
+    /// not yet returned.
     pub fn malformed_sectors(&self) -> u64 {
         self.frames.malformed_sectors()
     }
@@ -3012,11 +3130,46 @@ impl TrackAudioCursor {
         self.decode_on = on;
     }
 
+    /// This cursor, decoding `lanes` DST frames together on each thread
+    /// ([`crate::dst::DstDecoder::decode_many`]) instead of the [`crate::dst::lanes`] for
+    /// its channel count, on the calling thread and on a pool alike; continuations
+    /// ([`TrackAudioCursor::continue_to`] and the like) keep the choice.
+    ///
+    /// It changes speed and memory only: the frames returned, their order, counts and
+    /// `Warn` log lines are the same for every value, whenever this is called. Positions
+    /// are read ahead in groups of this size too (see [`MAX_PARALLEL_BATCH`]), and the
+    /// `Trace` lines naming each group follow it. This is for measuring: which count is
+    /// fastest depends on the processor and the pool. Without this call the cursor uses
+    /// [`crate::dst::lanes`], whose values are tuning: the default can change in any release,
+    /// per build and per CPU, while a count chosen here stays as chosen.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::DstLanesInvalid`] unless `lanes` is from 1 to [`crate::dst::MAX_LANES`]; the
+    /// cursor is dropped with the call.
+    pub fn with_dst_lanes(mut self, lanes: usize) -> Result<Self, Error> {
+        if !(1..=crate::dst::MAX_LANES).contains(&lanes) {
+            return Err(Error::DstLanesInvalid { lanes });
+        }
+        self.dst_lanes = Some(lanes);
+        Ok(self)
+    }
+
+    /// The count chosen with [`TrackAudioCursor::with_dst_lanes`], if any.
+    pub fn dst_lanes(&self) -> Option<usize> {
+        self.dst_lanes
+    }
+
+    /// How many frames of `channels` channels to decode together.
+    fn group(&self, channels: u8) -> usize {
+        self.dst_lanes.unwrap_or_else(|| crate::dst::lanes(channels))
+    }
+
     /// Most positions held ahead of the caller, the one being returned included: one group
     /// of frames decoded together on the calling thread (see [`MAX_PARALLEL_BATCH`]) or,
     /// with `parallel` on a pool of more than one thread, many.
     fn window(&self, channels: u8) -> usize {
-        let group = crate::dst::lanes(channels);
+        let group = self.group(channels);
         #[cfg(feature = "parallel")]
         {
             let threads = match &self.decode_on {
@@ -3046,7 +3199,7 @@ impl TrackAudioCursor {
     fn fill<R: Read + Seek>(&mut self, image: &mut Image<R>) -> bool {
         let channels = self.channels();
         let window = self.window(channels);
-        let group = crate::dst::lanes(channels);
+        let group = self.group(channels);
         let held = self.ahead.len() + self.ready.len();
         if self.pending_error.is_some() || (held > 0 && held + group > window) {
             return false;
@@ -3224,7 +3377,8 @@ impl TrackAudioCursor {
                     if matches!(f.content, FrameContent::Dst(_)) {
                         // This frame and the DST frames waiting behind it, together.
                         let mut run = vec![f];
-                        while run.len() < crate::dst::lanes(channels) {
+                        let group = self.group(channels);
+                        while run.len() < group {
                             match self.ahead.front() {
                                 Some(Pending::Here(TrackFrame { content: FrameContent::Dst(_), .. })) => {
                                     if let Some(Pending::Here(g)) = self.ahead.pop_front() {
@@ -3509,9 +3663,9 @@ impl<'a, R: Read + Seek> TrackAudio<'a, R> {
     /// Number of malformed sectors processed so far by this cursor's scan of its area. The
     /// scan starts at the area's first audio sector, not at the track, and a continued
     /// cursor keeps counting from where the earlier tracks left off.
-    /// Track cursors read ahead of the frames they return (a group of
-    /// [`crate::dst::lanes`] frames, or with `parallel` up to [`MAX_PARALLEL_BATCH`]
-    /// positions), so this may count sectors of frames not yet returned.
+    /// Track cursors read ahead of the frames they return (a group of a few frames,
+    /// or with `parallel` a window of bounded size), so this may count sectors of frames
+    /// not yet returned.
     pub fn malformed_sectors(&self) -> u64 {
         self.cursor.malformed_sectors()
     }
