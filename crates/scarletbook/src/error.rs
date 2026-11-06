@@ -329,6 +329,7 @@ impl fmt::Display for WarningCode {
 
 /// A warning: a code with the slot, track and LSN it concerns, where they apply.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct Warning {
     /// The diagnostic code.
     pub code: WarningCode,

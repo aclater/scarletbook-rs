@@ -84,7 +84,26 @@ text.title = Some(title);
 `error::Warning`, `audio::AreaFrame`, `TrackFrame` and `AudioFrame`, and the new
 `TrackFrame::new`.
 
-Not written yet.
+#### `TrackFrame` is built with `TrackFrame::new`, and patterns need `..` (#301)
+
+Changed in 0.6.0, with no deprecation first. This affects code outside the crate that uses struct
+patterns or struct literals on `Warning`, `AreaFrame`, `TrackFrame` or `AudioFrame`. Reading a field
+works as before. Only `TrackFrame` has a constructor, for frames a program saved and hands to
+`audio::decode_frame`; the library alone produces the other three.
+
+Before:
+
+```rust
+let frame = TrackFrame { number, content: FrameContent::Dst(saved) };
+let AudioFrame { number, status, data } = decode_frame(&mut decoder, frame, channels)?;
+```
+
+After:
+
+```rust
+let frame = TrackFrame::new(number, FrameContent::Dst(saved));
+let AudioFrame { number, status, data, .. } = decode_frame(&mut decoder, frame, channels)?;
+```
 
 ### M3. Enum variants with fields are `#[non_exhaustive]`
 
