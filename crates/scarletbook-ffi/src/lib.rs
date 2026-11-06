@@ -938,6 +938,8 @@ fn layout_value(a: &Area) -> u32 {
         LoudspeakerLayout::ThreeTwo => SB_LAYOUT_THREE_TWO,
         LoudspeakerLayout::FivePointOne => SB_LAYOUT_FIVE_POINT_ONE,
         LoudspeakerLayout::Unspecified { .. } => SB_LAYOUT_UNSPECIFIED,
+        // A layout this interface has no value for yet has none it can name.
+        _ => SB_LAYOUT_UNSPECIFIED,
     }
 }
 
@@ -952,6 +954,8 @@ fn speaker_value(a: &Area, index: usize) -> u32 {
         Some(Speaker::LowFrequencyEffects) => SB_SPEAKER_LOW_FREQUENCY_EFFECTS,
         Some(Speaker::SurroundLeft) => SB_SPEAKER_SURROUND_LEFT,
         Some(Speaker::SurroundRight) => SB_SPEAKER_SURROUND_RIGHT,
+        // A loudspeaker this interface has no value for yet.
+        Some(_) => SB_SPEAKER_UNSPECIFIED,
     }
 }
 
@@ -2843,6 +2847,8 @@ fn decoded_info(frame: &AudioFrame, size: usize) -> SbFrameInfo {
         FrameStatus::Decoded => (SbFrameStatus::Decoded, 0),
         FrameStatus::Missing => (SbFrameStatus::Missing, 0),
         FrameStatus::Invalid(e) => (SbFrameStatus::Invalid, u32::from(e.rule())),
+        // An outcome this interface does not know yet is never reported as good audio.
+        _ => (SbFrameStatus::Invalid, 0),
     };
     // At most size = channels x 4704, so it fits.
     let n = frame.data.len().min(size);
