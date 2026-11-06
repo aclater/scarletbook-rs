@@ -141,7 +141,8 @@ cargo test --workspace --all-features
 
 If you changed `scarletbook` or `scarletbook-ffi`, also run Miri
 (`cargo +nightly miri test -p scarletbook -p scarletbook-ffi`), and if you changed
-dependencies, `cargo deny check`. The minimum supported Rust version is 1.85.
+dependencies, `cargo deny check`. The minimum supported Rust version is 1.85; the README's
+"Stability" section says when it can rise.
 
 If you changed `scarletbook-ffi`, CI's `lsan` job checks it for memory leaks with
 LeakSanitizer (#238): every handle and buffer the C interface hands out must be released by

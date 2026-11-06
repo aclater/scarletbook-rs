@@ -1470,6 +1470,12 @@ pub fn decode(frame: &[u8], channels: u8, out: &mut [u8]) -> Result<(), DstError
 mod tests {
     use super::*;
 
+    /// A new decoder runs with the detected instruction set, not the generic one.
+    #[test]
+    fn new_decoder_uses_the_detected_isa() {
+        assert_eq!(DstDecoder::new().isa, Isa::detect());
+    }
+
     #[test]
     fn bitlen_examples() {
         assert_eq!([0, 1, 2, 3, 4, 7, 4576].map(bitlen), [0, 1, 2, 2, 3, 3, 13]);

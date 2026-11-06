@@ -29,22 +29,36 @@ and time under `lennon.sh bench`):
 
 ```sh
 benchmarks/compare.sh build ../cmp 3eb96dc v0.5.6   # git revisions or source directories
-benchmarks/compare.sh run ../cmp > table.md         # about 20 minutes on lennon, about 8.3 GB of images
+benchmarks/compare.sh run ../cmp > table.md         # about 20 minutes on the Zen 2 benchmark host, about 8.6 GB of images
 ```
 
 `compare.sh run` passes extra options to `run.py`, for example `--case dst-decode-2ch-t1`.
+
+## Correction, 2026-11-05: what the lock excluded
+
+Every figure in this file from the Zen 2 benchmark host taken before 2026-11-05 was timed under a lock that excluded only
+this project's own work, not other users' timed runs on the machine. So those runs were exposed to
+other users' load. Whether any such run actually overlapped is not known. Alternating runs and
+per-round ratios should still hold, since both builds of a round saw the same conditions, but that has
+not been tested. **Absolute seconds, and above all the slowest-frame and slowest-window figures of
+`bench realtime`, should be read with this in mind.** From 2026-11-05, timing runs go inside the
+machine's shared `benchlock`, and idle fuzzing pauses whenever any `benchlock` process exists (#259).
 
 ## Not measured
 
 Not in the run list yet, so not in these tables:
 
-- **TOC open** (open to parsed TOC, page cache and evicted): `bench` has no command for it.
-  The criterion benchmark `toc_read` measures it in development builds.
-- **First 128 KiB** of a track (seek), page cache and evicted: no `bench` command.
-- **Cold runs** (image evicted from the page cache) of any case.
+- **Cold runs** (image evicted from the page cache) of the whole-area cases.
+- **The first 128 KiB** of 5 or 6 channels, or without a complete seek index.
 - **The C interface:** `bench` calls the Rust API.
 - **DSD to PCM from an image** (`callpattern` converts generated DSD in memory) and DST areas
   to PCM.
+
+In the run list, but not in every table:
+
+- **TOC open** and the **first 128 KiB** of a track, stereo, through a complete seek index: from
+  `bench open` and `bench first` (#224), so for versions from 0.5.9. Earlier sections do not have
+  them.
 - Released versions before 0.5.6 have no `bench dsf` and no `callpattern`, so their cells for
   DSF and DSD to PCM are blank, unless an equivalent revision is compared instead (0.5.6
   below uses `3eb96dc` for 0.5.5).
