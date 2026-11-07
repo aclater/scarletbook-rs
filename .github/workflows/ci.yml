@@ -134,6 +134,10 @@ jobs:
       - run: cargo doc --workspace --no-deps --all-features --locked
         env:
           RUSTDOCFLAGS: -D warnings
+      # Without default features too: links to items behind a feature fail only there.
+      - run: cargo doc --workspace --no-deps --no-default-features --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
       # The licences must ship inside the published crate (issue #48); its copies must match
       # the repository's.
       - name: The published packages carry the licences and README

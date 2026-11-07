@@ -2900,7 +2900,7 @@ impl Stored {
 /// the caller, while the calling thread demultiplexes and consumes; memory stays bounded
 /// (a cursor holds at most about 48 MB of frames ahead, whatever the host, plus its decoder
 /// tables and read buffer). The pool is the current one unless
-/// [`TrackAudioCursor::set_decode_on`] says otherwise.
+/// `TrackAudioCursor::set_decode_on` (also from the `parallel` feature) says otherwise.
 #[derive(Debug)]
 pub struct TrackAudioCursor {
     frames: TrackCursor,
@@ -3395,7 +3395,7 @@ impl TrackAudioCursor {
     /// [`TrackAudioCursor::next_frame_with_stored`]: from one read of the area's sectors,
     /// both what [`TrackCursor::next_frame`] gives (as stored, DST frames undecoded) and
     /// what [`TrackAudioCursor::next_frame`] gives, decoded where the cursor decodes
-    /// ([`TrackAudioCursor::set_decode_on`]) with the same positions held ahead. A DST
+    /// (`TrackAudioCursor::set_decode_on`, with the `parallel` feature) with the same positions held ahead. A DST
     /// frame's bytes are copied (at most [`MAX_FRAME_BYTES`]) before it goes to its
     /// decoding. Continuations keep the choice.
     ///
