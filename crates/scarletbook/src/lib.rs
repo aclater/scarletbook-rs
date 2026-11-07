@@ -56,6 +56,18 @@
 //! provisional readings, the charset tables, built once on first use, and with `parallel`,
 //! a decoder cached on each thread that decodes. With `parallel`, a cursor not given a pool
 //! of its own (`DecodeOn`) uses rayon's current pool, by default its global one.
+//!
+//! **Stack.** Calls may use up to 68 KiB of the calling thread's stack (measured on x86-64
+//! Linux in release builds; `Layout::read_at` of the `output` module, over a DST area on a
+//! CPU with AVX2, is the deepest), and the reader, [`ReadAt`] source or [`Log`](log::Log)
+//! sink they call runs on top of that: give threads that call this crate at least 136 KiB. The
+//! threads that decode with `parallel` use about 20 KiB of the 2 MiB that rayon gives them
+//! (Rust's default, or `RUST_MIN_STACK`). Unoptimised builds of this crate need far more:
+//! on a CPU with AVX2, decoding a DST frame then takes about 2.1 MiB and `Layout::read_at`
+//! about 2.5 MiB, more than the 2 MiB of a new Rust thread, so a debug build that decodes
+//! on rayon's threads overflows their stacks. Build this crate optimised in the
+//! debug profile (`[profile.dev.package.scarletbook] opt-level = 2`, as this repository
+//! does), or set `RUST_MIN_STACK`.
 
 // `unsafe` is denied everywhere except in `dispatch`, which calls the AVX2 build of the
 // DST decoder and of the output path after checking for its features (CONTRIBUTING).

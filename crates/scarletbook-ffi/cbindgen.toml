@@ -73,6 +73,12 @@ header = """/* SPDX-License-Identifier: MIT OR Apache-2.0 */
  *   numbers), and, on each pool thread, a DST
  *   decoder reused from frame to frame (a cache, not shared between threads).
  *
+ * - Stack. Calls may use up to 68 KiB of the calling thread's stack (measured on x86-64
+ *   Linux; sb_output_layout_read on a CPU with AVX2 is the deepest), and the callbacks
+ *   they make run on top of that: give threads that call the library at least 136 KiB,
+ *   more than musl's default of 128 KiB. The pool threads the library starts
+ *   (sb_pool_new, rayon's global pool) get Rust's default of 2 MiB and use about 20 KiB.
+ *
  * - Callbacks and re-entrancy. While a disc's callback runs, that disc and its track
  *   and raw frames handles are in use: calling into this library with them from the
  *   callback returns SB_STATUS_INVALID_ARGUMENT, and their _free functions do
