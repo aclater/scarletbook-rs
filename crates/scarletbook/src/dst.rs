@@ -557,9 +557,14 @@ impl DstDecoder {
                         (0..=4, false) => run::<$k, $n, 4>(&mut runs, bytes),
                         (5..=8, false) => run::<$k, $n, 8>(&mut runs, bytes),
                         (_, false) => run::<$k, $n, 16>(&mut runs, bytes),
-                        (0..=4, true) => run_inline::<$k, $n, 4>(&mut runs, bytes),
-                        (5..=8, true) => run_inline::<$k, $n, 8>(&mut runs, bytes),
-                        (_, true) => run_inline::<$k, $n, 16>(&mut runs, bytes),
+                        // One copy for every `used` where the byte is unrolled (see
+                        // `run_inline`).
+                        (_, true) if const { $k * $n <= UNROLL_BYTE } => {
+                            run_inline::<$k, $n>(&mut runs, bytes, used)
+                        }
+                        (0..=4, true) => run_inline::<$k, $n>(&mut runs, bytes, 4),
+                        (5..=8, true) => run_inline::<$k, $n>(&mut runs, bytes, 8),
+                        (_, true) => run_inline::<$k, $n>(&mut runs, bytes, 16),
                     }
                 };
             }
@@ -1044,9 +1049,21 @@ fn rows<const NCH: usize, const U: usize, const FROM: usize>(
     ch: usize,
 ) -> Row {
     let mut sum = [0i16; 8];
+    add_rows::<NCH, FROM, FROM, U>(&mut sum, tables, w, ch);
+    sum
+}
+
+/// Adds the rows of tables `LO..HI` (`LO >= FROM`) to `sum`, as [`rows`] sums them.
+#[inline(always)]
+fn add_rows<const NCH: usize, const FROM: usize, const LO: usize, const HI: usize>(
+    sum: &mut Row,
+    tables: &[ByteTable; HISTORY_BYTES],
+    w: &[u8; WINDOW],
+    ch: usize,
+) {
     // A loop over constant bounds, which is unrolled with each byte's position known.
     #[allow(clippy::needless_range_loop)]
-    for d in FROM..U.min(HISTORY_BYTES) {
+    for d in LO..HI.min(HISTORY_BYTES) {
         let byte = w[(HISTORY_BYTES - 1 + FROM - d) * NCH + ch];
         let row = &tables[d][usize::from(byte)];
         for r in 0..8 {
@@ -1055,7 +1072,6 @@ fn rows<const NCH: usize, const U: usize, const FROM: usize>(
             sum[r] = sum[r].wrapping_add(row[r]);
         }
     }
-    sum
 }
 
 /// Most symbols per bit position (frames x channels) for which [`run`] unrolls a whole
@@ -1088,13 +1104,59 @@ struct LaneRun<'r, 'b> {
 /// [`run_inline`] instead.
 #[inline(never)]
 fn run<const K: usize, const NCH: usize, const U: usize>(lanes: &mut [LaneRun<'_, '_>], bytes: usize) {
-    run_inline::<K, NCH, U>(lanes, bytes);
+    run_inline::<K, NCH>(lanes, bytes, U);
 }
 
-/// [`run`], always inlined.
+/// The shares of the first `u` tables (4, 8 or 16; [`rows`]) of every frame and channel of
+/// [`run_inline`], for the byte `FROM` after byte `at` of each frame's chunk. Tables 4 to 7
+/// and 8 to 15 are added only when `u` reaches them, so that one copy serves every `u`;
+/// with `u` a constant, the optimiser drops the tests.
 #[inline(always)]
 #[allow(clippy::needless_range_loop)]
-fn run_inline<const K: usize, const NCH: usize, const U: usize>(lanes: &mut [LaneRun<'_, '_>], bytes: usize) {
+fn shares<const K: usize, const NCH: usize, const FROM: usize>(
+    out: &mut [[Aligned; NCH]; K],
+    lanes: &[LaneRun<'_, '_>; K],
+    tabs: &[[&[ByteTable; HISTORY_BYTES]; NCH]; K],
+    at: usize,
+    u: usize,
+) {
+    let windows: [&[u8; WINDOW]; K] =
+        core::array::from_fn(|l| window(lanes[l].hist, lanes[l].start + at, NCH));
+    for l in 0..K {
+        for ch in 0..NCH {
+            out[l][ch] = Aligned(rows::<NCH, 4, FROM>(tabs[l][ch], windows[l], ch));
+        }
+    }
+    if u > 4 {
+        for l in 0..K {
+            for ch in 0..NCH {
+                add_rows::<NCH, FROM, 4, 8>(&mut out[l][ch].0, tabs[l][ch], windows[l], ch);
+            }
+        }
+    }
+    if u > 8 {
+        for l in 0..K {
+            for ch in 0..NCH {
+                add_rows::<NCH, FROM, 8, 16>(&mut out[l][ch].0, tabs[l][ch], windows[l], ch);
+            }
+        }
+    }
+}
+
+/// [`run`] with the first `u` history bytes (4, 8 or 16), always inlined.
+///
+/// `u` is an argument rather than a const parameter so that [`DstDecoder::group`] can inline
+/// one copy of the symbol loop for all three: without optimisation every inlined copy keeps
+/// its own stack slots, and the 72 copies of `K`, `NCH` and `u` made the frame of each
+/// function that inlines them about 1 MiB, more than half of a new thread's stack (#336).
+/// Only the rows ([`shares`]) then depend on `u`, which they test byte by byte. `group`
+/// passes `u` so where the byte is unrolled (`K x NCH <= UNROLL_BYTE`), whose copies are the
+/// large ones, and elsewhere as a constant, which the optimiser folds: measured on Zen 2
+/// (3950X, #336), with `u` tested in the loop there, 6 channels in 2 frames took about 1 %
+/// longer in the generic build.
+#[inline(always)]
+#[allow(clippy::needless_range_loop)]
+fn run_inline<const K: usize, const NCH: usize>(lanes: &mut [LaneRun<'_, '_>], bytes: usize, u: usize) {
     let Ok(lanes) = <&mut [LaneRun<'_, '_>; K]>::try_from(lanes) else {
         return;
     };
@@ -1105,22 +1167,12 @@ fn run_inline<const K: usize, const NCH: usize, const U: usize>(lanes: &mut [Lan
     // Per frame and channel, the shares of the complete bytes at each bit of the current
     // byte.
     let mut base = [[Aligned([0i16; 8]); NCH]; K];
-    for l in 0..K {
-        let w = window(lanes[l].hist, lanes[l].start, NCH);
-        for ch in 0..NCH {
-            base[l][ch] = Aligned(rows::<NCH, U, 0>(tabs[l][ch], w, ch));
-        }
-    }
+    shares::<K, NCH, 0>(&mut base, lanes, &tabs, 0, u);
     for i in 0..bytes {
         // The shares at the next byte of every complete byte but the newest (which is
         // the current byte).
         let mut rest = [[Aligned([0i16; 8]); NCH]; K];
-        for l in 0..K {
-            let w = window(lanes[l].hist, lanes[l].start + i, NCH);
-            for ch in 0..NCH {
-                rest[l][ch] = Aligned(rows::<NCH, U, 1>(tabs[l][ch], w, ch));
-            }
-        }
+        shares::<K, NCH, 1>(&mut rest, lanes, &tabs, i, u);
         // The bits of the byte so far. The loop that does not unroll the bit position starts
         // them from a marker bit, so that they are the index `2^r | bits` of `Probe::partial`
         // as they stand; 8 shifts move the marker out of the low byte, which is all that is
