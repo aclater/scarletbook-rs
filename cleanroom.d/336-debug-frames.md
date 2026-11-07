@@ -1,0 +1,1 @@
+| 2026-11-07 | smaller unoptimised DST frames (#336, #338) | Own measurement of this crate: frame sizes read from `objdump` disassembly and the emitted LLVM IR of an opt-level 0 build, the smallest working `stack_size` found by bisection, timing on the Zen 2 benchmark host. No new sources consulted. |
