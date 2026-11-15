@@ -427,6 +427,64 @@ fn tag_sources_and_refusals() {
     assert!(!s.is_empty() && TagSet::new().is_empty());
 }
 
+/// A built tag at [`MAX_TAG_BYTES`], header and footer or padding included, is written
+/// and reads back unchanged as a caller's tag; one byte more is refused, as it is as a
+/// caller's tag (#343).
+#[test]
+#[cfg_attr(miri, ignore = "1 MiB tags; id3::tests::fits_counts_header_and_tail checks the sum under Miri")]
+fn built_tag_size_boundary() {
+    let too_large = |r: Result<Option<Vec<u8>>, Error>| {
+        matches!(r, Err(Error::InvalidArgument("the tag is larger than MAX_TAG_BYTES")))
+    };
+    let with_value = |n: usize, id3: &Id3Options| {
+        let mut s = TagSet::new();
+        s.set_custom("d", &"x".repeat(n));
+        OutputOptions::default().with_tags(Tags::Set(s)).with_id3(id3.clone())
+    };
+    let mut d = disc();
+    for id3 in [Id3Options::default(), Id3Options::default().with_footer(false)] {
+        // The tag grows by one byte per byte of the value.
+        let small = tag_with(&with_value(1, &id3)).unwrap().unwrap().len();
+        let at_max = with_value(MAX_TAG_BYTES - small + 1, &id3);
+        let tag = tag_with(&at_max).unwrap().unwrap();
+        assert_eq!(tag.len(), MAX_TAG_BYTES);
+        assert_eq!(parse(&tag).1, id3.footer);
+        assert!(too_large(tag_with(&with_value(MAX_TAG_BYTES - small + 2, &id3))));
+        // The same bytes as a caller's tag.
+        let raw = OutputOptions::default().with_tags(Tags::Raw(tag.clone()));
+        let layout = d.output_layout(Slot::TwoChannel, 0, 1, Format::Dsf, &raw).unwrap();
+        assert_eq!(tag_of(&mut d, &layout).unwrap(), tag);
+        // And a caller's tag one byte larger, its size field stating it.
+        let mut over = tag.clone();
+        let at = if id3.footer { over.len() - 10 } else { over.len() };
+        over.insert(at, 0);
+        let size = over.len() - if id3.footer { 20 } else { 10 };
+        let ss = [
+            (size >> 21) as u8 & 0x7F,
+            (size >> 14) as u8 & 0x7F,
+            (size >> 7) as u8 & 0x7F,
+            size as u8 & 0x7F,
+        ];
+        over[6..10].copy_from_slice(&ss);
+        if id3.footer {
+            let n = over.len();
+            over[n - 4..].copy_from_slice(&ss);
+        }
+        let raw = OutputOptions::default().with_tags(Tags::Raw(over));
+        assert!(matches!(
+            d.output_layout(Slot::TwoChannel, 0, 1, Format::Dsf, &raw),
+            Err(Error::InvalidArgument("not an ID3v2.4 tag of its stated size"))
+        ));
+    }
+    // Without a footer, padding that brings the tag to the maximum, and one byte more.
+    let id3 = Id3Options::default().with_footer(false);
+    let small = tag_with(&with_value(1, &id3)).unwrap().unwrap().len();
+    let padding = u32::try_from(MAX_TAG_BYTES - small).unwrap();
+    let tag = tag_with(&with_value(1, &id3.clone().with_padding(padding))).unwrap().unwrap();
+    assert_eq!((tag.len(), parse(&tag).2), (MAX_TAG_BYTES, padding as usize));
+    assert!(too_large(tag_with(&with_value(1, &id3.with_padding(padding + 1)))));
+}
+
 /// A caller's ID3v2.3 tag of `body.len() + 10` bytes, with flags byte `flags` and the
 /// 28-bit size of 8.2.6 item 4 over the body.
 fn v23(flags: u8, body: &[u8]) -> Vec<u8> {
