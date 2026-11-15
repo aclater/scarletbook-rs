@@ -1149,7 +1149,8 @@ pub extern "C" fn sb_build_info() -> *const c_char {
 }
 
 /// The message of the calling thread's last failed call (empty if the last call
-/// succeeded). Valid until the thread's next call into this library.
+/// succeeded). Valid until the thread's next call into this library. Every `_free`
+/// function overwrites it too, so read it before freeing handles on an error path.
 #[unsafe(no_mangle)]
 pub extern "C" fn sb_last_error_message() -> *const c_char {
     // Empty once the thread's message is destroyed, as for `set_error`.
@@ -2542,7 +2543,9 @@ pub unsafe extern "C" fn sb_track_audio_open(
 ///
 /// Do not pass the address of the variable holding `prev` as `out`
 /// (`sb_track_audio_open_next(d, h, slot, n, &h)`): `*out` is set to NULL before anything
-/// else, so on failure the only pointer to `prev` would be lost. Use a second variable.
+/// else, so on failure the only pointer to `prev`, which the caller still owns, would be
+/// lost and `prev` would leak. Use a second variable. The same holds for every `_open_next`
+/// function.
 ///
 /// # Safety
 ///
