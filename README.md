@@ -611,12 +611,18 @@ scarletbook-ffi-<version>-<target>/   (scarletbook-ffi-<version>-<target>-v3/ fo
 
 ```sh
 sha256sum -c scarletbook-ffi-<version>-<target>.tar.gz.sha256      # macOS: shasum -a 256 -c
-gh attestation verify scarletbook-ffi-<version>-<target>.tar.gz -R aclater/scarletbook-rs
+gh attestation verify scarletbook-ffi-<version>-<target>.tar.gz -R aclater/scarletbook-rs \
+  --signer-workflow aclater/scarletbook-rs/.github/workflows/release.yml \
+  --source-ref refs/tags/v<version>
 ```
 
-The attestation (a signed SLSA build provenance statement naming the workflow run and
-commit that built the file) exists once the repository is public; until then releases are
-published without one.
+The checksum detects a damaged download, not a replaced one: it is neither signed nor
+attested, so whoever could replace the archive could replace its `.sha256` too. The
+attestation (a signed SLSA build provenance statement naming the workflow run and commit
+that built the file) is what shows the file came from this project's release. With
+`--signer-workflow` and `--source-ref`, `gh` accepts only a file built by the release
+workflow from the tag `v<version>`; without them, a file attested by any workflow run in the
+repository would pass. Releases from 0.2.0 carry the attestation.
 
 ### Linking
 
@@ -1209,8 +1215,14 @@ and `bench-<version>-x86_64-linux-znver5.tar.gz` (AMD Zen 5), each with a SHA-25
 build provenance attestation:
 
 ```sh
-gh attestation verify bench-<version>-x86_64-linux.tar.gz -R aclater/scarletbook-rs
+gh attestation verify bench-<version>-x86_64-linux.tar.gz -R aclater/scarletbook-rs \
+  --signer-workflow aclater/scarletbook-rs/.github/workflows/release.yml \
+  --source-ref refs/tags/v<version>
 ```
+
+The checksum detects a damaged download, not a replaced one; the attestation, checked with
+both flags, shows that the release workflow built the file from the tag (see "Verifying a
+download" under "C library").
 
 The release also publishes a benchmark kit for consumers who time scarletbook on their own
 machines (#224, #226): `scarletbook-benchkit-<version>-x86_64-linux.tar.gz` and its
