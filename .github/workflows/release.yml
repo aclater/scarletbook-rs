@@ -33,6 +33,10 @@ name: Release
 # here succeeded. RELEASING.md has the first publish of a crate, which trusted publishing
 # cannot do.
 #
+# `preflight` stops a tag whose commit is not on the default branch or has not passed the
+# branch's required checks (issue #341). The two jobs that sign or publish, `release` and
+# `publish`, run in the environment `release`, which needs the owner's approval.
+#
 # The release notes start with the tag's section of CHANGELOG.md (`## [<version>] - <date>`);
 # the release stops if there is none, so the Unreleased section must be renamed for the
 # version in the commit that is tagged.
@@ -58,14 +62,28 @@ defaults:
     shell: bash
 
 jobs:
-  # Cheap checks first, so that a tag without a matching version or CHANGELOG.md section
-  # stops the release before the nine C library builds.
+  # Cheap checks first, so that a tag on the wrong commit, or without a matching version or
+  # CHANGELOG.md section, stops the release before the nine C library builds.
   preflight:
     runs-on: ubuntu-latest
+    # The source check waits up to 45 minutes for main's checks on a just-merged commit.
+    timeout-minutes: 60
+    permissions:
+      contents: read # checkout, and the compare API for the source check
+      checks: read # the tagged commit's check runs, for the source check
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Issue #341: the tagged commit must be on the default branch and have passed its
+      # required checks. This stops a stray or mistaken tag, not a tag on a commit that edits
+      # this workflow (that commit's copy runs); the `release` environment and the tag
+      # ruleset's creation rule (RELEASING.md, "Repository and crates.io settings") cover that.
+      - name: The tagged commit is on the default branch and passed its required checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: python3 -I .github/scripts/release-source-check.py "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$DEFAULT_BRANCH"
       - name: The tag matches the crate version and has a CHANGELOG.md section
         run: |
           version=$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
@@ -86,6 +104,9 @@ jobs:
   release:
     needs: [clib, benchkit]
     runs-on: ubuntu-latest
+    # Signs (attestation) and uploads: runs only after the owner approves the `release`
+    # environment (issue #341; RELEASING.md, "Repository and crates.io settings").
+    environment: release
     permissions:
       # Creating the GitHub release and uploading its assets (`gh release create`).
       contents: write
@@ -229,13 +250,14 @@ jobs:
   # crates.io, after everything above passed (issue #249). Dependency order: scarletbook-ffi
   # depends on the other two at their exact versions. Idempotent: a version already on
   # crates.io (a re-run, or a first publish done by hand per RELEASING.md) is skipped.
-  # This job must stay in release.yml itself, not in a reusable workflow, and without an
-  # `environment:`: the trusted publisher of each crate on crates.io names exactly this
-  # repository and workflow file, with no environment.
+  # This job must stay in release.yml itself, not in a reusable workflow: the trusted
+  # publisher of each crate on crates.io names exactly this repository and workflow file, and
+  # the environment `release` (RELEASING.md, "Repository and crates.io settings").
   publish:
     name: Publish to crates.io
     needs: release
     runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: read # checking out the tagged sources
       id-token: write # the OIDC token crates-io-auth-action exchanges for a crates.io token
@@ -289,8 +311,7 @@ jobs:
       - name: Publish crates that are not on crates.io yet (bootstrap)
         if: steps.pending.outputs.new != ''
         env:
-          # No environment: the trusted publishers on crates.io name none (see the job comment).
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_BOOTSTRAP_TOKEN }} # zizmor: ignore[secrets-outside-env]
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_BOOTSTRAP_TOKEN }}
           CRATES: ${{ steps.pending.outputs.new }}
         run: |
           if [[ -z "$CARGO_REGISTRY_TOKEN" ]]; then
