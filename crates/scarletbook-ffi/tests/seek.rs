@@ -643,6 +643,44 @@ fn caller_kept_index_checks_readings() {
     free(disc);
 }
 
+/// A verdict on an index given to `sb_disc_seek_index_set` before its queue was drained is
+/// returned once, by `sb_seek_index_event_next` on that index, and not by the disc (#326):
+/// the disc keeps a copy without it. Under Miri, on forty one-sector frames.
+#[test]
+fn a_verdict_on_an_index_set_on_the_disc_is_returned_once() {
+    let bytes = if cfg!(miri) { one_sector_frames(40, 40, 0) } else { image("dst-features-2ch-6ch") };
+    let disc = open(&bytes);
+    let p = playtime(disc, 0);
+    assert_eq!(policy(disc, 0, SB_SEEK_POLICY_SPECULATIVE, 0), SbStatus::Ok);
+    let index = index_new(disc, 0, 4).unwrap();
+    let a = open_indexed(disc, 0, (p / 2, p / 2 + 2), index).unwrap();
+    read_all(a, disc);
+    let s = speculation(a);
+    assert_eq!(s.state, SB_SPECULATION_PENDING, "{s:?}");
+    assert_eq!(absorb(a, index), SbStatus::Ok);
+    while !extend(disc, index, 1 << 20).unwrap() {}
+    // SAFETY: live handles; the index's queue is not drained first.
+    assert_eq!(unsafe { sb_disc_seek_index_set(disc, 0, index) }, SbStatus::Ok);
+    assert!(next_event(disc, 0).is_none(), "the disc's copy holds no verdict");
+    let mut e = SbSpeculation::default();
+    // SAFETY: a live handle and a valid out-pointer.
+    assert_eq!(unsafe { sb_seek_index_event_next(index, &mut e) }, SbStatus::Ok);
+    assert_eq!((e.claim, e.state), (s.claim, SB_SPECULATION_CONFIRMED));
+    // SAFETY: as above.
+    assert_eq!(unsafe { sb_seek_index_event_next(index, &mut e) }, SbStatus::End, "returned once");
+    assert!(next_event(disc, 0).is_none());
+    // The disc's index checks again, and settles nothing more.
+    let mut done = 0u8;
+    // SAFETY: a live handle and a valid out-pointer.
+    while unsafe { sb_disc_seek_verify(disc, 0, 1 << 20, &mut done) } == SbStatus::Ok && done == 0 {}
+    assert_eq!(done, 1, "{}", last_error());
+    assert!(next_event(disc, 0).is_none());
+    assert_eq!(speculation(a).state, SB_SPECULATION_CONFIRMED);
+    audio_free(a);
+    index_free(index);
+    free(disc);
+}
+
 /// Arguments of the provisional reading functions. Small enough for Miri.
 #[test]
 fn provisional_reading_arguments() {

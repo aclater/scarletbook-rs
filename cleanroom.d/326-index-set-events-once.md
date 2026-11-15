@@ -1,0 +1,1 @@
+| 2026-11-15 | C interface: a verdict on an index given to `sb_disc_seek_index_set` returned once, by the handle (#326, #353) | This crate's own FFI source and `AreaIndex::take_events` (#327); API behaviour of this repository only. No new sources consulted. |

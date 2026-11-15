@@ -31,5 +31,15 @@ Release binaries carry a SHA-256 checksum and, from 0.2.0, a signed build proven
 attestation (SLSA Build Level 2), which can be checked with:
 
 ```sh
-gh attestation verify bench-<version>-x86_64-linux.tar.gz -R aclater/scarletbook-rs
+gh attestation verify bench-<version>-x86_64-linux.tar.gz -R aclater/scarletbook-rs \
+  --signer-workflow aclater/scarletbook-rs/.github/workflows/release.yml \
+  --source-ref refs/tags/v<version>
 ```
+
+Give both `--signer-workflow` and `--source-ref`. Without them the command accepts a file
+attested by any workflow run in the repository, on any branch; with them, only one built by
+the release workflow from the tag `v<version>`.
+
+The `.sha256` file beside each archive is neither signed nor attested. It detects a damaged
+download, not a replaced one: whoever could replace the archive could replace its checksum
+too. Only the attestation shows who built the file.
