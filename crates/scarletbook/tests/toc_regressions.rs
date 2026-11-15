@@ -266,7 +266,8 @@ fn control_characters_in_fixed_fields_of_full_text() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/images/full-text.iso");
     let mut img = std::fs::read(path).unwrap();
     // The 2-channel area's TOC-1 and TOC-2 (master TOC offsets 64 and 68).
-    let lsn = |at: usize| u32::from_be_bytes(img[510 * S + at..510 * S + at + 4].try_into().unwrap()) as usize * S;
+    let lsn =
+        |at: usize| u32::from_be_bytes(img[510 * S + at..510 * S + at + 4].try_into().unwrap()) as usize * S;
     let areas = [lsn(64), lsn(68)];
     put_controls(&mut img, &areas);
     let disc = open(img);

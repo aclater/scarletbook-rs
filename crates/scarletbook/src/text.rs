@@ -312,7 +312,8 @@ mod tests {
     }
 
     fn fixed_text_before(field: &[u8]) -> String {
-        let s: String = fixed_bytes(field).iter().map(|&b| char::from(b)).filter(|c| !c.is_control()).collect();
+        let s: String =
+            fixed_bytes(field).iter().map(|&b| char::from(b)).filter(|c| !c.is_control()).collect();
         s.trim_matches(is_w).to_owned()
     }
 
