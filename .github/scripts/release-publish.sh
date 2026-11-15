@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Publishes the crates named in $CRATES (in that order) to crates.io without compiling
 # anything (issue #345). Run by release.yml's `publish` job from the tagged checkout, with
-# CARGO_REGISTRY_TOKEN set and the `build` job's packages in release-files/crates/.
+# CARGO_REGISTRY_TOKEN set and the `build` job's packages in release-files/crates-io/.
 #
 # `cargo publish` cannot upload a given .crate file; it always packs from the sources. So
 # each crate is packed again with --no-verify (no build), and published only if that file
@@ -11,7 +11,7 @@
 set -euo pipefail
 
 version=${GITHUB_REF_NAME#v}
-sums=release-files/crates/SHA256SUMS
+sums=release-files/crates-io/SHA256SUMS
 for crate in $CRATES; do
   file="$crate-$version.crate"
   cargo package --no-verify --locked -p "$crate"

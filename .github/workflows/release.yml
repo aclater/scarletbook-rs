@@ -243,10 +243,10 @@ jobs:
       - name: Pack and verify the crates.io packages
         run: |
           cargo package --locked -p scarletbook-pcm -p scarletbook -p scarletbook-ffi
-          mkdir crates
+          mkdir crates-io
           cp target/package/scarletbook-pcm-"$VERSION".crate target/package/scarletbook-"$VERSION".crate \
-            target/package/scarletbook-ffi-"$VERSION".crate crates/
-          (cd crates && sha256sum *.crate | tee SHA256SUMS)
+            target/package/scarletbook-ffi-"$VERSION".crate crates-io/
+          (cd crates-io && sha256sum *.crate | tee SHA256SUMS)
       - name: Hand over the release files
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -255,7 +255,7 @@ jobs:
             dist/*.tar.gz
             dist/*.tar.gz.sha256
             release-notes.md
-            crates/
+            crates-io/
           if-no-files-found: error
           retention-days: 7
 
