@@ -1,1 +1,0 @@
-| 2026-11-15 | built ID3 tag size counts header and footer (#343, #352) | Own derivation from the specification (8.3.1: a 10-byte header, the frames, then a 10-byte footer or padding) and this crate's documented `MAX_TAG_BYTES`. No new sources consulted. |
