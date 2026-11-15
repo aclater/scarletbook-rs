@@ -17,9 +17,9 @@ Pushing the tag runs `.github/workflows/release.yml`:
    waits up to 45 minutes for checks still running on a just-merged commit), the tag
    matches the workspace version and CHANGELOG.md has its section;
 2. `clib` and `benchkit`: the C libraries and the benchmark kits, built and tested;
-3. `release`, in the environment `release` (approval): `bench`, the correctness gate, the
+3. `release`, in the environment `release`: `bench`, the correctness gate, the
    assets and the GitHub release;
-4. `publish`, in the environment `release` (approval), only if all of the above passed:
+4. `publish`, in the environment `release`, only if all of the above passed:
    `scarletbook-pcm`, `scarletbook` and `scarletbook-ffi` to crates.io, in that order, with
    crates.io trusted publishing. A crate whose version is already on crates.io is skipped, so
    the job can be re-run, and a crate published by hand (below) is not published twice.
@@ -48,22 +48,21 @@ gh run rerun <release run id> --repo aclater/scarletbook-rs
 
 ## Repository and crates.io settings (issue #341)
 
-`preflight` stops a mistaken or stray tag, but not a tag on a commit that also edits
-`release.yml`: the workflow that runs is the one in the tagged commit. Only repository and
-crates.io settings stop that. The owner makes them, in this order:
+Releases are fully automated (owner, 2026-11-15): a pushed tag that passes `preflight`
+publishes with no approval step. The settings below narrow who and what can publish; the
+owner makes them, in this order.
 
 1. **Create the environment first, before the pull request that adds `environment: release`
-   to `release.yml` merges, and in any case before the next tag.** Settings, Environments, New environment, `release`:
-   - Required reviewers: the owner. Prevent self-review stays off, so the owner can approve
-     a release they tagged.
-   - Deployment branches and tags: Selected branches and tags, add the tag rule `v*`.
+   to `release.yml` merges, and in any case before the next tag.** Settings, Environments,
+   New environment, `release`:
+   - Required reviewers: none.
+   - Deployment branches and tags: Selected branches and tags, then Add deployment branch
+     or tag rule, choose **Ref type: Tag**, pattern `v*`. It must be a tag rule: a branch
+     rule `v*` matches no tag, so the `release` and `publish` jobs of a tag run would be
+     refused by the environment and the release would stop there.
 
-   A workflow run that names an environment which does not exist makes GitHub create it,
-   with no protection rules, so a tag pushed before this step would sign and publish
-   without approval. The `release` and
-   `publish` jobs each wait for approval (Review deployments on the run's page), so a
-   release is approved twice: once before the assets are signed and uploaded, once before
-   crates.io.
+   A workflow run that names an environment which does not exist makes GitHub create it
+   with no deployment rule, which lets a job on any branch use it.
 2. **Set the trusted publishers' environment to `release`,** once the pull request that
    added `environment: release` to `release.yml` has merged and before the next tag. For
    each of `scarletbook-pcm`, `scarletbook` and `scarletbook-ffi`, at
@@ -76,13 +75,26 @@ crates.io settings stop that. The owner makes them, in this order:
    works with the old publishers; the workflow change merges first. Until this step is
    done, any job of this workflow file can still get a crates.io token.
 3. **Restrict tag creation.** Settings, Rules, Rulesets, `release tags`: add the rule
-   "Restrict creations", with Repository admin in the bypass list, so that only the owner
-   can create a `v*` tag.
+   "Restrict creations", with Repository admin in the bypass list, so that only admin
+   accounts can create a `v*` tag.
 
-   This rule does not limit our own sessions: they push tags with the owner's admin account,
-   which the bypass lets through. It only stops accounts without admin access (and their
-   tokens). For every tag our sessions push, the `release` environment's approval is the
-   real gate.
+### What these settings stop, and what they don't
+
+- With 1 and 2, a crates.io token and the bootstrap secret are available only to the
+  `release` and `publish` jobs of a run on a `v*` tag, not to a job on a branch, a pull
+  request or a manual run.
+- With 3, an account or token without admin access cannot create a `v*` tag, so it cannot
+  start a release.
+- `preflight` refuses a tag whose commit is not on `main` or has not passed `main`'s
+  required checks.
+
+Together these stop honest mistakes and stray tags. They do not stop a compromised admin
+token. Our sessions tag releases with the owner's admin account, which the tag rule's bypass
+lets through, and there is no approval step. Anything holding an admin token can therefore
+publish from any commit it can tag and get past `preflight`: for example by getting a
+commit onto `main` (an admin can change `main`'s ruleset), or by tagging a commit that edits
+`release.yml`, since the workflow that runs is the tagged commit's copy, `preflight`
+included. Protecting admin tokens is what guards against that.
 
 ## Before the release: check the packages
 
@@ -166,7 +178,8 @@ cargo logout                                 # removes the token from ~/.cargo/c
 The `publish` job publishes a crate that is not on crates.io yet with the secret
 `CRATES_IO_BOOTSTRAP_TOKEN` of the environment `release`, if it is set. Set it on the
 environment, not the repository: a repository secret can be read by a job of any workflow on
-any branch, an environment secret only by an approved job in that environment; crates that already exist still go through trusted
+any branch, an environment secret only by a job in that environment, which is limited to
+`v*` tags; crates that already exist still go through trusted
 publishing, so requiring trusted publishing on them is no obstacle.
 
 ```sh
