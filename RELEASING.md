@@ -32,19 +32,35 @@ on pull requests, so a commit on `main` never has it; the ruleset required it on
 request that merged. If `preflight` fails because a check failed or was still running after
 45 minutes, fix that on `main`, or re-run the release workflow once the checks have passed.
 
+**main's CI was cancelled on the tagged commit.** `ci.yml` cancels a running push run on
+`main` when the next push starts one, so if another pull request merges before the
+release-preparation commit's CI has finished, that commit's checks end `cancelled` and
+`preflight` refuses the tag. The tag is fine; do not move or re-push it. Instead:
+
+```sh
+# 1. Re-run main's cancelled CI run for the tagged commit and wait for it to pass.
+gh run list --repo aclater/scarletbook-rs --workflow ci.yml --commit "$(git rev-parse vX.Y.Z^{commit})"
+gh run rerun <ci run id> --repo aclater/scarletbook-rs
+gh run watch <ci run id> --repo aclater/scarletbook-rs --exit-status
+# 2. Re-run the failed release run; it runs again on the same tag and commit.
+gh run rerun <release run id> --repo aclater/scarletbook-rs
+```
+
 ## Repository and crates.io settings (issue #341)
 
 `preflight` stops a mistaken or stray tag, but not a tag on a commit that also edits
 `release.yml`: the workflow that runs is the one in the tagged commit. Only repository and
 crates.io settings stop that. The owner makes them, in this order:
 
-1. **Create the environment first.** Settings, Environments, New environment, `release`:
+1. **Create the environment first, before the pull request that adds `environment: release`
+   to `release.yml` merges, and in any case before the next tag.** Settings, Environments, New environment, `release`:
    - Required reviewers: the owner. Prevent self-review stays off, so the owner can approve
      a release they tagged.
    - Deployment branches and tags: Selected branches and tags, add the tag rule `v*`.
 
-   Do this before the next tag: a workflow that names an environment which does not exist
-   makes GitHub create it, with no protection rules, on its first run. The `release` and
+   A workflow run that names an environment which does not exist makes GitHub create it,
+   with no protection rules, so a tag pushed before this step would sign and publish
+   without approval. The `release` and
    `publish` jobs each wait for approval (Review deployments on the run's page), so a
    release is approved twice: once before the assets are signed and uploaded, once before
    crates.io.
@@ -62,6 +78,11 @@ crates.io settings stop that. The owner makes them, in this order:
 3. **Restrict tag creation.** Settings, Rules, Rulesets, `release tags`: add the rule
    "Restrict creations", with Repository admin in the bypass list, so that only the owner
    can create a `v*` tag.
+
+   This rule does not limit our own sessions: they push tags with the owner's admin account,
+   which the bypass lets through. It only stops accounts without admin access (and their
+   tokens). For every tag our sessions push, the `release` environment's approval is the
+   real gate.
 
 ## Before the release: check the packages
 
@@ -140,21 +161,23 @@ cargo publish --locked -p scarletbook-ffi
 cargo logout                                 # removes the token from ~/.cargo/credentials.toml
 ```
 
-### Option B: a repository secret for one release
+### Option B: an environment secret for one release
 
-The `publish` job publishes a crate that is not on crates.io yet with the repository secret
-`CRATES_IO_BOOTSTRAP_TOKEN`, if it is set; crates that already exist still go through trusted
+The `publish` job publishes a crate that is not on crates.io yet with the secret
+`CRATES_IO_BOOTSTRAP_TOKEN` of the environment `release`, if it is set. Set it on the
+environment, not the repository: a repository secret can be read by a job of any workflow on
+any branch, an environment secret only by an approved job in that environment; crates that already exist still go through trusted
 publishing, so requiring trusted publishing on them is no obstacle.
 
 ```sh
 # Before pushing the tag v0.5.8, or before re-running its failed publish job:
-gh secret set CRATES_IO_BOOTSTRAP_TOKEN --repo aclater/scarletbook-rs
+gh secret set CRATES_IO_BOOTSTRAP_TOKEN --env release --repo aclater/scarletbook-rs
 # (paste the token at the prompt)
 
 # Push the tag (or re-run the job: gh run rerun <run id> --failed).
 
 # Right after the publish job has succeeded:
-gh secret delete CRATES_IO_BOOTSTRAP_TOKEN --repo aclater/scarletbook-rs
+gh secret delete CRATES_IO_BOOTSTRAP_TOKEN --env release --repo aclater/scarletbook-rs
 ```
 
 ### After either option
