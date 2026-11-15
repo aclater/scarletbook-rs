@@ -1149,7 +1149,8 @@ pub extern "C" fn sb_build_info() -> *const c_char {
 }
 
 /// The message of the calling thread's last failed call (empty if the last call
-/// succeeded). Valid until the thread's next call into this library.
+/// succeeded). Valid until the thread's next call into this library. Every `_free`
+/// function overwrites it too, so read it before freeing handles on an error path.
 #[unsafe(no_mangle)]
 pub extern "C" fn sb_last_error_message() -> *const c_char {
     // Empty once the thread's message is destroyed, as for `set_error`.
@@ -2542,7 +2543,9 @@ pub unsafe extern "C" fn sb_track_audio_open(
 ///
 /// Do not pass the address of the variable holding `prev` as `out`
 /// (`sb_track_audio_open_next(d, h, slot, n, &h)`): `*out` is set to NULL before anything
-/// else, so on failure the only pointer to `prev` would be lost. Use a second variable.
+/// else, so on failure the only pointer to `prev`, which the caller still owns, would be
+/// lost and `prev` would leak. Use a second variable. The same holds for every `_open_next`
+/// function.
 ///
 /// # Safety
 ///
@@ -4304,8 +4307,11 @@ pub unsafe extern "C" fn sb_disc_seek_index_enable(
 
 /// Keeps a copy of `index` (for example one loaded with `sb_seek_index_load`) as the seek
 /// index of its area in `disc` and its clones, as `sb_disc_seek_index_enable` does an
-/// empty one. Fails with `SB_STATUS_INVALID_ARGUMENT` for an index of another area or
-/// image size, or `SB_STATUS_NO_SUCH_AREA`.
+/// empty one. The copy is without the verdicts on provisional readings that `index` holds:
+/// they stay on `index`, so drain them with `sb_seek_index_event_next`, as
+/// `sb_disc_seek_event_next` does not return them. Fails with
+/// `SB_STATUS_INVALID_ARGUMENT` for an index of another area or image size, or
+/// `SB_STATUS_NO_SUCH_AREA`.
 ///
 /// # Safety
 ///
@@ -4321,7 +4327,9 @@ pub unsafe extern "C" fn sb_disc_seek_index_set(
         let d = unsafe { disc_handle(disc) }?;
         // SAFETY: forwarded contract.
         let i = unsafe { index_handle(index) }?;
-        let copy = i.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?.clone();
+        let mut copy = i.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?.clone();
+        // The verdicts not yet taken stay on `index` only, so each is returned once (#326).
+        copy.take_events();
         d.get_mut()?.set_seek_index(slot_from(slot)?, copy)?;
         Ok(SbStatus::Ok)
     })

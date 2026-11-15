@@ -9,6 +9,8 @@
  *   values (functions returning other types say so). On
  *   failure, sb_last_error_message() describes the error. The message belongs to the
  *   calling thread and stays valid until that thread's next call into this library.
+ *   A _free function is such a call too: it overwrites the message although it returns
+ *   nothing, so on an error path read or copy the message before freeing any handle.
  *
  * - Handles. SbDisc, SbTrackAudio, SbRawFrames, SbPool, SbSeekIndex, SbCancel,
  *   SbProgress, SbPcmConverter, SbOutputOptions, SbOutputLayout, SbTags and SbDstLengths
@@ -17,11 +19,16 @@
  *   _free function does nothing. A function that creates a handle sets *out to NULL when it fails, so
  *   freeing that pointer afterwards is safe.
  *   A const handle pointer does not mean the call leaves the handle unchanged: handles
- *   check for use at run time, so most take const even in calls that change them, such as
- *   a read or a setter. A pointer is not const only for: a _free function and the prev of
+ *   check at run time for a call made while a call of the same thread is using them (see
+ *   "Callbacks and re-entrancy"; this is no guard between threads, see "Threads"), so most
+ *   take const even in calls that change them, such as a read or a setter. A pointer is
+ *   not const only for: a _free function and the prev of
  *   an _open_next function, which consume their handle; sb_pcm_convert_run; and an
  *   SbSeekIndex that the call records into (sb_seek_index_extend, sb_seek_index_merge's
  *   into, sb_seek_index_verify, the _absorb functions and the _open_next_indexed functions).
+ *   An _open_next function sets *out to NULL before anything else, so out must never be
+ *   the address of the variable holding prev: on failure, prev, which the caller still
+ *   owns, would then have no pointer left and would leak. Use a second variable.
  *
  * - Pointers. Pointer arguments must be NULL or valid for the access the function
  *   documents. NULL where a value is required gives SB_STATUS_INVALID_ARGUMENT.
@@ -51,7 +58,11 @@
  *   bytes of a file from offset, and *written says how many.
  *
  * - Threads. A handle may be moved between threads, but must not be used by two threads
- *   at once; an SbPool, which only holds threads, may, and so may an SbCancel and an
+ *   at once. The run-time check (see "Handles") is not a lock: two threads using one
+ *   handle at once is undefined behaviour, even though such a call is sometimes refused
+ *   with SB_STATUS_INVALID_ARGUMENT. A caller that shares a handle between threads must
+ *   hold a lock of its own around every call that uses it. An SbPool, which only holds
+ *   threads, may be used by several threads at once, and so may an SbCancel and an
  *   SbProgress, made to be used from another thread while the disc or handle they come
  *   from reads (sb_disc_cancel_token, sb_track_audio_progress). To read one image on several
  *   threads at once, give each thread a clone of its disc (sb_disc_clone): a handle of
@@ -2317,7 +2328,8 @@ const char *sb_build_info(void);
 
 /*
  The message of the calling thread's last failed call (empty if the last call
- succeeded). Valid until the thread's next call into this library.
+ succeeded). Valid until the thread's next call into this library. Every `_free`
+ function overwrites it too, so read it before freeing handles on an error path.
  */
 const char *sb_last_error_message(void);
 
@@ -2879,7 +2891,9 @@ SbStatus sb_track_audio_open(const struct SbDisc *disc,
 
  Do not pass the address of the variable holding `prev` as `out`
  (`sb_track_audio_open_next(d, h, slot, n, &h)`): `*out` is set to NULL before anything
- else, so on failure the only pointer to `prev` would be lost. Use a second variable.
+ else, so on failure the only pointer to `prev`, which the caller still owns, would be
+ lost and `prev` would leak. Use a second variable. The same holds for every `_open_next`
+ function.
 
  # Safety
 
@@ -3604,8 +3618,11 @@ SbStatus sb_disc_seek_index_enable(const struct SbDisc *disc,
 /*
  Keeps a copy of `index` (for example one loaded with `sb_seek_index_load`) as the seek
  index of its area in `disc` and its clones, as `sb_disc_seek_index_enable` does an
- empty one. Fails with `SB_STATUS_INVALID_ARGUMENT` for an index of another area or
- image size, or `SB_STATUS_NO_SUCH_AREA`.
+ empty one. The copy is without the verdicts on provisional readings that `index` holds:
+ they stay on `index`, so drain them with `sb_seek_index_event_next`, as
+ `sb_disc_seek_event_next` does not return them. Fails with
+ `SB_STATUS_INVALID_ARGUMENT` for an index of another area or image size, or
+ `SB_STATUS_NO_SUCH_AREA`.
 
  # Safety
 
