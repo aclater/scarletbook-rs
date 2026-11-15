@@ -4307,8 +4307,11 @@ pub unsafe extern "C" fn sb_disc_seek_index_enable(
 
 /// Keeps a copy of `index` (for example one loaded with `sb_seek_index_load`) as the seek
 /// index of its area in `disc` and its clones, as `sb_disc_seek_index_enable` does an
-/// empty one. Fails with `SB_STATUS_INVALID_ARGUMENT` for an index of another area or
-/// image size, or `SB_STATUS_NO_SUCH_AREA`.
+/// empty one. The copy is without the verdicts on provisional readings that `index` holds:
+/// they stay on `index`, so drain them with `sb_seek_index_event_next`, as
+/// `sb_disc_seek_event_next` does not return them. Fails with
+/// `SB_STATUS_INVALID_ARGUMENT` for an index of another area or image size, or
+/// `SB_STATUS_NO_SUCH_AREA`.
 ///
 /// # Safety
 ///
@@ -4324,7 +4327,9 @@ pub unsafe extern "C" fn sb_disc_seek_index_set(
         let d = unsafe { disc_handle(disc) }?;
         // SAFETY: forwarded contract.
         let i = unsafe { index_handle(index) }?;
-        let copy = i.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?.clone();
+        let mut copy = i.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?.clone();
+        // The verdicts not yet taken stay on `index` only, so each is returned once (#326).
+        copy.take_events();
         d.get_mut()?.set_seek_index(slot_from(slot)?, copy)?;
         Ok(SbStatus::Ok)
     })
