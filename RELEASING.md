@@ -31,7 +31,14 @@ The jobs that sign and publish compile nothing (issue #345): dependencies' build
 proc macros run only in `build`, which holds no write, signing or publishing permission.
 `cargo publish` always packs from the sources, so `publish` packs each crate again with
 `--no-verify`, which builds nothing, checks that the file is byte-identical to the package
-`build` verified (cargo packs reproducibly), and publishes it with `--no-verify`.
+`build` verified (cargo packs reproducibly), and publishes it with `--no-verify`. Before the
+first upload it repacks all three together and compares them, so a mismatch stops the job
+before any crate is published.
+
+The split keeps the publishing token and the signing out of every step that runs dependency
+code. It does not make `build`'s output trustworthy: a compromised dependency in `build` (or
+in the `clib` and `benchkit` jobs) could alter the archives or the packed crates, and the
+attestation would then sign them and `publish` would publish them as they are.
 
 The workflow runs only on tag pushes, never on pull requests or branches.
 

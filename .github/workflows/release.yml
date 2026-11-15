@@ -43,6 +43,11 @@ name: Release
 # `release` attests and uploads them; `publish` publishes each crate with --no-verify once
 # its repacked .crate is byte-identical to the verified one.
 #
+# The split keeps the tokens and the signing out of every step that runs dependency code; it
+# does not make `build`'s output trustworthy. A compromised dependency in `build` (or in clib
+# or benchkit) could alter the archives or the packed crates, and `release` would then attest
+# and upload them, and `publish` publish them, as they are.
+#
 # The release notes start with the tag's section of CHANGELOG.md (`## [<version>] - <date>`);
 # the release stops if there is none, so the Unreleased section must be renamed for the
 # version in the commit that is tagged.
@@ -355,6 +360,16 @@ jobs:
           # crates.io at all cannot (crates.io has no trusted publisher for it yet).
           echo "existing=${existing[*]}" >> "$GITHUB_OUTPUT"
           echo "new=${new[*]}" >> "$GITHUB_OUTPUT"
+      # All three at once, packed as `build` packed them (each against the other two as
+      # packed, not against crates.io), before anything is uploaded: a mismatch stops the job
+      # here rather than after scarletbook-pcm is already published. The script below still
+      # checks each crate again right before its upload.
+      - name: The repacked crates match the verified packages
+        if: steps.pending.outputs.existing != '' || steps.pending.outputs.new != ''
+        run: |
+          cargo package --no-verify --locked -p scarletbook-pcm -p scarletbook -p scarletbook-ffi \
+            --target-dir target/precheck
+          (cd target/precheck/package && sha256sum -c "$GITHUB_WORKSPACE/release-files/crates-io/SHA256SUMS")
       - name: Authenticate with crates.io (trusted publishing)
         if: steps.pending.outputs.existing != ''
         id: auth
