@@ -240,7 +240,7 @@ jobs:
           - \`bench-$VERSION-x86_64-linux.tar.gz\`: generic x86-64 (the required asset).
           - \`bench-$VERSION-x86_64-linux-znver5.tar.gz\`: built for AMD Zen 5, the measuring machine's CPU (the optional labelled asset of benchmarks/README.md).
           - \`bench-$VERSION-x86-64-v3-linux.tar.gz\`: built for x86-64-v3 (AVX2 and later CPUs), labelled; an extra build for users, not one of the benchmark assets.
-          Each has a \`.sha256\` checksum and, for a public repository, a signed build provenance attestation: \`gh attestation verify <asset> -R $GITHUB_REPOSITORY\`. The correctness gate (every corpus case, 1 and all threads) passed on the generic and x86-64-v3 builds.
+          Each has a \`.sha256\` checksum (it detects a damaged download, not a replaced one) and, for a public repository, a signed build provenance attestation: \`gh attestation verify <asset> -R $GITHUB_REPOSITORY --signer-workflow $GITHUB_REPOSITORY/.github/workflows/release.yml --source-ref $GITHUB_REF\`. The correctness gate (every corpus case, 1 and all threads) passed on the generic and x86-64-v3 builds.
 
           Benchmark kit for running the benchmarks on your own machines (benchmarks/README.md): \`scarletbook-benchkit-$VERSION-x86_64-linux.tar.gz\` (generic x86-64) and \`scarletbook-benchkit-$VERSION-x86_64-linux-v3.tar.gz\` (x86-64-v3 CPUs only) hold statically linked \`bench\`, \`scarletbook-synth\` and \`callpattern\`, the run list \`runlist.json\` and its reference runner \`run.py\`. Match the names exactly: a prefix of the generic name also matches the v3 one."
           } > release-notes.md
