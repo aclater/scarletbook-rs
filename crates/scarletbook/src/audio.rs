@@ -131,7 +131,9 @@ impl std::fmt::Display for Malformed {
 /// Besides the window, each decoder holds its tables: per lane of
 /// [`DstDecoder::decode_many`], at most 12 filters' byte tables (64 KiB each) and 12
 /// ptables' probability tables (8 KiB each), and a 9 KiB copy of each channel's, about
-/// 0.9 MB. A cursor's own decoder, and each pool thread's, holds up to
+/// 0.9 MB in use; the tables grow as frames need more of them and keep the capacity they
+/// grew to, so a lane can hold more, and up to 1.33 MB per lane was measured (#246). A
+/// cursor's own decoder, and each pool thread's, holds up to
 /// [`crate::dst::lanes`] lanes of them.
 ///
 /// [`TrackAudioCursor::with_dst_lanes`] replaces [`crate::dst::lanes`] throughout this
