@@ -66,6 +66,7 @@ from 0.5.8).
 - TOC documentation: `Area::slot` and `Area::kind` now say why both exist (the kind comes from the signature, so a slot can yield an area of the other kind), and the module says that TOC LSNs keep their stored `u32` width where `Image` and `seek` use `u64`. No behaviour changes (#39, #323).
 - C header documentation: the conventions now state how each kind of call reports the buffer size it needs, what a `const` handle pointer does and does not promise, and all twelve opaque handles. `sb_track_audio_read` and `sb_dst_decode` now state what `SB_STATUS_BUFFER_TOO_SMALL` does; `sb_dst_decode`'s `out` may be NULL. No function's behaviour changes (#39, #322).
 - The documentation builds without default features again: two comments linked `TrackAudioCursor::set_decode_on`, which exists only with the `parallel` feature, and CI now builds the docs without default features too (#337).
+- Documentation of `MAX_PARALLEL_BATCH`: a DST decoder lane's tables are about 0.9 MB in use, but keep the capacity they grew to, and up to 1.33 MB per lane was measured in the memory soak (#246); the note said only "about 0.9 MB". Documentation only; no behaviour changes (#224, #356).
 
 ## [0.5.9] - 2026-11-06
 
