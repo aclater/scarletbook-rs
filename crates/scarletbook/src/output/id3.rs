@@ -314,6 +314,12 @@ fn synchsafe(v: usize) -> [u8; 4] {
     [(v >> 21) as u8 & 0x7F, (v >> 14) as u8 & 0x7F, (v >> 7) as u8 & 0x7F, v as u8 & 0x7F]
 }
 
+/// Whether a tag of a 10-byte header, `frames` bytes of frames and `tail` bytes of footer
+/// or padding is at most [`MAX_TAG_BYTES`] (#343).
+fn fits(frames: usize, tail: usize) -> bool {
+    10usize.saturating_add(frames).saturating_add(tail) <= MAX_TAG_BYTES
+}
+
 /// The tag of `set` (8.3), or `None` when it has no frame (8.2.6 item 3).
 ///
 /// # Errors
@@ -447,10 +453,14 @@ pub(super) fn tag(set: &TagSet, o: &Id3Options) -> Result<Option<Vec<u8>>, Error
     }
     // W6: stable, so frames with one ID keep the order they were made in.
     frames.sort_by_key(|(id, _, _)| o.frame_order.iter().position(|x| x == id).unwrap_or(usize::MAX));
+    // After the frames, a footer of 10 bytes or the padding (8.3.1). Each frame is checked
+    // with all before it, so the last check is the whole tag's.
+    let tail = if o.footer { 10 } else { o.padding as usize };
+    let too_large = Err(Error::InvalidArgument("the tag is larger than MAX_TAG_BYTES"));
     let mut body = Vec::new();
     for (id, b, _) in &frames {
-        if body.len() + 10 + b.len() > MAX_TAG_BYTES {
-            return Err(Error::InvalidArgument("the tag is larger than MAX_TAG_BYTES"));
+        if !fits(body.len() + 10 + b.len(), tail) {
+            return too_large;
         }
         body.extend_from_slice(id);
         body.extend_from_slice(&synchsafe(b.len()));
@@ -458,11 +468,7 @@ pub(super) fn tag(set: &TagSet, o: &Id3Options) -> Result<Option<Vec<u8>>, Error
         body.extend_from_slice(b);
     }
     if !o.footer {
-        let padding = o.padding as usize;
-        if body.len() + padding + 20 > MAX_TAG_BYTES {
-            return Err(Error::InvalidArgument("the tag is larger than MAX_TAG_BYTES"));
-        }
-        body.resize(body.len() + padding, 0);
+        body.resize(body.len() + tail, 0);
     }
     let flags = if o.footer { 0x10 } else { 0 };
     let header = |id: &[u8; 3]| {
@@ -518,4 +524,23 @@ fn check_raw_v23(tag: &[u8]) -> Result<(), Error> {
         return Err(Error::InvalidArgument("not an ID3v2.3 tag of its stated size"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The size check at its boundary, header and footer or padding counted (#343); the
+    /// whole tags are in `tests/output_tags.rs`, too large for Miri.
+    #[test]
+    fn fits_counts_header_and_tail() {
+        assert!(fits(MAX_TAG_BYTES - 20, 10));
+        assert!(!fits(MAX_TAG_BYTES - 19, 10));
+        assert!(fits(MAX_TAG_BYTES - 10, 0));
+        assert!(!fits(MAX_TAG_BYTES - 9, 0));
+        assert!(fits(0, MAX_TAG_BYTES - 10));
+        assert!(!fits(0, MAX_TAG_BYTES - 9));
+        assert!(!fits(usize::MAX, 10));
+        assert!(!fits(10, usize::MAX));
+    }
 }
