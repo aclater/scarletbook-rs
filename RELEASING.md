@@ -17,12 +17,28 @@ Pushing the tag runs `.github/workflows/release.yml`:
    waits up to 45 minutes for checks still running on a just-merged commit), the tag
    matches the workspace version and CHANGELOG.md has its section;
 2. `clib` and `benchkit`: the C libraries and the benchmark kits, built and tested;
-3. `release`, in the environment `release`: `bench`, the correctness gate, the
-   assets and the GitHub release;
-4. `publish`, in the environment `release`, only if all of the above passed:
+3. `build`, with a read-only token: `bench`, the correctness gates, all assets with their
+   checksums, the release notes, and the three crates.io packages, packed and verified
+   (`cargo package`);
+4. `release`, in the environment `release`: the build provenance attestation and
+   the GitHub release, from `build`'s files;
+5. `publish`, in the environment `release`, only if all of the above passed:
    `scarletbook-pcm`, `scarletbook` and `scarletbook-ffi` to crates.io, in that order, with
    crates.io trusted publishing. A crate whose version is already on crates.io is skipped, so
    the job can be re-run, and a crate published by hand (below) is not published twice.
+
+The jobs that sign and publish compile nothing (issue #345): dependencies' build scripts and
+proc macros run only in `build`, which holds no write, signing or publishing permission.
+`cargo publish` always packs from the sources, so `publish` packs each crate again with
+`--no-verify`, which builds nothing, checks that the file is byte-identical to the package
+`build` verified (cargo packs reproducibly), and publishes it with `--no-verify`. Before the
+first upload it repacks all three together and compares them, so a mismatch stops the job
+before any crate is published.
+
+The split keeps the publishing token and the signing out of every step that runs dependency
+code. It does not make `build`'s output trustworthy: a compromised dependency in `build` (or
+in the `clib` and `benchkit` jobs) could alter the archives or the packed crates, and the
+attestation would then sign them and `publish` would publish them as they are.
 
 The workflow runs only on tag pushes, never on pull requests or branches.
 

@@ -35,7 +35,18 @@ name: Release
 #
 # `preflight` stops a tag whose commit is not on the default branch or has not passed the
 # branch's required checks (issue #341). The two jobs that sign or publish, `release` and
-# `publish`, run in the environment `release`, which needs the owner's approval.
+# `publish`, run in the environment `release`, which only `v*` tags may use (RELEASING.md).
+#
+# Those two compile nothing (issue #345). The `build` job, with a read-only token, builds and
+# gates `bench`, packages and checks all 28 assets, writes the release notes, and packs and
+# verifies the crates.io packages; it hands the files over as the artifact `release-files`.
+# `release` attests and uploads them; `publish` publishes each crate with --no-verify once
+# its repacked .crate is byte-identical to the verified one.
+#
+# The split keeps the tokens and the signing out of every step that runs dependency code; it
+# does not make `build`'s output trustworthy. A compromised dependency in `build` (or in clib
+# or benchkit) could alter the archives or the packed crates, and `release` would then attest
+# and upload them, and `publish` publish them, as they are.
 #
 # The release notes start with the tag's section of CHANGELOG.md (`## [<version>] - <date>`);
 # the release stops if there is none, so the Unreleased section must be renamed for the
@@ -101,18 +112,16 @@ jobs:
     needs: preflight
     uses: ./.github/workflows/benchkit.yml
 
-  release:
+  # Issue #345: everything that compiles code (and so runs dependencies' build scripts and
+  # proc macros) runs here, with a read-only token and no environment: `bench` and its
+  # correctness gates, the packaging and checks of all 28 assets, the release notes, and the
+  # crates.io packages, packed and verified (`cargo package`, which builds them). The jobs
+  # that sign, upload and publish (`release`, `publish`) only take over these files.
+  build:
     needs: [clib, benchkit]
     runs-on: ubuntu-latest
-    # Signs (attestation) and uploads: runs only after the owner approves the `release`
-    # environment (issue #341; RELEASING.md, "Repository and crates.io settings").
-    environment: release
     permissions:
-      # Creating the GitHub release and uploading its assets (`gh release create`).
-      contents: write
-      # Build provenance attestations (sigstore via the workflow's OIDC token).
-      id-token: write
-      attestations: write
+      contents: read # checkout only; nothing here writes, signs or publishes
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -198,17 +207,6 @@ jobs:
             echo "::error::$archives archives and $checksums checksums, expected 14 and 14"
             exit 1
           fi
-      - name: Attest build provenance
-        # Artifact attestations work on public repositories (private ones need GitHub
-        # Enterprise Cloud); while the repository is private this step is skipped with a
-        # warning instead of failing the release.
-        if: github.event.repository.visibility == 'public'
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-path: dist/*.tar.gz
-      - name: No attestation for a private repository
-        if: github.event.repository.visibility != 'public'
-        run: echo "::warning::repository is not public; release assets are published without a build provenance attestation"
       - name: Smoke-test the packaged binaries against the manifest
         run: |
           smoke() {
@@ -223,9 +221,7 @@ jobs:
           smoke "bench-$VERSION-x86_64-linux"
           # The gate above already stopped the release on a runner that is not x86-64-v3.
           smoke "bench-$VERSION-x86-64-v3-linux"
-      - name: Publish
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Release notes
         run: |
           {
             cat changelog-notes.md
@@ -244,8 +240,74 @@ jobs:
 
           Benchmark kit for running the benchmarks on your own machines (benchmarks/README.md): \`scarletbook-benchkit-$VERSION-x86_64-linux.tar.gz\` (generic x86-64) and \`scarletbook-benchkit-$VERSION-x86_64-linux-v3.tar.gz\` (x86-64-v3 CPUs only) hold statically linked \`bench\`, \`scarletbook-synth\` and \`callpattern\`, the run list \`runlist.json\` and its reference runner \`run.py\`. Match the names exactly: a prefix of the generic name also matches the v3 one."
           } > release-notes.md
-          gh release create "$GITHUB_REF_NAME" --title "scarletbook $VERSION" --verify-tag \
-            --notes-file release-notes.md dist/*.tar.gz dist/*.sha256
+      # The crates.io packages, verified here: `cargo package` builds each packed crate (all
+      # three together, so scarletbook-ffi is checked against the other two as packed).
+      # `publish` repacks them with --no-verify, compiling nothing, and publishes only if
+      # the repacked file is byte-identical to the one verified here (cargo packs
+      # reproducibly: the same sources and cargo give the same .crate).
+      - name: Pack and verify the crates.io packages
+        run: |
+          cargo package --locked -p scarletbook-pcm -p scarletbook -p scarletbook-ffi
+          mkdir crates-io
+          cp target/package/scarletbook-pcm-"$VERSION".crate target/package/scarletbook-"$VERSION".crate \
+            target/package/scarletbook-ffi-"$VERSION".crate crates-io/
+          (cd crates-io && sha256sum *.crate | tee SHA256SUMS)
+      - name: Hand over the release files
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-files
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+            release-notes.md
+            crates-io/
+          if-no-files-found: error
+          retention-days: 7
+
+  # Attests and uploads what `build` made; compiles nothing.
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    # Signs (attestation) and uploads, in the environment `release`, which only `v*` tags may
+    # use (issue #341; RELEASING.md, "Repository and crates.io settings").
+    environment: release
+    permissions:
+      # Creating the GitHub release and uploading its assets (`gh release create`).
+      contents: write
+      # Build provenance attestations (sigstore via the workflow's OIDC token).
+      id-token: write
+      attestations: write
+    steps:
+      - name: Fetch the release files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-files
+      - name: The 28 assets arrived intact
+        run: |
+          (cd dist && sha256sum -c *.sha256)
+          ls -l dist
+          archives=$(ls dist/*.tar.gz | wc -l) checksums=$(ls dist/*.tar.gz.sha256 | wc -l)
+          if [[ "$archives" != 14 || "$checksums" != 14 ]]; then
+            echo "::error::$archives archives and $checksums checksums, expected 14 and 14"
+            exit 1
+          fi
+      - name: Attest build provenance
+        # Artifact attestations work on public repositories (private ones need GitHub
+        # Enterprise Cloud); while the repository is private this step is skipped with a
+        # warning instead of failing the release.
+        if: github.event.repository.visibility == 'public'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*.tar.gz
+      - name: No attestation for a private repository
+        if: github.event.repository.visibility != 'public'
+        run: echo "::warning::repository is not public; release assets are published without a build provenance attestation"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --title "scarletbook ${GITHUB_REF_NAME#v}" \
+            --verify-tag --notes-file release-notes.md dist/*.tar.gz dist/*.sha256
 
   # crates.io, after everything above passed (issue #249). Dependency order: scarletbook-ffi
   # depends on the other two at their exact versions. Idempotent: a version already on
@@ -253,9 +315,12 @@ jobs:
   # This job must stay in release.yml itself, not in a reusable workflow: the trusted
   # publisher of each crate on crates.io names exactly this repository and workflow file, and
   # the environment `release` (RELEASING.md, "Repository and crates.io settings").
+  # It compiles nothing (issue #345): `cargo publish` cannot upload a given .crate file, so
+  # each crate is repacked from the tagged sources with --no-verify, checked to be
+  # byte-identical to the package `build` verified, and published with --no-verify.
   publish:
     name: Publish to crates.io
-    needs: release
+    needs: [build, release]
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -266,6 +331,11 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup toolchain install "$RUST_STABLE" --profile minimal && rustup default "$RUST_STABLE"
+      - name: Fetch the verified packages
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-files
+          path: release-files
       - name: Crates whose version is not on crates.io yet
         id: pending
         run: |
@@ -290,6 +360,16 @@ jobs:
           # crates.io at all cannot (crates.io has no trusted publisher for it yet).
           echo "existing=${existing[*]}" >> "$GITHUB_OUTPUT"
           echo "new=${new[*]}" >> "$GITHUB_OUTPUT"
+      # All three at once, packed as `build` packed them (each against the other two as
+      # packed, not against crates.io), before anything is uploaded: a mismatch stops the job
+      # here rather than after scarletbook-pcm is already published. The script below still
+      # checks each crate again right before its upload.
+      - name: The repacked crates match the verified packages
+        if: steps.pending.outputs.existing != '' || steps.pending.outputs.new != ''
+        run: |
+          cargo package --no-verify --locked -p scarletbook-pcm -p scarletbook -p scarletbook-ffi \
+            --target-dir target/precheck
+          (cd target/precheck/package && sha256sum -c "$GITHUB_WORKSPACE/release-files/crates-io/SHA256SUMS")
       - name: Authenticate with crates.io (trusted publishing)
         if: steps.pending.outputs.existing != ''
         id: auth
@@ -299,15 +379,11 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
           CRATES: ${{ steps.pending.outputs.existing }}
-        run: |
-          # cargo publish waits until each version is in the index, so the next crate resolves it.
-          for crate in $CRATES; do
-            cargo publish --locked -p "$crate"
-          done
+        run: bash .github/scripts/release-publish.sh
       # A crate's first version (RELEASING.md, "The first publish of a crate"): only with the
-      # repository secret CRATES_IO_BOOTSTRAP_TOKEN, a short-lived token the owner sets for
-      # that one release and deletes and revokes afterwards. Without it the job fails here,
-      # after everything else was published, and the crate is published by hand.
+      # secret CRATES_IO_BOOTSTRAP_TOKEN of the environment `release`, a short-lived token the
+      # owner sets for that one release and deletes and revokes afterwards. Without it the job
+      # fails here, after everything else was published, and the crate is published by hand.
       - name: Publish crates that are not on crates.io yet (bootstrap)
         if: steps.pending.outputs.new != ''
         env:
@@ -319,6 +395,4 @@ jobs:
             exit 1
           fi
           echo "::warning::publishing $CRATES with CRATES_IO_BOOTSTRAP_TOKEN; delete the secret and revoke the token now (RELEASING.md)"
-          for crate in $CRATES; do
-            cargo publish --locked -p "$crate"
-          done
+          bash .github/scripts/release-publish.sh
