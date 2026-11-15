@@ -366,9 +366,9 @@ jobs:
           CRATES: ${{ steps.pending.outputs.existing }}
         run: bash .github/scripts/release-publish.sh
       # A crate's first version (RELEASING.md, "The first publish of a crate"): only with the
-      # repository secret CRATES_IO_BOOTSTRAP_TOKEN, a short-lived token the owner sets for
-      # that one release and deletes and revokes afterwards. Without it the job fails here,
-      # after everything else was published, and the crate is published by hand.
+      # secret CRATES_IO_BOOTSTRAP_TOKEN of the environment `release`, a short-lived token the
+      # owner sets for that one release and deletes and revokes afterwards. Without it the job
+      # fails here, after everything else was published, and the crate is published by hand.
       - name: Publish crates that are not on crates.io yet (bootstrap)
         if: steps.pending.outputs.new != ''
         env:
