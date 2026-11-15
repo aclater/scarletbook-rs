@@ -47,14 +47,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-**Byte stability.** While the version is 0.x, a new 0.5.y release may change the PCM bytes
+**Byte stability.** While the version is 0.x, a new 0.6.y release may change the PCM bytes
 that `scarletbook-pcm` (and the C library's `sb_pcm_*`) produce; the decoded DSD bytes are
-fixed by the specification. Cargo treats `0.5.y` as compatible with `0.5.x`, so a plain
-`scarletbook-pcm = "0.5"` picks up such changes on `cargo update`. A consumer that needs the
+fixed by the specification. Cargo treats `0.6.y` as compatible with `0.6.x`, so a plain
+`scarletbook-pcm = "0.6"` picks up such changes on `cargo update`. A consumer that needs the
 same PCM bytes across builds (stored hashes, reproducible files) pins the exact version:
 
 ```toml
-scarletbook-pcm = "=0.5.9"
+scarletbook-pcm = "=0.6.0"
 ```
 
 ## Layout
