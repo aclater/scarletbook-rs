@@ -20,9 +20,9 @@ Pushing the tag runs `.github/workflows/release.yml`:
 3. `build`, with a read-only token: `bench`, the correctness gates, all assets with their
    checksums, the release notes, and the three crates.io packages, packed and verified
    (`cargo package`);
-4. `release`, in the environment `release` (approval): the build provenance attestation and
+4. `release`, in the environment `release`: the build provenance attestation and
    the GitHub release, from `build`'s files;
-5. `publish`, in the environment `release` (approval), only if all of the above passed:
+5. `publish`, in the environment `release`, only if all of the above passed:
    `scarletbook-pcm`, `scarletbook` and `scarletbook-ffi` to crates.io, in that order, with
    crates.io trusted publishing. A crate whose version is already on crates.io is skipped, so
    the job can be re-run, and a crate published by hand (below) is not published twice.

@@ -35,7 +35,7 @@ name: Release
 #
 # `preflight` stops a tag whose commit is not on the default branch or has not passed the
 # branch's required checks (issue #341). The two jobs that sign or publish, `release` and
-# `publish`, run in the environment `release`, which needs the owner's approval.
+# `publish`, run in the environment `release`, which only `v*` tags may use (RELEASING.md).
 #
 # Those two compile nothing (issue #345). The `build` job, with a read-only token, builds and
 # gates `bench`, packages and checks all 28 assets, writes the release notes, and packs and
@@ -263,8 +263,8 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
-    # Signs (attestation) and uploads: runs only after the owner approves the `release`
-    # environment (issue #341; RELEASING.md, "Repository and crates.io settings").
+    # Signs (attestation) and uploads, in the environment `release`, which only `v*` tags may
+    # use (issue #341; RELEASING.md, "Repository and crates.io settings").
     environment: release
     permissions:
       # Creating the GitHub release and uploading its assets (`gh release create`).
