@@ -145,7 +145,8 @@ pub struct Date {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct Locale {
-    /// The language code, trailing NUL and space removed; may contain control characters.
+    /// The language code: control characters (C0, 0x7F and C1) removed, then trailing spaces
+    /// (#342). Empty when nothing else is left.
     pub language: String,
     /// The language code's two bytes as stored, nothing removed: tells an unset code
     /// (0x00 0x00) from one of spaces, which [`Locale::language`] reports alike.
@@ -212,6 +213,9 @@ macro_rules! text_struct {
         $(#[$meta:meta])* $name:ident, $(#[$imeta:meta])* $item:ident { $($(#[$fmeta:meta])* $field:ident = $key:literal => $variant:ident),* $(,)? }
     ) => {
         $(#[$meta])*
+        ///
+        /// Every control character of an item, C0 (U+0000 to U+001F), U+007F and C1 (U+0080
+        /// to U+009F), is replaced with a space (#342); an item is absent when empty.
         #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
         #[non_exhaustive]
         pub struct $name {
@@ -380,7 +384,8 @@ pub struct MasterToc {
     pub album_set_size: u16,
     /// Album sequence number (offset 18).
     pub album_sequence_number: u16,
-    /// Album catalogue number (offset 24), a fixed text field.
+    /// Album catalogue number (offset 24), a fixed text field: control characters (C0, 0x7F
+    /// and C1) removed, then surrounding whitespace trimmed (#342). May be empty.
     pub album_catalog_number: String,
     /// The album catalogue number's bytes as stored, up to the first 0x00 (all 16 if there
     /// is none), padding kept: step 1 of the fixed text field rules (specification 2,
@@ -394,7 +399,8 @@ pub struct MasterToc {
     pub multichannel: AreaPointer,
     /// Disc flags byte (offset 80).
     pub disc_flags: u8,
-    /// Disc catalogue number (offset 88), a fixed text field.
+    /// Disc catalogue number (offset 88), a fixed text field, as
+    /// [`MasterToc::album_catalog_number`].
     pub disc_catalog_number: String,
     /// The disc catalogue number's bytes as stored, as for
     /// [`MasterToc::album_catalog_number_stored`].
@@ -662,7 +668,8 @@ pub struct Track {
     pub start_flags: u8,
     /// Duration flags byte.
     pub duration_flags: u8,
-    /// ISRC, if any.
+    /// ISRC, if any: a fixed text field with control characters (C0, 0x7F and C1) removed,
+    /// then surrounding whitespace trimmed (#342); `None` when nothing is left.
     pub isrc: Option<String>,
     /// Genre, if the area has a `SACD_IGL`.
     pub genre: Option<Genre>,

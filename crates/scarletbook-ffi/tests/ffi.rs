@@ -752,6 +752,46 @@ fn tiny_image_handles_and_strings() {
     audio_free(a);
 }
 
+/// #342: the C interface returns the catalogue numbers without control characters, as the
+/// Rust one does; one of nothing but control characters is the empty string.
+#[test]
+fn control_characters_in_catalogue_numbers() {
+    let mut img = tiny_image();
+    let m = 510 * 2048;
+    img[m + 24..m + 40].copy_from_slice(b"ALB\x1bCAT\x07\n0042\x0c\x7f\x80");
+    img[m + 88..m + 104].copy_from_slice(b"\x1b\x07\n\x0c\x7f\x80\x9f\x85 \x1b\x07\n\x0c\x7f\x80\x9f");
+    let disc = open(&img).unwrap();
+    let album = disc_string(disc, SbDiscString::AlbumCatalogNumber as u32);
+    assert_eq!(album.as_deref(), Some("ALBCAT0042"));
+    assert_eq!(disc_string(disc, SbDiscString::DiscCatalogNumber as u32).as_deref(), Some(""));
+    free(disc);
+}
+
+/// #342's reproduction through the C interface: `full-text` with ESC, BEL, LF, FF and 0x7F
+/// in track 1's ISRC (area TOC sector 2, offset 8, in both copies) and in the album
+/// catalogue number (master TOC offset 24, in all three copies).
+#[test]
+#[cfg_attr(miri, ignore = "reads whole corpus images; control_characters_in_catalogue_numbers covers it")]
+fn control_characters_in_isrc_and_catalogue_of_full_text() {
+    let s = 2048;
+    let mut img = image("full-text");
+    for lsn in [510, 520, 530] {
+        img[lsn * s + 24..lsn * s + 40].copy_from_slice(b"ALB\x1bCAT\x07\n0042\x0c\x7f\x80");
+    }
+    for at in [64, 68] {
+        let a = u32::from_be_bytes(img[510 * s + at..510 * s + at + 4].try_into().unwrap()) as usize * s;
+        img[a + 2 * s + 8..a + 2 * s + 20].copy_from_slice(b"US\x1bABC\x079\n9\x0c\x7f");
+    }
+    let disc = open(&img).unwrap();
+    let album = disc_string(disc, SbDiscString::AlbumCatalogNumber as u32);
+    assert_eq!(album.as_deref(), Some("ALBCAT0042"));
+    let (st, a) = area(disc, 0);
+    assert_eq!(st, SbStatus::Ok);
+    let isrc = track_string(disc, a.slot, 1, SbTrackString::Isrc as u32);
+    assert_eq!(isrc.as_deref(), Some("USABC99"));
+    free(disc);
+}
+
 fn audio_open_next(
     disc: *const SbDisc,
     prev: *mut SbTrackAudio,

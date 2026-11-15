@@ -184,8 +184,9 @@ fn check_master(disc: *const SbDisc, m: &MasterToc, s0: &[u8], s9: &[u8], what: 
             "{what}: channel {i}"
         );
         assert_eq!((c.language, c.charset), stored_channel(&s0[136 + 4 * i as usize..]), "{what}: stored");
-        let trimmed: String = c.language.iter().map(|&b| char::from(b)).collect();
-        assert_eq!(trimmed.trim_end_matches(['\0', ' ']), l.language, "{what}: channel {i} trimmed");
+        // Control characters removed, then trailing spaces (#342).
+        let trimmed: String = c.language.iter().map(|&b| char::from(b)).filter(|c| !c.is_control()).collect();
+        assert_eq!(trimmed.trim_end_matches(' '), l.language, "{what}: channel {i} trimmed");
     }
     assert_eq!(disc_channel(disc, listed).unwrap_err(), SbStatus::InvalidArgument, "{what}");
     for (field, rust, trimmed, at) in [

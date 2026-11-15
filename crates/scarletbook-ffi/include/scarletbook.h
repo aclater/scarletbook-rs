@@ -602,7 +602,8 @@ typedef uint32_t SbSlot;
 
 /*
  Disc-level strings for `sb_disc_string`: the 16 disc text items of specification 2,
- 2.5.4, then the two catalogue numbers.
+ 2.5.4, then the two catalogue numbers. Control characters (C0, 0x7F and C1) are
+ replaced with spaces in text items and removed from catalogue numbers.
  */
 enum SbDiscString
 #if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
@@ -674,11 +675,12 @@ enum SbDiscString
    */
   SB_DISC_STRING_DISC_COPYRIGHT_PHONETIC = 15,
   /*
-   Album catalogue number (always present; may be empty).
+   Album catalogue number (always present; may be empty): control characters removed,
+   then surrounding whitespace trimmed.
    */
   SB_DISC_STRING_ALBUM_CATALOG_NUMBER = 16,
   /*
-   Disc catalogue number (always present; may be empty).
+   Disc catalogue number (always present; may be empty), as the album's.
    */
   SB_DISC_STRING_DISC_CATALOG_NUMBER = 17,
 };
@@ -691,7 +693,8 @@ typedef uint32_t SbDiscString;
 #endif // __cplusplus
 
 /*
- Area strings for `sb_area_string`, in the order of specification 3, 3.3.
+ Area strings for `sb_area_string`, in the order of specification 3, 3.3. Control
+ characters (C0, 0x7F and C1) are replaced with spaces.
  */
 enum SbAreaString
 #if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
@@ -725,7 +728,8 @@ typedef uint32_t SbAreaString;
 
 /*
  Track strings for `sb_track_string`: the text item types 0x01 to 0x07 and 0x81 to 0x87
- of specification 3, 3.8, then the ISRC.
+ of specification 3, 3.8, then the ISRC. Control characters (C0, 0x7F and C1) are
+ replaced with spaces in text items and removed from the ISRC.
  */
 enum SbTrackString
 #if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
@@ -789,7 +793,8 @@ enum SbTrackString
    */
   SB_TRACK_STRING_EXTRA_MESSAGE_PHONETIC = 13,
   /*
-   ISRC.
+   ISRC: control characters removed, then surrounding whitespace trimmed; absent when
+   nothing is left.
    */
   SB_TRACK_STRING_ISRC = 14,
 };
@@ -1547,8 +1552,9 @@ typedef struct SbGenre {
 typedef struct SbTextChannel {
   /*
    The language code's two bytes as stored (an ISO 639-1 code such as "en"), nothing
-   removed: 0x00 0x00 is an unset code. The trimmed language of specification 2, 2.5.1
-   item 1 is these bytes with every trailing 0x00 and 0x20 removed.
+   removed: 0x00 0x00 is an unset code. The bytes may hold control characters. The
+   language that the Rust API reports is these bytes with every control character (0x00
+   to 0x1F, 0x7F and 0x80 to 0x9F) removed, then every trailing 0x20.
    */
   uint8_t language[2];
   /*

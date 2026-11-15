@@ -198,15 +198,21 @@ pub fn string_bytes(buf: &[u8], q: usize) -> &[u8] {
 /// Decodes a text string's bytes and replaces control characters (2.6.4 items 2 to 4).
 /// Returns `None` when the result is empty (the item is absent).
 ///
+/// Every control character, C0 (U+0000 to U+001F), U+007F and C1 (U+0080 to U+009F), becomes
+/// a space (#342). Specification 2, 2.6.4 item 3 replaces only C0 and keeps U+007F and C1;
+/// this library replaces those too. The rule applies to the decoded code points, never to the
+/// bytes: in sets 3 to 6 the bytes 0x80 to 0x9F are lead or trail bytes of characters, and
+/// no table entry decodes to C1.
+///
 /// Not part of the public API: a helper of the TOC parser, not covered by semantic
 /// versioning. It may change or go in any release.
 #[doc(hidden)]
 pub fn decode_string(bytes: &[u8], cs: Charset) -> Option<String> {
     let mut s = decode(bytes, cs);
-    // Control characters are single bytes in UTF-8: the string is copied again only when it
-    // holds some.
-    if s.bytes().any(|b| b < 0x20) {
-        s = s.replace(|c: char| c < '\u{20}', " ");
+    // C0 and U+007F are single bytes in UTF-8 and C1 starts with 0xC2: the string is copied
+    // again only when it may hold some.
+    if s.bytes().any(|b| b < 0x20 || b == 0x7F || b == 0xC2) {
+        s = s.replace(char::is_control, " ");
     }
     (!s.is_empty()).then_some(s)
 }
@@ -228,14 +234,32 @@ fn is_w(c: char) -> bool {
     )
 }
 
-/// A fixed text field (specification 2, 2.6.5).
+/// A fixed text field (specification 2, 2.6.5), with its control characters removed.
+///
+/// The bytes are ISO 8859-1 whatever the locale (2.6.5 step 2), so each byte is one code
+/// point. Every control character, C0 (0x00 to 0x1F), 0x7F and C1 (0x80 to 0x9F), is removed
+/// before W is trimmed from the ends (#342); 2.6.5 item 4 keeps them, this library does not.
 ///
 /// Not part of the public API: a helper of the TOC parser, not covered by semantic
 /// versioning. It may change or go in any release.
 #[doc(hidden)]
 pub fn fixed_text(field: &[u8]) -> String {
-    // Each byte is one character, so trimming the bytes trims the text.
     let bytes = fixed_bytes(field);
+    if bytes.iter().any(|&b| is_control_byte(b)) {
+        let kept: Vec<u8> = bytes.iter().copied().filter(|&b| !is_control_byte(b)).collect();
+        return trimmed(&kept);
+    }
+    trimmed(bytes)
+}
+
+/// Whether an ISO 8859-1 byte is a control character: C0, 0x7F or C1.
+fn is_control_byte(b: u8) -> bool {
+    char::from(b).is_control()
+}
+
+/// ISO 8859-1 bytes as text with W trimmed from both ends (2.6.5 step 3).
+fn trimmed(bytes: &[u8]) -> String {
+    // Each byte is one character, so trimming the bytes trims the text.
     let start = bytes.iter().position(|&b| !is_w(char::from(b))).unwrap_or(bytes.len());
     let end = bytes.iter().rposition(|&b| !is_w(char::from(b))).map_or(start, |i| i + 1);
     latin1(bytes.get(start..end).unwrap_or_default())
@@ -252,14 +276,20 @@ pub fn fixed_bytes(field: &[u8]) -> &[u8] {
     field.get(..len).unwrap_or(field)
 }
 
-/// A locale's language code (specification 2, 2.5.1 item 1).
+/// A locale's language code (specification 2, 2.5.1 item 1), with its control characters
+/// removed.
+///
+/// The two bytes are ISO 8859-1. Every control character, C0 (0x00 to 0x1F), 0x7F and C1
+/// (0x80 to 0x9F), is removed, then trailing spaces (#342). 2.5.1 item 1 keeps control
+/// characters other than trailing U+0000; this library removes them, so the bytes 0x00 0x65
+/// give "e".
 ///
 /// Not part of the public API: a helper of the TOC parser, not covered by semantic
 /// versioning. It may change or go in any release.
 #[doc(hidden)]
 pub fn language(code: [u8; 2]) -> String {
-    let s: String = code.iter().map(|&b| char::from(b)).collect();
-    s.trim_end_matches(['\u{0}', ' ']).to_owned()
+    let s: String = code.iter().map(|&b| char::from(b)).filter(|c| !c.is_control()).collect();
+    s.trim_end_matches(' ').to_owned()
 }
 
 #[cfg(test)]
@@ -268,21 +298,21 @@ mod tests {
 
     #[test]
     fn latin1_and_controls() {
-        assert_eq!(decode_string(b"a\x01\x7f\xe9", Charset::Latin1).unwrap(), "a \u{7f}\u{e9}");
+        assert_eq!(decode_string(b"a\x01\x7f\xe9", Charset::Latin1).unwrap(), "a  \u{e9}");
         assert_eq!(decode_string(b"", Charset::Latin1), None);
         assert_eq!(Charset::from_code(0xFF), Charset::Latin1);
         assert_eq!(Charset::from_code(0x0B), Charset::ShiftJisX0213);
     }
 
     /// The decoding before #132 (one pass to decode, one to replace controls, one to trim),
-    /// against which the faster one is checked.
+    /// against which the faster one is checked; with #342's control characters.
     fn decode_string_before(bytes: &[u8], cs: Charset) -> Option<String> {
-        let s: String = decode(bytes, cs).chars().map(|c| if c < '\u{20}' { ' ' } else { c }).collect();
+        let s: String = decode(bytes, cs).chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
         (!s.is_empty()).then_some(s)
     }
 
     fn fixed_text_before(field: &[u8]) -> String {
-        let s: String = fixed_bytes(field).iter().map(|&b| char::from(b)).collect();
+        let s: String = fixed_bytes(field).iter().map(|&b| char::from(b)).filter(|c| !c.is_control()).collect();
         s.trim_matches(is_w).to_owned()
     }
 
@@ -309,6 +339,49 @@ mod tests {
         }
     }
 
+    /// #342: C0, U+007F and C1 become a space in text strings, and are removed from fixed text
+    /// fields and language codes; a field of nothing else is empty.
+    #[test]
+    fn control_characters() {
+        let c1: Vec<u8> = (0x80..=0x9F).collect();
+        let mut bytes = b"A\x1b\x07\n\x0c\x7fB".to_vec();
+        bytes.extend(&c1);
+        let mut spaces = String::from("A     B");
+        spaces.extend(std::iter::repeat_n(' ', c1.len()));
+        assert_eq!(decode_string(&bytes, Charset::Latin1).unwrap(), spaces);
+        assert_eq!(decode_string(b"\x7f\x85", Charset::Latin1).unwrap(), "  ");
+        assert_eq!(fixed_text(b"\x1bXX\x07\n1\x0c\x7f2\x9f "), "XX12");
+        assert_eq!(fixed_text(b" \x1b \x85AB\x80 \xa0\x9f"), "AB");
+        assert_eq!(fixed_text(b"\x1b\x07\n\x0c\x7f\x80\x9f"), "");
+        assert_eq!(fixed_text(b"\xa0\xe9"), "\u{e9}");
+        assert_eq!(language(*b"\x1be"), "e");
+        assert_eq!(language(*b"e\x7f"), "e");
+        assert_eq!(language(*b"\x9f\x07"), "");
+        assert_eq!(language(*b"\x1b "), "");
+        // 0x00 ends the field (2.6.5 step 1), so it starts at 0x01.
+        for b in 1..=255u8 {
+            let control = b < 0x20 || (0x7F..=0x9F).contains(&b);
+            assert_eq!(fixed_text(&[b'X', b, b'X']).chars().count() == 2, control, "{b:#x}");
+        }
+    }
+
+    /// #342: the rule is on decoded code points. Shift_JIS-X0213 pairs whose bytes are all in
+    /// 0x80 to 0x9F decode to characters, unchanged; only the U+007F of a single 0x7F becomes a
+    /// space.
+    #[test]
+    #[cfg_attr(miri, ignore = "parses large tables; control_characters covers the rule")]
+    fn multibyte_bytes_in_c1_range_are_kept() {
+        let sj = Charset::ShiftJisX0213;
+        let bytes = [0x81, 0x80, 0x8A, 0x80, 0x9F, 0x9F, 0x82, 0xA0, 0x81, 0x9F];
+        let s = decode_string(&bytes, sj).unwrap();
+        assert_eq!(s, decode(&bytes, sj));
+        assert_eq!(s, "\u{f7}\u{6a7f}\u{6cba}\u{3042}\u{25c6}");
+        assert_eq!(decode_string(&[0x8A, 0x80, 0x7F], sj).unwrap(), "\u{6a7f} ");
+        for cs in [Charset::EucKr, Charset::EucCn, Charset::Big5] {
+            assert_eq!(decode_string(b"a\x7f", cs).unwrap(), "a ", "{cs:?}");
+        }
+    }
+
     #[test]
     fn string_bytes_bounds() {
         let buf = [b'a'; 5000];
@@ -322,12 +395,12 @@ mod tests {
     #[test]
     fn fixed_text_and_language() {
         assert_eq!(fixed_text(b" \x85AB C\xa0\0junk"), "AB C");
-        assert_eq!(fixed_text(b"\x01X\x01"), "\u{1}X\u{1}");
+        assert_eq!(fixed_text(b"\x01X\x01"), "X");
         assert_eq!(fixed_bytes(b" \x85AB C\xa0\0junk"), b" \x85AB C\xa0");
         assert_eq!(fixed_bytes(b"AB  "), b"AB  ");
         assert_eq!(fixed_bytes(b"\0AB"), b"");
         assert_eq!(language(*b"e\0"), "e");
-        assert_eq!(language([0, b'e']), "\u{0}e");
+        assert_eq!(language([0, b'e']), "e");
         assert_eq!(language(*b"  "), "");
     }
 

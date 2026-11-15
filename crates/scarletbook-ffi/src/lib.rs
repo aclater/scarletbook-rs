@@ -131,7 +131,8 @@ pub enum SbFrameKind {
 }
 
 /// Disc-level strings for `sb_disc_string`: the 16 disc text items of specification 2,
-/// 2.5.4, then the two catalogue numbers.
+/// 2.5.4, then the two catalogue numbers. Control characters (C0, 0x7F and C1) are
+/// replaced with spaces in text items and removed from catalogue numbers.
 #[repr(u32)]
 #[derive(Clone, Copy, Debug)]
 pub enum SbDiscString {
@@ -167,13 +168,15 @@ pub enum SbDiscString {
     DiscPublisherPhonetic = 14,
     /// Disc copyright, phonetic.
     DiscCopyrightPhonetic = 15,
-    /// Album catalogue number (always present; may be empty).
+    /// Album catalogue number (always present; may be empty): control characters removed,
+    /// then surrounding whitespace trimmed.
     AlbumCatalogNumber = 16,
-    /// Disc catalogue number (always present; may be empty).
+    /// Disc catalogue number (always present; may be empty), as the album's.
     DiscCatalogNumber = 17,
 }
 
-/// Area strings for `sb_area_string`, in the order of specification 3, 3.3.
+/// Area strings for `sb_area_string`, in the order of specification 3, 3.3. Control
+/// characters (C0, 0x7F and C1) are replaced with spaces.
 #[repr(u32)]
 #[derive(Clone, Copy, Debug)]
 pub enum SbAreaString {
@@ -188,7 +191,8 @@ pub enum SbAreaString {
 }
 
 /// Track strings for `sb_track_string`: the text item types 0x01 to 0x07 and 0x81 to 0x87
-/// of specification 3, 3.8, then the ISRC.
+/// of specification 3, 3.8, then the ISRC. Control characters (C0, 0x7F and C1) are
+/// replaced with spaces in text items and removed from the ISRC.
 #[repr(u32)]
 #[derive(Clone, Copy, Debug)]
 pub enum SbTrackString {
@@ -220,7 +224,8 @@ pub enum SbTrackString {
     MessagePhonetic = 12,
     /// Extra message, phonetic (type 0x87).
     ExtraMessagePhonetic = 13,
-    /// ISRC.
+    /// ISRC: control characters removed, then surrounding whitespace trimmed; absent when
+    /// nothing is left.
     Isrc = 14,
 }
 
@@ -405,8 +410,9 @@ pub struct SbGenre {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SbTextChannel {
     /// The language code's two bytes as stored (an ISO 639-1 code such as "en"), nothing
-    /// removed: 0x00 0x00 is an unset code. The trimmed language of specification 2, 2.5.1
-    /// item 1 is these bytes with every trailing 0x00 and 0x20 removed.
+    /// removed: 0x00 0x00 is an unset code. The bytes may hold control characters. The
+    /// language that the Rust API reports is these bytes with every control character (0x00
+    /// to 0x1F, 0x7F and 0x80 to 0x9F) removed, then every trailing 0x20.
     pub language: [u8; 2],
     /// Character set code, the stored byte (the low 3 bits select the character set).
     pub charset: u8,

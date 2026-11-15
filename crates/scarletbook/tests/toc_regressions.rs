@@ -222,3 +222,54 @@ fn stored_language_codes_and_catalogue_numbers() {
     let a = &disc.toc().areas[0].locales;
     assert_eq!((a[0].language.as_str(), a[0].language_code, a[0].charset), ("", *b"  ", 3));
 }
+
+/// #342: ESC, BEL, LF, FF, 0x7F and C1 in the ISRCs, the catalogue numbers and the language
+/// codes, written into `img` whose area TOC copies start at the bytes `areas`. Track 1's ISRC (area TOC
+/// sector 2, offset 8), the album catalogue number (offset 24) and locale 0's language
+/// (offset 136) keep their other characters; track 2's ISRC, the disc catalogue number (offset
+/// 88) and locale 1's language are nothing but control characters.
+fn put_controls(img: &mut [u8], areas: &[usize]) {
+    for &a in areas {
+        put(img, a + 2 * S + 8, b"US\x1bABC\x079\n9\x0c\x7f");
+        put(img, a + 2 * S + 20, b"\x1b\x07\n\x0c\x7f\x80\x85\x9f \x1b\x07\x7f");
+    }
+    patch_master(img, 24, b"ALB\x1bCAT\x07\n0042\x0c\x7f\x80");
+    patch_master(img, 88, b"\x1b\x07\n\x0c\x7f\x80\x9f\x85 \x1b\x07\n\x0c\x7f\x80\x9f");
+    patch_master(img, 128, &[2]);
+    patch_master(img, 136, b"e\x7f");
+    patch_master(img, 140, b"\x07\x0c");
+}
+
+fn check_controls_removed(disc: &Disc<Cursor<Vec<u8>>>) {
+    let m = &disc.toc().master;
+    assert_eq!(m.album_catalog_number, "ALBCAT0042");
+    assert_eq!(m.album_catalog_number_stored, b"ALB\x1bCAT\x07\n0042\x0c\x7f\x80");
+    assert_eq!(m.disc_catalog_number, "");
+    let languages: Vec<_> = m.locales.iter().map(|l| (l.language.as_str(), l.language_code)).collect();
+    assert_eq!(languages[..2], [("e", *b"e\x7f"), ("", *b"\x07\x0c")]);
+    let tracks = &disc.toc().areas[0].tracks;
+    assert_eq!(tracks[0].isrc.as_deref(), Some("USABC99"));
+    assert_eq!(tracks[1].isrc, None);
+}
+
+#[test]
+fn control_characters_in_fixed_fields_are_removed() {
+    let mut img = Spec::simple().build();
+    put_controls(&mut img, &[A]);
+    check_controls_removed(&open(img));
+}
+
+/// The issue's reproduction, on the corpus case `full-text`.
+#[test]
+#[cfg_attr(miri, ignore = "reads a corpus image; control_characters_in_fixed_fields_are_removed covers it")]
+fn control_characters_in_fixed_fields_of_full_text() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/images/full-text.iso");
+    let mut img = std::fs::read(path).unwrap();
+    // The 2-channel area's TOC-1 and TOC-2 (master TOC offsets 64 and 68).
+    let lsn = |at: usize| u32::from_be_bytes(img[510 * S + at..510 * S + at + 4].try_into().unwrap()) as usize * S;
+    let areas = [lsn(64), lsn(68)];
+    put_controls(&mut img, &areas);
+    let disc = open(img);
+    check_controls_removed(&disc);
+    assert!(disc.warnings().is_empty(), "{:?}", disc.warnings());
+}
