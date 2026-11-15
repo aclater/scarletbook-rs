@@ -591,15 +591,19 @@ stable `cf-protection` option in rustc and a standard library built with it (iss
 The PyPA build images are pinned by digest; `.github/workflows/clib.yml` says how to move
 to newer ones.
 
-An archive unpacks to:
+An archive unpacks to the following. This is the layout from 0.6.0 on, whose shared libraries
+are named after the C ABI (see "Linking"). An archive of 0.5.9 or earlier holds a single file
+`lib/libscarletbook_ffi.so` (SONAME `libscarletbook_ffi.so`) on Linux and
+`lib/libscarletbook_ffi.dylib` (install name `@rpath/libscarletbook_ffi.dylib`) on macOS, with no
+versioned name and no link.
 
 ```
 scarletbook-ffi-<version>-<target>/   (scarletbook-ffi-<version>-<target>-v3/ for a -v3 archive)
   include/scarletbook.h
   lib/libscarletbook_ffi.a           static library (every target)
-  lib/libscarletbook_ffi.so.2        shared library (Linux) ...
+  lib/libscarletbook_ffi.so.2        shared library (Linux, 0.6.0 on) ...
   lib/libscarletbook_ffi.so          ... and a link to it, for the linker
-  lib/libscarletbook_ffi.2.dylib     shared library (macOS) ...
+  lib/libscarletbook_ffi.2.dylib     shared library (macOS, 0.6.0 on) ...
   lib/libscarletbook_ffi.dylib       ... and a link to it, for the linker
   lib/scarletbook_ffi.dll            shared library (Windows) ...
   lib/libscarletbook_ffi.dll.a       ... and its import library
@@ -611,24 +615,32 @@ scarletbook-ffi-<version>-<target>/   (scarletbook-ffi-<version>-<target>-v3/ fo
 
 ```sh
 sha256sum -c scarletbook-ffi-<version>-<target>.tar.gz.sha256      # macOS: shasum -a 256 -c
-gh attestation verify scarletbook-ffi-<version>-<target>.tar.gz -R aclater/scarletbook-rs
+gh attestation verify scarletbook-ffi-<version>-<target>.tar.gz -R aclater/scarletbook-rs \
+  --signer-workflow aclater/scarletbook-rs/.github/workflows/release.yml \
+  --source-ref refs/tags/v<version>
 ```
 
-The attestation (a signed SLSA build provenance statement naming the workflow run and
-commit that built the file) exists once the repository is public; until then releases are
-published without one.
+The checksum detects a damaged download, not a replaced one: it is neither signed nor
+attested, so whoever could replace the archive could replace its `.sha256` too. The
+attestation (a signed SLSA build provenance statement naming the workflow run and commit
+that built the file) is what shows the file came from this project's release. With
+`--signer-workflow` and `--source-ref`, `gh` accepts only a file built by the release
+workflow from the tag `v<version>`; without them, a file attested by any workflow run in the
+repository would pass. Releases from 0.2.0 carry the attestation.
 
 ### Linking
 
 ```sh
 # Static: the archive, then the system libraries it needs.
 cc app.c -I$PKG/include $PKG/lib/libscarletbook_ffi.a $(cat $PKG/native-static-libs.txt)
-# Shared: ship libscarletbook_ffi.so.2 next to the program, or set an rpath.
+# Shared: ship libscarletbook_ffi.so.2 (0.5.9 and earlier: libscarletbook_ffi.so) next to the
+# program, or set an rpath.
 cc app.c -I$PKG/include -L$PKG/lib -lscarletbook_ffi -Wl,-rpath,'$ORIGIN'
 ```
 
-The shared library's name carries the C ABI version, `SB_ABI_VERSION`, not the crate version
-(see "ABI compatibility"):
+From 0.6.0 on, the shared library's name carries the C ABI version, `SB_ABI_VERSION`, not the
+crate version (see "ABI compatibility"). Releases up to 0.5.9 ship only the unversioned file, and
+a program records that name. From 0.6.0:
 
 | | Name a program records | The file | Link for the linker |
 |---|---|---|---|
@@ -667,7 +679,9 @@ without them ctypes passes and returns C `int`, which truncates pointers and 64-
 ```python
 import ctypes as C
 
-lib = C.CDLL("/path/to/libscarletbook_ffi.so.2")  # libscarletbook_ffi.2.dylib on macOS, scarletbook_ffi.dll on Windows
+# libscarletbook_ffi.2.dylib on macOS, scarletbook_ffi.dll on Windows; before 0.6.0,
+# libscarletbook_ffi.so and libscarletbook_ffi.dylib
+lib = C.CDLL("/path/to/libscarletbook_ffi.so.2")
 
 SB_ABI_VERSION = 2  # the SB_ABI_VERSION of the header these bindings follow
 lib.sb_abi_version.argtypes, lib.sb_abi_version.restype = [], C.c_uint32
@@ -1209,8 +1223,14 @@ and `bench-<version>-x86_64-linux-znver5.tar.gz` (AMD Zen 5), each with a SHA-25
 build provenance attestation:
 
 ```sh
-gh attestation verify bench-<version>-x86_64-linux.tar.gz -R aclater/scarletbook-rs
+gh attestation verify bench-<version>-x86_64-linux.tar.gz -R aclater/scarletbook-rs \
+  --signer-workflow aclater/scarletbook-rs/.github/workflows/release.yml \
+  --source-ref refs/tags/v<version>
 ```
+
+The checksum detects a damaged download, not a replaced one; the attestation, checked with
+both flags, shows that the release workflow built the file from the tag (see "Verifying a
+download" under "C library").
 
 The release also publishes a benchmark kit for consumers who time scarletbook on their own
 machines (#224, #226): `scarletbook-benchkit-<version>-x86_64-linux.tar.gz` and its
