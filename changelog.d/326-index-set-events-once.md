@@ -1,0 +1,2 @@
+Fixed
+- C interface: a verdict on a provisional reading that a seek index handle held when given to `sb_disc_seek_index_set` was returned twice, by `sb_seek_index_event_next` on that handle and by `sb_disc_seek_event_next`, with the same claim number. The disc now keeps a copy without the handle's pending verdicts, so each is returned once, by the handle: drain the handle's queue to see them (#326, #PR).
