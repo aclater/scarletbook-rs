@@ -89,8 +89,9 @@ fn functions(lib: &str) -> BTreeMap<String, (bool, Vec<String>)> {
 }
 
 /// The exported functions of `lib` (the source of `src/lib.rs`) that are not guarded: a
-/// function is guarded when its body starts with `guard(` (after at most clearing its
-/// output pointer, which cannot panic), or consists of one call to a guarded function.
+/// function is guarded when its body starts with `guard(` or `guard_free(` (after at most
+/// clearing its output pointer, which cannot panic), or consists of one call to a guarded
+/// function.
 fn unguarded(lib: &str) -> BTreeSet<String> {
     let fns = functions(lib);
     let mut guarded = BTreeSet::new();
@@ -100,7 +101,7 @@ fn unguarded(lib: &str) -> BTreeSet<String> {
             let starts_with_guard = body
                 .iter()
                 .find(|l| !matches!(l.as_str(), "unsafe { clear_out(out) };" | "unsafe { clear_out(out) }"))
-                .is_some_and(|l| l.starts_with("guard(") || l.starts_with("let _ = guard("));
+                .is_some_and(|l| l.starts_with("guard(") || l.starts_with("guard_free("));
             let forwards = match body.as_slice() {
                 [one] => {
                     let call = one.trim_start_matches("unsafe {").trim_start();
@@ -145,6 +146,18 @@ fn the_check_finds_a_missing_guard() {
     assert_eq!(without("sb_track_check"), expect(&["sb_track_check"]));
     // `raw_read` is the guarded body both raw frames readers forward to.
     assert_eq!(without("raw_read"), expect(&["sb_raw_frames_read", "sb_raw_frames_read_dst_equivalent"]));
+    // A `_free` function, and `free`, which the output handles' `_free` functions forward to.
+    let without_free = |head: &str| {
+        let at = LIB.find(head).unwrap();
+        let g = at + LIB[at..].find("guard_free(").unwrap();
+        let lib = format!("{}run({}", &LIB[..g], &LIB[g + "guard_free(".len()..]);
+        unguarded(&lib)
+    };
+    assert_eq!(without_free("fn sb_disc_free("), expect(&["sb_disc_free"]));
+    assert_eq!(
+        without_free("fn free<"),
+        expect(&["sb_dst_lengths_free", "sb_output_layout_free", "sb_output_options_free", "sb_tags_free"])
+    );
 }
 
 /// A call made while a thread exits, from a thread-local destructor that runs after the

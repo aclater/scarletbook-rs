@@ -1,0 +1,1 @@
+| 2026-11-16 | `_free` functions leave the thread's last error message alone (#347, #PR) | This crate's own FFI source (`guard`, the `_free` functions, the `free` helper of the output handles). No new sources consulted. |
