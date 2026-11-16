@@ -774,6 +774,9 @@ fn clear_error() {
     });
 }
 
+/// The thread's message after a caught panic.
+const PANIC_MESSAGE: &str = "internal error: panic in scarletbook (this is a bug)";
+
 /// Runs `f`, catching panics and recording the error message.
 fn guard(f: impl FnOnce() -> Result<SbStatus, Failure>) -> SbStatus {
     clear_error();
@@ -784,9 +787,20 @@ fn guard(f: impl FnOnce() -> Result<SbStatus, Failure>) -> SbStatus {
             status
         }
         Err(_) => {
-            set_error("internal error: panic in scarletbook (this is a bug)");
+            set_error(PANIC_MESSAGE);
             SbStatus::Panic
         }
+    }
+}
+
+/// `guard` for the `_free` functions, which return nothing: runs `f`, catching panics, and
+/// leaves the thread's message alone (#347). It neither clears the message nor records a
+/// refusal (a NULL or in-use handle), so a caller freeing handles on an error path can
+/// still read the failed call's message afterwards. Only a caught panic sets it, as a bug
+/// report.
+fn guard_free(f: impl FnOnce() -> Result<(), Failure>) {
+    if catch_unwind(AssertUnwindSafe(f)).is_err() {
+        set_error(PANIC_MESSAGE);
     }
 }
 
@@ -1153,9 +1167,11 @@ pub extern "C" fn sb_build_info() -> *const c_char {
     INFO.as_ptr()
 }
 
-/// The message of the calling thread's last failed call (empty if the last call
-/// succeeded). Valid until the thread's next call into this library. Every `_free`
-/// function overwrites it too, so read it before freeing handles on an error path.
+/// The message of the calling thread's last failed call (empty if the last call that
+/// returns a status succeeded). Valid until the thread's next call into this library,
+/// except a `_free` function: the `_free` functions neither clear nor set it, so it can
+/// still be read after freeing handles on an error path. Only a panic caught inside a
+/// `_free` function sets it, as a bug report.
 #[unsafe(no_mangle)]
 pub extern "C" fn sb_last_error_message() -> *const c_char {
     // Empty once the thread's message is destroyed, as for `set_error`.
@@ -1873,7 +1889,7 @@ pub unsafe extern "C" fn sb_disc_set_log(
 /// `disc` must be NULL or a live handle, freed only once.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sb_disc_free(disc: *mut SbDisc) {
-    let _ = guard(|| {
+    guard_free(|| {
         // SAFETY: forwarded contract.
         let handle = unsafe { disc_handle(disc) }?;
         if handle.inner.try_borrow_mut().is_err() {
@@ -1882,7 +1898,7 @@ pub unsafe extern "C" fn sb_disc_free(disc: *mut SbDisc) {
         // SAFETY: a live handle created by Box::into_raw and not in use (no borrow is
         // active, so no call on any frame holds a reference into it), freed only once.
         drop(unsafe { Box::from_raw(disc) });
-        Ok(SbStatus::Ok)
+        Ok(())
     });
 }
 
@@ -3139,7 +3155,7 @@ pub unsafe extern "C" fn sb_track_audio_warning(
 /// `audio` must be NULL or a live handle, freed only once.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sb_track_audio_free(audio: *mut SbTrackAudio) {
-    let _ = guard(|| {
+    guard_free(|| {
         // SAFETY: forwarded contract.
         let handle = unsafe { audio_handle(audio) }?;
         if handle.inner.try_borrow_mut().is_err() {
@@ -3147,7 +3163,7 @@ pub unsafe extern "C" fn sb_track_audio_free(audio: *mut SbTrackAudio) {
         }
         // SAFETY: a live handle created by Box::into_raw and not in use, freed only once.
         drop(unsafe { Box::from_raw(audio) });
-        Ok(SbStatus::Ok)
+        Ok(())
     });
 }
 
@@ -3237,13 +3253,13 @@ pub unsafe extern "C" fn sb_pool_threads(pool: *const SbPool) -> u32 {
 /// `pool` must be NULL or a live handle, freed only once, and not in use by another call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sb_pool_free(pool: *mut SbPool) {
-    let _ = guard(|| {
+    guard_free(|| {
         if !pool.is_null() {
             // SAFETY: a live handle created by Box::into_raw, not in use, and freed only
             // once (this function's contract).
             drop(unsafe { Box::from_raw(pool) });
         }
-        Ok(SbStatus::Ok)
+        Ok(())
     });
 }
 
@@ -3718,7 +3734,7 @@ pub unsafe extern "C" fn sb_raw_frames_warning(
 /// `raw` must be NULL or a live handle, freed only once.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sb_raw_frames_free(raw: *mut SbRawFrames) {
-    let _ = guard(|| {
+    guard_free(|| {
         // SAFETY: forwarded contract.
         let handle = unsafe { raw_handle(raw) }?;
         if handle.inner.try_borrow_mut().is_err() {
@@ -3726,7 +3742,7 @@ pub unsafe extern "C" fn sb_raw_frames_free(raw: *mut SbRawFrames) {
         }
         // SAFETY: a live handle created by Box::into_raw and not in use, freed only once.
         drop(unsafe { Box::from_raw(raw) });
-        Ok(SbStatus::Ok)
+        Ok(())
     });
 }
 
@@ -3892,7 +3908,7 @@ pub unsafe extern "C" fn sb_pcm_converter_new(
 /// `conv` must be NULL or a live handle, freed only once.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sb_pcm_converter_free(conv: *mut SbPcmConverter) {
-    let _ = guard(|| {
+    guard_free(|| {
         // SAFETY: forwarded contract.
         let handle = unsafe { pcm_handle(conv) }?;
         if handle.inner.try_borrow_mut().is_err() {
@@ -3900,7 +3916,7 @@ pub unsafe extern "C" fn sb_pcm_converter_free(conv: *mut SbPcmConverter) {
         }
         // SAFETY: a live handle created by Box::into_raw and not in use, freed only once.
         drop(unsafe { Box::from_raw(conv) });
-        Ok(SbStatus::Ok)
+        Ok(())
     });
 }
 
@@ -4309,7 +4325,7 @@ pub unsafe extern "C" fn sb_seek_index_load(
 /// `index` must be NULL or a live handle, freed only once.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sb_seek_index_free(index: *mut SbSeekIndex) {
-    let _ = guard(|| {
+    guard_free(|| {
         // SAFETY: forwarded contract.
         let handle = unsafe { index_handle(index) }?;
         if handle.inner.try_borrow_mut().is_err() {
@@ -4317,7 +4333,7 @@ pub unsafe extern "C" fn sb_seek_index_free(index: *mut SbSeekIndex) {
         }
         // SAFETY: a live handle created by Box::into_raw and not in use, freed only once.
         drop(unsafe { Box::from_raw(index) });
-        Ok(SbStatus::Ok)
+        Ok(())
     });
 }
 
@@ -5083,13 +5099,13 @@ pub unsafe extern "C" fn sb_cancel_requested(token: *const SbCancel, requested: 
 /// `token` must be NULL or a live handle, freed only once, and not in use by another call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sb_cancel_free(token: *mut SbCancel) {
-    let _ = guard(|| {
+    guard_free(|| {
         if !token.is_null() {
             // SAFETY: a live handle created by Box::into_raw, not in use, and freed only
             // once (this function's contract).
             drop(unsafe { Box::from_raw(token) });
         }
-        Ok(SbStatus::Ok)
+        Ok(())
     });
 }
 
@@ -5202,13 +5218,13 @@ pub unsafe extern "C" fn sb_progress_get(
 /// call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sb_progress_free(progress: *mut SbProgress) {
-    let _ = guard(|| {
+    guard_free(|| {
         if !progress.is_null() {
             // SAFETY: a live handle created by Box::into_raw, not in use, and freed only
             // once (this function's contract).
             drop(unsafe { Box::from_raw(progress) });
         }
-        Ok(SbStatus::Ok)
+        Ok(())
     });
 }
 
@@ -5992,6 +6008,26 @@ mod tests {
         // SAFETY: as above.
         let msg = unsafe { CStr::from_ptr(sb_last_error_message()) };
         assert!(msg.to_bytes().is_empty());
+    }
+
+    /// `guard_free` neither clears nor sets the thread's message, for a refusal either
+    /// (#347); a caught panic sets it.
+    #[test]
+    fn guard_free_keeps_the_message_except_after_a_panic() {
+        // SAFETY: sb_last_error_message returns a valid NUL-terminated string.
+        let message = || unsafe { CStr::from_ptr(sb_last_error_message()) }.to_bytes().to_vec();
+        assert_eq!(guard(|| Err(Failure::arg("earlier"))), SbStatus::InvalidArgument);
+        guard_free(|| Ok(()));
+        assert_eq!(message(), b"earlier");
+        guard_free(|| Err(Failure::arg(REENTRANT)));
+        assert_eq!(message(), b"earlier");
+        guard_free(|| {
+            #[allow(clippy::panic)]
+            {
+                panic!("deliberate")
+            }
+        });
+        assert!(message().starts_with(b"internal error"));
     }
 
     /// What C callers get for each error, as of #308. `OutputRefusal::UnspecifiedLayout`

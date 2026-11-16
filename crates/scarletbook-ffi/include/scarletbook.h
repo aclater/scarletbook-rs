@@ -8,9 +8,10 @@
  * - Status. Calls return an SbStatus, an int32_t holding one of the SB_STATUS_*
  *   values (functions returning other types say so). On
  *   failure, sb_last_error_message() describes the error. The message belongs to the
- *   calling thread and stays valid until that thread's next call into this library.
- *   A _free function is such a call too: it overwrites the message although it returns
- *   nothing, so on an error path read or copy the message before freeing any handle.
+ *   calling thread and stays valid until that thread's next call into this library,
+ *   except a _free function: the _free functions neither clear nor set the message, so it
+ *   can still be read after freeing handles on an error path. Only a panic caught inside
+ *   a _free function sets it, as a bug report.
  *
  * - Handles. SbDisc, SbTrackAudio, SbRawFrames, SbPool, SbSeekIndex, SbCancel,
  *   SbProgress, SbPcmConverter, SbOutputOptions, SbOutputLayout, SbTags and SbDstLengths
@@ -2333,9 +2334,11 @@ const char *sb_version(void);
 const char *sb_build_info(void);
 
 /*
- The message of the calling thread's last failed call (empty if the last call
- succeeded). Valid until the thread's next call into this library. Every `_free`
- function overwrites it too, so read it before freeing handles on an error path.
+ The message of the calling thread's last failed call (empty if the last call that
+ returns a status succeeded). Valid until the thread's next call into this library,
+ except a `_free` function: the `_free` functions neither clear nor set it, so it can
+ still be read after freeing handles on an error path. Only a panic caught inside a
+ `_free` function sets it, as a bug report.
  */
 const char *sb_last_error_message(void);
 
