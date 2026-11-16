@@ -145,7 +145,13 @@ pub struct Date {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct Locale {
-    /// The language code, trailing NUL and space removed; may contain control characters.
+    /// The language code, every trailing U+0000 and U+0020 removed, as specification 2,
+    /// 2.5.1 item 1 defines it. **It may contain control characters:** no other character is
+    /// removed or replaced, so C0 (U+0000 included), U+007F (DEL) and U+0080 to U+009F (C1)
+    /// are kept. The bytes 0x00 0x65 give U+0000 U+0065, which code that passes the string
+    /// on as a NUL-terminated C string truncates to nothing. A caller that prints it or
+    /// puts it in a tag or file name should escape or filter it for that use.
+    /// [`Locale::language_code`] gives the two bytes as stored.
     pub language: String,
     /// The language code's two bytes as stored, nothing removed: tells an unset code
     /// (0x00 0x00) from one of spaces, which [`Locale::language`] reports alike.
@@ -212,6 +218,14 @@ macro_rules! text_struct {
         $(#[$meta:meta])* $name:ident, $(#[$imeta:meta])* $item:ident { $($(#[$fmeta:meta])* $field:ident = $key:literal => $variant:ident),* $(,)? }
     ) => {
         $(#[$meta])*
+        ///
+        /// **Items may contain control characters.** Every field, [`Self::get`] and
+        /// [`Self::iter`] return an item as specification 2, 2.6.4 item 3 defines it: each
+        /// code point below U+0020 (C0) is replaced with a space, so U+001B (ESC) is the only
+        /// escape-sequence starter removed, while U+007F (DEL) and U+0080 to U+009F (C1) are
+        /// kept. U+009B (CSI), for example, starts a terminal control sequence on terminals
+        /// that honour 8-bit controls. A caller that prints an item or puts it in a tag or
+        /// file name should escape or filter it for that use.
         #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
         #[non_exhaustive]
         pub struct $name {
@@ -380,7 +394,13 @@ pub struct MasterToc {
     pub album_set_size: u16,
     /// Album sequence number (offset 18).
     pub album_sequence_number: u16,
-    /// Album catalogue number (offset 24), a fixed text field.
+    /// Album catalogue number (offset 24), a fixed text field as specification 2, 2.6.5
+    /// defines it: the bytes up to the first 0x00, with whitespace trimmed from the ends.
+    /// **It may contain control characters:** C0, U+007F (DEL) and U+0080 to U+009F (C1)
+    /// are kept (2.6.5 item 4). Such characters reach whatever the string is passed to: U+009B (CSI), for example, starts a
+    /// terminal control sequence on terminals that honour 8-bit controls. A caller that prints
+    /// the value or puts it in a tag or file name should escape or filter it for that use.
+    /// [`MasterToc::album_catalog_number_stored`] gives the bytes as stored.
     pub album_catalog_number: String,
     /// The album catalogue number's bytes as stored, up to the first 0x00 (all 16 if there
     /// is none), padding kept: step 1 of the fixed text field rules (specification 2,
@@ -394,7 +414,11 @@ pub struct MasterToc {
     pub multichannel: AreaPointer,
     /// Disc flags byte (offset 80).
     pub disc_flags: u8,
-    /// Disc catalogue number (offset 88), a fixed text field.
+    /// Disc catalogue number (offset 88), a fixed text field, as
+    /// [`MasterToc::album_catalog_number`]: **it may contain control characters** (C0, DEL
+    /// and C1, specification 2, 2.6.5 item 4); escape or filter it before printing it or
+    /// putting it in a tag or file name. [`MasterToc::disc_catalog_number_stored`] gives the
+    /// bytes as stored.
     pub disc_catalog_number: String,
     /// The disc catalogue number's bytes as stored, as for
     /// [`MasterToc::album_catalog_number_stored`].
@@ -662,7 +686,12 @@ pub struct Track {
     pub start_flags: u8,
     /// Duration flags byte.
     pub duration_flags: u8,
-    /// ISRC, if any.
+    /// ISRC, if any: a fixed text field as specification 2, 2.6.5 and specification 3, 3.7.3
+    /// define it, the bytes up to the first 0x00 with whitespace trimmed from the ends; its
+    /// syntax is not validated. **It may contain control characters:** C0, U+007F (DEL) and
+    /// U+0080 to U+009F (C1) are kept (2.6.5 item 4). Such characters reach whatever the string is passed to: U+009B (CSI), for example, starts a
+    /// terminal control sequence on terminals that honour 8-bit controls. A caller that prints
+    /// the value or puts it in a tag or file name should escape or filter it for that use.
     pub isrc: Option<String>,
     /// Genre, if the area has a `SACD_IGL`.
     pub genre: Option<Genre>,
