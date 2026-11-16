@@ -63,6 +63,47 @@ In the run list, but not in every table:
   DSF and DSD to PCM are blank, unless an equivalent revision is compared instead (0.5.6
   below uses `3eb96dc` for 0.5.5).
 
+## 0.6.0
+
+Measured on the Zen 2 benchmark host (AMD Ryzen 9 3950X), 2026-11-16, with `compare.sh` (generic kits, statically linked, profile `dist`): 0.5.9 = `v0.5.9` and 0.6.0 = the release-prep tree at `90f480a`. Timed under the machine's shared benchmark lock. 162 runs, none failed.
+
+| Path | Build | 0.5.9 wall s | 0.5.9 CPU s | 0.6.0 wall s | 0.6.0 CPU s | 0.6.0 / 0.5.9 | Median of per-round ratios [range] |
+|---|---|---|---|---|---|---|---|
+| DST decode, one thread, 2 channels | generic | 6.070 | 6.04 | 5.437 | 5.40 | 0.896 | 0.899 [0.890-0.958] |
+| DST decode, one thread, 2 channels, corpus frames | generic | 20.056 | 19.96 | 18.543 | 18.45 | 0.925 | 0.924 [0.923-0.927] |
+| DST decode, all threads, 2 channels | generic | 3.833 | 120.71 | 3.518 | 110.71 | 0.918 | 0.918 [0.910-0.927] |
+| DST decode, one thread, 6 channels | generic | 7.364 | 7.32 | 7.010 | 6.96 | 0.952 | 0.949 [0.943-0.960] |
+| DST decode, all threads, 6 channels | generic | 2.468 | 77.73 | 2.335 | 73.56 | 0.946 | 0.947 [0.942-0.955] |
+| plain-DSD area to DSF, 2 channels | generic | 0.487 | 0.48 | 0.483 | 0.48 | 0.992 | 0.996 [0.990-0.998], unresolved |
+| plain-DSD area to DSF, 5 channels | generic | 0.533 | 0.53 | 0.531 | 0.52 | 0.997 | 1.002 [0.983-1.006], unresolved |
+| DST area to DSF, all threads | generic | 3.825 | 121.30 | 3.528 | 111.49 | 0.922 | 0.923 [0.917-0.926] |
+| DSD to PCM, stereo DSD64 to 176.4 kHz 24-bit, one thread | generic | 3.89 / 3.81 / 3.80 ms per s | - | 3.90 / 3.81 / 3.81 ms per s | - | 1.000 | - |
+| open to parsed TOC, page cache | generic | 14.7 µs | - | 15.2 µs | - | 1.039 | -, within spread |
+| open to parsed TOC, evicted | generic | 200.7 µs | - | 200.2 µs | - | 0.997 | -, within spread |
+| first 128 KiB, 2 channels, plain DSD, page cache | generic | 27.9 µs | - | 28.2 µs | - | 1.013 | -, within spread |
+| first 128 KiB, 2 channels, plain DSD, evicted | generic | 248.1 µs | - | 245.2 µs | - | 0.989 | -, within spread |
+| first 128 KiB, 2 channels, DST, one thread, page cache | generic | 3983.7 µs | - | 3681.9 µs | - | 0.924 | - |
+| first 128 KiB, 2 channels, DST, one thread, evicted | generic | 4358.2 µs | - | 4101.1 µs | - | 0.941 | - |
+| first 128 KiB, 2 channels, DST, all threads, page cache | generic | 2352.6 µs | - | 2228.2 µs | - | 0.947 | - |
+| first 128 KiB, 2 channels, DST, all threads, evicted | generic | 4138.1 µs | - | 4165.4 µs | - | 1.007 | -, within spread |
+
+Medians of 5 rounds (3 for the 20-minute DST case and DSD to PCM), alternating builds, a fresh copy of each program and image per round, images in the page cache, output to `/dev/null`. The DSD-to-PCM cells are at 1 / 8 / 256 frames per call. `open` and `first` cells are the program's own median in microseconds; the per-round column is computed from process wall times, so it is left out for them. Spread between rounds above 5 %, so read as a range: open, page cache 13.6 to 19.2 µs (0.5.9) and 13.7 to 18.3 µs (0.6.0); open, evicted 192.7 to 218.1 µs and 186.3 to 223.2 µs; first 128 KiB plain DSD, page cache 27.2 to 29.1 µs and 27.0 to 30.3 µs; first 128 KiB plain DSD, evicted 247.0 to 260.0 µs (0.5.9); first 128 KiB DST all threads, evicted 3993.5 to 4247.1 µs and 4037.9 to 4465.5 µs.
+
+**DST:** #330's Q table, 5 to 10 % less time at one and at all threads, with every round faster. #338 (one inlined copy of the symbol loops, for debug builds) is in the same figures; it was not separated.
+
+**Plain-DSD rows:** differences under about 2 % are unresolved (#259). 2 channels 0.996 (5 of 5 rounds a little faster), 5 channels 1.002 (3 of 5 slower): no change resolved either way. The absolute seconds are lower than in the 0.5.9 section for both versions alike, so compare within this table only.
+
+**5 channels.** The run list has no 5-channel DST case, so this is a separate run, same method, 5 rounds, 20 runs, none failed:
+
+| Path (not in the run list) | Build | 0.5.9 wall s | 0.5.9 CPU s | 0.6.0 wall s | 0.6.0 CPU s | 0.6.0 / 0.5.9 | Median of per-round ratios [range] |
+|---|---|---|---|---|---|---|---|
+| DST decode, one thread, 5 channels, corpus frames, 3 min | generic | 7.449 | 7.40 | 7.068 | 7.02 | 0.949 | 0.945 [0.938-0.949] |
+| DST decode, all threads, 5 channels, corpus frames, 10 min | generic | 1.598 | 50.17 | 1.464 | 45.83 | 0.916 | 0.917 [0.911-0.925] |
+
+No row is slower than 0.5.9 beyond noise.
+
+Not measured for 0.6.0: the x86-64-v3 build; AVX-512 builds (`znver5`, including 0.5.9's 5-channel slowdown there), Zen 5 and Raptor Lake; real output files; the first 128 KiB of 5 or 6 channels or without a seek index; cold runs of the whole-area cases; the C interface (see "Not measured"); `bench realtime` (the 0.5.9 section's table is the latest); `--lanes`.
+
 ## 0.5.9
 
 Measured on the Zen 2 benchmark host (AMD Ryzen 9 3950X), 2026-11-06, with `compare.sh` (generic kits, statically linked, profile `dist`): 0.5.8 = `v0.5.8` and 0.5.9 = the release-prep tree. Timed under the machine's shared benchmark lock. 122 runs, none failed. The kit was built just before #283 merged; #283 changes only comments, Miri-only tests and CI, no timed code.

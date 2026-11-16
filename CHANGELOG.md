@@ -15,7 +15,7 @@ from 0.5.8).
 **The interface change before 1.0 (#39), faster DST decoding, fixes to seek verdicts, ID3 tag sizes and debug builds, and the first release from the hardened release workflow.**
 
 - **Breaking changes: read [Migrating to 0.6.0](https://github.com/aclater/scarletbook-rs/blob/v0.6.0/docs/migrating-0.6.md) first.** This is the release that changes the interface before it is frozen for 1.0 (#39). Rust: TOC and result structs and several enums and enum variants are `#[non_exhaustive]`; `Stored::Plain` is `Stored::Dsd` and `Cutoff::Default` is `Cutoff::Standard` (old names kept as deprecated constants); `Image::read_sectors` returns `Result<(), Error>`; plumbing, tuning values and the low-level text helpers are `#[doc(hidden)]` and out of the semver promise; the cursor twins of `Disc`, the `*with_log`/`*with_format*` constructors, `speculation_id`/`counts_from`, the count methods of `AreaIndex` and `dst::{MAX_CHANNELS, FL}` are deprecated, to be removed before 1.0. Each has a before-and-after on that page. **C library:** the ABI and the header's declarations do not change (`SB_ABI_VERSION` 2, now declared the 1.0 ABI), but the shared library is named after it: `libscarletbook_ffi.so.2` (SONAME) on Linux and `libscarletbook_ffi.2.dylib` on macOS, with the old names as links in the archives. A program linked against 0.6.0 needs the versioned file at run time; one that loads the library by path should move to the versioned name (#294, migration page M8). Windows is unchanged.
-- **Faster DST decoding, same output.** Q now comes from a table in the fast loop for 1, 2, 5 and 6 channels (#330); #330 measured about 5 to 8 % less time on Zen 2. The DST decoder also inlines one copy of most of its symbol loops instead of three (#338), for debug builds; release builds are about the same. The release's own table is below.
+- **Faster DST decoding, same output.** Q now comes from a table in the fast loop for 1, 2, 5 and 6 channels (#330); against 0.5.9 on Zen 2 (table below), DST decoding takes 5 to 10 % less time: stereo 7.6 to 10 %, 5 channels 5.5 % at one thread and 8 % at all threads, 6 channels 5 %. The DST decoder also inlines one copy of most of its symbol loops instead of three (#338), for debug builds; release builds are about the same.
 - **DST lanes: the default stays 2, and `dst::lanes` stays public** (owner's decision of 2026-11-07, #203). Callers can still choose their own count with `TrackAudioCursor::with_dst_lanes`.
 - **`znver5` and 5 channels: unmeasured.** 0.5.9's `znver5` build decoded 5 channels about 1.9× slower than 0.5.8's at one thread. #330 removed the code pairing suspected behind it, so it may be fixed, but no 5-channel `znver5` figure of this release exists yet: it is unmeasured, and any fix that turns out to be needed ships in a patch release. Whether `lanes()` should be 6 on AVX-512 builds is still open (#203).
 - **Stack use is documented** (#335): calls may use up to 68 KiB of stack; give threads that call the library at least 136 KiB.
@@ -28,7 +28,38 @@ from 0.5.8).
 
 **Open in milestone 0.6.0, not blocking it:** #340 (track-length plausibility, sacdfs), #342 (control characters in ISRC, catalogue numbers and language code) and #347 (C header wording, the `_free` point), each waiting on a decision with its requester; #307 (DSF partial rows), #259 (plain-DSD benchmark variance), #202 and #203 (performance against a reference implementation).
 
-**Performance: not yet measured.** The release's before-and-after table against 0.5.9 is not here yet: the benchmark host is unavailable. It is added before the tag (RESULTS.md, "0.6.0").
+| Path | Build | 0.5.9 wall s | 0.5.9 CPU s | 0.6.0 wall s | 0.6.0 CPU s | 0.6.0 / 0.5.9 | Median of per-round ratios [range] |
+|---|---|---|---|---|---|---|---|
+| DST decode, one thread, 2 channels | generic | 6.070 | 6.04 | 5.437 | 5.40 | 0.896 | 0.899 [0.890-0.958] |
+| DST decode, one thread, 2 channels, corpus frames | generic | 20.056 | 19.96 | 18.543 | 18.45 | 0.925 | 0.924 [0.923-0.927] |
+| DST decode, all threads, 2 channels | generic | 3.833 | 120.71 | 3.518 | 110.71 | 0.918 | 0.918 [0.910-0.927] |
+| DST decode, one thread, 6 channels | generic | 7.364 | 7.32 | 7.010 | 6.96 | 0.952 | 0.949 [0.943-0.960] |
+| DST decode, all threads, 6 channels | generic | 2.468 | 77.73 | 2.335 | 73.56 | 0.946 | 0.947 [0.942-0.955] |
+| plain-DSD area to DSF, 2 channels | generic | 0.487 | 0.48 | 0.483 | 0.48 | 0.992 | 0.996 [0.990-0.998], unresolved |
+| plain-DSD area to DSF, 5 channels | generic | 0.533 | 0.53 | 0.531 | 0.52 | 0.997 | 1.002 [0.983-1.006], unresolved |
+| DST area to DSF, all threads | generic | 3.825 | 121.30 | 3.528 | 111.49 | 0.922 | 0.923 [0.917-0.926] |
+| DSD to PCM, stereo DSD64 to 176.4 kHz 24-bit, one thread | generic | 3.89 / 3.81 / 3.80 ms per s | - | 3.90 / 3.81 / 3.81 ms per s | - | 1.000 | - |
+| open to parsed TOC, page cache | generic | 14.7 µs | - | 15.2 µs | - | 1.039 | -, within spread |
+| open to parsed TOC, evicted | generic | 200.7 µs | - | 200.2 µs | - | 0.997 | -, within spread |
+| first 128 KiB, 2 channels, plain DSD, page cache | generic | 27.9 µs | - | 28.2 µs | - | 1.013 | -, within spread |
+| first 128 KiB, 2 channels, plain DSD, evicted | generic | 248.1 µs | - | 245.2 µs | - | 0.989 | -, within spread |
+| first 128 KiB, 2 channels, DST, one thread, page cache | generic | 3983.7 µs | - | 3681.9 µs | - | 0.924 | - |
+| first 128 KiB, 2 channels, DST, one thread, evicted | generic | 4358.2 µs | - | 4101.1 µs | - | 0.941 | - |
+| first 128 KiB, 2 channels, DST, all threads, page cache | generic | 2352.6 µs | - | 2228.2 µs | - | 0.947 | - |
+| first 128 KiB, 2 channels, DST, all threads, evicted | generic | 4138.1 µs | - | 4165.4 µs | - | 1.007 | -, within spread |
+
+Medians of alternating runs on the Zen 2 benchmark host (AMD Ryzen 9 3950X), 2026-11-16, under the machine's shared benchmark lock, generic build, kits from `benchmarks/compare.sh` (`v0.5.9` and this release's tree), a fresh copy of each program and image per round, images in the page cache, output to `/dev/null`: 5 rounds, 3 for the 20-minute DST case and for DSD to PCM; 162 runs, none failed. The DSD-to-PCM cells are at 1 / 8 / 256 frames per call. The `open` and `first` cells are the program's own medians in microseconds; their per-round column is left out, and those marked "within spread" vary between rounds by more than the difference (`benchmarks/RESULTS.md` lists the ranges).
+
+**Plain-DSD rows:** differences under about 2 % are unresolved (#259). Neither row shows a change either way, and 0.6.0 has no change aimed at that path.
+
+**5 channels.** The run list has no 5-channel DST case, so these come from a separate run with the same method (5 rounds, 20 runs, none failed):
+
+| Path (not in the run list) | Build | 0.5.9 wall s | 0.5.9 CPU s | 0.6.0 wall s | 0.6.0 CPU s | 0.6.0 / 0.5.9 | Median of per-round ratios [range] |
+|---|---|---|---|---|---|---|---|
+| DST decode, one thread, 5 channels, corpus frames, 3 min | generic | 7.449 | 7.40 | 7.068 | 7.02 | 0.949 | 0.945 [0.938-0.949] |
+| DST decode, all threads, 5 channels, corpus frames, 10 min | generic | 1.598 | 50.17 | 1.464 | 45.83 | 0.916 | 0.917 [0.911-0.925] |
+
+No row is slower than 0.5.9 beyond noise. **Compare within these tables only.** Not measured: the x86-64-v3 build; AVX-512 builds (`znver5`), Zen 5 and Raptor Lake; real output files; the first 128 KiB of 5 or 6 channels or without a seek index; cold runs of the whole-area cases; the C interface; `bench realtime` (`benchmarks/RESULTS.md`).
 
 ### Added
 
