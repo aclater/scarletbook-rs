@@ -11,6 +11,13 @@ pull request sets the version in three places (the build fails if they disagree)
 and renames the Unreleased section of CHANGELOG.md for the version
 (`.github/scripts/fragments.py assemble X.Y.Z DATE`).
 
+It also moves the README's Quick start (#364) to the new version: the `cargo add` pin, the
+tag in the image URL, the release asset name, and any API the examples use that changed. The
+Quick start fetches the published release, so it can only run once the tag is out. After the
+release, run both of its command blocks exactly as written in an empty directory, and if they
+fail, or their output differs from what the README shows, fix the README in a follow-up pull
+request.
+
 Pushing the tag runs `.github/workflows/release.yml`:
 
 1. `preflight`: the tagged commit is on `main` and passed `main`'s required checks (it
