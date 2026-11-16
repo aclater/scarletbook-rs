@@ -98,7 +98,7 @@ if readme_path not in block:
 exec(block.replace(readme_path, repr(str(lib_path))), bindings)
 check("README SB_ABI_VERSION", bindings["SB_ABI_VERSION"], int(re.search(r"^#define SB_ABI_VERSION (\d+)$", header, flags=re.M).group(1)))
 CTYPES = {"uint8_t": C.c_uint8, "uint16_t": C.c_uint16, "uint32_t": C.c_uint32, "uint64_t": C.c_uint64,
-          "int32_t": C.c_int32, "int64_t": C.c_int64, "size_t": C.c_size_t, "const char *": C.c_char_p,
+          "int32_t": C.c_int32, "int64_t": C.c_int64, "size_t": C.c_size_t, "double": C.c_double, "const char *": C.c_char_p,
           "const uint8_t *": C.POINTER(C.c_uint8)}
 decls = abi_check.normalise(header)
 structs = re.findall(r"^typedef struct (\w+) \{\n(.*?)^\} \1;", decls, flags=re.M | re.S)
@@ -243,6 +243,10 @@ check("sb_disc_manufacturer", B.sb_disc_manufacturer(disc, manufacturer, len(man
 for want in toc["areas"]:
     details, slot = bindings["SbAreaDetails"](), slots[want["slot"]]
     check(f"sb_area_details {slot}", B.sb_area_details(disc, slot, C.byref(details)), OK)
+    cap = bindings["SbAreaCapacity"]()
+    check(f"sb_area_capacity {slot}", B.sb_area_capacity(disc, slot, C.byref(cap)), OK)
+    check(f"area {slot} capacity", [cap.capacity, cap.has_plain_frame_bound, list(cap.reserved)],
+          [7 * cap.audio_sectors, 1, [0] * 7])
     check(f"area {slot} details", [[details.version_major, details.version_minor], details.max_available_channels,
                                    details.mute_flags, details.track_attribute, details.track_offset],
           [want[k] for k in ("version", "max_available_channels", "area_mute_flags", "track_attribute",

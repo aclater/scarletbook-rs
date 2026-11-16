@@ -737,6 +737,11 @@ class SbAreaDetails(C.Structure):
         "version_major", "version_minor", "max_available_channels", "mute_flags",
         "track_attribute", "track_offset", "text_channel_count", "text_charset")]
 
+class SbAreaCapacity(C.Structure):  # frames_per_sector: inf when audio_sectors is 0
+    _fields_ = [("audio_sectors", C.c_uint64), ("capacity", C.c_uint64), ("plain_frame_bound", C.c_uint64),
+                ("frames_per_sector", C.c_double), ("playtime_frames", C.c_uint32), ("max_track_end", C.c_uint32),
+                ("has_plain_frame_bound", C.c_uint8), ("reserved", C.c_uint8 * 7)]
+
 # The layout of sb_disc_toc (format 1.0); see "The whole TOC in one call" below.
 class SbTocStr(C.Structure):
     _fields_ = [("offset", C.c_uint32), ("length", C.c_uint32)]
@@ -829,6 +834,7 @@ bind("sb_disc_text_channel", S, H, U32, P(SbTextChannel))
 bind("sb_disc_catalog_number_stored", S, H, U32, C.c_char_p, SIZE, P(SIZE))
 bind("sb_disc_manufacturer", S, H, C.c_char_p, SIZE, P(SIZE))
 bind("sb_area_details", S, H, U32, P(SbAreaDetails))
+bind("sb_area_capacity", S, H, U32, P(SbAreaCapacity))
 bind("sb_area_text_channel", S, H, U32, U32, P(SbTextChannel))
 bind("sb_track_info", S, H, U32, U32, P(SbTrackInfo))
 bind("sb_area_playtime_stored", S, H, U32, P(SbTimecode))
