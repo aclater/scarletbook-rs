@@ -65,7 +65,7 @@ In the run list, but not in every table:
 
 ## 0.6.0
 
-Measured on the Zen 2 benchmark host (AMD Ryzen 9 3950X), 2026-11-16, with `compare.sh` (generic kits, statically linked, profile `dist`): 0.5.9 = `v0.5.9` and 0.6.0 = the release-prep tree at `90f480a`. Timed under the machine's shared benchmark lock. 162 runs, none failed.
+Measured on the Zen 2 benchmark host (AMD Ryzen 9 3950X), 2026-11-16, with `compare.sh` (generic kits, statically linked, profile `dist`): 0.5.9 = `v0.5.9` and 0.6.0 = the release-prep tree at `90f480a`. Timed under the machine's shared benchmark lock. 162 runs, none failed. Later changes in 0.6.0 (#360, #362, #363) touch the C interface's `_free` functions, documentation and a new capacity API, none of the measured paths.
 
 | Path | Build | 0.5.9 wall s | 0.5.9 CPU s | 0.6.0 wall s | 0.6.0 CPU s | 0.6.0 / 0.5.9 | Median of per-round ratios [range] |
 |---|---|---|---|---|---|---|---|
