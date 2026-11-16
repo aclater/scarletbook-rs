@@ -1,1 +1,0 @@
-| 2026-11-16 | control characters in TOC strings documented (#342, #360) | Documentation and a test only, written from sacd-spec `95d8b51` specification 2, 2.5.1 item 1, 2.6.4 item 3 and 2.6.5 item 4, and specification 3, 3.7.3. No behaviour change. No new sources consulted. |
