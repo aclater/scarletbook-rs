@@ -17,8 +17,8 @@ use scarletbook::output::{
 };
 
 use super::{
-    Failure, REENTRANT, SbDisc, SbStatus, clear_out, copy_string, disc_handle, guard, slot_from, slot_index,
-    write_out,
+    Failure, REENTRANT, SbDisc, SbStatus, clear_out, copy_string, disc_handle, guard, guard_free, slot_from,
+    slot_index, write_out,
 };
 
 /// Output file formats, as passed in `format` arguments.
@@ -461,15 +461,15 @@ unsafe fn string(s: *const c_char) -> Result<Option<String>, Failure> {
 ///
 /// `p` must be NULL or a live handle, freed only once.
 unsafe fn free<T>(p: *mut T, in_use: impl FnOnce(&T) -> bool) {
-    let _ = guard(|| {
+    guard_free(|| {
         // SAFETY: forwarded contract.
-        let Some(h) = (unsafe { p.as_ref() }) else { return Ok(SbStatus::Ok) };
+        let Some(h) = (unsafe { p.as_ref() }) else { return Ok(()) };
         if in_use(h) {
             return Err(Failure::arg(REENTRANT));
         }
         // SAFETY: a live handle created by Box::into_raw and not in use, freed only once.
         drop(unsafe { Box::from_raw(p) });
-        Ok(SbStatus::Ok)
+        Ok(())
     });
 }
 

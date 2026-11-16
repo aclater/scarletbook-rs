@@ -452,6 +452,16 @@ uint8_t track_offset;
 uint8_t text_channel_count;
 uint8_t text_charset;
 } SbAreaDetails;
+typedef struct SbAreaCapacity {
+uint64_t audio_sectors;
+uint64_t capacity;
+uint64_t plain_frame_bound;
+double frames_per_sector;
+uint32_t playtime_frames;
+uint32_t max_track_end;
+uint8_t has_plain_frame_bound;
+uint8_t reserved [ 7 ];
+} SbAreaCapacity;
 typedef struct SbTrackInfo {
 uint32_t number;
 uint32_t start_lsn;
@@ -643,6 +653,7 @@ SbStatus sb_disc_manufacturer(const struct SbDisc *disc, uint8_t *buf, size_t ca
 SbStatus sb_area_playtime_stored(const struct SbDisc *disc, uint32_t slot, struct SbTimecode *out);
 SbStatus sb_track_timecodes_stored(const struct SbDisc *disc, uint32_t slot, uint32_t number, struct SbTimecode *start, struct SbTimecode *duration);
 SbStatus sb_area_details(const struct SbDisc *disc, uint32_t slot, struct SbAreaDetails *out);
+SbStatus sb_area_capacity(const struct SbDisc *disc, uint32_t slot, struct SbAreaCapacity *out);
 SbStatus sb_area_text_channel(const struct SbDisc *disc, uint32_t slot, uint32_t index, struct SbTextChannel *out);
 SbStatus sb_track_info(const struct SbDisc *disc, uint32_t slot, uint32_t number, struct SbTrackInfo *out);
 SbStatus sb_track_string(const struct SbDisc *disc, uint32_t slot, uint32_t number, uint32_t field, char *buf, size_t cap, size_t *len);
