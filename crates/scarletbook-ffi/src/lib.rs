@@ -167,9 +167,11 @@ pub enum SbDiscString {
     DiscPublisherPhonetic = 14,
     /// Disc copyright, phonetic.
     DiscCopyrightPhonetic = 15,
-    /// Album catalogue number (always present; may be empty).
+    /// Album catalogue number (always present; may be empty; may contain control
+    /// characters). `sb_disc_catalog_number_stored` gives the bytes as stored.
     AlbumCatalogNumber = 16,
-    /// Disc catalogue number (always present; may be empty).
+    /// Disc catalogue number (always present; may be empty; may contain control
+    /// characters). `sb_disc_catalog_number_stored` gives the bytes as stored.
     DiscCatalogNumber = 17,
 }
 
@@ -220,7 +222,7 @@ pub enum SbTrackString {
     MessagePhonetic = 12,
     /// Extra message, phonetic (type 0x87).
     ExtraMessagePhonetic = 13,
-    /// ISRC.
+    /// ISRC (may contain control characters; its syntax is not validated).
     Isrc = 14,
 }
 
@@ -406,7 +408,10 @@ pub struct SbGenre {
 pub struct SbTextChannel {
     /// The language code's two bytes as stored (an ISO 639-1 code such as "en"), nothing
     /// removed: 0x00 0x00 is an unset code. The trimmed language of specification 2, 2.5.1
-    /// item 1 is these bytes with every trailing 0x00 and 0x20 removed.
+    /// item 1 is these bytes with every trailing 0x00 and 0x20 removed; no other byte is
+    /// removed or replaced, so **it may contain control characters**, 0x00 included (0x00
+    /// 0x65 is U+0000 U+0065). The two bytes are not NUL-terminated: read both. Escape or
+    /// filter them before printing them or putting them in a tag or file name.
     pub language: [u8; 2],
     /// Character set code, the stored byte (the low 3 bits select the character set).
     pub charset: u8,
@@ -1915,6 +1920,16 @@ pub unsafe extern "C" fn sb_disc_info(disc: *const SbDisc, out: *mut SbDiscInfo)
 
 /// Copies a disc-level string (`SbDiscString`).
 ///
+/// These strings are returned as the specification defines them and **may contain control
+/// characters**. ISRCs and catalogue numbers (specification 2, 2.6.5 item 4) keep C0,
+/// U+007F (DEL) and U+0080 to U+009F (C1). Text items (2.6.4 item 3) have each C0 code
+/// point replaced with a space, so U+001B (ESC) is the only escape-sequence starter
+/// removed, but keep DEL and C1. U+009B (CSI), for example, starts a terminal control
+/// sequence on terminals that honour 8-bit controls, so do not pass a string straight to
+/// printf or a terminal: escape or filter it for its use, including tags and file names.
+/// `*len` is the string's authoritative length; use it, not strlen (the copy-out
+/// convention in the header's introduction).
+///
 /// # Safety
 ///
 /// `disc` must be NULL or a live handle; `buf` NULL or valid for `cap` bytes; `len` NULL
@@ -2033,6 +2048,15 @@ pub unsafe extern "C" fn sb_area_channel_speaker(
 
 /// Copies an area string (`SbAreaString`) of the area from `slot`.
 ///
+/// These strings are returned as specification 2, 2.6.4 item 3 defines them and **may
+/// contain control characters**: each C0 code point is replaced with a space, so U+001B
+/// (ESC) is the only escape-sequence starter removed, but U+007F (DEL) and U+0080 to
+/// U+009F (C1) are kept. U+009B (CSI), for example, starts a terminal control sequence on
+/// terminals that honour 8-bit controls, so do not pass a string straight to printf or a
+/// terminal: escape or filter it for its use, including tags and file names. `*len` is the
+/// string's authoritative length; use it, not strlen (the copy-out convention in the
+/// header's introduction).
+///
 /// # Safety
 ///
 /// As `sb_disc_string`.
@@ -2116,6 +2140,11 @@ fn text_channel(locales: &[scarletbook::toc::Locale], index: u32) -> Result<SbTe
 /// The locale entry of master TOC text channel `index`, below `min(count, 8)` of
 /// `sb_disc_text_channel_count` (the reported locale list, specification 2, 2.5.2);
 /// `SB_STATUS_INVALID_ARGUMENT` for another index.
+///
+/// The language code is two bytes as stored (`SbTextChannel.language`): they **may be
+/// control characters**, 0x00 included (specification 2, 2.5.1 item 1), and are not
+/// NUL-terminated. Read both bytes; escape or filter them before printing them or putting
+/// them in a tag or file name.
 ///
 /// # Safety
 ///
@@ -2306,6 +2335,11 @@ pub unsafe extern "C" fn sb_area_details(
 /// `min(SbAreaDetails.text_channel_count, 10)` (the reported area locale list,
 /// specification 3, 3.5); `SB_STATUS_INVALID_ARGUMENT` for another index.
 ///
+/// The language code is two bytes as stored (`SbTextChannel.language`): they **may be
+/// control characters**, 0x00 included (specification 2, 2.5.1 item 1), and are not
+/// NUL-terminated. Read both bytes; escape or filter them before printing them or putting
+/// them in a tag or file name.
+///
 /// # Safety
 ///
 /// `disc` must be NULL or a live handle; `out` NULL or valid for a write.
@@ -2350,6 +2384,16 @@ pub unsafe extern "C" fn sb_track_info(
 }
 
 /// Copies a track string (`SbTrackString`).
+///
+/// These strings are returned as the specification defines them and **may contain control
+/// characters**. ISRCs and catalogue numbers (specification 2, 2.6.5 item 4) keep C0,
+/// U+007F (DEL) and U+0080 to U+009F (C1). Text items (2.6.4 item 3) have each C0 code
+/// point replaced with a space, so U+001B (ESC) is the only escape-sequence starter
+/// removed, but keep DEL and C1. U+009B (CSI), for example, starts a terminal control
+/// sequence on terminals that honour 8-bit controls, so do not pass a string straight to
+/// printf or a terminal: escape or filter it for its use, including tags and file names.
+/// `*len` is the string's authoritative length; use it, not strlen (the copy-out
+/// convention in the header's introduction).
 ///
 /// # Safety
 ///
@@ -5199,8 +5243,9 @@ pub const SB_TOC_ABSENT: u32 = 0xFFFF_FFFF;
 /// A string in a `sb_disc_toc` layout: `length` bytes at byte `offset` of the layout,
 /// followed by a NUL that `length` does not count; `offset` is `SB_TOC_ABSENT` (and
 /// `length` 0) for an absent string, where the per-field call returns
-/// `SB_STATUS_ABSENT`. Text is UTF-8, as from `sb_disc_string`; stored catalogue numbers
-/// and the manufacturer sector are bytes as stored.
+/// `SB_STATUS_ABSENT`. Text is UTF-8, as from `sb_disc_string`, and may contain control
+/// characters as described there; `length` is authoritative. Stored catalogue numbers and
+/// the manufacturer sector are bytes as stored.
 ///
 /// Layout: 8 bytes, aligned to 4: `offset` at 0, `length` at 4.
 #[repr(C)]
@@ -5682,6 +5727,13 @@ fn write_layout(d: &Disc<Reader>, plan: &LayoutPlan, buf: &mut [u8]) -> Result<(
 /// `SB_STATUS_BUFFER_TOO_SMALL`.
 ///
 /// No I/O and no log output: the data is the TOC parsed when the disc was opened.
+///
+/// The strings in the layout are those of `sb_disc_string`, `sb_area_string` and
+/// `sb_track_string`, and **may contain control characters** as described there (C0, DEL
+/// and C1 in ISRCs and catalogue numbers; DEL and C1 in text). Escape or filter them for
+/// their use, and take each string's length from its `SbTocStr.length`, not from strlen.
+/// The text channels' language codes are two bytes as stored, which may be control
+/// characters, 0x00 included.
 ///
 /// # Safety
 ///
