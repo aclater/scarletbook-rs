@@ -20,6 +20,118 @@ audio sector multiplexing, DST decoding, C FFI. The clean-room record is in
 in [CHANGELOG.md](CHANGELOG.md), and vulnerabilities are reported as described in
 [SECURITY.md](SECURITY.md).
 
+## Quick start
+
+Both examples read a small synthetic image from this repository's conformance corpus,
+[`full-text.iso`](https://github.com/aclater/scarletbook-rs/blob/v0.6.0/corpus/images/full-text.iso)
+(1.1 MB, CC0-1.0, [corpus/LICENSE](corpus/LICENSE)): a stereo area with three tracks of one or two
+frames each, and every text field filled in. It holds generated test signals, no real audio.
+Every command below was run against v0.6.0 on 2026-11-16.
+
+### Rust
+
+```sh
+cargo new quickstart && cd quickstart
+cargo add scarletbook@=0.6.0
+curl -fsSLO https://raw.githubusercontent.com/aclater/scarletbook-rs/v0.6.0/corpus/images/full-text.iso
+cat > src/main.rs <<'EOF'
+use std::{fs::File, io::BufReader};
+
+use scarletbook::Disc;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let disc = Disc::open(BufReader::new(File::open("full-text.iso")?))?;
+    let toc = disc.toc();
+    let album = toc.master.text.album_title.as_deref().unwrap_or("(untitled)");
+    println!("album: {album}");
+    for area in &toc.areas {
+        println!("{:?} area: {} channels, {} tracks", area.slot, area.channel_count, area.tracks.len());
+        for track in &area.tracks {
+            let title = track.text.title.as_deref().unwrap_or("(untitled)");
+            println!("  track {}: {} frames, {title}", track.number, track.duration_frames);
+        }
+    }
+    Ok(())
+}
+EOF
+cargo run
+```
+
+```
+album: Album title
+TwoChannel area: 2 channels, 3 tracks
+  track 1: 1 frames, Title 1
+  track 2: 1 frames, Title 2
+  track 3: 2 frames, Track 3 title, second item
+```
+
+The `=0.6.0` pin is the one recommended under [Installing](#installing); a frame is 1/75 s.
+For audio, see [Using the library](#using-the-library).
+
+### C
+
+On x86_64 Linux with glibc 2.17 or later and a C compiler. The archive's name and the checks are
+those of [Release assets](#release-assets) and [Verifying a download](#verifying-a-download).
+
+```sh
+mkdir quickstart-c && cd quickstart-c
+gh release download v0.6.0 -R aclater/scarletbook-rs -p 'scarletbook-ffi-0.6.0-x86_64-unknown-linux-gnu.tar.gz*'
+sha256sum -c scarletbook-ffi-0.6.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+gh attestation verify scarletbook-ffi-0.6.0-x86_64-unknown-linux-gnu.tar.gz -R aclater/scarletbook-rs \
+  --signer-workflow aclater/scarletbook-rs/.github/workflows/release.yml --source-ref refs/tags/v0.6.0
+tar xzf scarletbook-ffi-0.6.0-x86_64-unknown-linux-gnu.tar.gz
+curl -fsSLO https://raw.githubusercontent.com/aclater/scarletbook-rs/v0.6.0/corpus/images/full-text.iso
+cat > toc.c <<'EOF'
+#include <stdio.h>
+#include "scarletbook.h"
+
+int main(void) {
+    struct SbDisc *disc = NULL;
+    struct SbDiscInfo info;
+    char title[256];
+    size_t len = 0;
+
+    if (sb_abi_version() != SB_ABI_VERSION) return 1;  /* header and library must agree */
+    if (sb_disc_open_file("full-text.iso", &disc) != SB_STATUS_OK) {
+        fprintf(stderr, "%s\n", sb_last_error_message());
+        return 1;
+    }
+    sb_disc_info(disc, &info);
+    if (sb_disc_string(disc, SB_DISC_STRING_ALBUM_TITLE, title, sizeof title, &len) == SB_STATUS_OK)
+        printf("ABI %u, album: %.*s\n", sb_abi_version(), (int)len, title);
+    for (uint32_t a = 0; a < info.area_count; a++) {
+        struct SbAreaInfo area;
+        sb_disc_area(disc, a, &area);
+        printf("area slot %u: %u channels, %u tracks\n", area.slot, area.channel_count, area.track_count);
+        for (uint32_t t = 1; t <= area.track_count; t++) {
+            struct SbTrackInfo track;
+            sb_track_info(disc, area.slot, t, &track);
+            printf("  track %u: %u frames\n", t, track.duration_frames);
+        }
+    }
+    sb_disc_free(disc);
+    return 0;
+}
+EOF
+P=scarletbook-ffi-0.6.0-x86_64-unknown-linux-gnu
+cc -std=c99 -Wall -I$P/include toc.c -L$P/lib -lscarletbook_ffi -Wl,-rpath,'$ORIGIN/'$P/lib -o toc
+./toc
+```
+
+```
+ABI 2, album: Album title
+area slot 0: 2 channels, 3 tracks
+  track 1: 1 frames
+  track 2: 1 frames
+  track 3: 2 frames
+```
+
+`gh attestation verify` prints nothing when it succeeds (a non-zero exit status is a failure).
+The program records `libscarletbook_ffi.so.2`, the library's name for C ABI 2, and finds it through
+the rpath, so it runs from this directory without the link. To ship it, copy
+`lib/libscarletbook_ffi.so.2` next to the program, as [Linking](#linking) says. See [C library](#c-library)
+for the rest of the API, and [Migrating to 0.6.0](docs/migrating-0.6.md) from an earlier release.
+
 ## Installing
 
 The crates are on crates.io: [`scarletbook`](https://crates.io/crates/scarletbook) (the
