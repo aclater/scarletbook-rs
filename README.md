@@ -43,12 +43,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let disc = Disc::open(BufReader::new(File::open("full-text.iso")?))?;
     let toc = disc.toc();
     let album = toc.master.text.album_title.as_deref().unwrap_or("(untitled)");
-    println!("album: {album}");
+    println!("album: {album:?}");
     for area in &toc.areas {
         println!("{:?} area: {} channels, {} tracks", area.slot, area.channel_count, area.tracks.len());
         for track in &area.tracks {
             let title = track.text.title.as_deref().unwrap_or("(untitled)");
-            println!("  track {}: {} frames, {title}", track.number, track.duration_frames);
+            println!("  track {}: {} frames, {title:?}", track.number, track.duration_frames);
         }
     }
     Ok(())
@@ -58,15 +58,17 @@ cargo run
 ```
 
 ```
-album: Album title
+album: "Album title"
 TwoChannel area: 2 channels, 3 tracks
-  track 1: 1 frames, Title 1
-  track 2: 1 frames, Title 2
-  track 3: 2 frames, Track 3 title, second item
+  track 1: 1 frames, "Title 1"
+  track 2: 1 frames, "Title 2"
+  track 3: 2 frames, "Track 3 title, second item"
 ```
 
 The `=0.6.0` pin is the one recommended under [Installing](#installing); a frame is 1/75 s.
-For audio, see [Using the library](#using-the-library).
+`{:?}` quotes a string and escapes control characters, including U+007F and U+0080 to U+009F,
+while keeping other text (Japanese, say) readable, which `escape_default()` would turn into
+`\u{..}` escapes. For audio, see [Using the library](#using-the-library).
 
 ### C
 
@@ -85,6 +87,14 @@ cat > toc.c <<'EOF'
 #include <stdio.h>
 #include "scarletbook.h"
 
+/* Prints len bytes, escaping every byte outside 0x20 to 0x7E (a UTF-8 letter becomes \xNN bytes). */
+static void put(const char *s, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c >= 0x20 && c <= 0x7E) putchar(c); else printf("\\x%02X", c);
+    }
+}
+
 int main(void) {
     struct SbDisc *disc = NULL;
     struct SbDiscInfo info;
@@ -98,7 +108,7 @@ int main(void) {
     }
     sb_disc_info(disc, &info);
     if (sb_disc_string(disc, SB_DISC_STRING_ALBUM_TITLE, title, sizeof title, &len) == SB_STATUS_OK)
-        printf("ABI %u, album: %.*s\n", sb_abi_version(), (int)len, title);
+        { printf("ABI %u, album: ", sb_abi_version()); put(title, len); putchar('\n'); }
     for (uint32_t a = 0; a < info.area_count; a++) {
         struct SbAreaInfo area;
         sb_disc_area(disc, a, &area);
@@ -106,7 +116,10 @@ int main(void) {
         for (uint32_t t = 1; t <= area.track_count; t++) {
             struct SbTrackInfo track;
             sb_track_info(disc, area.slot, t, &track);
-            printf("  track %u: %u frames\n", t, track.duration_frames);
+            printf("  track %u: %u frames, ", t, track.duration_frames);
+            if (sb_track_string(disc, area.slot, t, SB_TRACK_STRING_TITLE, title, sizeof title, &len) == SB_STATUS_OK)
+                put(title, len);
+            putchar('\n');
         }
     }
     sb_disc_free(disc);
@@ -114,17 +127,23 @@ int main(void) {
 }
 EOF
 P=scarletbook-ffi-0.6.0-x86_64-unknown-linux-gnu
-cc -std=c99 -Wall -I$P/include toc.c -L$P/lib -lscarletbook_ffi -Wl,-rpath,'$ORIGIN/'$P/lib -o toc
+cc -std=c99 -Wall -Wextra -pedantic -I$P/include toc.c -L$P/lib -lscarletbook_ffi -Wl,-rpath,'$ORIGIN/'$P/lib -o toc
 ./toc
 ```
 
 ```
 ABI 2, album: Album title
 area slot 0: 2 channels, 3 tracks
-  track 1: 1 frames
-  track 2: 1 frames
-  track 3: 2 frames
+  track 1: 1 frames, Title 1
+  track 2: 1 frames, Title 2
+  track 3: 2 frames, Track 3 title, second item
 ```
+
+Titles and other text come from the disc and can hold control characters (U+007F, U+0080 to U+009F,
+and U+009B starts a control sequence on some terminals), so both examples escape what they print;
+code of yours should do the same, as the docs of
+[`DiscText`](https://docs.rs/scarletbook/0.6.0/scarletbook/toc/struct.DiscText.html) and of
+[`sb_disc_string`](crates/scarletbook-ffi/include/scarletbook.h) say.
 
 `gh attestation verify` prints nothing when it succeeds (a non-zero exit status is a failure).
 The program records `libscarletbook_ffi.so.2`, the library's name for C ABI 2, and finds it through
