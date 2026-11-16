@@ -47,14 +47,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-**Byte stability.** While the version is 0.x, a new 0.5.y release may change the PCM bytes
+**Byte stability.** While the version is 0.x, a new 0.6.y release may change the PCM bytes
 that `scarletbook-pcm` (and the C library's `sb_pcm_*`) produce; the decoded DSD bytes are
-fixed by the specification. Cargo treats `0.5.y` as compatible with `0.5.x`, so a plain
-`scarletbook-pcm = "0.5"` picks up such changes on `cargo update`. A consumer that needs the
+fixed by the specification. Cargo treats `0.6.y` as compatible with `0.6.x`, so a plain
+`scarletbook-pcm = "0.6"` picks up such changes on `cargo update`. A consumer that needs the
 same PCM bytes across builds (stored hashes, reproducible files) pins the exact version:
 
 ```toml
-scarletbook-pcm = "=0.5.9"
+scarletbook-pcm = "=0.6.0"
 ```
 
 ## Layout
@@ -1073,7 +1073,7 @@ that loads the library at run time can look the symbol up instead.
 | `SB_ABI_VERSION` | First release |
 |---|---|
 | 1 | 0.1.0 to 0.3.0 (additions only in 0.3.0) |
-| 2 | 0.4.0 (additions in 0.4.1, 0.5.0, 0.5.1, 0.5.2, 0.5.3 and 0.5.4); the 1.0 ABI |
+| 2 | 0.4.0 (additions in 0.4.1, 0.5.0, 0.5.1, 0.5.2, 0.5.3, 0.5.4 and 0.6.0); the 1.0 ABI |
 
 CI enforces this. `crates/scarletbook-ffi/abi/abi-N.txt` is the baseline of ABI version N:
 the header's declarations without comments or layout. `.github/scripts/abi-check.py`

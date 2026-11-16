@@ -65,52 +65,34 @@ gh run rerun <release run id> --repo aclater/scarletbook-rs
 ## Repository and crates.io settings (issue #341)
 
 Releases are fully automated (owner, 2026-11-15): a pushed tag that passes `preflight`
-publishes with no approval step. The settings below narrow who and what can publish; the
-owner makes them, in this order.
+publishes with no approval step. The agents manage the code and the releases. The owner
+decided on 2026-11-16 to keep one setting, the environment below, and not to restrict the
+crates.io trusted publishers to an environment or to restrict who can create a tag.
 
-1. **Create the environment first, before the pull request that adds `environment: release`
-   to `release.yml` merges, and in any case before the next tag.** Settings, Environments,
-   New environment, `release`:
-   - Required reviewers: none.
-   - Deployment branches and tags: Selected branches and tags, then Add deployment branch
-     or tag rule, choose **Ref type: Tag**, pattern `v*`. It must be a tag rule: a branch
-     rule `v*` matches no tag, so the `release` and `publish` jobs of a tag run would be
-     refused by the environment and the release would stop there.
+**The environment `release`** (Settings, Environments): no required reviewers; deployment
+branches and tags: Selected branches and tags, with one rule of **Ref type: Tag**, pattern
+`v*`. It must be a tag rule: a branch rule `v*` matches no tag, so the `release` and
+`publish` jobs of a tag run would be refused by the environment and the release would stop
+there. A workflow run that names an environment which does not exist makes GitHub create it
+with no deployment rule, which lets a job on any branch use it.
 
-   A workflow run that names an environment which does not exist makes GitHub create it
-   with no deployment rule, which lets a job on any branch use it.
-2. **Set the trusted publishers' environment to `release`,** once the pull request that
-   added `environment: release` to `release.yml` has merged and before the next tag. For
-   each of `scarletbook-pcm`, `scarletbook` and `scarletbook-ffi`, at
-   `https://crates.io/crates/<crate>/settings`, edit the GitHub trusted publisher (or remove
-   it and add it again) with environment `release`, everything else unchanged. crates.io
-   accepts a token request from a job in an environment when the trusted publisher names
-   that environment or none, and refuses one from a job without an environment when the
-   trusted publisher names one. So a publisher with environment `release` fails every
-   release from a `release.yml` without `environment: release`, while the workflow change
-   works with the old publishers; the workflow change merges first. Until this step is
-   done, any job of this workflow file can still get a crates.io token.
-3. **Restrict tag creation.** Settings, Rules, Rulesets, `release tags`: add the rule
-   "Restrict creations", with Repository admin in the bypass list, so that only admin
-   accounts can create a `v*` tag.
+### What this stops, and what it doesn't
 
-### What these settings stop, and what they don't
-
-- With 1 and 2, a crates.io token and the bootstrap secret are available only to the
-  `release` and `publish` jobs of a run on a `v*` tag, not to a job on a branch, a pull
-  request or a manual run.
-- With 3, an account or token without admin access cannot create a `v*` tag, so it cannot
-  start a release.
+- The environment's secrets, such as the bootstrap secret (below), are available only to
+  the `release` and `publish` jobs of a run on a `v*` tag.
 - `preflight` refuses a tag whose commit is not on `main` or has not passed `main`'s
   required checks.
 
-Together these stop honest mistakes and stray tags. They do not stop a compromised admin
-token. Our sessions tag releases with the owner's admin account, which the tag rule's bypass
-lets through, and there is no approval step. Anything holding an admin token can therefore
-publish from any commit it can tag and get past `preflight`: for example by getting a
-commit onto `main` (an admin can change `main`'s ruleset), or by tagging a commit that edits
-`release.yml`, since the workflow that runs is the tagged commit's copy, `preflight`
-included. Protecting admin tokens is what guards against that.
+Together these stop honest mistakes and stray tags. They do not stop a compromised token
+with write access to the repository. The crates.io trusted publishers name this repository
+and `release.yml`, but no environment, so crates.io issues a token to any job of a workflow
+file named `release.yml` in this repository, whatever the ref; and anyone who can push to
+the repository can create a `v*` tag, since tag creation is not restricted. Such a token can
+therefore publish from any commit it can tag and get past `preflight`, for example by
+tagging a commit that edits `release.yml` (the workflow that runs is the tagged commit's
+copy, `preflight` included), or from a branch whose `release.yml` it has changed. Nothing in
+the workflow guards against that: protecting the tokens and accounts with write access is
+what does.
 
 ## Before the release: check the packages
 
@@ -136,14 +118,14 @@ a crate that already exists on crates.io ("Your crate must already be published 
 trusted publishing cannot create a crate: each crate's first version is published with an
 API token (below), and trusted publishing is set up right after.
 
-The trusted publisher names this repository, workflow file and the environment `release`
-(above), so the `publish` job stays in `release.yml` itself (not in a reusable workflow it
-calls) and keeps `environment: release`. To set one up, once the crate exists:
+The trusted publisher names this repository and workflow file, with no environment (owner,
+2026-11-16), so the `publish` job stays in `release.yml` itself (not in a reusable workflow
+it calls). To set one up, once the crate exists:
 
 1. Open `https://crates.io/crates/<crate>/settings` (signed in as an owner).
 2. Trusted Publishing, Add, GitHub.
 3. Repository owner `aclater`, repository name `scarletbook-rs`, workflow filename
-   `release.yml`, environment `release`. Save.
+   `release.yml`, environment left empty. Save.
 4. Optionally, require trusted publishing for the crate, so that no API token can publish it.
 
 | Crate | First version | Published by | Trusted publisher |

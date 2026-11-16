@@ -1,1 +1,0 @@
-| 2026-11-15 | C header wording: thread check, `_free` and the last error, `_open_next` out (#347, #349) | This crate's own FFI source (`guard`, the `_free` functions, `open_next`). No new sources consulted. |

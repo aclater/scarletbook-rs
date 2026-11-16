@@ -5,48 +5,9 @@ one consumer cycle, then 1.0.0 with no further API change
 ([#39](https://github.com/aclater/scarletbook-rs/issues/39), owner decision of 2026-11-06). This
 page gives a short before-and-after for each change, so that a consumer can move item by item.
 
-**This page is a skeleton until 0.6.0 is released.** A section that still says "Not written yet"
-has no change on `main`. Nothing here applies to 0.5.x.
-
 Where it can, 0.6.0 deprecates the old name instead of removing it, and the removal follows
 before 1.0. An entry says which of the two it is, so code that builds with deprecation warnings
 on 0.6.0 still has that entry to act on.
-
-## How this page is filled
-
-Each pull request that makes one of these changes does both of these itself:
-
-1. Adds its [`changelog.d/`](../changelog.d/README.md) fragment under `Changed`, `Removed` or
-   `Deprecated`. The fragment says that the change is breaking and ends with the section of this
-   page, for example "Migration: `docs/migrating-0.6.md`, M1".
-2. Replaces "Not written yet" in that section with an entry, or adds its entry after the ones
-   already there:
-
-````markdown
-#### `Old::name` is now `New::name` (#PR)
-
-Removed in 0.6.0, or: deprecated in 0.6.0 and removed before 1.0. Say who is affected, and what
-does not change, in a sentence or two.
-
-Before:
-
-```rust
-// the shortest code that shows the old use
-```
-
-After:
-
-```rust
-// the same code on 0.6.0
-```
-````
-
-Use `c` blocks for changes to the C library. Each section already has its heading, so pull
-requests working on different items do not touch the same lines.
-
-Preparing the 0.6.0 release needs every section filled in, so `grep -c '^Not written yet\.$'
-docs/migrating-0.6.md` must give 0. The release preparation then removes this part and the
-skeleton note above.
 
 ## Rust API
 

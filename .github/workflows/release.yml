@@ -313,8 +313,8 @@ jobs:
   # depends on the other two at their exact versions. Idempotent: a version already on
   # crates.io (a re-run, or a first publish done by hand per RELEASING.md) is skipped.
   # This job must stay in release.yml itself, not in a reusable workflow: the trusted
-  # publisher of each crate on crates.io names exactly this repository and workflow file, and
-  # the environment `release` (RELEASING.md, "Repository and crates.io settings").
+  # publisher of each crate on crates.io names exactly this repository and workflow file
+  # (RELEASING.md, "Repository and crates.io settings").
   # It compiles nothing (issue #345): `cargo publish` cannot upload a given .crate file, so
   # each crate is repacked from the tagged sources with --no-verify, checked to be
   # byte-identical to the package `build` verified, and published with --no-verify.
