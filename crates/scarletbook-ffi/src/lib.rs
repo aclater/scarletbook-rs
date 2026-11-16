@@ -2331,6 +2331,83 @@ pub unsafe extern "C" fn sb_area_details(
     })
 }
 
+/// What an area's TOC claims against the audio sectors the image holds (specification 4,
+/// 4.2 and 4.8): `sb_area_capacity`. Figures for the caller's own plausibility check of the
+/// area's length; the caller chooses the threshold. Every field is defined whatever the TOC
+/// holds, with no overflow and no NaN.
+///
+/// Layout: 48 bytes, without padding: `audio_sectors` at offset 0, `capacity` at 8,
+/// `plain_frame_bound` at 16, `frames_per_sector` at 24, `playtime_frames` at 32,
+/// `max_track_end` at 36, `has_plain_frame_bound` at 40, then `reserved` at 41 to 47.
+/// Aligned to 8 (to 4 where `uint64_t` and `double` are, as on 32-bit x86).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SbAreaCapacity {
+    /// `n = max(0, S1' - S0 + 1)`, the area's audio sectors that exist in the image
+    /// (specification 4, 4.2 item 1): 0 when they all lie past its end.
+    pub audio_sectors: u64,
+    /// The capacity `7 x n` (specification 4, 4.8 item 3): a track ending past it is refused
+    /// with `SB_STATUS_TRACK_EXCEEDS_CAPACITY`.
+    pub capacity: u64,
+    /// `floor(n x 2045 / (C x 4704))`, the most plain DSD frames the area's sectors can
+    /// carry, `C` its channel count; valid only when `has_plain_frame_bound` is 1, else 0.
+    /// It bounds plain DSD frames of any image, not DST frames.
+    pub plain_frame_bound: u64,
+    /// `max(playtime_frames, max_track_end) / audio_sectors`; positive infinity when
+    /// `audio_sectors` is 0, whatever the TOC claims, so that a `> limit` test treats such
+    /// an area as implausible. Never NaN.
+    pub frames_per_sector: f64,
+    /// The area's play time in frames (`SbAreaInfo.playtime_frames`).
+    pub playtime_frames: u32,
+    /// The largest track end frame (start plus duration, after clamping); 0 when the area
+    /// has no tracks.
+    pub max_track_end: u32,
+    /// 1 when `plain_frame_bound` is valid; 0 when the channel count is not 1 to 6, for
+    /// which no audio is produced (specification 4, 4.8 item 1).
+    pub has_plain_frame_bound: u8,
+    /// Reserved: written as 0.
+    pub reserved: [u8; 7],
+}
+
+impl From<scarletbook::AreaCapacity> for SbAreaCapacity {
+    fn from(c: scarletbook::AreaCapacity) -> Self {
+        SbAreaCapacity {
+            audio_sectors: c.audio_sectors,
+            capacity: c.capacity,
+            plain_frame_bound: c.plain_frame_bound.unwrap_or(0),
+            frames_per_sector: c.frames_per_sector(),
+            playtime_frames: c.playtime_frames,
+            max_track_end: c.max_track_end,
+            has_plain_frame_bound: u8::from(c.plain_frame_bound.is_some()),
+            reserved: [0; 7],
+        }
+    }
+}
+
+/// What the TOC of the area from `slot` claims against the audio sectors the image holds
+/// (`SbAreaCapacity`; specification 4, 4.2 and 4.8). It reads nothing: the figures come
+/// from the TOC and the image size known since the disc was opened. Fails with
+/// `SB_STATUS_NO_SUCH_AREA`.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle; `out` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_area_capacity(
+    disc: *const SbDisc,
+    slot: u32,
+    out: *mut SbAreaCapacity,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?.get()?;
+        let capacity = d.area_capacity(slot_from(slot)?)?;
+        // SAFETY: forwarded contract.
+        unsafe { write_out(out, SbAreaCapacity::from(capacity)) }?;
+        Ok(SbStatus::Ok)
+    })
+}
+
 /// The locale entry of text channel `index` of the area from `slot`, below
 /// `min(SbAreaDetails.text_channel_count, 10)` (the reported area locale list,
 /// specification 3, 3.5); `SB_STATUS_INVALID_ARGUMENT` for another index.

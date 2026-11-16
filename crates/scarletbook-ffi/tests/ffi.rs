@@ -917,6 +917,11 @@ fn struct_layouts() {
         version_major: 0, version_minor: 1, max_available_channels: 2, mute_flags: 3,
         track_attribute: 4, track_offset: 5, text_channel_count: 6, text_charset: 7,
     });
+    assert_layout!(SbAreaCapacity, size 48, align align64, {
+        audio_sectors: 0, capacity: 8, plain_frame_bound: 16, frames_per_sector: 24, playtime_frames: 32,
+        max_track_end: 36, has_plain_frame_bound: 40, reserved: 41,
+    });
+    assert_eq!(std::mem::align_of::<f64>(), align64);
     assert_layout!(SbSpeculation, size 40, align align64, {
         claim: 0, lsn: 8, slot: 16, state: 20, first: 24, last_returned: 28, exact_from: 32, reserved: 36,
     });

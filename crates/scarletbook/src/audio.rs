@@ -1486,6 +1486,90 @@ fn check_capacity(area: &Area, end_frame: u32, image_sectors: u64) -> Result<(),
     Ok(())
 }
 
+/// Most bytes of packet data an audio sector can carry: 2048 less the smallest header of
+/// a sector with a packet, the 1-byte sector header and one 2-byte packet record
+/// (specification 4, 4.3.1, 4.3.2 and 4.3.4 item 1).
+const PACKET_BYTES_PER_SECTOR: u64 = SECTOR_SIZE as u64 - 3;
+
+/// What an area's TOC claims against the audio sectors the image holds (specification 4,
+/// 4.2 and 4.8), for a consumer's own plausibility check of the area's length:
+/// [`area_capacity`] or [`crate::Disc::area_capacity`].
+///
+/// These are figures, not a verdict, and the consumer chooses the threshold. Only
+/// [`AreaCapacity::capacity`] is a bound of the specification on what a track may claim
+/// (4.8 item 3), and the library already refuses a track past it
+/// ([`Error::TrackExceedsCapacity`]). [`AreaCapacity::plain_frame_bound`] holds for every
+/// image but bounds plain DSD frames only. For DST the specification gives no bound below
+/// 7 frames per sector: a DST frame's size depends on its content (4.4.2). The figure of
+/// specification 7, 7.9 (informative) is that 110 commercial discs carry at most 0.6
+/// frames per audio sector.
+///
+/// Every figure is computed without overflow, division by zero or NaN, whatever the TOC
+/// holds; see each field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct AreaCapacity {
+    /// `n = max(0, S1' - S0 + 1)`, the area's audio sectors that exist in the image
+    /// (specification 4, 4.2 item 1 and 4.8 item 3): 0 when they all lie past its end.
+    pub audio_sectors: u64,
+    /// `P`, the area's play time in frames ([`Area::playtime_frames`]).
+    pub playtime_frames: u32,
+    /// The largest track end frame `s_i + d_i` of the area's tracks ([`Track::end_frame`]),
+    /// 0 when it has none.
+    pub max_track_end: u32,
+    /// The capacity `Q = 7 x n` (specification 4, 4.8 item 3; 7.5): a sector's header can
+    /// start at most 7 frames (4.3.1). A track ending past it is refused.
+    pub capacity: u64,
+    /// `floor(n x 2045 / (C x 4704))`, the most plain DSD frames the area's sectors can
+    /// carry, `C` its channel count; `None` when `C` is not 1 to 6, for which no audio is
+    /// produced (4.8 item 1).
+    ///
+    /// Own derivation from the specification: a sector carrying audio has at least one
+    /// packet record, so at least 3 bytes of header (4.3.1, 4.3.2, 4.3.4 item 1), which
+    /// leaves at most 2045 bytes of packet data; a plain frame is complete with exactly
+    /// `C x 4704` bytes of them (4.1 item 1, 4.4.2), and no byte belongs to two frames.
+    /// It bounds the plain frames of every image, conforming or not, but not DST frames,
+    /// and only the sectors' DST flag says which kind an area carries (the TOC's frame
+    /// format is informative, 3.4.2 item 2), so it applies only to an area known to be
+    /// plain DSD. Dense "3 in 14" packing (4.10 item 2) gives 3/14 frames per sector at 2
+    /// channels, against this bound's 2045/9408.
+    pub plain_frame_bound: Option<u64>,
+}
+
+impl AreaCapacity {
+    /// The frames the TOC claims, `max(P, max_track_end)`, per audio sector present (`n`).
+    ///
+    /// `f64::INFINITY` when `n` is 0, whatever the TOC claims, so that a `> limit` test
+    /// treats an area with no audio sectors in the image as implausible; never NaN.
+    pub fn frames_per_sector(&self) -> f64 {
+        if self.audio_sectors == 0 {
+            return f64::INFINITY;
+        }
+        let claimed = self.playtime_frames.max(self.max_track_end);
+        // n <= 2^32 and claimed < 2^32 are exact in an f64.
+        f64::from(claimed) / self.audio_sectors as f64
+    }
+}
+
+/// The figures of [`AreaCapacity`] for `area` in an image of `image_sectors` sectors
+/// (specification 4, 4.2 and 4.8). Arithmetic on the TOC's fields only: it reads nothing.
+pub fn area_capacity(area: &Area, image_sectors: u64) -> AreaCapacity {
+    let (start, end) = audio_sector_range(area, image_sectors);
+    let n = end - start;
+    let plain_frame_bound = (1..=MAX_CHANNELS).contains(&area.channel_count).then(|| {
+        let frame = u64::from(area.channel_count) * FRAME_BYTES_PER_CHANNEL as u64;
+        // n <= 2^32, so n x 2045 fits; saturating all the same.
+        n.saturating_mul(PACKET_BYTES_PER_SECTOR) / frame
+    });
+    AreaCapacity {
+        audio_sectors: n,
+        playtime_frames: area.playtime_frames(),
+        max_track_end: area.tracks.iter().map(Track::end_frame).max().unwrap_or(0),
+        capacity: n.saturating_mul(FRAMES_PER_SECTOR),
+        plain_frame_bound,
+    }
+}
+
 /// Track `number`'s **track with pause** (specification 4, 4.7.1 item 5): `[a, b)` with
 /// `a = 0` for track 1 and its own start `s_i` for every other track, and
 /// `b = max(s_i + d_i, s_j)` when the track numbered `j = i + 1` exists, `max(s_i + d_i, P)`
@@ -3892,6 +3976,7 @@ pub(crate) mod tests_support {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::toc::Timecode;
 
     /// The deprecated name `Stored::Plain` is `Stored::Dsd`, in expressions and patterns.
     #[test]
@@ -4208,5 +4293,103 @@ pub(crate) mod tests {
         deinterleave(&frame, 2, 1, &mut out).unwrap();
         assert!(out.iter().all(|&b| b == 1));
         assert!(deinterleave(&frame, 2, 2, &mut out).is_err());
+    }
+
+    /// An area of `channels` channels whose audio sectors are `[start, end]` as stored,
+    /// with play time `playtime` and one track per `(start, duration)` given, read
+    /// nothing from (#340).
+    fn capacity_area(
+        channels: u8,
+        (start, end): (u32, u32),
+        playtime: Timecode,
+        tracks: &[(u32, u32)],
+    ) -> Area {
+        let (_, mut area, track) = area_of(1, 1, |_, _| {});
+        area.channel_count = channels;
+        area.audio_start_lsn = start;
+        area.audio_end_lsn = end;
+        area.playtime = playtime;
+        area.tracks = tracks
+            .iter()
+            .map(|&(s, d)| Track { start_frame: s, duration_frames: d, ..track.clone() })
+            .collect();
+        area
+    }
+
+    fn tc(frames: u32) -> Timecode {
+        Timecode {
+            minutes: (frames / 4500) as u8,
+            seconds: (frames / 75 % 60) as u8,
+            frames: (frames % 75) as u8,
+        }
+    }
+
+    /// The figures of a synthetic area against their derivation (specification 4, 4.2 and
+    /// 4.8; #340), with the plain bound per channel count.
+    #[test]
+    fn area_capacity_of_synthetic_areas() {
+        let area = capacity_area(2, (100, 199), tc(50), &[(0, 20), (20, 40)]);
+        let c = area_capacity(&area, 1000);
+        assert_eq!((c.audio_sectors, c.playtime_frames, c.max_track_end, c.capacity), (100, 50, 60, 700));
+        // floor(100 x 2045 / 9408) = floor(21.7...)
+        assert_eq!(c.plain_frame_bound, Some(21));
+        assert_eq!(c.frames_per_sector(), 0.6);
+        // The image ends inside the area: only the sectors that exist count (4.2 item 1).
+        let c = area_capacity(&area, 150);
+        assert_eq!((c.audio_sectors, c.capacity, c.plain_frame_bound), (50, 350, Some(10)));
+        assert_eq!(c.frames_per_sector(), 1.2);
+        // n = 9408 sectors hold at most 2045 x 9408 bytes of packet data: 2045 plain frames
+        // of 2 channels, 818 of 5 (rounded down), 681 of 6.
+        for (channels, bound) in [(1, 4090), (2, 2045), (3, 1363), (4, 1022), (5, 818), (6, 681)] {
+            let area = capacity_area(channels, (0, 9407), tc(0), &[]);
+            let c = area_capacity(&area, 9408);
+            assert_eq!(c.plain_frame_bound, Some(bound), "{channels} channels");
+            assert_eq!((c.max_track_end, c.frames_per_sector()), (0, 0.0));
+        }
+        // The bound per sector to 4 places (2045/9408, 2045/23520 and 2045/28224; #340 gave
+        // 0.0870 for 5 channels, a rounding of 0.086947), and above it the play time per
+        // sector measured on #340's densely packed synthetic plain areas.
+        for (channels, per_sector, measured) in
+            [(2, 0.2174, 0.2172), (5, 0.0869, 0.0869), (6, 0.0725, 0.0724)]
+        {
+            let area = capacity_area(channels, (0, 999_999), tc(0), &[]);
+            let bound = area_capacity(&area, 1_000_000).plain_frame_bound.unwrap();
+            let bound = bound as f64 / 1e6;
+            assert!((bound - per_sector).abs() < 5e-5, "{channels} channels: {bound}");
+            assert!(measured <= bound, "{channels} channels: {bound}");
+        }
+    }
+
+    /// Hostile TOCs: no audio sector in the image, sectors reversed, channel counts outside
+    /// 1 to 6, and every field at its largest (#340).
+    #[test]
+    fn area_capacity_of_hostile_areas() {
+        // Every audio sector past the end of the image, or the range reversed: n = 0, and
+        // the figure per sector is infinite, never NaN, even when the TOC claims nothing.
+        for (range, playtime, tracks) in
+            [((500, 600), 75, &[(0, 75)][..]), ((500, 600), 0, &[]), ((300, 200), 10, &[(0, 10)])]
+        {
+            let c = area_capacity(&capacity_area(2, range, tc(playtime), tracks), 400);
+            assert_eq!((c.audio_sectors, c.capacity, c.plain_frame_bound), (0, 0, Some(0)));
+            assert_eq!(c.frames_per_sector(), f64::INFINITY);
+            assert!(c.frames_per_sector() > 1e300);
+        }
+        // No audio is produced for these channel counts (4.8 item 1): no plain bound.
+        for channels in [0, 7, 8, 255] {
+            let c = area_capacity(&capacity_area(channels, (0, 9), tc(5), &[(0, 5)]), 10);
+            assert_eq!((c.audio_sectors, c.capacity, c.plain_frame_bound), (10, 70, None));
+            assert_eq!(c.frames_per_sector(), 0.5);
+        }
+        // The largest values: n = 2^32, a play time of 255:255:255 and a track ending at
+        // u32::MAX (its end saturates).
+        let largest = Timecode { minutes: 255, seconds: 255, frames: 255 };
+        let area = capacity_area(1, (0, u32::MAX), largest, &[(u32::MAX - 1, u32::MAX), (5, 1)]);
+        let c = area_capacity(&area, u64::MAX);
+        let n = 1u64 << 32;
+        assert_eq!((c.audio_sectors, c.capacity, c.max_track_end), (n, 7 * n, u32::MAX));
+        assert_eq!(c.playtime_frames, largest.frame_number());
+        assert_eq!(c.plain_frame_bound, Some(n * 2045 / 4704));
+        assert_eq!(c.frames_per_sector(), f64::from(u32::MAX) / n as f64);
+        assert!(c.frames_per_sector() < 1.0);
     }
 }

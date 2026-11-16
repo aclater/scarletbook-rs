@@ -300,6 +300,7 @@ Merged since the record was first prepared; each changes code but introduces no 
 | #270, #294 | files packaged in the crate; the C library's file name | Packaging. |
 | #282, #283, #315 | tests and Miri slices for the dispatch modules; tests that work from the packaged crate | Test-only, with `#[cfg(test)]` helpers. |
 | #257, #276, #281, #306, #316, #317 | `bench` commands and limits; `scarletbook-synth` stress frames | Benchmark and tooling programs (Z2); the library is not touched. |
+| #363 (#340) | `AreaCapacity`, `Disc::area_capacity`, `audio::area_capacity`, `sb_area_capacity`: an area's audio sectors present, play time, largest track end, the capacity `7 x n` and a plain DSD frame bound `floor(n x 2045 / (C x 4704))` | Reported figures only: nothing read, decoded or output changes. The capacity is the specification's (4.8 item 3, under M1); the plain bound is arithmetic on the specification's sector syntax (4.3.1, 4.3.2, 4.3.4 item 1: at least 3 header bytes in a sector with a packet) and frame size (4.1 item 1, 4.4.2), own derivation with no outside source. |
 
 ## Source register
 
