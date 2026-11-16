@@ -222,3 +222,18 @@ fn stored_language_codes_and_catalogue_numbers() {
     let a = &disc.toc().areas[0].locales;
     assert_eq!((a[0].language.as_str(), a[0].language_code, a[0].charset), ("", *b"  ", 3));
 }
+
+/// #342: fixed text fields and language codes keep their control characters, as specification
+/// 2, 2.5.1 item 1 and 2.6.5 item 4 define; only whitespace at the ends is trimmed.
+#[test]
+fn control_characters_are_kept_as_the_specification_defines() {
+    let mut img = Spec::simple().build();
+    put(&mut img, A + 2 * S + 8, b"US\x1bABC\x7f9\x8599 ");
+    patch_master(&mut img, 24, b" CAT\x1b\x07\n1\x7f\x9f\0");
+    patch_master(&mut img, 136, b"\x1be");
+    let disc = open(img);
+    let m = &disc.toc().master;
+    assert_eq!(m.album_catalog_number, "CAT\u{1b}\u{7}\n1\u{7f}\u{9f}");
+    assert_eq!(m.locales[0].language, "\u{1b}e");
+    assert_eq!(disc.toc().areas[0].tracks[0].isrc.as_deref(), Some("US\u{1b}ABC\u{7f}9\u{85}99"));
+}

@@ -10,7 +10,7 @@
 use std::ffi::{CStr, c_char, c_void};
 use std::path::PathBuf;
 use std::ptr;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 
 use scarletbook_ffi::*;
@@ -787,5 +787,104 @@ fn replacing_the_log_waits_for_a_pool_threads_call() {
     audio_free(audio);
     // SAFETY: a live pool, not used again.
     unsafe { sb_pool_free(pool) };
+    free(disc);
+}
+
+/// The usual C cleanup path: a call fails, the caller frees its handles (NULL ones
+/// included) and then reads the message, which is still the failed call's (#347). The
+/// next call that returns a status replaces it as before: a success empties it.
+#[test]
+fn freeing_handles_keeps_the_last_error() {
+    let bytes = small_image(5);
+    let disc = open(&bytes);
+    let audio = range_open(disc, 0, 0, 1);
+    let raw = raw_open(disc, 0, 0, 1);
+    let mut options = ptr::null_mut();
+    // SAFETY: a valid out-pointer.
+    assert_eq!(unsafe { sb_output_options_new(&mut options) }, SbStatus::Ok);
+    let mut failed = ptr::null_mut();
+    // SAFETY: a live handle and a valid out-pointer.
+    let s = unsafe { sb_range_audio_open(disc, 0, 3, 2, &mut failed) };
+    assert_eq!(s, SbStatus::FrameRangeInvalid);
+    let message = last_error();
+    assert!(!message.is_empty());
+    assert!(failed.is_null());
+    // Live handles of both kinds of `_free` function (the output handles' go through
+    // `free`), and NULL ones, which every `_free` function ignores.
+    audio_free(failed);
+    audio_free(audio);
+    // SAFETY: a live handle, not used again.
+    unsafe { sb_raw_frames_free(raw) };
+    // SAFETY: as above.
+    unsafe { sb_output_options_free(options) };
+    // SAFETY: NULL is ignored.
+    unsafe { sb_output_options_free(ptr::null_mut()) };
+    // SAFETY: as above.
+    unsafe { sb_disc_free(ptr::null_mut()) };
+    free(disc);
+    assert_eq!(last_error(), message);
+    // A call that returns a status and succeeds empties it, as before.
+    let disc = open(&bytes);
+    assert_eq!(last_error(), "");
+    free(disc);
+}
+
+/// What [`fail_then_free_in_use`] needs: the image, and the disc whose read it is called
+/// from.
+struct InUse {
+    bytes: Vec<u8>,
+    disc: AtomicPtr<SbDisc>,
+    /// The thread's message after the refused free, read inside the callback.
+    message: Mutex<Option<String>>,
+}
+
+/// A positional read that, when armed, makes a call fail and then frees the disc whose
+/// read invoked it, which is refused (the disc is in use), and records the message.
+unsafe extern "C" fn fail_then_free_in_use(user: *mut c_void, offset: u64, buf: *mut u8, len: usize) -> i64 {
+    // SAFETY: `user` is the test's `InUse`, alive for the disc's life; only shared access.
+    let u = unsafe { &*user.cast::<InUse>() };
+    let disc = u.disc.swap(ptr::null_mut(), Ordering::SeqCst);
+    if !disc.is_null() {
+        // SAFETY: NULL handles and output pointers are accepted.
+        assert_eq!(unsafe { sb_disc_info(ptr::null(), ptr::null_mut()) }, SbStatus::InvalidArgument);
+        // SAFETY: a live handle, in use by the call that invoked this callback: a no-op.
+        unsafe { sb_disc_free(disc) };
+        *u.message.lock().unwrap() = Some(last_error());
+    }
+    let start = usize::try_from(offset).unwrap_or(usize::MAX).min(u.bytes.len());
+    let n = len.min(u.bytes.len() - start);
+    // SAFETY: the library passes a buffer valid for `len >= n` bytes of writes, which does
+    // not overlap the source.
+    unsafe { ptr::copy_nonoverlapping(u.bytes[start..].as_ptr(), buf, n) };
+    n as i64
+}
+
+/// A `_free` refused because its handle is in use (called from one of its disc's
+/// callbacks) leaves the thread's message alone too: it is still the failed call's, not
+/// one about the refusal (#347).
+#[test]
+fn a_refused_free_keeps_the_last_error() {
+    let user =
+        InUse { bytes: small_image(5), disc: AtomicPtr::new(ptr::null_mut()), message: Mutex::new(None) };
+    let mut disc = ptr::null_mut();
+    // SAFETY: `fail_then_free_in_use` may be called with `user` (which outlives the disc)
+    // from any thread; `&mut disc` is a valid out-pointer.
+    let s = unsafe {
+        sb_disc_open_callbacks_at(
+            Some(fail_then_free_in_use),
+            user.bytes.len() as u64,
+            ptr::from_ref(&user).cast_mut().cast(),
+            &mut disc,
+        )
+    };
+    assert_eq!(s, SbStatus::Ok, "{}", last_error());
+    user.disc.store(disc, Ordering::SeqCst);
+    let mut buf = [0u8; 2048];
+    // SAFETY: a live handle; `buf` is valid for its length.
+    assert_eq!(unsafe { sb_disc_read_sectors(disc, 0, 1, buf.as_mut_ptr(), buf.len()) }, SbStatus::Ok);
+    assert_eq!(user.message.lock().unwrap().as_deref(), Some("NULL disc handle"));
+    // The disc was not freed: it still reads, and frees.
+    // SAFETY: as above.
+    assert_eq!(unsafe { sb_disc_read_sectors(disc, 1, 1, buf.as_mut_ptr(), buf.len()) }, SbStatus::Ok);
     free(disc);
 }
