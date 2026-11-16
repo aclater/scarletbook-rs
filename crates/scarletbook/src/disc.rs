@@ -6,8 +6,8 @@ use std::io::{Read, Seek};
 use std::sync::Arc;
 
 use crate::audio::{
-    self, AreaCursor, AreaFrames, Continuation, CursorOptions, FrameSpan, TrackAudio, TrackAudioCursor,
-    TrackCursor, TrackFrames,
+    self, AreaCapacity, AreaCursor, AreaFrames, Continuation, CursorOptions, FrameSpan, TrackAudio,
+    TrackAudioCursor, TrackCursor, TrackFrames,
 };
 use crate::control::CancelToken;
 use crate::error::{Error, Slot, Warning};
@@ -593,6 +593,20 @@ impl<R: Read + Seek> Disc<R> {
             area.channel_count
         );
         Ok(AreaCursor::new(area, self.image.sector_count()))
+    }
+
+    /// What the TOC of the area from `slot` claims against the audio sectors this image
+    /// holds (specification 4, 4.2 and 4.8): see [`audio::area_capacity`] and
+    /// [`AreaCapacity`]. It reads nothing: the figures come from the TOC and the image
+    /// size known since the disc was opened. The consumer chooses the threshold, for
+    /// example on [`AreaCapacity::frames_per_sector`].
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NoSuchArea`] if the TOC has no area from that slot.
+    pub fn area_capacity(&self, slot: Slot) -> Result<AreaCapacity, Error> {
+        let area = self.shared.toc.area(slot).ok_or(Error::NoSuchArea(slot))?;
+        Ok(audio::area_capacity(area, self.image.sector_count()))
     }
 
     /// Whether track `number` of the area from `slot` produces audio (specification 4,

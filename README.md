@@ -283,7 +283,7 @@ The conventions (status codes, copy-out strings, handle lifetimes, threads) are 
 at the top of `crates/scarletbook-ffi/include/scarletbook.h`;
 `crates/scarletbook-ffi/examples/smoke.c` is a complete program. Calls return an
 `SbStatus`, an `int32_t`; every struct field is a fixed-width integer (flags are `uint8_t`,
-1 or 0) or, in `SbWarning`, a string pointer; and no struct has padding, so the layouts
+1 or 0), a string pointer in `SbWarning` or a `double` in `SbAreaCapacity`; and no struct has padding, so the layouts
 stated in the header hold on every target. Regenerate the header with
 `cbindgen --config cbindgen.toml --crate scarletbook-ffi --output include/scarletbook.h`
 in `crates/scarletbook-ffi` (cbindgen 0.29.4; CI checks the committed header).
@@ -298,6 +298,11 @@ available channels, mute flags, track attribute and offset, and text channels
 duration are also given as their stored timecode bytes (`SbTimecode`:
 `sb_area_playtime_stored`, `sb_track_timecodes_stored`), before any clamping and whatever
 their range, beside the frame counts of `SbAreaInfo` and `SbTrackInfo`.
+`sb_area_capacity` gives what an area's TOC claims against the audio sectors the image
+holds (`SbAreaCapacity`: the sectors present, the play time and largest track end, the
+capacity of specification 4, 4.8, the most plain DSD frames those sectors can carry, and
+frames per sector), for a plausibility check whose threshold the caller chooses; it reads
+nothing.
 
 `sb_disc_read_sectors(disc, lsn, count, buf, cap)` copies the 2048-byte user data of
 logical sectors `[lsn, lsn + count)`, whatever the image's stored sector size (2048, 2054

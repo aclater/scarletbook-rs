@@ -97,9 +97,9 @@ pub mod toc;
 #[cfg(feature = "parallel")]
 pub use audio::DecodeOn;
 pub use audio::{
-    AreaCursor, AreaFrame, AreaFrames, AudioFrame, Continuation, CursorOptions, Demuxer, FrameContent,
-    FrameKind, FrameSpan, FrameStatus, Opening, Stored, TrackAudio, TrackAudioCursor, TrackCursor,
-    TrackFrame, TrackFrames,
+    AreaCapacity, AreaCursor, AreaFrame, AreaFrames, AudioFrame, Continuation, CursorOptions, Demuxer,
+    FrameContent, FrameKind, FrameSpan, FrameStatus, Opening, Stored, TrackAudio, TrackAudioCursor,
+    TrackCursor, TrackFrame, TrackFrames,
 };
 pub use control::{CancelToken, Progress};
 pub use disc::{Disc, DiscOptions};

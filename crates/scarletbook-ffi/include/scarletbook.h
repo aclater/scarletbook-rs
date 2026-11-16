@@ -1625,6 +1625,60 @@ typedef struct SbAreaDetails {
 } SbAreaDetails;
 
 /*
+ What an area's TOC claims against the audio sectors the image holds (specification 4,
+ 4.2 and 4.8): `sb_area_capacity`. Figures for the caller's own plausibility check of the
+ area's length; the caller chooses the threshold. Every field is defined whatever the TOC
+ holds, with no overflow and no NaN.
+
+ Layout: 48 bytes, without padding: `audio_sectors` at offset 0, `capacity` at 8,
+ `plain_frame_bound` at 16, `frames_per_sector` at 24, `playtime_frames` at 32,
+ `max_track_end` at 36, `has_plain_frame_bound` at 40, then `reserved` at 41 to 47.
+ Aligned to 8 (to 4 where `uint64_t` and `double` are, as on 32-bit x86).
+ */
+typedef struct SbAreaCapacity {
+  /*
+   `n = max(0, S1' - S0 + 1)`, the area's audio sectors that exist in the image
+   (specification 4, 4.2 item 1): 0 when they all lie past its end.
+   */
+  uint64_t audio_sectors;
+  /*
+   The capacity `7 x n` (specification 4, 4.8 item 3): a track ending past it is refused
+   with `SB_STATUS_TRACK_EXCEEDS_CAPACITY`.
+   */
+  uint64_t capacity;
+  /*
+   `floor(n x 2045 / (C x 4704))`, the most plain DSD frames the area's sectors can
+   carry, `C` its channel count; valid only when `has_plain_frame_bound` is 1, else 0.
+   It bounds plain DSD frames of any image, not DST frames.
+   */
+  uint64_t plain_frame_bound;
+  /*
+   `max(playtime_frames, max_track_end) / audio_sectors`; positive infinity when
+   `audio_sectors` is 0, whatever the TOC claims, so that a `> limit` test treats such
+   an area as implausible. Never NaN.
+   */
+  double frames_per_sector;
+  /*
+   The area's play time in frames (`SbAreaInfo.playtime_frames`).
+   */
+  uint32_t playtime_frames;
+  /*
+   The largest track end frame (start plus duration, after clamping); 0 when the area
+   has no tracks.
+   */
+  uint32_t max_track_end;
+  /*
+   1 when `plain_frame_bound` is valid; 0 when the channel count is not 1 to 6, for
+   which no audio is produced (specification 4, 4.8 item 1).
+   */
+  uint8_t has_plain_frame_bound;
+  /*
+   Reserved: written as 0.
+   */
+  uint8_t reserved[7];
+} SbAreaCapacity;
+
+/*
  Information about one track.
 
  Layout: 28 bytes, aligned to 4, without padding: the five `uint32_t` at offsets 0 to
@@ -2774,6 +2828,18 @@ SbStatus sb_track_timecodes_stored(const struct SbDisc *disc,
  `disc` must be NULL or a live handle; `out` NULL or valid for a write.
  */
 SbStatus sb_area_details(const struct SbDisc *disc, uint32_t slot, struct SbAreaDetails *out);
+
+/*
+ What the TOC of the area from `slot` claims against the audio sectors the image holds
+ (`SbAreaCapacity`; specification 4, 4.2 and 4.8). It reads nothing: the figures come
+ from the TOC and the image size known since the disc was opened. Fails with
+ `SB_STATUS_NO_SUCH_AREA`.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `out` NULL or valid for a write.
+ */
+SbStatus sb_area_capacity(const struct SbDisc *disc, uint32_t slot, struct SbAreaCapacity *out);
 
 /*
  The locale entry of text channel `index` of the area from `slot`, below
