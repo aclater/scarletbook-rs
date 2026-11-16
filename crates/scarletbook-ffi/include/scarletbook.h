@@ -602,7 +602,11 @@ typedef uint32_t SbSlot;
 
 /*
  Disc-level strings for `sb_disc_string`: the 16 disc text items of specification 2,
- 2.5.4, then the two catalogue numbers.
+ 2.5.4, then the two catalogue numbers. Each is returned as the specification defines it
+ and may contain control characters: in text items (2.6.4 item 3) C0 becomes a space but
+ U+007F and U+0080 to U+009F are kept; in catalogue numbers (2.6.5) C0, DEL and C1 are
+ all kept. Callers that print it or put it in a
+ tag or file name should escape or filter it for that use.
  */
 enum SbDiscString
 #if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
@@ -674,11 +678,13 @@ enum SbDiscString
    */
   SB_DISC_STRING_DISC_COPYRIGHT_PHONETIC = 15,
   /*
-   Album catalogue number (always present; may be empty).
+   Album catalogue number (always present; may be empty; may contain control
+   characters). `sb_disc_catalog_number_stored` gives the bytes as stored.
    */
   SB_DISC_STRING_ALBUM_CATALOG_NUMBER = 16,
   /*
-   Disc catalogue number (always present; may be empty).
+   Disc catalogue number (always present; may be empty; may contain control
+   characters). `sb_disc_catalog_number_stored` gives the bytes as stored.
    */
   SB_DISC_STRING_DISC_CATALOG_NUMBER = 17,
 };
@@ -691,7 +697,10 @@ typedef uint32_t SbDiscString;
 #endif // __cplusplus
 
 /*
- Area strings for `sb_area_string`, in the order of specification 3, 3.3.
+ Area strings for `sb_area_string`, in the order of specification 3, 3.3. Each is
+ returned as specification 2, 2.6.4 defines it and may contain control characters: C0
+ becomes a space, but U+007F and U+0080 to U+009F are kept. Callers that print it or put it in a
+ tag or file name should escape or filter it for that use.
  */
 enum SbAreaString
 #if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
@@ -725,7 +734,11 @@ typedef uint32_t SbAreaString;
 
 /*
  Track strings for `sb_track_string`: the text item types 0x01 to 0x07 and 0x81 to 0x87
- of specification 3, 3.8, then the ISRC.
+ of specification 3, 3.8, then the ISRC. Each is returned as the specification defines it
+ and may contain control characters: in text items (specification 2, 2.6.4 item 3) C0
+ becomes a space but U+007F and U+0080 to U+009F are kept; in the ISRC (2.6.5) C0, DEL
+ and C1 are all kept. Callers that print it or put it in a
+ tag or file name should escape or filter it for that use.
  */
 enum SbTrackString
 #if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
@@ -789,7 +802,7 @@ enum SbTrackString
    */
   SB_TRACK_STRING_EXTRA_MESSAGE_PHONETIC = 13,
   /*
-   ISRC.
+   ISRC (may contain control characters; its syntax is not validated).
    */
   SB_TRACK_STRING_ISRC = 14,
 };
@@ -1548,7 +1561,9 @@ typedef struct SbTextChannel {
   /*
    The language code's two bytes as stored (an ISO 639-1 code such as "en"), nothing
    removed: 0x00 0x00 is an unset code. The trimmed language of specification 2, 2.5.1
-   item 1 is these bytes with every trailing 0x00 and 0x20 removed.
+   item 1 is these bytes with every trailing 0x00 and 0x20 removed; no other byte is
+   removed or replaced, so it may contain control characters. Callers that print it or
+   put it in a tag or file name should escape or filter it for that use.
    */
   uint8_t language[2];
   /*

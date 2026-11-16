@@ -145,7 +145,11 @@ pub struct Date {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct Locale {
-    /// The language code, trailing NUL and space removed; may contain control characters.
+    /// The language code, trailing NUL and space removed, as specification 2, 2.5.1 item 1
+    /// defines it: no other character is removed or replaced, so it may contain control
+    /// characters (C0, DEL, C1; the bytes 0x00 0x65 give U+0000 U+0065). A caller that prints
+    /// it or puts it in a tag or file name should escape or filter it for that use;
+    /// [`Locale::language_code`] gives the two bytes as stored.
     pub language: String,
     /// The language code's two bytes as stored, nothing removed: tells an unset code
     /// (0x00 0x00) from one of spaces, which [`Locale::language`] reports alike.
@@ -212,6 +216,11 @@ macro_rules! text_struct {
         $(#[$meta:meta])* $name:ident, $(#[$imeta:meta])* $item:ident { $($(#[$fmeta:meta])* $field:ident = $key:literal => $variant:ident),* $(,)? }
     ) => {
         $(#[$meta])*
+        ///
+        /// Each item is returned as specification 2, 2.6.4 defines it: every code point below
+        /// U+0020 (C0) is replaced with a space, while U+007F (DEL) and U+0080 to U+009F (C1)
+        /// are kept, so an item may contain control characters. A caller that prints an item
+        /// or puts it in a tag or file name should escape or filter it for that use.
         #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
         #[non_exhaustive]
         pub struct $name {
@@ -380,7 +389,11 @@ pub struct MasterToc {
     pub album_set_size: u16,
     /// Album sequence number (offset 18).
     pub album_sequence_number: u16,
-    /// Album catalogue number (offset 24), a fixed text field.
+    /// Album catalogue number (offset 24), a fixed text field as specification 2, 2.6.5
+    /// defines it: whitespace is trimmed from the ends, and control characters (C0, DEL, C1)
+    /// are kept, not replaced. A caller that prints it or puts it in a tag or file name
+    /// should escape or filter it for that use; [`MasterToc::album_catalog_number_stored`]
+    /// gives the bytes as stored.
     pub album_catalog_number: String,
     /// The album catalogue number's bytes as stored, up to the first 0x00 (all 16 if there
     /// is none), padding kept: step 1 of the fixed text field rules (specification 2,
@@ -394,7 +407,9 @@ pub struct MasterToc {
     pub multichannel: AreaPointer,
     /// Disc flags byte (offset 80).
     pub disc_flags: u8,
-    /// Disc catalogue number (offset 88), a fixed text field.
+    /// Disc catalogue number (offset 88), a fixed text field, returned and stored as
+    /// [`MasterToc::album_catalog_number`] is; may contain control characters.
+    /// [`MasterToc::disc_catalog_number_stored`] gives the bytes as stored.
     pub disc_catalog_number: String,
     /// The disc catalogue number's bytes as stored, as for
     /// [`MasterToc::album_catalog_number_stored`].
@@ -662,7 +677,10 @@ pub struct Track {
     pub start_flags: u8,
     /// Duration flags byte.
     pub duration_flags: u8,
-    /// ISRC, if any.
+    /// ISRC, if any: a fixed text field as specification 2, 2.6.5 and specification 3, 3.7.3
+    /// define it, whitespace trimmed from the ends and its syntax not validated. Control
+    /// characters (C0, DEL, C1) are kept, not replaced; a caller that prints it or puts it in
+    /// a tag or file name should escape or filter it for that use.
     pub isrc: Option<String>,
     /// Genre, if the area has a `SACD_IGL`.
     pub genre: Option<Genre>,

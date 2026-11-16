@@ -131,7 +131,11 @@ pub enum SbFrameKind {
 }
 
 /// Disc-level strings for `sb_disc_string`: the 16 disc text items of specification 2,
-/// 2.5.4, then the two catalogue numbers.
+/// 2.5.4, then the two catalogue numbers. Each is returned as the specification defines it
+/// and may contain control characters: in text items (2.6.4 item 3) C0 becomes a space but
+/// U+007F and U+0080 to U+009F are kept; in catalogue numbers (2.6.5) C0, DEL and C1 are
+/// all kept. Callers that print it or put it in a
+/// tag or file name should escape or filter it for that use.
 #[repr(u32)]
 #[derive(Clone, Copy, Debug)]
 pub enum SbDiscString {
@@ -167,13 +171,18 @@ pub enum SbDiscString {
     DiscPublisherPhonetic = 14,
     /// Disc copyright, phonetic.
     DiscCopyrightPhonetic = 15,
-    /// Album catalogue number (always present; may be empty).
+    /// Album catalogue number (always present; may be empty; may contain control
+    /// characters). `sb_disc_catalog_number_stored` gives the bytes as stored.
     AlbumCatalogNumber = 16,
-    /// Disc catalogue number (always present; may be empty).
+    /// Disc catalogue number (always present; may be empty; may contain control
+    /// characters). `sb_disc_catalog_number_stored` gives the bytes as stored.
     DiscCatalogNumber = 17,
 }
 
-/// Area strings for `sb_area_string`, in the order of specification 3, 3.3.
+/// Area strings for `sb_area_string`, in the order of specification 3, 3.3. Each is
+/// returned as specification 2, 2.6.4 defines it and may contain control characters: C0
+/// becomes a space, but U+007F and U+0080 to U+009F are kept. Callers that print it or put it in a
+/// tag or file name should escape or filter it for that use.
 #[repr(u32)]
 #[derive(Clone, Copy, Debug)]
 pub enum SbAreaString {
@@ -188,7 +197,11 @@ pub enum SbAreaString {
 }
 
 /// Track strings for `sb_track_string`: the text item types 0x01 to 0x07 and 0x81 to 0x87
-/// of specification 3, 3.8, then the ISRC.
+/// of specification 3, 3.8, then the ISRC. Each is returned as the specification defines it
+/// and may contain control characters: in text items (specification 2, 2.6.4 item 3) C0
+/// becomes a space but U+007F and U+0080 to U+009F are kept; in the ISRC (2.6.5) C0, DEL
+/// and C1 are all kept. Callers that print it or put it in a
+/// tag or file name should escape or filter it for that use.
 #[repr(u32)]
 #[derive(Clone, Copy, Debug)]
 pub enum SbTrackString {
@@ -220,7 +233,7 @@ pub enum SbTrackString {
     MessagePhonetic = 12,
     /// Extra message, phonetic (type 0x87).
     ExtraMessagePhonetic = 13,
-    /// ISRC.
+    /// ISRC (may contain control characters; its syntax is not validated).
     Isrc = 14,
 }
 
@@ -406,7 +419,9 @@ pub struct SbGenre {
 pub struct SbTextChannel {
     /// The language code's two bytes as stored (an ISO 639-1 code such as "en"), nothing
     /// removed: 0x00 0x00 is an unset code. The trimmed language of specification 2, 2.5.1
-    /// item 1 is these bytes with every trailing 0x00 and 0x20 removed.
+    /// item 1 is these bytes with every trailing 0x00 and 0x20 removed; no other byte is
+    /// removed or replaced, so it may contain control characters. Callers that print it or
+    /// put it in a tag or file name should escape or filter it for that use.
     pub language: [u8; 2],
     /// Character set code, the stored byte (the low 3 bits select the character set).
     pub charset: u8,
