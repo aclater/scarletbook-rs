@@ -207,6 +207,42 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo +"$RUST_MSRV" check -p scarletbook -p scarletbook-pcm -p scarletbook-ffi --all-features --locked
 
+  # 32-bit x86 (#369): the core crate's tests and the corpus conformance tests on i686, built
+  # for the pentium4 baseline (SSE2) and for the Atom class (SSE3, SSSE3, MOVBE). There the DST
+  # decoder keeps its arithmetic in u32; the corpus's recorded hashes and the fixed digest of
+  # `dispatch::tests::decoded_frames_digest_is_fixed` are those of x86-64, so a pass shows the
+  # same output to the bit, damaged frames and errors included.
+  i686:
+    name: i686 (${{ matrix.cpu }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        cpu: [pentium4, atom]
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -C target-cpu=${{ matrix.cpu }}
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: |
+          rustup toolchain install "$RUST_STABLE" --profile minimal --target i686-unknown-linux-musl
+          rustup default "$RUST_STABLE"
+      # The 32-bit libgcc the musl target links against.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc-multilib
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: i686-${{ matrix.cpu }}
+          # Only main writes the cache; pull requests read it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: >-
+          cargo test --locked --target i686-unknown-linux-musl --all-features
+          -p scarletbook -p scarletbook-conformance
+
   # Miri: the slices for unsafe code here, chosen by the changes job (#76); the core crate's
   # tests and the long slices run in miri-full.yml, which queues instead of cancelling so that
   # they always complete (#84).

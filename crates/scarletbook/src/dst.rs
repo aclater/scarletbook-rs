@@ -509,14 +509,48 @@ impl DstDecoder {
         outs: &mut [&mut [u8]],
         results: &mut [Result<(), DstError>],
     ) {
+        self.group_with::<INLINE_RUN, Native>(frames, channels, outs, results);
+    }
+
+    /// [`DstDecoder::decode_many`] with the arithmetic decoder in `W` instead of [`Native`],
+    /// without run-time features: the same output and results (#369).
+    #[cfg(test)]
+    pub(crate) fn decode_many_with<W: Word>(
+        &mut self,
+        frames: &[&[u8]],
+        channels: u8,
+        outs: &mut [&mut [u8]],
+    ) -> Vec<Result<(), DstError>> {
+        let mut results = Vec::with_capacity(frames.len());
+        for (frames, outs) in frames.chunks(MAX_LANES).zip(outs.chunks_mut(MAX_LANES)) {
+            let mut group = vec![Ok(()); frames.len()];
+            if frames.len() != outs.len() {
+                group.fill(Err(DstError::InvalidArguments));
+            } else {
+                self.group_with::<false, W>(frames, channels, outs, &mut group);
+            }
+            results.extend(group);
+        }
+        results
+    }
+
+    /// [`DstDecoder::group`] with the arithmetic decoder in `W`.
+    #[inline(always)]
+    fn group_with<const INLINE_RUN: bool, W: Word>(
+        &mut self,
+        frames: &[&[u8]],
+        channels: u8,
+        outs: &mut [&mut [u8]],
+        results: &mut [Result<(), DstError>],
+    ) {
         if self.lanes.len() < frames.len() {
             self.lanes.resize_with(frames.len(), Lane::default);
         }
         let nch = usize::from(channels);
-        let mut live: Vec<Live<'_, '_>> = Vec::with_capacity(frames.len());
+        let mut live: Vec<Live<'_, '_, W>> = Vec::with_capacity(frames.len());
         let lanes = self.lanes.iter_mut().zip(frames).zip(outs.iter_mut());
         for ((i, ((lane, frame), out)), result) in lanes.enumerate().zip(results.iter_mut()) {
-            match Coded::start(lane, frame, nch, out) {
+            match Coded::<W>::start(lane, frame, nch, out) {
                 Ok(Some(coded)) => live.push(Live { index: i, coded, out }),
                 Ok(None) => *result = Ok(()),
                 Err(e) => *result = Err(e),
@@ -549,22 +583,22 @@ impl DstDecoder {
             // many history bytes (4, 8 or 16) as the longest filter needs.
             let bytes = live.iter().zip(&spans).map(|(lv, s)| (s.end - lv.coded.n) / 8).min().unwrap_or(0);
             let used = spans.iter().map(|s| s.most).max().unwrap_or(0);
-            let mut runs: Vec<LaneRun<'_, '_>> =
+            let mut runs: Vec<LaneRun<'_, '_, W>> =
                 live.iter_mut().zip(&spans).map(|(lv, s)| lv.coded.lane_run(s)).collect();
             macro_rules! by_tables {
                 ($k:literal, $n:literal) => {
                     match (used, INLINE_RUN) {
-                        (0..=4, false) => run::<$k, $n, 4>(&mut runs, bytes),
-                        (5..=8, false) => run::<$k, $n, 8>(&mut runs, bytes),
-                        (_, false) => run::<$k, $n, 16>(&mut runs, bytes),
+                        (0..=4, false) => run::<$k, $n, 4, W>(&mut runs, bytes),
+                        (5..=8, false) => run::<$k, $n, 8, W>(&mut runs, bytes),
+                        (_, false) => run::<$k, $n, 16, W>(&mut runs, bytes),
                         // One copy for every `used` where the byte is unrolled (see
                         // `run_inline`).
                         (_, true) if const { $k * $n <= UNROLL_BYTE } => {
-                            run_inline::<$k, $n>(&mut runs, bytes, used)
+                            run_inline::<$k, $n, W>(&mut runs, bytes, used)
                         }
-                        (0..=4, true) => run_inline::<$k, $n>(&mut runs, bytes, 4),
-                        (5..=8, true) => run_inline::<$k, $n>(&mut runs, bytes, 8),
-                        (_, true) => run_inline::<$k, $n>(&mut runs, bytes, 16),
+                        (0..=4, true) => run_inline::<$k, $n, W>(&mut runs, bytes, 4),
+                        (5..=8, true) => run_inline::<$k, $n, W>(&mut runs, bytes, 8),
+                        (_, true) => run_inline::<$k, $n, W>(&mut runs, bytes, 16),
                     }
                 };
             }
@@ -661,15 +695,15 @@ impl Lane {
 }
 
 /// A coded frame of [`DstDecoder::decode_group`] still being decoded, and its output.
-struct Live<'b, 'o> {
+struct Live<'b, 'o, W: Word> {
     /// Its position in the group.
     index: usize,
-    coded: Coded<'b>,
+    coded: Coded<'b, W>,
     out: &'o mut [u8],
 }
 
 /// A coded frame whose header has been read, decoded up to bit `n` of every channel.
-struct Coded<'b> {
+struct Coded<'b, W: Word> {
     nch: usize,
     fseg: Segmentation,
     pseg: Segmentation,
@@ -685,7 +719,7 @@ struct Coded<'b> {
     /// See [`Lane::probes`], and per channel the filter and ptable they hold.
     probes: &'b mut [Probe],
     keys: [(usize, usize); MAX_NCH],
-    arith: Arith<'b>,
+    arith: Arith<'b, W>,
     /// See [`Lane::hist`].
     hist: &'b mut [u8],
     /// Per channel, the current filter and ptable segment.
@@ -713,7 +747,7 @@ struct Span<'t> {
     keys: [(usize, usize); MAX_NCH],
 }
 
-impl<'b> Coded<'b> {
+impl<'b, W: Word> Coded<'b, W> {
     /// Reads the header of `frame` (`nch` channels) and prepares `lane` for its code, up
     /// to the coded X bit. A plain frame is copied to `out` at once (`Ok(None)`).
     fn start(lane: &'b mut Lane, frame: &[u8], nch: usize, out: &mut [u8]) -> Result<Option<Self>, DstError> {
@@ -786,7 +820,7 @@ impl<'b> Coded<'b> {
         if c == 4095 {
             return Err(DstError::CodeOutOfRange);
         }
-        let mut arith = Arith { a: 4095 << 52, x: u64::from(c) << 52, code };
+        let mut arith = Arith { a: W::from_u32(4095) << W::SCALE, x: W::from_u32(c) << W::SCALE, code };
 
         // Coded X bit (5.5.8), decoded and discarded.
         let a0 = filters.first().map_or(0, |f| f.coefs[0]);
@@ -880,7 +914,7 @@ impl<'b> Coded<'b> {
     }
 
     /// The state [`run`] decodes `span` (the next chunk) with.
-    fn lane_run<'r>(&'r mut self, span: &Span<'b>) -> LaneRun<'r, 'b> {
+    fn lane_run<'r>(&'r mut self, span: &Span<'b>) -> LaneRun<'r, 'b, W> {
         for ch in 0..self.nch {
             if self.keys[ch] != span.keys[ch] {
                 if let Some(p) = self.probes.get_mut(ch) {
@@ -913,25 +947,116 @@ impl<'b> Coded<'b> {
     }
 }
 
+/// The machine word the arithmetic decoder of 5.5.7 keeps A and C in: `u64` (scale 2^52) or
+/// `u32` (scale 2^20). Both give the same symbols, the same renormalisation and the same
+/// code position to the bit: A and C are 12-bit integers either way, and the bits below
+/// the scale are only the look-ahead of the code bits, which `u32` refills more often. The
+/// 32-bit form is for 32-bit targets, where every operation on a `u64` takes a register
+/// pair (#369); both are built everywhere, and the tests compare them.
+pub(crate) trait Word:
+    Copy
+    + Ord
+    + core::fmt::Debug
+    + core::ops::Shl<u32, Output = Self>
+    + core::ops::Shr<u32, Output = Self>
+    + core::ops::BitOr<Output = Self>
+    + core::ops::BitOrAssign
+{
+    /// The scale of A and C, 2^SCALE: the word's bits but the top 12.
+    const SCALE: u32;
+    /// How many symbols [`Arith::refill`] provides for: at most 8 code bits each.
+    const PER_REFILL: usize = (Self::SCALE / 8) as usize;
+    fn from_u32(v: u32) -> Self;
+    /// The top 5 bits of A x 2^SCALE (A is below 4096).
+    fn top5(self) -> usize;
+    /// The word stored big-endian at `bytes[at..]`, or 0 if `bytes` ends before it.
+    fn load(bytes: &[u8], at: usize) -> Self;
+    fn wrapping_sub(self, b: Self) -> Self;
+    fn wrapping_mul(self, b: Self) -> Self;
+    fn wrapping_shl(self, k: u32) -> Self;
+    fn leading_zeros(self) -> u32;
+    fn q(probe: &Probe) -> &QTable<Self>;
+    fn scaled(probe: &Probe) -> &ScaledLut<Self>;
+}
+
+macro_rules! word {
+    ($t:ty, $q:ident, $scaled:ident) => {
+        impl Word for $t {
+            const SCALE: u32 = <$t>::BITS - 12;
+            #[inline(always)]
+            fn from_u32(v: u32) -> Self {
+                v as $t
+            }
+            #[inline(always)]
+            fn top5(self) -> usize {
+                (self >> (Self::SCALE + 7)) as usize
+            }
+            #[inline(always)]
+            fn load(bytes: &[u8], at: usize) -> Self {
+                const N: usize = core::mem::size_of::<$t>();
+                bytes.get(at..at + N).map_or(0, |w| {
+                    let mut b = [0u8; N];
+                    b.copy_from_slice(w);
+                    <$t>::from_be_bytes(b)
+                })
+            }
+            #[inline(always)]
+            fn wrapping_sub(self, b: Self) -> Self {
+                <$t>::wrapping_sub(self, b)
+            }
+            #[inline(always)]
+            fn wrapping_mul(self, b: Self) -> Self {
+                <$t>::wrapping_mul(self, b)
+            }
+            #[inline(always)]
+            fn wrapping_shl(self, k: u32) -> Self {
+                <$t>::wrapping_shl(self, k)
+            }
+            #[inline(always)]
+            fn leading_zeros(self) -> u32 {
+                <$t>::leading_zeros(self)
+            }
+            #[inline(always)]
+            fn q(probe: &Probe) -> &QTable<Self> {
+                &probe.$q
+            }
+            #[inline(always)]
+            fn scaled(probe: &Probe) -> &ScaledLut<Self> {
+                &probe.$scaled
+            }
+        }
+    };
+}
+word!(u64, q, scaled);
+word!(u32, q32, scaled32);
+
+/// The [`Word`] the decoder uses: the target's pointer width (#369).
+#[cfg(target_pointer_width = "64")]
+pub(crate) type Native = u64;
+/// The [`Word`] the decoder uses: the target's pointer width (#369).
+#[cfg(not(target_pointer_width = "64"))]
+pub(crate) type Native = u32;
+
 /// The arithmetic decoder of 5.5.7.
 ///
-/// A and C are kept x 2^52: A as `a`, and C as the top 12 bits of the 64-bit `x`; below it are the code bits that
-/// follow (from `code.pos` on), of which [`Arith::refill`] makes at least 52 valid. A
-/// symbol takes at most 8 bits, so up to 6 symbols can be decoded per refill: shifting
-/// `x` left by the renormalisation count then both doubles C and appends the next bits.
+/// A and C are kept x 2^S (S = [`Word::SCALE`], 52 or 20): A as `a`, and C as the top 12
+/// bits of `x`; below it are the code bits that follow (from `code.pos` on), of which
+/// [`Arith::refill`] makes at least S valid. A symbol takes at most 8 bits, so up to
+/// [`Word::PER_REFILL`] symbols (6 or 2) can be decoded per refill: shifting `x` left by the
+/// renormalisation count then both doubles C and appends the next bits.
 #[derive(Clone, Copy)]
-struct Arith<'a> {
-    a: u64,
-    x: u64,
+struct Arith<'a, W: Word> {
+    a: W,
+    x: W,
     code: CodeBits<'a>,
 }
 
-impl Arith<'_> {
-    /// Fills the 52 bits below C with the code bits from `code.pos` on. Bits already there
+impl<W: Word> Arith<'_, W> {
+    /// Fills the S bits below C with the code bits from `code.pos` on. Bits already there
     /// are the same code bits, and those shifted in are 0, so an OR does it.
     #[inline(always)]
     fn refill(&mut self) {
-        self.x |= self.code.peek() >> 12;
+        self.x |= self.code.peek::<W>() >> 12;
     }
 
     /// Decodes one symbol with probability `p` (1 to 128) and renormalises by the whole
@@ -941,13 +1066,13 @@ impl Arith<'_> {
     fn decode(&mut self, p: u32) -> u32 {
         // A is 2048 to 4095 here (4095 at the start, then renormalised), so Q is 8 to 15
         // and Q x p is at most A / 2 + 128 < A: nothing below wraps, and the wrapping
-        // forms only spare the hot loop the overflow checks. Everything is x 2^52, like C.
+        // forms only spare the hot loop the overflow checks. Everything is x 2^S, like C.
         // Q is floor(A / 256) with bit 0 ORed with bit 7 of A: from t = floor(A / 128). Worked
         // out at the scale of 1, it holds no constant in a register.
         let a = self.a;
-        let t = (a >> 59) as u32;
+        let t = a.top5() as u32;
         let q = (t >> 1) | (t & 1);
-        let w0 = u64::from(q.wrapping_mul(p)) << 52;
+        let w0 = W::from_u32(q.wrapping_mul(p)) << W::SCALE;
         let w1 = a.wrapping_sub(w0);
         let zero = self.x >= w1;
         // C - W1 if that does not wrap, else C: the smaller of the two.
@@ -965,10 +1090,10 @@ impl Arith<'_> {
     /// [`Arith::decode`] with Q from `q`, a [`QTable`] the caller reaches without another
     /// register. The same to the bit.
     #[inline(always)]
-    fn decode_table(&mut self, p: u32, q: &QTable) -> u32 {
+    fn decode_table(&mut self, p: u32, q: &QTable<W>) -> u32 {
         // A is 2048 to 4095, so its top 5 bits are below 32. Nothing wraps; see `decode`.
         let a = self.a;
-        let w0 = q[(a >> 59) as usize].wrapping_mul(u64::from(p));
+        let w0 = q[a.top5()].wrapping_mul(W::from_u32(p));
         let w1 = a.wrapping_sub(w0);
         let zero = self.x >= w1;
         // C - W1 if that does not wrap, else C: the smaller of the two.
@@ -981,13 +1106,13 @@ impl Arith<'_> {
         u32::from(!zero)
     }
 
-    /// [`Arith::decode`] with `p` given x 2^52 (a [`ScaledLut`] entry), the same to the
+    /// [`Arith::decode`] with `p` given x 2^S (a [`ScaledLut`] entry), the same to the
     /// bit: Q x p is one multiply from the top 5 bits of A.
     #[inline(always)]
-    fn decode_scaled(&mut self, p: u64) -> u32 {
+    fn decode_scaled(&mut self, p: W) -> u32 {
         // Q is floor(A / 256) with bit 0 ORed with bit 7 of A: from t = floor(A / 128).
-        let t = (self.a >> 59) as u32;
-        let q = u64::from((t >> 1) | (t & 1));
+        let t = self.a.top5() as u32;
+        let q = W::from_u32((t >> 1) | (t & 1));
         let w0 = q.wrapping_mul(p);
         let w1 = self.a.wrapping_sub(w0);
         let zero = self.x >= w1;
@@ -1007,7 +1132,14 @@ impl Arith<'_> {
 /// (`partial[2^r | bits]`), the probability (128 in the half-probability region, 5.5.5),
 /// and the output bit.
 #[inline(always)]
-fn symbol(ar: &mut Arith<'_>, base: i16, partial: &[i16; 256], idx: u32, lut: &Lut, half: bool) -> u32 {
+fn symbol<W: Word>(
+    ar: &mut Arith<'_, W>,
+    base: i16,
+    partial: &[i16; 256],
+    idx: u32,
+    lut: &Lut,
+    half: bool,
+) -> u32 {
     // The wrapping sum is S reduced as 5.5.3 does (32768 becomes -32768).
     let spred = base.wrapping_add(partial[(idx & 0xFF) as usize]);
     let sign = u32::from(spred < 0);
@@ -1024,9 +1156,9 @@ fn probability(spred: i16, lut: &Lut) -> (u32, u32) {
     (u32::from(lut[usize::from(spred.unsigned_abs() >> 3)]), u32::from(spred < 0))
 }
 
-/// [`probability`] from a [`ScaledLut`], p x 2^52.
+/// [`probability`] from a [`ScaledLut`], p x 2^S.
 #[inline(always)]
-fn probability_scaled(spred: i16, lut: &ScaledLut) -> (u64, u32) {
+fn probability_scaled<W: Word>(spred: i16, lut: &ScaledLut<W>) -> (W, u32) {
     // 5.5.4's `min(|Spred| / 8, M_q - 1)`, with the last entry repeated up to 64.
     let j = usize::from(spred.unsigned_abs() >> 3).min(MAX_PTABLE_LEN - 1);
     (lut[j], u32::from(spred < 0))
@@ -1086,11 +1218,11 @@ const UNROLL_BYTE: usize = 9;
 struct Aligned([i16; 8]);
 
 /// One frame's part in [`run`]: its chunk from byte `start` on and its decoding state.
-struct LaneRun<'r, 'b> {
+struct LaneRun<'r, 'b, W: Word> {
     start: usize,
     tabs: [&'b [ByteTable; HISTORY_BYTES]; MAX_NCH],
     probes: &'r [Probe; MAX_NCH],
-    arith: &'r mut Arith<'b>,
+    arith: &'r mut Arith<'b, W>,
     hist: &'r mut [u8],
 }
 
@@ -1103,8 +1235,11 @@ struct LaneRun<'r, 'b> {
 /// A function of its own, for the build without run-time features; `dispatch` inlines
 /// [`run_inline`] instead.
 #[inline(never)]
-fn run<const K: usize, const NCH: usize, const U: usize>(lanes: &mut [LaneRun<'_, '_>], bytes: usize) {
-    run_inline::<K, NCH>(lanes, bytes, U);
+fn run<const K: usize, const NCH: usize, const U: usize, W: Word>(
+    lanes: &mut [LaneRun<'_, '_, W>],
+    bytes: usize,
+) {
+    run_inline::<K, NCH, W>(lanes, bytes, U);
 }
 
 /// The shares of the first `u` tables (4, 8 or 16; [`rows`]) of every frame and channel of
@@ -1113,9 +1248,9 @@ fn run<const K: usize, const NCH: usize, const U: usize>(lanes: &mut [LaneRun<'_
 /// with `u` a constant, the optimiser drops the tests.
 #[inline(always)]
 #[allow(clippy::needless_range_loop)]
-fn shares<const K: usize, const NCH: usize, const FROM: usize>(
+fn shares<const K: usize, const NCH: usize, const FROM: usize, W: Word>(
     out: &mut [[Aligned; NCH]; K],
-    lanes: &[LaneRun<'_, '_>; K],
+    lanes: &[LaneRun<'_, '_, W>; K],
     tabs: &[[&[ByteTable; HISTORY_BYTES]; NCH]; K],
     at: usize,
     u: usize,
@@ -1156,34 +1291,39 @@ fn shares<const K: usize, const NCH: usize, const FROM: usize>(
 /// longer in the generic build.
 #[inline(always)]
 #[allow(clippy::needless_range_loop)]
-fn run_inline<const K: usize, const NCH: usize>(lanes: &mut [LaneRun<'_, '_>], bytes: usize, u: usize) {
-    let Ok(lanes) = <&mut [LaneRun<'_, '_>; K]>::try_from(lanes) else {
+fn run_inline<const K: usize, const NCH: usize, W: Word>(
+    lanes: &mut [LaneRun<'_, '_, W>],
+    bytes: usize,
+    u: usize,
+) {
+    let Ok(lanes) = <&mut [LaneRun<'_, '_, W>; K]>::try_from(lanes) else {
         return;
     };
-    let mut ar: [Arith<'_>; K] = core::array::from_fn(|l| *lanes[l].arith);
+    let mut ar: [Arith<'_, W>; K] = core::array::from_fn(|l| *lanes[l].arith);
     let tabs: [[&[ByteTable; HISTORY_BYTES]; NCH]; K] =
         core::array::from_fn(|l| core::array::from_fn(|ch| lanes[l].tabs[ch]));
     let probes: [&[Probe; MAX_NCH]; K] = core::array::from_fn(|l| lanes[l].probes);
     // Per frame and channel, the shares of the complete bytes at each bit of the current
     // byte.
     let mut base = [[Aligned([0i16; 8]); NCH]; K];
-    shares::<K, NCH, 0>(&mut base, lanes, &tabs, 0, u);
+    shares::<K, NCH, 0, W>(&mut base, lanes, &tabs, 0, u);
     for i in 0..bytes {
         // The shares at the next byte of every complete byte but the newest (which is
         // the current byte).
         let mut rest = [[Aligned([0i16; 8]); NCH]; K];
-        shares::<K, NCH, 1>(&mut rest, lanes, &tabs, i, u);
+        shares::<K, NCH, 1, W>(&mut rest, lanes, &tabs, i, u);
         // The bits of the byte so far. The loop that does not unroll the bit position starts
         // them from a marker bit, so that they are the index `2^r | bits` of `Probe::partial`
         // as they stand; 8 shifts move the marker out of the low byte, which is all that is
         // read after the loop.
         let mut cur = [[if K * NCH <= UNROLL_BYTE { 0u32 } else { 1 }; NCH]; K];
         // A refill waits for the position after the previous symbol, so it is done as
-        // rarely as allowed: before every 6 symbols, counted from the byte's first.
+        // rarely as allowed: before every `W::PER_REFILL` symbols, counted from the byte's
+        // first.
         macro_rules! symbol {
             ($r:literal, $ch:literal, $l:literal) => {
                 if $ch < NCH && $l < K {
-                    if ($r * NCH + $ch) % 6 == 0 {
+                    if ($r * NCH + $ch) % W::PER_REFILL == 0 {
                         ar[$l].refill();
                     }
                     let idx = ((1 << $r) | cur[$l][$ch]) as usize & 0xFF;
@@ -1191,9 +1331,9 @@ fn run_inline<const K: usize, const NCH: usize>(lanes: &mut [LaneRun<'_, '_>], b
                     let spred = base[$l][$ch].0[$r].wrapping_add(probe.partial[idx]);
                     let y = if const { byte_lut(NCH) } {
                         let (p, sign) = probability(spred, &probe.lut);
-                        sign ^ ar[$l].decode_table(p, &probes[$l][0].q)
+                        sign ^ ar[$l].decode_table(p, W::q(&probes[$l][0]))
                     } else {
-                        let (p, sign) = probability_scaled(spred, &probe.scaled);
+                        let (p, sign) = probability_scaled(spred, W::scaled(probe));
                         sign ^ ar[$l].decode_scaled(p)
                     };
                     cur[$l][$ch] = (cur[$l][$ch] << 1) | y;
@@ -1220,11 +1360,12 @@ fn run_inline<const K: usize, const NCH: usize>(lanes: &mut [LaneRun<'_, '_>], b
             };
         }
         // The same with the bit position not unrolled (a smaller loop body for many
-        // symbols per byte), refilling before every channel 0: at most 6 symbols apart.
+        // symbols per byte), refilling before every `W::PER_REFILL`-th channel from channel 0:
+        // at most that many symbols apart.
         macro_rules! symbol_at {
             ($r:ident, $ch:literal, $l:literal) => {
                 if $ch < NCH && $l < K {
-                    if $ch == 0 {
+                    if $ch % W::PER_REFILL == 0 {
                         ar[$l].refill();
                     }
                     let idx = cur[$l][$ch] as usize & 0xFF;
@@ -1232,9 +1373,9 @@ fn run_inline<const K: usize, const NCH: usize>(lanes: &mut [LaneRun<'_, '_>], b
                     let spred = base[$l][$ch].0[$r].wrapping_add(probe.partial[idx]);
                     let y = if const { byte_lut(NCH) } {
                         let (p, sign) = probability(spred, &probe.lut);
-                        sign ^ ar[$l].decode_table(p, &probes[$l][0].q)
+                        sign ^ ar[$l].decode_table(p, W::q(&probes[$l][0]))
                     } else {
-                        let (p, sign) = probability_scaled(spred, &probe.scaled);
+                        let (p, sign) = probability_scaled(spred, W::scaled(probe));
                         sign ^ ar[$l].decode_scaled(p)
                     };
                     cur[$l][$ch] = (cur[$l][$ch] << 1) | y;
@@ -1290,12 +1431,12 @@ fn run_inline<const K: usize, const NCH: usize>(lanes: &mut [LaneRun<'_, '_>], b
 /// Decodes bytes `start / 8 .. span.end / 8` of `nch` channels, with probability 128 for
 /// bits `n < nh[c]` of channel c (5.5.5).
 #[allow(clippy::needless_range_loop)]
-fn run_general(
+fn run_general<W: Word>(
     start: usize,
     span: &Span<'_>,
     nch: usize,
     nh: &[usize; MAX_NCH],
-    arith: &mut Arith<'_>,
+    arith: &mut Arith<'_, W>,
     hist: &mut [u8],
 ) {
     for m in start / 8..span.end / 8 {
@@ -1340,23 +1481,35 @@ const LUT_USED: usize = 4097;
 /// A probability lookup table: each entry is p, 1 to 128.
 type Lut = [u8; LUT_LEN];
 
-/// The first 64 entries of a [`Lut`] x 2^52, the scale of [`Arith`], indexed by
+/// The first 64 entries of a [`Lut`] x 2^S, the scale of [`Arith`], indexed by
 /// `min(|Spred| / 8, 63)` ([`probability_scaled`]).
-type ScaledLut = [u64; MAX_PTABLE_LEN];
+pub(crate) type ScaledLut<W> = [W; MAX_PTABLE_LEN];
 
-/// Q (5.5.7) x 2^52, the scale of [`Arith`], indexed by the top 5 bits of A x 2^52: with
+/// Q (5.5.7) x 2^S, the scale of [`Arith`], indexed by the top 5 bits of A x 2^52: with
 /// t = floor(A / 128), Q is floor(t / 2) with bit 0 ORed with bit 0 of t.
 ///
 /// One load instead of a shift and two logic operations before the multiply and a shift after
 /// it. Measured on Zen 2 (#203), where the 2-channel loop is bound by its integer operations
 /// rather than by the arithmetic decoder's chain, which this lengthens.
-type QTable = [u64; 32];
+pub(crate) type QTable<W> = [W; 32];
 
-const fn q_table() -> QTable {
+const fn q_table() -> QTable<u64> {
     let mut q = [0; 32];
     let mut t = 0;
     while t < 32 {
         q[t] = (((t >> 1) | (t & 1)) as u64) << 52;
+        t += 1;
+    }
+    q
+}
+
+/// [`q_table`] at the scale of `u32`, 2^20.
+const fn q_table32() -> QTable<u32> {
+    let wide = q_table();
+    let mut q = [0; 32];
+    let mut t = 0;
+    while t < 32 {
+        q[t] = (wide[t] >> 32) as u32;
         t += 1;
     }
     q
@@ -1376,15 +1529,18 @@ const fn byte_lut(nch: usize) -> bool {
 /// The partial shares (see [`Lane::partial`]) and probability table of one channel of a
 /// chunk, copied together so that [`run`] reaches both from one address per frame, with
 /// the channel's offset a constant, and holds fewer addresses in registers. Only the table
-/// [`byte_lut`] chooses for the frame's channel count is filled. `q` never changes; [`run`]
-/// reads channel 0's for every channel, so that only one is in the cache.
+/// [`byte_lut`] chooses for the frame's channel count is filled, in both [`Word`]s. `q` never
+/// changes; [`run`] reads channel 0's for every channel, so that only one is in the cache.
+/// The `u32` tables come last, so that the layout of the `u64` ones is as before.
 #[derive(Clone, Debug)]
 #[repr(C, align(64))]
-struct Probe {
+pub(crate) struct Probe {
     partial: [i16; 256],
-    scaled: ScaledLut,
-    q: QTable,
+    scaled: ScaledLut<u64>,
+    q: QTable<u64>,
     lut: Lut,
+    scaled32: ScaledLut<u32>,
+    q32: QTable<u32>,
 }
 
 impl Probe {
@@ -1394,15 +1550,22 @@ impl Probe {
             // Only the entries that can be read (see [`Lane::build_luts`]).
             self.lut[..LUT_USED].copy_from_slice(&lut[..LUT_USED]);
         } else {
-            for (s, &p) in self.scaled.iter_mut().zip(lut) {
-                *s = u64::from(p) << 52;
+            for ((s, s32), &p) in self.scaled.iter_mut().zip(self.scaled32.iter_mut()).zip(lut) {
+                *s = u64::from(p) << u64::SCALE;
+                *s32 = u32::from(p) << u32::SCALE;
             }
         }
     }
 }
 
-const NO_PROBE: Probe =
-    Probe { partial: [0; 256], scaled: [128 << 52; MAX_PTABLE_LEN], q: q_table(), lut: [128; LUT_LEN] };
+const NO_PROBE: Probe = Probe {
+    partial: [0; 256],
+    scaled: [128 << u64::SCALE; MAX_PTABLE_LEN],
+    q: q_table(),
+    lut: [128; LUT_LEN],
+    scaled32: [128 << u32::SCALE; MAX_PTABLE_LEN],
+    q32: q_table32(),
+};
 
 /// The probes of the channels that are not decoded.
 static NO_PROBES: [Probe; MAX_NCH] = [NO_PROBE; MAX_NCH];
@@ -1449,17 +1612,12 @@ impl<'a> CodeBits<'a> {
         CodeBits { bytes: buf, pos: 0 }
     }
 
-    /// The next 57 or more bits, from the most significant bit on, without taking them.
+    /// The next bits, from the most significant bit on, without taking them: all but the
+    /// last 7 of a `W` or more.
     #[inline(always)]
-    fn peek(&self) -> u64 {
-        let byte = self.pos / 8;
+    fn peek<W: Word>(&self) -> W {
         // Past the padded copy every bit is 0 (the code can be read beyond its end).
-        let word = self.bytes.get(byte..byte + 8).map_or(0, |w| {
-            let mut b = [0u8; 8];
-            b.copy_from_slice(w);
-            u64::from_be_bytes(b)
-        });
-        word << (self.pos % 8)
+        W::load(self.bytes, self.pos / 8) << (self.pos % 8) as u32
     }
 
     /// Takes `k` bits.
@@ -1471,7 +1629,7 @@ impl<'a> CodeBits<'a> {
 
     /// The next 12 bits as an integer.
     fn take12(&mut self) -> u32 {
-        let v = (self.peek() >> 52) as u32;
+        let v = (self.peek::<u64>() >> 52) as u32;
         self.skip(12);
         v
     }
@@ -1636,29 +1794,50 @@ mod tests {
     // most of Miri's time on the crate (#76).
     #[test]
     fn fast_loop_matches_general_1_frame() {
-        fast_loop_matches_general(1);
+        fast_loop_matches_general::<u64>(1);
+    }
+
+    #[test]
+    fn fast_loop_matches_general_1_frame_u32() {
+        fast_loop_matches_general::<u32>(1);
     }
 
     #[test]
     fn fast_loop_matches_general_2_frames() {
-        fast_loop_matches_general(2);
+        fast_loop_matches_general::<u64>(2);
+    }
+
+    #[test]
+    fn fast_loop_matches_general_2_frames_u32() {
+        fast_loop_matches_general::<u32>(2);
     }
 
     #[test]
     fn fast_loop_matches_general_3_frames() {
-        fast_loop_matches_general(3);
+        fast_loop_matches_general::<u64>(3);
+    }
+
+    #[test]
+    fn fast_loop_matches_general_3_frames_u32() {
+        fast_loop_matches_general::<u32>(3);
     }
 
     #[test]
     fn fast_loop_matches_general_4_frames() {
-        fast_loop_matches_general(4);
+        fast_loop_matches_general::<u64>(4);
+    }
+
+    #[test]
+    fn fast_loop_matches_general_4_frames_u32() {
+        fast_loop_matches_general::<u32>(4);
     }
 
     /// The lockstep loop of `k` frames and constant channel and table counts against the
     /// general loop run on each frame alone, with channels using different numbers of tables
     /// (zero beyond), frames at different positions with different histories and code, for
-    /// every channel count and table count.
-    fn fast_loop_matches_general(k: usize) {
+    /// every channel count and table count. With the arithmetic decoder in `W` (both [`Word`]s
+    /// are tested on every target).
+    fn fast_loop_matches_general<W: Word>(k: usize) {
         assert!((1..=MAX_LANES).contains(&k));
         let mut seed = 0x9E37_79B9_7F4A_7C15u64 ^ k as u64;
         let mut rnd = move || {
@@ -1711,14 +1890,14 @@ mod tests {
                     let mut results = Vec::new();
                     for general in [false, true] {
                         let mut bufs: Vec<Vec<u8>> = vec![Vec::new(); k];
-                        let mut ars: Vec<Arith<'_>> = bufs
+                        let mut ars: Vec<Arith<'_, W>> = bufs
                             .iter_mut()
                             .enumerate()
                             .map(|(l, buf)| {
                                 let from = &code[128 * l..];
                                 Arith {
-                                    a: 4095 << 52,
-                                    x: 0,
+                                    a: W::from_u32(4095) << W::SCALE,
+                                    x: W::from_u32(0),
                                     code: CodeBits::new(buf, from, 0, from.len() * 8),
                                 }
                             })
@@ -1747,7 +1926,7 @@ mod tests {
                                     })
                                 })
                                 .collect();
-                            let mut runs: Vec<LaneRun<'_, '_>> = ars
+                            let mut runs: Vec<LaneRun<'_, '_, W>> = ars
                                 .iter_mut()
                                 .zip(hists.iter_mut())
                                 .enumerate()
@@ -1762,9 +1941,9 @@ mod tests {
                             macro_rules! by_tables {
                                 ($k:literal, $n:literal) => {
                                     match u {
-                                        4 => run::<$k, $n, 4>(&mut runs, bytes),
-                                        8 => run::<$k, $n, 8>(&mut runs, bytes),
-                                        _ => run::<$k, $n, 16>(&mut runs, bytes),
+                                        4 => run::<$k, $n, 4, W>(&mut runs, bytes),
+                                        8 => run::<$k, $n, 8, W>(&mut runs, bytes),
+                                        _ => run::<$k, $n, 16, W>(&mut runs, bytes),
                                     }
                                 };
                             }
@@ -1836,6 +2015,69 @@ mod tests {
                     let (mut one, mut two) = (arith, arith);
                     assert_eq!(one.decode(p), two.decode_table(p, &q));
                     assert_eq!((one.a, one.x, one.code.pos), (two.a, two.x, two.code.pos));
+                }
+            }
+        }
+    }
+    /// The arithmetic decoder in `u32` steps exactly as in `u64` (#369), in each of its three
+    /// forms: the same symbol, A, C and code position, and after a refill the same look-ahead
+    /// bits as far as `u32` holds them, for every A and p (fewer under Miri), C on both sides
+    /// of the decision, and code bits that differ from step to step. Each case runs two
+    /// symbols, so that the second starts from the first's renormalised state.
+    #[test]
+    fn u32_steps_as_u64() {
+        let (a_step, p_step) = if cfg!(miri) { (89, 11) } else { (1, 1) };
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let code: Vec<u8> = (0..64)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                seed as u8
+            })
+            .chain([0; CODE_PADDING])
+            .collect();
+        let mut probe = NO_PROBE;
+        let mut lut = [0u8; LUT_LEN];
+        for (i, v) in lut.iter_mut().enumerate() {
+            *v = (1 + i % 128) as u8;
+        }
+        probe.fill(&[0; 256], &lut, false);
+        let (q64, q32) = (u64::q(&probe), u32::q(&probe));
+        let (s64, s32) = (u64::scaled(&probe), u32::scaled(&probe));
+        for a in (2048u32..4096).step_by(a_step) {
+            for p in (1u32..=128).step_by(p_step) {
+                let w1 = a - ((a >> 8) | ((a >> 7) & 1)) * p;
+                for (n, c) in [0, w1 - 1, w1, a - 1].into_iter().enumerate() {
+                    let pos = (a as usize * 7 + p as usize * 3 + n) % 256;
+                    let at = |pos| CodeBits { bytes: &code, pos };
+                    let one = Arith::<u64> { a: u64::from(a) << 52, x: u64::from(c) << 52, code: at(pos) };
+                    let two = Arith::<u32> { a: a << 20, x: c << 20, code: at(pos) };
+                    for form in 0..3 {
+                        let (mut one, mut two) = (one, two);
+                        for step in 0..2 {
+                            one.refill();
+                            two.refill();
+                            assert_eq!(
+                                (one.x >> 32) as u32,
+                                two.x,
+                                "a {a} p {p} c {c} form {form} step {step}"
+                            );
+                            let pp = (p + 37 * step) % 128 + 1;
+                            let (y1, y2) = match form {
+                                0 => (one.decode(pp), two.decode(pp)),
+                                1 => (one.decode_table(pp, q64), two.decode_table(pp, q32)),
+                                _ => {
+                                    let j = (pp - 1) as usize % MAX_PTABLE_LEN;
+                                    (one.decode_scaled(s64[j]), two.decode_scaled(s32[j]))
+                                }
+                            };
+                            assert_eq!(y1, y2, "a {a} p {pp} c {c} form {form} step {step}");
+                            assert_eq!((one.a >> 52) as u32, two.a >> 20);
+                            assert_eq!((one.x >> 52) as u32, two.x >> 20);
+                            assert_eq!(one.code.pos, two.code.pos);
+                        }
+                    }
                 }
             }
         }
