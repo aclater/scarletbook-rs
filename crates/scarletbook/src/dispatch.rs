@@ -423,9 +423,18 @@ mod tests {
         pools
     }
 
+    /// How [`decode_all`] decodes: with an instruction set, or without run-time features and
+    /// with the arithmetic decoder in a given word (#369).
+    #[derive(Clone, Copy, Debug)]
+    enum How {
+        Isa(Isa),
+        Word64,
+        Word32,
+    }
+
     /// Every frame of `pool` and a damaged copy of every third one, decoded in groups of 1 to
-    /// [`MAX_LANES`] frames with `isa`: the results and the outputs.
-    fn decode_all(isa: Isa, pool: &[Vec<u8>], channels: u8) -> Vec<(Result<(), DstError>, Vec<u8>)> {
+    /// [`MAX_LANES`] frames as `how` says: the results and the outputs.
+    fn decode_all(how: How, pool: &[Vec<u8>], channels: u8) -> Vec<(Result<(), DstError>, Vec<u8>)> {
         let mut frames: Vec<Vec<u8>> = pool.to_vec();
         for (i, f) in pool.iter().enumerate().step_by(3) {
             let mut f = f.clone();
@@ -437,7 +446,10 @@ mod tests {
             }
             frames.push(f);
         }
-        let mut dec = DstDecoder::with_isa(isa);
+        let mut dec = DstDecoder::with_isa(match how {
+            How::Isa(isa) => isa,
+            How::Word64 | How::Word32 => Isa::generic(),
+        });
         let mut out = Vec::new();
         let mut rest = &frames[..];
         let mut group = 1;
@@ -446,7 +458,11 @@ mod tests {
             let refs: Vec<&[u8]> = now.iter().map(Vec::as_slice).collect();
             let mut bufs = vec![vec![0u8; FL * usize::from(channels)]; now.len()];
             let mut outs: Vec<&mut [u8]> = bufs.iter_mut().map(Vec::as_mut_slice).collect();
-            let results = dec.decode_many(&refs, channels, &mut outs);
+            let results = match how {
+                How::Isa(_) => dec.decode_many(&refs, channels, &mut outs),
+                How::Word64 => dec.decode_many_with::<u64>(&refs, channels, &mut outs),
+                How::Word32 => dec.decode_many_with::<u32>(&refs, channels, &mut outs),
+            };
             out.extend(
                 results.into_iter().zip(bufs).map(|(r, b)| (r, if r.is_ok() { b } else { Vec::new() })),
             );
@@ -456,25 +472,25 @@ mod tests {
         out
     }
 
+    /// The detected instruction set, and both words of the arithmetic decoder (whichever the
+    /// target uses and the other one, #369), give the generic decoder's results and output.
     fn assert_same(pool: &[Vec<u8>], channels: u8, what: &str) {
-        let detected = decode_all(Isa::detect(), pool, channels);
-        let generic = decode_all(Isa::generic(), pool, channels);
-        assert_eq!(detected.len(), generic.len());
+        let generic = decode_all(How::Isa(Isa::generic()), pool, channels);
         assert!(generic.iter().any(|(r, _)| r.is_ok()), "{what}, {channels} channels: no valid frame");
-        for (i, (d, g)) in detected.iter().zip(&generic).enumerate() {
-            assert!(
-                d == g,
-                "{what}, {channels} channels, frame {i}: {:?} differs ({:?})",
-                d.0,
-                Isa::detect()
-            );
+        for how in [How::Isa(Isa::detect()), How::Word64, How::Word32] {
+            let other = decode_all(how, pool, channels);
+            assert_eq!(other.len(), generic.len());
+            for (i, (d, g)) in other.iter().zip(&generic).enumerate() {
+                assert!(d == g, "{what}, {channels} channels, frame {i}: {:?} differs ({how:?})", d.0);
+            }
         }
     }
 
-    /// The decoder chosen for this CPU gives exactly the output and results of the generic
-    /// decoder on the DST frames of the corpus (1 to 6 channels), on the generated stress
-    /// frames of the benchmarks (2 and 6 channels), and on damaged copies of both. (On a
-    /// CPU without the features, both are the generic decoder.)
+    /// The decoder chosen for this CPU, and the arithmetic decoder in `u64` and in `u32`, give
+    /// exactly the output and results of the generic decoder on the DST frames of the corpus
+    /// (1 to 6 channels), on the generated stress frames of the benchmarks (2 and 6
+    /// channels), and on damaged copies of both. (On a CPU without the features, the
+    /// detected decoder is the generic one.)
     #[test]
     #[cfg_attr(
         miri,
@@ -500,6 +516,45 @@ mod tests {
         assert!(seen > 100, "only {seen} frames");
     }
 
+    /// A digest (FNV-1a, 64 bits) of the results and outputs of every DST frame of the corpus
+    /// (up to 6 per track) and of the generated frames of
+    /// [`detected_decoder_matches_generic_simple`], with the damaged copies [`decode_all`]
+    /// adds, decoded with the detected instruction set. It is fixed, so every target that runs
+    /// this test decodes them exactly as x86-64 does, damaged frames and errors included: CI
+    /// runs it on i686 as well (#369). The benchmarks' stress frames are left out: their
+    /// signal comes from the platform's floating-point library, so the frames themselves
+    /// differ between targets.
+    #[test]
+    #[cfg_attr(miri, ignore = "the corpus is too large for Miri")]
+    fn decoded_frames_digest_is_fixed() {
+        let Some(images) = super::testutil::images() else { return };
+        let mut pools: Vec<(u8, Vec<Vec<u8>>)> = corpus_frames(&images, 6)
+            .into_iter()
+            .enumerate()
+            .filter(|(_, p)| !p.is_empty())
+            .map(|(c, p)| (c as u8, p))
+            .collect();
+        for nch in 1..=6 {
+            pools.push((nch, generated(nch, 6)));
+        }
+        let mut h = 0xCBF2_9CE4_8422_2325u64;
+        let mut eat = |bytes: &[u8]| {
+            for &b in bytes {
+                h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01B3);
+            }
+        };
+        let mut frames = 0;
+        for (nch, pool) in &pools {
+            for (result, out) in decode_all(How::Isa(Isa::detect()), pool, *nch) {
+                eat(format!("{result:?}").as_bytes());
+                eat(&(out.len() as u64).to_le_bytes());
+                eat(&out);
+                frames += 1;
+            }
+        }
+        assert_eq!((frames, format!("{h:016x}")), (1179, "704239643d84921c".to_string()));
+    }
+
     /// The same on small generated frames, short enough for Miri. (Under Miri, both are
     /// the generic decoder unless the build enables the features: `core-dispatch-avx2`.)
     #[test]
@@ -508,7 +563,16 @@ mod tests {
     }
 
     fn detected_decoder_matches_generic_simple_body() {
-        let mut seed = 0x51_3C_7A_D2u64;
+        let channels: &[u8] = if cfg!(miri) { &[1] } else { &[1, 2, 3, 4, 5, 6] };
+        for &nch in channels {
+            assert_same(&generated(nch, if cfg!(miri) { 1 } else { 6 }), nch, "generated");
+        }
+    }
+
+    /// `frames` small generated frames of `nch` channels, from integer arithmetic only, so the
+    /// same on every target.
+    fn generated(nch: u8, frames: usize) -> Vec<Vec<u8>> {
+        let mut seed = 0x51_3C_7A_D2u64 ^ u64::from(nch);
         let mut rnd = move || {
             seed ^= seed << 13;
             seed ^= seed >> 7;
@@ -517,17 +581,12 @@ mod tests {
         };
         let coefs: Vec<i32> = (0..20).map(|i| [96, -40, 17, -5][i % 4] >> (i / 4)).collect();
         let ptable: Vec<u32> = (0..24).map(|i| 128 - 5 * i).collect();
-        let channels: &[u8] = if cfg!(miri) { &[1] } else { &[1, 2, 3, 4, 5, 6] };
-        for &nch in channels {
-            let pool: Vec<Vec<u8>> = (0..if cfg!(miri) { 1 } else { 6 })
-                .map(|k| {
-                    let signal: Vec<Vec<u8>> =
-                        (0..nch).map(|_| (0..FL).map(|_| rnd() as u8).collect()).collect();
-                    let half: Vec<bool> = (0..nch).map(|c| (usize::from(c) + k) % 3 == 0).collect();
-                    dst_enc::encode_simple(&signal, &coefs, &ptable, &half)
-                })
-                .collect();
-            assert_same(&pool, nch, "generated");
-        }
+        (0..frames)
+            .map(|k| {
+                let signal: Vec<Vec<u8>> = (0..nch).map(|_| (0..FL).map(|_| rnd() as u8).collect()).collect();
+                let half: Vec<bool> = (0..nch).map(|c| (usize::from(c) + k) % 3 == 0).collect();
+                dst_enc::encode_simple(&signal, &coefs, &ptable, &half)
+            })
+            .collect()
     }
 }
