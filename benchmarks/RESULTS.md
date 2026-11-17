@@ -63,6 +63,23 @@ In the run list, but not in every table:
   DSF and DSD to PCM are blank, unless an equivalent revision is compared instead (0.5.6
   below uses `3eb96dc` for 0.5.5).
 
+## 0.6.1
+
+Measured on the Zen 2 benchmark host (AMD Ryzen 9 3950X), 2026-11-17, for #369 (#370). **Not with `compare.sh`:** these are `bench` programs built with `cargo build --release` (profile `release`, not `dist`), as static i686 musl binaries with `-C target-cpu=pentium4` and as the x86-64 release build. Before is `main` at the branch point of #370, which decodes as 0.6.0 does, and after is `bd4d672`, whose decoder is this release's. The command is `bench decode IMAGE --area mc|2ch --threads 1 --sink null` on the synthetic images `dst-stress-6ch-10m` and `dst-20min-2ch`. It ran in 7 rounds under the exclusive benchmark lock: each round runs both programs for each case, in the opposite order on even rounds, with a fresh copy of each program. All 56 runs succeeded. Figures are median wall times, and the last column is the median of per-round ratios.
+
+| Path | Build | Before wall s | After wall s | After / before | Median of per-round ratios [range] |
+|---|---|---|---|---|---|
+| DST decode, one thread, 6 channels | i686 musl, pentium4 | 93.05 | 55.71 | 0.599 | 0.597 [0.592-0.601] |
+| DST decode, one thread, 2 channels | i686 musl, pentium4 | 61.59 | 31.29 | 0.508 | 0.508 [0.506-0.510] |
+| DST decode, one thread, 6 channels | x86-64 release (AVX2 decoder at run time) | 34.75 | 34.77 | 1.001 | 1.001 [0.984-1.012] |
+| DST decode, one thread, 2 channels | x86-64 release (AVX2 decoder at run time) | 18.71 | 18.67 | 0.998 | 0.999 [0.995-1.007] |
+
+**On i686, 6-channel DST takes 40 % less time and 2-channel 49 % less. On x86-64 there is no change.** An i686 build with SSE3, SSSE3 and MOVBE enabled was no faster than the pentium4 build: 6 channels 55.50 against 55.66 s, 2 channels 31.37 against 31.42 s, 2 rounds. On the same core, i686 still takes about 1.6 times as long as x86-64 for 6 channels.
+
+sacdfs's black-box figures for the same change are on #369 (i9-13900H, its own i686 pentium4 build, 0.6.0 against this code). 6-channel DST took 0.583 of the time on one E-core and 0.587 on two E-cores with 4 threads; 2-channel took 0.577 and 0.582. The output was byte-identical to x86-64 on 1,004 files.
+
+**Not measured:** in-order Atom cores; more than one thread here; x86-64-v3 and the `dist` profile for this release, since the x86-64 code is unchanged; the other paths of the 0.6.0 table, also unchanged.
+
 ## 0.6.0
 
 Measured on the Zen 2 benchmark host (AMD Ryzen 9 3950X), 2026-11-16, with `compare.sh` (generic kits, statically linked, profile `dist`): 0.5.9 = `v0.5.9` and 0.6.0 = the release-prep tree at `90f480a`. Timed under the machine's shared benchmark lock. 162 runs, none failed. Later changes in 0.6.0 (#360, #362, #363) touch the C interface's `_free` functions, documentation and a new capacity API, none of the measured paths.
