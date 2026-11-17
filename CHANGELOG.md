@@ -10,6 +10,31 @@ from 0.5.8).
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-18
+
+**Faster DST decoding on 32-bit x86 (i686), with the same output to the bit (#369, #370). No API or ABI change: a drop-in update from 0.6.0.**
+
+- **Measured on the Zen 2 benchmark host** (Ryzen 9 3950X), one thread, static i686 musl builds with `-C target-cpu=pentium4`, before against the same code as this release, 7 alternating rounds:
+
+  | Path | Before wall s | After wall s | Median of per-round ratios [range] |
+  |---|---|---|---|
+  | i686, 6-channel DST (10 min, synthetic) | 93.05 | 55.71 | 0.597 [0.592-0.601] |
+  | i686, 2-channel DST (20 min, synthetic) | 61.59 | 31.29 | 0.508 [0.506-0.510] |
+  | x86-64, 6-channel DST | 34.75 | 34.77 | 1.001 [0.984-1.012] |
+  | x86-64, 2-channel DST | 18.71 | 18.67 | 0.999 [0.995-1.007] |
+
+  On i686, 6-channel DST takes 40 % less time and 2-channel 49 % less. x86-64 and other 64-bit targets are unchanged: they keep the 64-bit form.
+- **sacdfs's black-box figures** (on #369, i9-13900H, its own i686 musl pentium4 build, 0.6.0 against this code):
+  - 6-channel DST took 0.583 of the time on one E-core and 0.587 on two E-cores with 4 threads;
+  - 2-channel took 0.577 and 0.582;
+  - every corpus file (910) and every file from its 3 real discs (94) was byte-identical to the x86-64 output.
+- **No run-time SSE3/SSSE3 detection:** building with SSE3, SSSE3 and MOVBE measured no faster than the pentium4 baseline, so there is one i686 path for every CPU.
+- **Unmeasured:** in-order Atom cores, such as the NAS units #369 is for (sacdfs projects about 2.2x real time for 6-channel DST there from its E-core ratio; that is a projection, not a measurement); more than one thread on the Zen 2 host; other 32-bit targets.
+
+### Changed
+
+- DST decoding on 32-bit targets (i686 and others) keeps the arithmetic decoder's state in a 32-bit word instead of a 64-bit one, so that each step is single-register arithmetic. The decoded output is identical to the bit. CI now tests i686 builds for the pentium4 baseline and for the Atom class (#369).
+
 ## [0.6.0] - 2026-11-15
 
 **The interface change before 1.0 (#39), faster DST decoding, fixes to seek verdicts, ID3 tag sizes and debug builds, and the first release from the hardened release workflow.**
