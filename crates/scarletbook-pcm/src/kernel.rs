@@ -530,30 +530,80 @@ fn s1(lut: &[[i32; 256]], bytes: &[u8], start: usize, stride: usize, out: &mut [
     // S1's 8 tables, and `Wide`'s 12, as arrays: the sum over a window is unrolled, with no
     // bounds checks (issue #216).
     if let Ok(lut) = <&[[i32; 256]; 8]>::try_from(lut) {
-        s1_n(lut, bytes, start, stride, out);
+        s1_n::<8, NativeWord>(lut, bytes, start, stride, out);
     } else if let Ok(lut) = <&[[i32; 256]; 12]>::try_from(lut) {
-        s1_n(lut, bytes, start, stride, out);
+        s1_n::<12, NativeWord>(lut, bytes, start, stride, out);
     } else {
         s1_any(lut, bytes, start, stride, out);
     }
 }
 
-/// [`s1`] with `B` tables. Each window is read as 64-bit words and taken apart, not loaded a
-/// byte at a time, which leaves the CPU's load ports to the table lookups (issue #224).
+/// A machine word [`s1_n`] reads a window in: `u64`, or `u32` on 32-bit targets, where
+/// shifting a `u64` takes a register pair and two instructions (#372).
+trait S1Word: Copy {
+    /// Its size in bytes.
+    const BYTES: usize;
+    /// `part` (at most `BYTES` bytes) as a little-endian word, zero above it.
+    fn load(part: &[u8]) -> Self;
+    /// The low byte, as an index.
+    fn low(self) -> usize;
+    /// The word shifted right by 8 bits.
+    fn next(self) -> Self;
+}
+
+macro_rules! s1_word {
+    ($t:ty) => {
+        impl S1Word for $t {
+            const BYTES: usize = core::mem::size_of::<$t>();
+            #[inline(always)]
+            fn load(part: &[u8]) -> Self {
+                let mut word = [0u8; core::mem::size_of::<$t>()];
+                word[..part.len()].copy_from_slice(part);
+                <$t>::from_le_bytes(word)
+            }
+            #[inline(always)]
+            fn low(self) -> usize {
+                (self & 0xff) as usize
+            }
+            #[inline(always)]
+            fn next(self) -> Self {
+                self >> 8
+            }
+        }
+    };
+}
+s1_word!(u64);
+s1_word!(u32);
+
+/// The [`S1Word`] of this target: its pointer width.
+#[cfg(target_pointer_width = "64")]
+type NativeWord = u64;
+/// The [`S1Word`] of this target: its pointer width.
+#[cfg(not(target_pointer_width = "64"))]
+type NativeWord = u32;
+
+/// [`s1`] with `B` tables. Each window is read as words of `W` and taken apart, not loaded a
+/// byte at a time, which leaves the CPU's load ports to the table lookups (issue #224). The
+/// word changes only how the bytes are fetched: the same table entries are added, in the
+/// same order, whatever `W` is.
 #[inline(always)]
-fn s1_n<const B: usize>(lut: &[[i32; 256]; B], bytes: &[u8], start: usize, stride: usize, out: &mut [f64]) {
+fn s1_n<const B: usize, W: S1Word>(
+    lut: &[[i32; 256]; B],
+    bytes: &[u8],
+    start: usize,
+    stride: usize,
+    out: &mut [f64],
+) {
     let Some(last) = out.len().checked_sub(1) else { return };
     let windows = bytes[start..start + stride * last + B].windows(B).step_by(stride);
     for (o, w) in out.iter_mut().zip(windows) {
         // As in `s1_any`: no partial sum wraps.
         let mut sum = 0i32;
-        for (tables, part) in lut.chunks(8).zip(w.chunks(8)) {
-            let mut word = [0u8; 8];
-            word[..part.len()].copy_from_slice(part);
-            let mut word = u64::from_le_bytes(word);
+        for (tables, part) in lut.chunks(W::BYTES).zip(w.chunks(W::BYTES)) {
+            let mut word = W::load(part);
             for table in tables {
-                sum = sum.wrapping_add(table[(word & 0xff) as usize]);
-                word >>= 8;
+                sum = sum.wrapping_add(table[word.low()]);
+                word = word.next();
             }
         }
         *o = f64::from(sum);
@@ -657,6 +707,60 @@ pub(crate) fn interp2_odd<const L: usize, const FMA: bool>(s: &Sym, w: &[f64], o
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S1 reads its windows in `u64` or `u32` words with the same result as one byte at a
+    /// time (`s1_any`), for 8 and 12 tables (S1 and S1_WIDE), strides 1 and 2 and every
+    /// start in a word (#372). Both words are tested on every target. Fewer outputs under
+    /// Miri.
+    #[test]
+    fn s1_words_match_bytes() {
+        let n = if cfg!(miri) { 8 } else { 256 };
+        let mut seed = 0x5DEE_CE66_D1A4_F00Du64;
+        let mut rnd = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        // Table entries of either sign, small enough that no sum wraps.
+        let lut: Vec<[i32; 256]> =
+            (0..12).map(|_| core::array::from_fn(|_| (rnd() % (1 << 26)) as i32 - (1 << 25))).collect();
+        let bytes: Vec<u8> = (0..2 * n + 64).map(|_| rnd() as u8).collect();
+        for stride in [1, 2] {
+            for start in 0..8 {
+                let mut want = vec![0.0; n];
+                let mut got = vec![0.0; n];
+                for b in [8, 12] {
+                    s1_any(&lut[..b], &bytes, start, stride, &mut want);
+                    for word in [32, 64] {
+                        match (b, word) {
+                            (8, 32) => {
+                                s1_n::<8, u32>(lut[..8].try_into().unwrap(), &bytes, start, stride, &mut got)
+                            }
+                            (8, _) => {
+                                s1_n::<8, u64>(lut[..8].try_into().unwrap(), &bytes, start, stride, &mut got)
+                            }
+                            (_, 32) => s1_n::<12, u32>(
+                                lut[..12].try_into().unwrap(),
+                                &bytes,
+                                start,
+                                stride,
+                                &mut got,
+                            ),
+                            (_, _) => s1_n::<12, u64>(
+                                lut[..12].try_into().unwrap(),
+                                &bytes,
+                                start,
+                                stride,
+                                &mut got,
+                            ),
+                        }
+                        assert_eq!(got, want, "{b} tables, u{word}, stride {stride}, start {start}");
+                    }
+                }
+            }
+        }
+    }
 
     /// The kernels give the same sums whatever their block of outputs `L` and with or without
     /// fused multiply-adds (#372): 8 (32-bit x86), 16 (other generic builds) and 32 (AVX2),
