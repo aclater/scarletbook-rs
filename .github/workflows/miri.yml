@@ -158,8 +158,9 @@ jobs:
               RUSTFLAGS="-C target-feature=+avx2,+fma" miri -p scarletbook-pcm --lib -- --exact \
                 kernel::tests::miri_slice_selects_the_wrappers \
                 dispatch::tests::detected_kernels_match_generic \
-                kernel::tests::lane_counts_and_fma_give_the_same_sums
-              named 3 ;;
+                kernel::tests::lane_counts_and_fma_give_the_same_sums \
+                kernel::tests::s1_words_match_bytes
+              named 4 ;;
             lanes-1-2)
               miri -p scarletbook --lib -- --exact dst::tests::fast_loop_matches_general_1_frame \
                 dst::tests::fast_loop_matches_general_2_frames \
