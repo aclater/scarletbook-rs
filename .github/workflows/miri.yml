@@ -157,8 +157,9 @@ jobs:
             pcm-dispatch-avx2)
               RUSTFLAGS="-C target-feature=+avx2,+fma" miri -p scarletbook-pcm --lib -- --exact \
                 kernel::tests::miri_slice_selects_the_wrappers \
-                dispatch::tests::detected_kernels_match_generic
-              named 2 ;;
+                dispatch::tests::detected_kernels_match_generic \
+                kernel::tests::lane_counts_and_fma_give_the_same_sums
+              named 3 ;;
             lanes-1-2)
               miri -p scarletbook --lib -- --exact dst::tests::fast_loop_matches_general_1_frame \
                 dst::tests::fast_loop_matches_general_2_frames \

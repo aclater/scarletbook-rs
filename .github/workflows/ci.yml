@@ -207,11 +207,12 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo +"$RUST_MSRV" check -p scarletbook -p scarletbook-pcm -p scarletbook-ffi --all-features --locked
 
-  # 32-bit x86 (#369): the core crate's tests and the corpus conformance tests on i686, built
+  # 32-bit x86 (#369, #372): the core and PCM crates' tests and the corpus conformance tests on i686, built
   # for the pentium4 baseline (SSE2) and for the Atom class (SSE3, SSSE3, MOVBE). There the DST
   # decoder keeps its arithmetic in u32; the corpus's recorded hashes and the fixed digest of
   # `dispatch::tests::decoded_frames_digest_is_fixed` are those of x86-64, so a pass shows the
-  # same output to the bit, damaged frames and errors included.
+  # same output to the bit, damaged frames and errors included. The PCM kernels run there with
+  # 8 lanes; `dispatch::tests::converted_digest_is_fixed` pins their output to x86-64's.
   i686:
     name: i686 (${{ matrix.cpu }})
     needs: changes
@@ -241,7 +242,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: >-
           cargo test --locked --target i686-unknown-linux-musl --all-features
-          -p scarletbook -p scarletbook-conformance
+          -p scarletbook -p scarletbook-pcm -p scarletbook-conformance
 
   # Miri: the slices for unsafe code here, chosen by the changes job (#76); the core crate's
   # tests and the long slices run in miri-full.yml, which queues instead of cancelling so that
