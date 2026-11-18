@@ -658,6 +658,134 @@ pub(crate) fn interp2_odd<const L: usize, const FMA: bool>(s: &Sym, w: &[f64], o
 mod tests {
     use super::*;
 
+    /// The kernels give the same sums whatever their block of outputs `L` and with or without
+    /// fused multiply-adds (#372): 8 (32-bit x86), 16 (other generic builds) and 32 (AVX2),
+    /// for every filter of the plans, on inputs chosen to expose a different order of
+    /// additions if there were one. They are full-scale values of one sign, alternating
+    /// signs (cancellation), isolated full-scale impulses among small values (dynamic
+    /// range), and pseudo-random values, all at the largest magnitude for which every sum of
+    /// the filter stays an exact integer, the bound the kernels rely on. Each output has its
+    /// own sum over the taps in tap order, so this holds by construction; the test guards
+    /// against a change that would combine sums across outputs. Fewer outputs under Miri.
+    #[test]
+    fn lane_counts_and_fma_give_the_same_sums() {
+        // A multiple of every block (`LANES`).
+        let n = if cfg!(miri) { LANES } else { 16 * LANES };
+        for (name, half) in [
+            ("HB", &tables::HB[..]),
+            ("F30", &tables::F30[..]),
+            ("F40", &tables::F40[..]),
+            ("F80", &tables::F80[..]),
+        ]
+        .into_iter()
+        // Under Miri, the shortest and the longest filter.
+        .filter(|(name, _)| !cfg!(miri) || *name == "HB" || *name == "F80")
+        {
+            let s = Sym::new(half, Q_FIR);
+            // Every sum is at most sum |h| x max |x| (with the centre tap once and the
+            // others twice), which must stay below 2^53.
+            let taps: f64 =
+                s.full.iter().enumerate().map(|(j, h)| if j == 0 { h.abs() } else { 2.0 * h.abs() }).sum();
+            let max = ((pow2(53) - 1.0) / taps).floor();
+            let len = 2 * (n + 2 * s.full.len()) + 2 * LANES;
+            let mut seed = 0x0123_4567_89AB_CDEFu64 ^ half.len() as u64;
+            let mut rnd = move || {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                seed
+            };
+            let inputs: [(&str, Vec<f64>); 4] = [
+                ("one sign", vec![max; len]),
+                ("alternating", (0..len).map(|i| if i % 2 == 0 { max } else { -max }).collect()),
+                (
+                    "impulses",
+                    (0..len).map(|i| if i % 97 == 0 { -max } else { (i % 5) as f64 - 2.0 }).collect(),
+                ),
+                ("random", (0..len).map(|_| ((rnd() % (2 * max as u64 + 1)) as f64) - max).collect()),
+            ];
+            // Under Miri, the two inputs that matter most for the order of additions.
+            for (what, x) in
+                inputs.iter().filter(|(w, _)| !cfg!(miri) || *w == "one sign" || *w == "impulses")
+            {
+                let (xe, xo): (Vec<f64>, Vec<f64>) =
+                    (x.iter().step_by(2).copied().collect(), x.iter().skip(1).step_by(2).copied().collect());
+                let run = |f: &dyn Fn(&mut [f64])| {
+                    let mut out = vec![0.0; n];
+                    f(&mut out);
+                    out
+                };
+                macro_rules! all {
+                    ($k:ident, $($arg:expr),*) => {
+                        [
+                            run(&|o| $k::<8, false>($($arg,)* o)),
+                            run(&|o| $k::<8, true>($($arg,)* o)),
+                            run(&|o| $k::<16, false>($($arg,)* o)),
+                            run(&|o| $k::<16, true>($($arg,)* o)),
+                            run(&|o| $k::<32, false>($($arg,)* o)),
+                            run(&|o| $k::<32, true>($($arg,)* o)),
+                        ]
+                    };
+                }
+                for (kernel, outs) in [
+                    ("fir1", all!(fir1, &s, x)),
+                    ("dec2", all!(dec2, &s, &xe, &xo)),
+                    ("interp2_odd", all!(interp2_odd, &s, x)),
+                ] {
+                    // A halfband filter nulls the alternating input; every other case must give a signal.
+                    assert!(
+                        *what == "alternating" || outs[0].iter().any(|&v| v != 0.0),
+                        "{name} {kernel} {what}: all zero"
+                    );
+                    for (k, o) in outs.iter().enumerate() {
+                        assert!(o == &outs[0], "{name} {kernel} {what}: variant {k} differs");
+                    }
+                }
+            }
+            // Beyond the bound, where sums round and their order matters: the block of outputs
+            // still changes nothing, with fused multiply-adds and without (which differ from
+            // each other here, as they may). A sum in the opposite order of taps does differ,
+            // which shows that these inputs would expose a different order.
+            let big: Vec<f64> = (0..len)
+                .map(|_| ((rnd() >> 3) as i64 as f64) * if rnd() % 2 == 0 { 1.0 } else { -1.0 })
+                .collect();
+            for fma in [false, true] {
+                let outs: Vec<Vec<f64>> = [8, 16, 32]
+                    .into_iter()
+                    .map(|l| {
+                        let mut out = vec![0.0; n];
+                        match (l, fma) {
+                            (8, false) => fir1::<8, false>(&s, &big, &mut out),
+                            (8, true) => fir1::<8, true>(&s, &big, &mut out),
+                            (16, false) => fir1::<16, false>(&s, &big, &mut out),
+                            (16, true) => fir1::<16, true>(&s, &big, &mut out),
+                            (_, false) => fir1::<32, false>(&s, &big, &mut out),
+                            (_, true) => fir1::<32, true>(&s, &big, &mut out),
+                        }
+                        out
+                    })
+                    .collect();
+                assert!(
+                    outs.iter().all(|o| o == &outs[0]),
+                    "{name} fir1 beyond the bound, fma {fma}: lane counts differ"
+                );
+                if !fma {
+                    let m = s.half_len();
+                    let reversed: Vec<f64> = (0..n)
+                        .map(|i| {
+                            let mut a = 0.0;
+                            for j in (1..=m).rev() {
+                                a += s.full[j] * (big[i + m + j] + big[i + m - j]);
+                            }
+                            round_even((a + s.full[0] * big[i + m]) * s.scale)
+                        })
+                        .collect();
+                    assert!(reversed != outs[0], "{name}: these inputs don't expose the order of additions");
+                }
+            }
+        }
+    }
+
     /// `pcm-dispatch-avx2` really runs the wrappers. This test exists only in a Miri build
     /// with the features, and the slice requires it by name: if the slice loses its flags,
     /// the test is gone and the slice fails; if [`Isa::detect`] comes to need a feature the

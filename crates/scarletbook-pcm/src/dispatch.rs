@@ -39,6 +39,16 @@ use crate::kernel::{self, Sym};
 
 /// Outputs per block in the generic kernels: 4 vectors of SSE2, or 2 of AVX.
 const GENERIC_LANES: usize = 16;
+/// Outputs per block of the generic Fir1 kernel. On 32-bit x86, whose SSE2 has 8 vector
+/// registers rather than 16, 8 outputs (4 vectors), so that its sums and the operands of one
+/// step stay in registers instead of spilling (#372). Dec2 and Interp2 keep 16 there: Dec2,
+/// with two input sequences per step, measured slower with 8. The output is the same either
+/// way: each output has its own sum, over the taps in the same order, whatever the block
+/// (`kernel::add_pairs`).
+#[cfg(target_arch = "x86")]
+const FIR1_LANES: usize = 8;
+#[cfg(not(target_arch = "x86"))]
+const FIR1_LANES: usize = GENERIC_LANES;
 /// Outputs per block with AVX2 and FMA: 8 independent multiply-add chains, enough to cover
 /// the latency of FMA.
 #[cfg(target_arch = "x86_64")]
@@ -78,7 +88,7 @@ pub(crate) fn fir1(isa: Isa, s: &Sym, x: &[f64], out: &mut [f64]) {
         // `is_x86_feature_detected!` found AVX2 and FMA.
         #[cfg(target_arch = "x86_64")]
         Level::Avx2Fma => unsafe { avx2::fir1(s, x, out) },
-        Level::Generic => kernel::fir1::<GENERIC_LANES, false>(s, x, out),
+        Level::Generic => kernel::fir1::<FIR1_LANES, false>(s, x, out),
     }
 }
 
@@ -207,6 +217,63 @@ mod tests {
     fn new_converter_uses_the_detected_isa() {
         let config = PcmConfig::new(PcmRate::Hz176400, Cutoff::Standard, 2);
         assert_eq!(Converter::new(config).unwrap().plan.isa(), Isa::detect());
+    }
+
+    /// A digest (FNV-1a, 64 bits) of the 32-bit samples and statistics of conversions with
+    /// the detected kernels, for every rate and cutoff, 1, 2 and 6 channels and three gains
+    /// (0 dB, +7.5 dB, which clips, and -3 dB), of inputs chosen to stress the arithmetic:
+    /// full-scale ones (all 0xFF), long full-scale swings (blocks of 0x00 and 0xFF), the idle
+    /// pattern, and pseudo-random bytes. It is fixed, so every target that runs it converts
+    /// them exactly as x86-64 does: CI runs it on i686 as well (#372). The inputs come from
+    /// integer arithmetic only, never from the platform's maths library.
+    #[test]
+    #[cfg_attr(miri, ignore = "converts too much for Miri; see lane_counts_and_fma_give_the_same_sums")]
+    fn converted_digest_is_fixed() {
+        let mut h = 0xCBF2_9CE4_8422_2325u64;
+        let mut eat = |bytes: &[u8]| {
+            for &b in bytes {
+                h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01B3);
+            }
+        };
+        let mut conversions = 0;
+        let frames = 3;
+        for rate in PcmRate::ALL {
+            for &cutoff in Cutoff::ALL.iter().filter(|c| c.supports(rate)) {
+                for channels in [1u8, 2, 6] {
+                    let n = usize::from(channels) * frames * FRAME_BYTES_PER_CHANNEL;
+                    let mut seed = 0x9E37_79B9_7F4A_7C15u64 ^ u64::from(channels);
+                    let inputs: [Vec<u8>; 4] = [
+                        vec![0xFF; n],
+                        (0..n).map(|i| if (i / 3001) % 2 == 0 { 0x00 } else { 0xFF }).collect(),
+                        vec![0x69; n],
+                        (0..n)
+                            .map(|_| {
+                                seed ^= seed << 13;
+                                seed ^= seed >> 7;
+                                seed ^= seed << 17;
+                                seed as u8
+                            })
+                            .collect(),
+                    ];
+                    for input in &inputs {
+                        for db in [0.0, 7.5, -3.0] {
+                            let config =
+                                PcmConfig::new(rate, cutoff, channels).with_gain(Gain::from_db(db).unwrap());
+                            let mut conv = Converter::new(config).unwrap();
+                            let mut out =
+                                vec![0i32; frames * conv.samples_per_frame() * usize::from(channels)];
+                            let stats = conv.convert_run(FrameRun::new(input), &mut out).unwrap();
+                            eat(format!("{stats:?}").as_bytes());
+                            for v in &out {
+                                eat(&v.to_le_bytes());
+                            }
+                            conversions += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!((conversions, format!("{h:016x}")), (288, "54c3ced461085e03".to_string()));
     }
 
     /// The kernels chosen for this CPU give exactly the output of the generic kernels, in
