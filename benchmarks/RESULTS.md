@@ -63,6 +63,28 @@ In the run list, but not in every table:
   DSF and DSD to PCM are blank, unless an equivalent revision is compared instead (0.5.6
   below uses `3eb96dc` for 0.5.5).
 
+## 0.6.2
+
+Two measurements, neither with `compare.sh`; both on the Zen 2 benchmark host (AMD Ryzen 9 3950X), one thread, in 7 rounds under the exclusive benchmark lock, each round running both programs in the opposite order on even rounds, with a fresh copy of each program.
+
+**Single DST frames (#378, #379), 2026-11-20.** A harness that calls `DstDecoder::decode` frame by frame over all of an area's DST frames with one reused decoder, built against `main` at 97733cc (0.6.1's decoder) and against the fix (`1e76a03`, the code of this release), profile `release`. The default-lanes rows use `bench decode --threads 1`. Images: the generated `dst-stress-6ch-10m` and `dst-20min-2ch`, and for 1 and 5 channels the corpus images `dst-features-1ch` and `dst-features-5ch` decoded 3000 and 1500 times.
+
+| Path | 0.6.1 s | 0.6.2 s | Median of per-round ratios [range] |
+|---|---|---|---|
+| single frames, 1 channel | 23.51 | 23.55 | 1.002 [1.000-1.004] |
+| single frames, 2 channels | 25.05 | 24.98 | 0.998 [0.992-1.006] |
+| single frames, 5 channels | 34.20 | 32.67 | 0.956 [0.949-0.962] |
+| single frames, 6 channels | 42.60 | 40.82 | 0.956 [0.950-0.983] |
+| single frames, 6 channels, i686 pentium4 | 65.89 | 66.28 | 1.005 [0.994-1.022] |
+| default lanes (2 frames), 6 channels | 34.75 | 34.56 | 0.994 [0.982-1.005] |
+| default lanes (2 frames), 2 channels | 18.55 | 18.57 | 1.001 [0.993-1.006] |
+
+The bisection that found the cause (#330's Q table) is on #378: single 6-channel frames went from 41.08 s in 0.5.6 to 42.67 s in 0.6.0 on these frames.
+
+**DSD to PCM on i686 (#374, #377), 2026-11-18.** `scarletbook-pcm`'s `throughput` example (best of 3 passes of 10 s per configuration), as static i686 musl binaries with `-C target-cpu=pentium4` and as the x86-64 release build. The full tables are in #374 (before: 0.6.1's code) and #377 (before: #374). Combined, for 6 channels in ms of CPU per second of audio on i686: 176.4 kHz Standard 26.85 to 25.11, Low 32.46 to 30.73, 88.2 kHz Standard 19.04 to 18.70, 352.8 kHz Standard 33.19 to 31.59, 176.4 kHz Wide unchanged. x86-64 was unchanged in both.
+
+**Not measured:** in-order Atom cores; real-disc frames for #378 (a consumer's figure, 11 %, is on #378); Zen 5, Raptor Lake, AVX-512 and x86-64-v3 builds; the other paths of the 0.6.0 table, which this release doesn't change.
+
 ## 0.6.1
 
 Measured on the Zen 2 benchmark host (AMD Ryzen 9 3950X), 2026-11-17, for #369 (#370). **Not with `compare.sh`:** these are `bench` programs built with `cargo build --release` (profile `release`, not `dist`), as static i686 musl binaries with `-C target-cpu=pentium4` and as the x86-64 release build. Before is `main` at the branch point of #370, which decodes as 0.6.0 does, and after is `bd4d672`, whose decoder is this release's. The command is `bench decode IMAGE --area mc|2ch --threads 1 --sink null` on the synthetic images `dst-stress-6ch-10m` and `dst-20min-2ch`. It ran in 7 rounds under the exclusive benchmark lock: each round runs both programs for each case, in the opposite order on even rounds, with a fresh copy of each program. All 56 runs succeeded. Figures are median wall times, and the last column is the median of per-round ratios.

@@ -10,6 +10,42 @@ from 0.5.8).
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-11-20
+
+**Single-frame DST decoding of 5 and 6 channels is back to its 0.5.x speed (#378), and DSD-to-PCM conversion is faster on 32-bit x86 (#372). Output is identical to the bit. No API or ABI change: a drop-in update from 0.6.0 and 0.6.1.**
+
+- **Single DST frames (#378, #379).** Measured on the Zen 2 benchmark host (Ryzen 9 3950X), one thread, generated frames decoded one at a time with `DstDecoder::decode`, 7 alternating rounds against 0.6.1's decoder:
+
+  | Path | 0.6.1 s | 0.6.2 s | Median of per-round ratios [range] |
+  |---|---|---|---|
+  | single frames, 5 channels | 34.20 | 32.67 | 0.956 [0.949-0.962] |
+  | single frames, 6 channels | 42.60 | 40.82 | 0.956 [0.950-0.983] |
+  | single frames, 1 and 2 channels | 23.51 / 25.05 | 23.55 / 24.98 | 1.002 / 0.998 |
+  | 2 frames at a time (default), 6 and 2 channels | 34.75 / 18.55 | 34.56 / 18.57 | 0.994 / 1.001 |
+
+  On these frames, 0.5.6 took 41.08 s for the 6-channel case. A consumer measured the regression at 11 % on real discs, which are not in our corpus; their re-timing is pending on #378.
+- **DSD to PCM on i686 (#372: #374, #377).** Zen 2 benchmark host, one thread, i686 musl `-C target-cpu=pentium4`, ms of CPU per second of audio, 6 channels, 7-round ABBA per PR (the tables are in #374 and #377):
+
+  | Rate, cutoff | 0.6.1 | 0.6.2 | Change |
+  |---|---|---|---|
+  | 176.4 kHz Standard | 26.85 | 25.11 | about 6.5 % less |
+  | 176.4 kHz Low | 32.46 | 30.73 | about 5.3 % less |
+  | 88.2 kHz Standard | 19.04 | 18.70 | about 1.8 % less |
+  | 352.8 kHz Standard | 33.19 | 31.59 | about 4.8 % less |
+  | 176.4 kHz Wide | 42.89 | 42.81 | unchanged |
+
+  These chain two separate runs, so read them as approximate. sacdfs measured the conversion step at 7 to 9 % less time at 176.4 kHz on Gracemont E-cores (#372). x86-64 is unchanged.
+- **Unmeasured:** in-order Atom cores; consumers' real-disc frames for #378; Zen 5, Raptor Lake and AVX-512 builds.
+
+### Changed
+
+- DSD-to-PCM conversion on 32-bit x86 (i686): the Fir1 stage computes 8 outputs at a time instead of 16, which fits SSE2's 8 vector registers there, so 176.4 and 352.8 kHz output take about 4 to 6 % less time. The output is identical to the bit. CI now also tests `scarletbook-pcm` on i686 (#372).
+- DSD-to-PCM conversion on 32-bit targets: the first filter stage (S1) reads its input in 32-bit words instead of 64-bit ones, which i686 handles in single registers, about 1 to 2 % less time. The output is identical to the bit (#372).
+
+### Fixed
+
+- Decoding single DST frames of 5 or 6 channels (`DstDecoder::decode`, or `decode_many` with one frame) was about 4 % slower on synthetic frames than in 0.5.x, and up to 11 % on a consumer's real discs. The cause was 0.6.0's Q table (#330), which lengthens a lone frame's serial chain. A lone frame of 5 or 6 channels now takes Q by shifts again, the same to the bit. Groups of 2 or more frames, and 1 and 2 channels, are unchanged (#378).
+
 ## [0.6.1] - 2026-11-18
 
 **Faster DST decoding on 32-bit x86 (i686), with the same output to the bit (#369, #370). No API or ABI change: a drop-in update from 0.6.0.**
