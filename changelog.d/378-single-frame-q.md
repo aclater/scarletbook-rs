@@ -1,0 +1,2 @@
+Fixed
+- Decoding single DST frames of 5 or 6 channels (`DstDecoder::decode`, or `decode_many` with one frame) was about 4 % slower on synthetic frames than in 0.5.x, and up to 11 % on a consumer's real discs. The cause was 0.6.0's Q table (#330), which lengthens a lone frame's serial chain. A lone frame of 5 or 6 channels now takes Q by shifts again, the same to the bit. Groups of 2 or more frames, and 1 and 2 channels, are unchanged (#378).

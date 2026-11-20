@@ -1,0 +1,1 @@
+| 2026-11-20 | Q by shifts for single 5- and 6-channel frames (#378) | This crate's own decoder (`dst.rs`, `run_inline`) and its history (bisection of v0.5.6..v0.6.0 on the Zen 2 benchmark host); EVIDENCE.md D19, D21. No new sources consulted. |

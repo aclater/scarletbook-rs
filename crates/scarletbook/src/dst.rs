@@ -1331,7 +1331,15 @@ fn run_inline<const K: usize, const NCH: usize, W: Word>(
                     let spred = base[$l][$ch].0[$r].wrapping_add(probe.partial[idx]);
                     let y = if const { byte_lut(NCH) } {
                         let (p, sign) = probability(spred, &probe.lut);
-                        sign ^ ar[$l].decode_table(p, W::q(&probes[$l][0]))
+                        // One frame alone (K = 1) of 5 or 6 channels takes Q by shifts, the
+                        // same to the bit: with no other frame to overlap with, the table's
+                        // load lengthens its serial chain (#378). Measured on Zen 2: 4 to
+                        // 5 % faster for 5 and 6 channels, 1 to 4 % slower for 1 and 2.
+                        if K == 1 && NCH >= 5 {
+                            sign ^ ar[$l].decode(p)
+                        } else {
+                            sign ^ ar[$l].decode_table(p, W::q(&probes[$l][0]))
+                        }
                     } else {
                         let (p, sign) = probability_scaled(spred, W::scaled(probe));
                         sign ^ ar[$l].decode_scaled(p)
@@ -1373,7 +1381,15 @@ fn run_inline<const K: usize, const NCH: usize, W: Word>(
                     let spred = base[$l][$ch].0[$r].wrapping_add(probe.partial[idx]);
                     let y = if const { byte_lut(NCH) } {
                         let (p, sign) = probability(spred, &probe.lut);
-                        sign ^ ar[$l].decode_table(p, W::q(&probes[$l][0]))
+                        // One frame alone (K = 1) of 5 or 6 channels takes Q by shifts, the
+                        // same to the bit: with no other frame to overlap with, the table's
+                        // load lengthens its serial chain (#378). Measured on Zen 2: 4 to
+                        // 5 % faster for 5 and 6 channels, 1 to 4 % slower for 1 and 2.
+                        if K == 1 && NCH >= 5 {
+                            sign ^ ar[$l].decode(p)
+                        } else {
+                            sign ^ ar[$l].decode_table(p, W::q(&probes[$l][0]))
+                        }
                     } else {
                         let (p, sign) = probability_scaled(spred, W::scaled(probe));
                         sign ^ ar[$l].decode_scaled(p)
