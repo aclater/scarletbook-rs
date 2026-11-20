@@ -23,17 +23,17 @@ in [CHANGELOG.md](CHANGELOG.md), and vulnerabilities are reported as described i
 ## Quick start
 
 Both examples read a small synthetic image from this repository's conformance corpus,
-[`full-text.iso`](https://github.com/aclater/scarletbook-rs/blob/v0.6.1/corpus/images/full-text.iso)
+[`full-text.iso`](https://github.com/aclater/scarletbook-rs/blob/v0.6.2/corpus/images/full-text.iso)
 (1.1 MB, CC0-1.0, [corpus/LICENSE](corpus/LICENSE)): a stereo area with three tracks of one or two
 frames each, and every text field filled in. It holds generated test signals, no real audio.
-Every command below was run against v0.6.1 on 2026-11-18.
+Every command below was run against v0.6.1 on 2026-11-18. 0.6.2 changes nothing they use, and they are re-run against it after its release.
 
 ### Rust
 
 ```sh
 cargo new quickstart && cd quickstart
-cargo add scarletbook@=0.6.1
-curl -fsSLO https://raw.githubusercontent.com/aclater/scarletbook-rs/v0.6.1/corpus/images/full-text.iso
+cargo add scarletbook@=0.6.2
+curl -fsSLO https://raw.githubusercontent.com/aclater/scarletbook-rs/v0.6.2/corpus/images/full-text.iso
 cat > src/main.rs <<'EOF'
 use std::{fs::File, io::BufReader};
 
@@ -65,7 +65,7 @@ TwoChannel area: 2 channels, 3 tracks
   track 3: 2 frames, "Track 3 title, second item"
 ```
 
-The `=0.6.1` pin is the one recommended under [Installing](#installing); a frame is 1/75 s.
+The `=0.6.2` pin is the one recommended under [Installing](#installing); a frame is 1/75 s.
 `{:?}` quotes a string and escapes control characters, including U+007F and U+0080 to U+009F,
 while keeping other text (Japanese, say) readable, which `escape_default()` would turn into
 `\u{..}` escapes. For audio, see [Using the library](#using-the-library).
@@ -77,12 +77,12 @@ those of [Release assets](#release-assets) and [Verifying a download](#verifying
 
 ```sh
 mkdir quickstart-c && cd quickstart-c
-gh release download v0.6.1 -R aclater/scarletbook-rs -p 'scarletbook-ffi-0.6.1-x86_64-unknown-linux-gnu.tar.gz*'
-sha256sum -c scarletbook-ffi-0.6.1-x86_64-unknown-linux-gnu.tar.gz.sha256
-gh attestation verify scarletbook-ffi-0.6.1-x86_64-unknown-linux-gnu.tar.gz -R aclater/scarletbook-rs \
-  --signer-workflow aclater/scarletbook-rs/.github/workflows/release.yml --source-ref refs/tags/v0.6.1
-tar xzf scarletbook-ffi-0.6.1-x86_64-unknown-linux-gnu.tar.gz
-curl -fsSLO https://raw.githubusercontent.com/aclater/scarletbook-rs/v0.6.1/corpus/images/full-text.iso
+gh release download v0.6.2 -R aclater/scarletbook-rs -p 'scarletbook-ffi-0.6.2-x86_64-unknown-linux-gnu.tar.gz*'
+sha256sum -c scarletbook-ffi-0.6.2-x86_64-unknown-linux-gnu.tar.gz.sha256
+gh attestation verify scarletbook-ffi-0.6.2-x86_64-unknown-linux-gnu.tar.gz -R aclater/scarletbook-rs \
+  --signer-workflow aclater/scarletbook-rs/.github/workflows/release.yml --source-ref refs/tags/v0.6.2
+tar xzf scarletbook-ffi-0.6.2-x86_64-unknown-linux-gnu.tar.gz
+curl -fsSLO https://raw.githubusercontent.com/aclater/scarletbook-rs/v0.6.2/corpus/images/full-text.iso
 cat > toc.c <<'EOF'
 #include <stdio.h>
 #include "scarletbook.h"
@@ -126,7 +126,7 @@ int main(void) {
     return 0;
 }
 EOF
-P=scarletbook-ffi-0.6.1-x86_64-unknown-linux-gnu
+P=scarletbook-ffi-0.6.2-x86_64-unknown-linux-gnu
 cc -std=c99 -Wall -Wextra -pedantic -I$P/include toc.c -L$P/lib -lscarletbook_ffi -Wl,-rpath,'$ORIGIN/'$P/lib -o toc
 ./toc
 ```
@@ -142,7 +142,7 @@ area slot 0: 2 channels, 3 tracks
 Titles and other text come from the disc and can hold control characters (U+007F, U+0080 to U+009F,
 and U+009B starts a control sequence on some terminals), so both examples escape what they print;
 code of yours should do the same, as the docs of
-[`DiscText`](https://docs.rs/scarletbook/0.6.1/scarletbook/toc/struct.DiscText.html) and of
+[`DiscText`](https://docs.rs/scarletbook/0.6.2/scarletbook/toc/struct.DiscText.html) and of
 [`sb_disc_string`](crates/scarletbook-ffi/include/scarletbook.h) say.
 
 `gh attestation verify` prints nothing when it succeeds (a non-zero exit status is a failure).
@@ -185,7 +185,7 @@ fixed by the specification. Cargo treats `0.6.y` as compatible with `0.6.x`, so 
 same PCM bytes across builds (stored hashes, reproducible files) pins the exact version:
 
 ```toml
-scarletbook-pcm = "=0.6.1"
+scarletbook-pcm = "=0.6.2"
 ```
 
 ## Layout
