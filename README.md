@@ -149,7 +149,8 @@ code of yours should do the same, as the docs of
 The program records `libscarletbook_ffi.so.2`, the library's name for C ABI 2, and finds it through
 the rpath, so it runs from this directory without the link. To ship it, copy
 `lib/libscarletbook_ffi.so.2` next to the program, as [Linking](#linking) says. See [C library](#c-library)
-for the rest of the API, and [Migrating to 0.6.0](docs/migrating-0.6.md) from an earlier release.
+for the rest of the API, and [Migrating to 0.7.0](docs/migrating-0.7.md) and
+[Migrating to 0.6.0](docs/migrating-0.6.md) from an earlier release.
 
 ## Installing
 
@@ -1275,7 +1276,8 @@ the C ABI is in [ABI compatibility](#abi-compatibility).
 Before 1.0, as in Cargo, the `y` step of `0.y.z` is the major one and may break the API, and
 the `z` step is the minor one and may only add to it. The interface is not frozen yet:
 [#39](https://github.com/aclater/scarletbook-rs/issues/39) tracks the changes planned before
-1.0, and [Migrating to 0.6.0](docs/migrating-0.6.md) gives a before-and-after for each.
+1.0, and [Migrating to 0.6.0](docs/migrating-0.6.md) and [Migrating to 0.7.0](docs/migrating-0.7.md)
+give a before-and-after for each.
 
 Not covered:
 

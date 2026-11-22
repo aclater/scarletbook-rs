@@ -153,20 +153,6 @@ impl<R: Read + Seek> Image<R> {
         Image::options().open(reader)
     }
 
-    /// Opens an image, detecting its sector format, and reports to `log` (see
-    /// [`crate::log`]) from the detection on.
-    ///
-    /// # Errors
-    ///
-    /// As [`Image::open`].
-    #[deprecated(
-        since = "0.6.0",
-        note = "use `Image::options().with_log(log).open(reader)`; to be removed before 1.0"
-    )]
-    pub fn open_with_log(reader: R, log: Log) -> Result<Self, Error> {
-        Image::options().with_log(log).open(reader)
-    }
-
     fn detect(mut reader: R, log: Log) -> Result<Self, Error> {
         let len = match reader.seek(SeekFrom::End(0)) {
             Ok(len) => len,
@@ -205,34 +191,6 @@ impl<R: Read + Seek> Image<R> {
         }
         sb_log!(&log, Info, "no sector format matches: not a Scarletbook image");
         Err(Error::NotScarletbook)
-    }
-
-    /// Opens an image with a sector format chosen by the caller (specification 1, 1.4
-    /// item 5). The master TOC signature is then checked by the TOC parser.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Io`] if the reader fails.
-    #[deprecated(
-        since = "0.6.0",
-        note = "use `Image::options().with_format(format).open(reader)`; to be removed before 1.0"
-    )]
-    pub fn with_format(reader: R, format: SectorFormat) -> Result<Self, Error> {
-        Image::options().with_format(format).open(reader)
-    }
-
-    /// Opens an image with a sector format chosen by the caller, and reports to `log`
-    /// from the start (see [`crate::log`]).
-    ///
-    /// # Errors
-    ///
-    /// As [`Image::with_format`].
-    #[deprecated(
-        since = "0.6.0",
-        note = "use `Image::options().with_format(format).with_log(log).open(reader)`; to be removed before 1.0"
-    )]
-    pub fn with_format_and_log(reader: R, format: SectorFormat, log: Log) -> Result<Self, Error> {
-        Image::options().with_format(format).with_log(log).open(reader)
     }
 
     fn open_format(mut reader: R, format: SectorFormat, log: Log) -> Result<Self, Error> {
@@ -523,16 +481,6 @@ mod tests {
         let chosen = Image::options().with_format(f).open(Cursor::new(vec![0u8; 2 * 2054])).unwrap();
         assert_eq!((chosen.format(), chosen.sector_count()), (f, 2));
         assert!(matches!(Image::options().open(Cursor::new(vec![0u8; 8])), Err(Error::NotScarletbook)));
-    }
-
-    #[test]
-    #[allow(deprecated)]
-    fn old_constructors_still_work() {
-        let f = SectorFormat::Raw2064;
-        let reader = || Cursor::new(image_with_sig(f, 511));
-        assert_eq!(Image::open_with_log(reader(), Log::none()).unwrap().format(), f);
-        assert_eq!(Image::with_format(reader(), f).unwrap().format(), f);
-        assert_eq!(Image::with_format_and_log(reader(), f, Log::none()).unwrap().format(), f);
     }
 
     #[test]
