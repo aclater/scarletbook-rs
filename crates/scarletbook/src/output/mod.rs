@@ -465,7 +465,7 @@ pub struct OutputOptions {
     /// reproduce the files some existing programs write; see [`DsdiffDeparture`]. DSF files
     /// ignore them.
     pub dsdiff_departures: BTreeSet<DsdiffDeparture>,
-    /// W32, what a DSF file holds (8.2.7, sacd-spec e069569 and fa558a8): with this and
+    /// W32, what a DSF file holds (8.2.7, sacd-spec e069569, fa558a8 and 67b8563): with this and
     /// [`OutputOptions::dsf_chain_end`], the byte range of the range `[a_i, b_i)` in a
     /// chain whose first range starts at frame `a_1`, this. Default `None`: the range of
     /// positions itself. [`plan_dsf_chain`] gives both values per file. The byte range is

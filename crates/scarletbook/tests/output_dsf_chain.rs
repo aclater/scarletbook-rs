@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! DSF byte ranges built from a chain (specification 8, 8.2.7, sacd-spec e069569; issue
-//! #169): each file's size and header follow from the TOC, its bytes equal a sequential
+//! DSF byte ranges built from a chain (specification 8, 8.2.7, sacd-spec 67b8563; issues
+//! #169 and #359): each file's size and header follow from the TOC, its bytes equal a sequential
 //! write of its byte range, the files' streams concatenate to the chain's bytes of the
 //! byte timeline (8.2.7 item 4), and a skipped or refused range splits the chain (item 3).
 
@@ -43,10 +43,15 @@ fn timeline(all: &[Vec<u8>], channels: usize, c: usize, k: u64) -> u8 {
     all[(k / PER) as usize][(k % PER) as usize * channels + c]
 }
 
-/// `[p_i, p_{i+1})` of each range of the chain `bounds`, as 8.2.7 item 3 states it.
+/// `[p_i, p_{i+1})` of each range of the chain `bounds`, as 8.2.7 item 3 states it
+/// (amended at sacd-spec 67b8563 for #359): `p_1 = 4704 a_1`, and
+/// `p_i = p_1 + 4096 floor((4704 (a_i - a_1) - 1) / 4096)` for `i >= 2`.
 fn spec_bytes(bounds: &[u32]) -> Vec<(u64, u64)> {
     let a1 = u64::from(bounds[0]);
-    let p = |a: u32| PER * a1 + 4096 * ((PER * (u64::from(a) - a1)) / 4096);
+    let p = |a: u32| {
+        let d = PER * (u64::from(a) - a1);
+        PER * a1 + if d == 0 { 0 } else { 4096 * ((d - 1) / 4096) }
+    };
     let k = bounds.len() - 1;
     (0..k)
         .map(|i| (p(bounds[i]), if i + 1 == k { PER * u64::from(bounds[k]) } else { p(bounds[i + 1]) }))
@@ -165,10 +170,15 @@ fn sizes_follow_from_the_toc_at_the_edge_cases() {
     // Ranges of one position: each but the last is one block, the rest goes to the next.
     assert_eq!(check_sizes(&toc, 1, &[0, 1, 2, 3]), [4096, 4096, 3 * PER - 8192]);
     assert_eq!(check_sizes(&toc, 1, &[7, 8]), [PER]);
-    // Exact multiples of 4096: no carried bytes, and no pad in the last file.
-    assert_eq!(check_sizes(&toc, 1, &[0, 128, 256]), [128 * PER, 128 * PER]);
-    assert_eq!(check_sizes(&toc, 1, &[0, 128, 129]), [128 * PER, PER]);
-    assert_eq!(check_sizes(&toc, 1, &[3, 131, 132, 259]), [128 * PER, 4096, 598_016]);
+    // A range ending exactly on a block (#359): its file ends one block earlier and the
+    // next carries that block (4096 bytes); the last file keeps its end and has no pad.
+    assert_eq!(check_sizes(&toc, 1, &[0, 128, 256]), [128 * PER - 4096, 128 * PER + 4096]);
+    assert_eq!(check_sizes(&toc, 1, &[0, 128, 129]), [128 * PER - 4096, PER + 4096]);
+    assert_eq!(check_sizes(&toc, 1, &[3, 131, 132, 259]), [128 * PER - 4096, 8192, 598_016]);
+    // Two such ranges in a row: each file but the last gives its last block to the next.
+    assert_eq!(check_sizes(&toc, 1, &[0, 128, 256, 300]), [598_016, 602_112, 44 * PER + 4096]);
+    // One frame short of a block boundary: nothing changes from the floor rule.
+    assert_eq!(check_sizes(&toc, 1, &[0, 127, 254]), [593_920, 127 * PER * 2 - 593_920]);
     // Chains starting inside a block's worth of the area, and other offsets.
     assert_eq!(check_sizes(&toc, 1, &[1, 2, 130]), [4096, 130 * PER - (PER + 4096)]);
     for bounds in [&[10, 11, 13, 20, 21][..], &[0, 127, 128, 255, 256], &[299, 300]] {
@@ -347,6 +357,21 @@ fn check_chain(
             }
         }
     }
+}
+
+/// Ranges of 128 positions end exactly on a block (4704 x 128 = 4096 x 147); two such
+/// files in a row each carry the previous file's last block (8.2.7 items 3 and 4 at
+/// sacd-spec 67b8563, #359), and the chain's streams still concatenate to its bytes of the
+/// timeline unchanged.
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "reads 300 positions; the lib test chain_boundary_on_a_block_carries_the_block_on and sizes_follow_from_the_toc_at_the_edge_cases cover the arithmetic under Miri"
+)]
+fn chain_boundaries_on_a_block_carry_the_block() {
+    let mut disc = synthetic(1, &plain(1, 300), vec![TrackSpec { start: 0, duration: 300 }], 300);
+    check_chain(&mut disc, 1, 300, &[0, 128, 256, 300], &mut Lcg(359));
+    check_chain(&mut disc, 1, 300, &[44, 172, 300], &mut Lcg(360));
 }
 
 /// Positions of `channels` channels, each plain, an invalid DST frame of a few bytes, or
