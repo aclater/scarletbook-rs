@@ -203,47 +203,6 @@ impl<R: Read + Seek> Disc<R> {
         Disc::options().open(reader)
     }
 
-    /// Opens a disc image, detecting its sector format, and reports to `log` from the
-    /// detection on (see [`crate::log`]).
-    ///
-    /// # Errors
-    ///
-    /// As [`Disc::open`].
-    #[deprecated(
-        since = "0.6.0",
-        note = "use `Disc::options().with_log(log).open(reader)`; to be removed before 1.0"
-    )]
-    pub fn open_with_log(reader: R, log: Log) -> Result<Self, Error> {
-        Disc::options().with_log(log).open(reader)
-    }
-
-    /// Opens a disc image in a sector format chosen by the caller.
-    ///
-    /// # Errors
-    ///
-    /// As [`Disc::open`].
-    #[deprecated(
-        since = "0.6.0",
-        note = "use `Disc::options().with_format(format).open(reader)`; to be removed before 1.0"
-    )]
-    pub fn open_with_format(reader: R, format: SectorFormat) -> Result<Self, Error> {
-        Disc::options().with_format(format).open(reader)
-    }
-
-    /// Opens a disc image in a sector format chosen by the caller, and reports to `log`
-    /// from the start (see [`crate::log`]).
-    ///
-    /// # Errors
-    ///
-    /// As [`Disc::open`].
-    #[deprecated(
-        since = "0.6.0",
-        note = "use `Disc::options().with_format(format).with_log(log).open(reader)`; to be removed before 1.0"
-    )]
-    pub fn open_with_format_and_log(reader: R, format: SectorFormat, log: Log) -> Result<Self, Error> {
-        Disc::options().with_format(format).with_log(log).open(reader)
-    }
-
     /// Parses the TOC of an image, reporting to the image's log ([`Image::set_log`]).
     ///
     /// # Errors
@@ -733,19 +692,6 @@ impl<R: Read + Seek> Disc<R> {
         Ok(TrackCursor::start_with(area, range, n, Some(index), policy))
     }
 
-    /// [`Disc::frames_cursor`] of a track.
-    ///
-    /// # Errors
-    ///
-    /// As [`Disc::check_track`].
-    #[deprecated(
-        since = "0.6.0",
-        note = "use `Disc::frames_cursor` with `FrameSpan::Track(number)`, or `Disc::track_frames` and `into_cursor`"
-    )]
-    pub fn track_frames_cursor(&self, slot: Slot, number: u32) -> Result<TrackCursor, Error> {
-        self.frames_cursor(slot, FrameSpan::Track(number), CursorOptions::new())
-    }
-
     /// The timeline positions of the frame range `[first, end)` of the area from `slot`,
     /// without decoding: for each position, its frame number and the frame as stored (DST
     /// bytes, plain DSD bytes) or nothing, exactly the frames that [`Disc::range_audio`]
@@ -757,19 +703,6 @@ impl<R: Read + Seek> Disc<R> {
     pub fn range_frames(&mut self, slot: Slot, first: u32, end: u32) -> Result<TrackFrames<'_, R>, Error> {
         let cursor = self.frames_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new())?;
         Ok(TrackFrames::with_cursor(&mut self.image, cursor, Some(&self.shared.seek)))
-    }
-
-    /// [`Disc::frames_cursor`] of a frame range.
-    ///
-    /// # Errors
-    ///
-    /// As [`Disc::check_range`].
-    #[deprecated(
-        since = "0.6.0",
-        note = "use `Disc::frames_cursor` with `FrameSpan::Range(first, end)`, or `Disc::range_frames` and `into_cursor`"
-    )]
-    pub fn range_frames_cursor(&self, slot: Slot, first: u32, end: u32) -> Result<TrackCursor, Error> {
-        self.frames_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new())
     }
 
     /// The reading state of track `number`'s positions, continuing `prev` (the state of an
@@ -878,61 +811,6 @@ impl<R: Read + Seek> Disc<R> {
         Ok(TrackAudioCursor::from_frames(self.open_cursor(slot, span, options, "decoded audio")?))
     }
 
-    /// [`Disc::audio_cursor`] of a frame range.
-    ///
-    /// # Errors
-    ///
-    /// As [`Disc::check_range`].
-    #[deprecated(
-        since = "0.6.0",
-        note = "use `Disc::audio_cursor` with `FrameSpan::Range(first, end)`, or `Disc::range_audio` and `into_cursor`"
-    )]
-    pub fn range_audio_cursor(&self, slot: Slot, first: u32, end: u32) -> Result<TrackAudioCursor, Error> {
-        self.audio_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new())
-    }
-
-    /// [`Disc::audio_cursor`] of a frame range, from the caller's seek `index` rather than
-    /// the disc's ([`CursorOptions::with_index`]).
-    ///
-    /// # Errors
-    ///
-    /// As [`Disc::check_range`], then [`Error::InvalidArgument`] if `index` is of another
-    /// area or image size.
-    #[deprecated(
-        since = "0.6.0",
-        note = "use `Disc::audio_cursor` with `FrameSpan::Range(first, end)` and `CursorOptions::new().with_index(index)`"
-    )]
-    pub fn range_audio_cursor_indexed(
-        &self,
-        slot: Slot,
-        first: u32,
-        end: u32,
-        index: &AreaIndex,
-    ) -> Result<TrackAudioCursor, Error> {
-        self.audio_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new().with_index(index))
-    }
-
-    /// [`Disc::frames_cursor`] of a frame range, from the caller's seek `index` rather than
-    /// the disc's ([`CursorOptions::with_index`]).
-    ///
-    /// # Errors
-    ///
-    /// As [`Disc::check_range`], then [`Error::InvalidArgument`] if `index` is of another
-    /// area or image size.
-    #[deprecated(
-        since = "0.6.0",
-        note = "use `Disc::frames_cursor` with `FrameSpan::Range(first, end)` and `CursorOptions::new().with_index(index)`"
-    )]
-    pub fn range_frames_cursor_indexed(
-        &self,
-        slot: Slot,
-        first: u32,
-        end: u32,
-        index: &AreaIndex,
-    ) -> Result<TrackCursor, Error> {
-        self.frames_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new().with_index(index))
-    }
-
     /// The decoding state of the frame range `[first, end)` of the area from `slot`,
     /// continuing `prev` (a cursor of an earlier track or range) without rescanning the
     /// area when the result is the same, as [`Disc::continue_track_audio`] does for
@@ -949,19 +827,6 @@ impl<R: Read + Seek> Disc<R> {
         end: u32,
     ) -> Result<TrackAudioCursor, Error> {
         Ok(self.range_continuation(slot, first, end)?.audio(prev))
-    }
-
-    /// [`Disc::audio_cursor`] of a track.
-    ///
-    /// # Errors
-    ///
-    /// As [`Disc::check_track`].
-    #[deprecated(
-        since = "0.6.0",
-        note = "use `Disc::audio_cursor` with `FrameSpan::Track(number)`, or `Disc::track_audio` and `into_cursor`"
-    )]
-    pub fn track_audio_cursor(&self, slot: Slot, number: u32) -> Result<TrackAudioCursor, Error> {
-        self.audio_cursor(slot, FrameSpan::Track(number), CursorOptions::new())
     }
 
     /// The decoding state of track `number` of the area from `slot`, continuing `prev`
