@@ -2196,7 +2196,10 @@ impl TrackCursor {
     /// # Errors
     ///
     /// As [`check_range`].
-    #[deprecated(since = "0.6.0", note = "use `TrackCursor::open_range` with `CursorOptions::new()`")]
+    #[deprecated(
+        since = "0.6.0",
+        note = "use `TrackCursor::open_range` with `CursorOptions::new()`; to be removed before 1.0"
+    )]
     pub fn for_range(area: &Area, first: u32, end: u32, image_sectors: u64) -> Result<Self, Error> {
         Self::open_range(area, first, end, image_sectors, CursorOptions::new())
     }
@@ -2208,7 +2211,7 @@ impl TrackCursor {
     /// As [`TrackCursor::open_range`].
     #[deprecated(
         since = "0.6.0",
-        note = "use `TrackCursor::open_range` with `CursorOptions::new().with_index(index)`"
+        note = "use `TrackCursor::open_range` with `CursorOptions::new().with_index(index)`; to be removed before 1.0"
     )]
     pub fn for_range_indexed(
         area: &Area,
@@ -2284,7 +2287,7 @@ impl TrackCursor {
     /// As [`TrackCursor::open_range`].
     #[deprecated(
         since = "0.6.0",
-        note = "use `TrackCursor::open_range` with `CursorOptions::new().with_index(index).with_policy(SeekPolicy::Speculative(options))`"
+        note = "use `TrackCursor::open_range` with `CursorOptions::new().with_index(index).with_policy(SeekPolicy::Speculative(options))`; to be removed before 1.0"
     )]
     pub fn for_range_speculative(
         area: &Area,
@@ -3063,7 +3066,10 @@ impl TrackAudioCursor {
     /// # Errors
     ///
     /// As [`check_range`].
-    #[deprecated(since = "0.6.0", note = "use `TrackAudioCursor::open_range` with `CursorOptions::new()`")]
+    #[deprecated(
+        since = "0.6.0",
+        note = "use `TrackAudioCursor::open_range` with `CursorOptions::new()`; to be removed before 1.0"
+    )]
     pub fn for_range(area: &Area, first: u32, end: u32, image_sectors: u64) -> Result<Self, Error> {
         Self::open_range(area, first, end, image_sectors, CursorOptions::new())
     }
@@ -3075,7 +3081,7 @@ impl TrackAudioCursor {
     /// As [`TrackCursor::open_range`].
     #[deprecated(
         since = "0.6.0",
-        note = "use `TrackAudioCursor::open_range` with `CursorOptions::new().with_index(index)`"
+        note = "use `TrackAudioCursor::open_range` with `CursorOptions::new().with_index(index)`; to be removed before 1.0"
     )]
     pub fn for_range_indexed(
         area: &Area,
@@ -3100,7 +3106,7 @@ impl TrackAudioCursor {
     /// As [`TrackCursor::open_range`].
     #[deprecated(
         since = "0.6.0",
-        note = "use `TrackAudioCursor::open_range` with `CursorOptions::new().with_index(index).with_policy(SeekPolicy::Speculative(options))`"
+        note = "use `TrackAudioCursor::open_range` with `CursorOptions::new().with_index(index).with_policy(SeekPolicy::Speculative(options))`; to be removed before 1.0"
     )]
     pub fn for_range_speculative(
         area: &Area,

@@ -1,0 +1,2 @@
+Deprecated
+- The deprecation notes of the twelve reading entry points deprecated by M6 (`Disc::track_audio_cursor`, `range_audio_cursor`, `range_audio_cursor_indexed`, `track_frames_cursor`, `range_frames_cursor`, `range_frames_cursor_indexed`, and `for_range`, `for_range_indexed` and `for_range_speculative` on `TrackCursor` and `TrackAudioCursor`) now say they are to be removed before 1.0, as the other 0.6.0 deprecations and the migration page already say. No behaviour changes. (#39, #PR)

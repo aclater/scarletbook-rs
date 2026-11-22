@@ -740,7 +740,7 @@ impl<R: Read + Seek> Disc<R> {
     /// As [`Disc::check_track`].
     #[deprecated(
         since = "0.6.0",
-        note = "use `Disc::frames_cursor` with `FrameSpan::Track(number)`, or `Disc::track_frames` and `into_cursor`"
+        note = "use `Disc::frames_cursor` with `FrameSpan::Track(number)`, or `Disc::track_frames` and `into_cursor`; to be removed before 1.0"
     )]
     pub fn track_frames_cursor(&self, slot: Slot, number: u32) -> Result<TrackCursor, Error> {
         self.frames_cursor(slot, FrameSpan::Track(number), CursorOptions::new())
@@ -766,7 +766,7 @@ impl<R: Read + Seek> Disc<R> {
     /// As [`Disc::check_range`].
     #[deprecated(
         since = "0.6.0",
-        note = "use `Disc::frames_cursor` with `FrameSpan::Range(first, end)`, or `Disc::range_frames` and `into_cursor`"
+        note = "use `Disc::frames_cursor` with `FrameSpan::Range(first, end)`, or `Disc::range_frames` and `into_cursor`; to be removed before 1.0"
     )]
     pub fn range_frames_cursor(&self, slot: Slot, first: u32, end: u32) -> Result<TrackCursor, Error> {
         self.frames_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new())
@@ -885,7 +885,7 @@ impl<R: Read + Seek> Disc<R> {
     /// As [`Disc::check_range`].
     #[deprecated(
         since = "0.6.0",
-        note = "use `Disc::audio_cursor` with `FrameSpan::Range(first, end)`, or `Disc::range_audio` and `into_cursor`"
+        note = "use `Disc::audio_cursor` with `FrameSpan::Range(first, end)`, or `Disc::range_audio` and `into_cursor`; to be removed before 1.0"
     )]
     pub fn range_audio_cursor(&self, slot: Slot, first: u32, end: u32) -> Result<TrackAudioCursor, Error> {
         self.audio_cursor(slot, FrameSpan::Range(first, end), CursorOptions::new())
@@ -900,7 +900,7 @@ impl<R: Read + Seek> Disc<R> {
     /// area or image size.
     #[deprecated(
         since = "0.6.0",
-        note = "use `Disc::audio_cursor` with `FrameSpan::Range(first, end)` and `CursorOptions::new().with_index(index)`"
+        note = "use `Disc::audio_cursor` with `FrameSpan::Range(first, end)` and `CursorOptions::new().with_index(index)`; to be removed before 1.0"
     )]
     pub fn range_audio_cursor_indexed(
         &self,
@@ -921,7 +921,7 @@ impl<R: Read + Seek> Disc<R> {
     /// area or image size.
     #[deprecated(
         since = "0.6.0",
-        note = "use `Disc::frames_cursor` with `FrameSpan::Range(first, end)` and `CursorOptions::new().with_index(index)`"
+        note = "use `Disc::frames_cursor` with `FrameSpan::Range(first, end)` and `CursorOptions::new().with_index(index)`; to be removed before 1.0"
     )]
     pub fn range_frames_cursor_indexed(
         &self,
@@ -958,7 +958,7 @@ impl<R: Read + Seek> Disc<R> {
     /// As [`Disc::check_track`].
     #[deprecated(
         since = "0.6.0",
-        note = "use `Disc::audio_cursor` with `FrameSpan::Track(number)`, or `Disc::track_audio` and `into_cursor`"
+        note = "use `Disc::audio_cursor` with `FrameSpan::Track(number)`, or `Disc::track_audio` and `into_cursor`; to be removed before 1.0"
     )]
     pub fn track_audio_cursor(&self, slot: Slot, number: u32) -> Result<TrackAudioCursor, Error> {
         self.audio_cursor(slot, FrameSpan::Track(number), CursorOptions::new())
