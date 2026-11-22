@@ -82,6 +82,7 @@ Updates:
 | 2026-11-18 | PCM kernel blocks on 32-bit x86 (#372) | Row P12 updated: the generic Fir1 kernel uses blocks of 8 outputs on 32-bit x86 instead of 16, chosen by profiling this crate. It is the same technique with another constant. No new source, no stored file touched. |
 | 2026-11-18 | S1 words on 32-bit targets (#372) | Row P16 updated: S1 reads its windows in 32-bit words on 32-bit targets instead of 64-bit ones. It is the same technique with another word, chosen by profiling this crate. No new source, no stored file touched. |
 | 2026-11-20 | Q by shifts for single 5- and 6-channel frames (#378) | Row D21 updated: the fast loop keeps D19's shift form for Q, not the table, when it decodes one frame alone of 5 or 6 channels, chosen by profiling and bisecting this crate (#378). The same computed result (D21's exhaustive test against `decode`). No new source, no stored file touched. |
+| 2026-11-22 | checked against the merges since v0.6.0 (Part of #40) | Every pull request merged after v0.6.0 up to `58644a8` (#365 to #381), and the gap the 2026-11-06 check left (#303, #305 and #320 to #362, merged before v0.6.0), was checked by its description, and those changing library code also by their diff with comments left out. Techniques: #370 (D22), #374 (P12), #377 (P16) and #379 (D21) updated their rows when they merged; the log rows above give their issues (#369, #372, #378), not the pull requests. #330 is the 2026-11-06 row "Q from a table" (D21). Each row still matches the code on main: `Word`, `Native`, `Probe::q32` and `Probe::scaled32` with a refill every `SCALE / 8` symbols (2 for `u32`, 6 for `u64`); `FIR1_LANES` of 8 on `target_arch = "x86"` only; `S1Word` and `NativeWord` by pointer width; and the `K == 1 && NCH >= 5` test that keeps `Arith::decode`. D8, D11, D15, D19 and D21 state the 2^52 scale and 8-byte loads of the 64-bit form; D22 is the 32-bit form (2^20, 4-byte loads, `Probe::q32`, `Probe::scaled32`), so they were left as they are. The rest change no technique; "Changes with no new technique" now lists them. "Still open" now begins with a summary of every row not verified by a pre-2006 source read. **No row's status changed.** No source was consulted, and no stored file or `MANIFEST.tsv` changed. |
 | 2026-11-22 | DSF chain boundaries on a block (#359) | Row O6 updated: the chain arithmetic of 8.2.7 item 3 follows the specification as amended at sacd-spec `67b8563`; still SPEC. No new source, no stored file touched. |
 
 ## Scope and method
@@ -286,7 +287,7 @@ on).
 
 ### Changes with no new technique
 
-Merged since the record was first prepared; each changes code but introduces no technique.
+Merged since the record was first prepared; each changes code, documentation or tooling but introduces no technique.
 
 | Pull request | Change | Why no entry |
 |---|---|---|
@@ -307,6 +308,15 @@ Merged since the record was first prepared; each changes code but introduces no 
 | #282, #283, #315 | tests and Miri slices for the dispatch modules; tests that work from the packaged crate | Test-only, with `#[cfg(test)]` helpers. |
 | #257, #276, #281, #306, #316, #317 | `bench` commands and limits; `scarletbook-synth` stress frames | Benchmark and tooling programs (Z2); the library is not touched. |
 | #363 (#340) | `AreaCapacity`, `Disc::area_capacity`, `audio::area_capacity`, `sb_area_capacity`: an area's audio sectors present, play time, largest track end, the capacity `7 x n` and a plain DSD frame bound `floor(n x 2045 / (C x 4704))` | Reported figures only: nothing read, decoded or output changes. The capacity is the specification's (4.8 item 3, under M1); the plain bound is arithmetic on the specification's sector syntax (4.3.1, 4.3.2, 4.3.4 item 1: at least 3 header bytes in a sector with a packet) and frame size (4.1 item 1, 4.4.2), own derivation with no outside source. |
+| #338 (#336) | `run_inline` takes the number of history bytes to sum as an argument where the byte is unrolled, and `shares` sums D7's rows in stages (`add_rows`: tables to 4, then to 8, then to 16) | Fewer specialised copies (D14), for smaller stack frames in unoptimised builds. The same tables and the same wrapping sums, so the output is the same (hash gate); D7's rows and partial-share table are unchanged. |
+| #327, #353 (#310, #326) | a merged or newly set seek index reports each verdict once, past the claim cap as well | What is reported about S3's confirmations, not how they are made or saved. |
+| #352 (#343) | a built ID3 tag's header and footer counted against `MAX_TAG_BYTES` (`output/id3.rs`, `fits`) | An allocation bound (specification 7); the tag's layout (O1) is unchanged. |
+| #303, #305, #362 (#39, #347) | `Image::read_sectors` returns `Error::SectorRangeInvalid`; one cursor entry point per concept, the old ones deprecated as wrappers; the C layer's `_free` functions keep the last error message | API surface only. |
+| #322, #323, #335, #337, #349, #356, #360 | documentation: the C header, TOC fields, stack use, lane table memory, control characters in TOC strings, links | Comments and documentation only. |
+| #320, #321, #328, #332 | this record | The record itself (each has its log row above). |
+| #324, #325, #333, #348, #365, #366, #368, #373 | README, RELEASING.md and a changelog fragment | Documentation only; no library code. |
+| #331, #334, #339, #350, #351, #354, #355, #381 | CI and release workflows, scripts and pinned action updates | CI and release tooling; no library code. |
+| #357, #371, #380 | releases 0.6.0, 0.6.1, 0.6.2 | Version numbers and folded fragments. |
 
 ## Source register
 
@@ -479,6 +489,19 @@ Kept in `process/` of the evidence store, hashed in `MANIFEST.tsv`, and describe
   first agent session on #31 failed before reporting and its list of sources was lost.
 
 ## Still open
+
+### Not verified by a pre-2006 source: summary (2026-11-22)
+
+What remains unverified before 1.0, from each row's status on 2026-11-22. The subsections below give the detail.
+
+- **OPEN:** S2 (the seek-index file format; the hash is CLEARED), S3, S8, T1 (low).
+- **OWN** (counts as OPEN): P9, P14, P15, D21 (the table in the decoder step).
+- **BIBLIO:** P8 (test only).
+- **PARTIAL:** D8, S1, S4, O3; and the 2^52 scale that D15, D19 and D21 take from D8.
+- **SPEC, not checkable on this side** (clean-room rule; for counsel): D1-D5, M1-M3, O1, O6, and the layout of O4.
+- **GENERIC whose basis is reasoning or profiling only, with no outside source stating it:** the layout of D7; the OR and schedule of D11; D16; D17; D20; the scale and schedule of D22; M4; the mechanical part of P11; P16; the loop order and scratch row of O4; O5; X2 (skipping work by the count; `collins1960` states reference counting itself). These change no computed result and are outside the pre-2006 preference.
+- GENERIC rows whose basis cites documentation or a source read (not counted above): D13, D14, D18, the trick of P5, P12, P13, P17, R1-R4.
+
 
 ### Techniques whose earliest source is from 2006 or later, or missing
 
