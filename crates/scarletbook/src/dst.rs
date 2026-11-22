@@ -591,9 +591,9 @@ impl DstDecoder {
                         (0..=4, false) => run::<$k, $n, 4, W>(&mut runs, bytes),
                         (5..=8, false) => run::<$k, $n, 8, W>(&mut runs, bytes),
                         (_, false) => run::<$k, $n, 16, W>(&mut runs, bytes),
-                        // One copy for every `used` where the byte is unrolled (see
-                        // `run_inline`).
-                        (_, true) if const { $k * $n <= UNROLL_BYTE } => {
+                        // One copy for every `used` where the byte is unrolled, but for
+                        // one frame alone only in debug builds (see `run_inline`).
+                        (_, true) if const { ($k > 1 || DEBUG) && $k * $n <= UNROLL_BYTE } => {
                             run_inline::<$k, $n, W>(&mut runs, bytes, used)
                         }
                         (0..=4, true) => run_inline::<$k, $n, W>(&mut runs, bytes, 4),
@@ -1212,6 +1212,10 @@ fn add_rows<const NCH: usize, const FROM: usize, const LO: usize, const HI: usiz
 /// instructions unrolled but take more cycles.
 const UNROLL_BYTE: usize = 9;
 
+/// Whether this is a debug build, taken as unoptimised: [`DstDecoder::group`] then passes the
+/// number of history bytes to [`run_inline`] at run time for one frame alone too.
+const DEBUG: bool = cfg!(debug_assertions);
+
 /// A row on the stack of [`run`], aligned so that no vector access of it splits a cache line.
 #[derive(Clone, Copy)]
 #[repr(align(16))]
@@ -1285,10 +1289,13 @@ fn shares<const K: usize, const NCH: usize, const FROM: usize, W: Word>(
 /// its own stack slots, and the 72 copies of `K`, `NCH` and `u` made the frame of each
 /// function that inlines them about 1 MiB, more than half of a new thread's stack (#336).
 /// Only the rows ([`shares`]) then depend on `u`, which they test byte by byte. `group`
-/// passes `u` so where the byte is unrolled (`K x NCH <= UNROLL_BYTE`), whose copies are the
-/// large ones, and elsewhere as a constant, which the optimiser folds: measured on Zen 2
-/// (3950X, #336), with `u` tested in the loop there, 6 channels in 2 frames took about 1 %
-/// longer in the generic build.
+/// passes `u` so where the byte is unrolled for more than one frame (`K x NCH <=
+/// UNROLL_BYTE`), whose copies are the large ones, and elsewhere as a constant, which the
+/// optimiser folds: measured on Zen 2 (3950X, #336), with `u` tested in the loop there, 6
+/// channels in 2 frames took about 1 % longer in the generic build. One frame alone gets a
+/// constant too except in debug builds ([`DEBUG`]), which keep its one copy (#383): its 18
+/// copies added about 210 KiB to each unoptimised frame, and a frame decoded alone, with no
+/// other to overlap with, waits on the tests.
 #[inline(always)]
 #[allow(clippy::needless_range_loop)]
 fn run_inline<const K: usize, const NCH: usize, W: Word>(
