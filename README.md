@@ -26,7 +26,7 @@ Both examples read a small synthetic image from this repository's conformance co
 [`full-text.iso`](https://github.com/aclater/scarletbook-rs/blob/v0.6.2/corpus/images/full-text.iso)
 (1.1 MB, CC0-1.0, [corpus/LICENSE](corpus/LICENSE)): a stereo area with three tracks of one or two
 frames each, and every text field filled in. It holds generated test signals, no real audio.
-Every command below was run against v0.6.1 on 2026-11-18. 0.6.2 changes nothing they use, and they are re-run against it after its release.
+Every command below was run against v0.6.2 on 2026-11-22.
 
 ### Rust
 
