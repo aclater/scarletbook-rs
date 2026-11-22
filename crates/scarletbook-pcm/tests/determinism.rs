@@ -189,19 +189,3 @@ fn pack_s24le_layout() {
     scarletbook_pcm::pack_s24le(&[1, -1, 8_388_607], &mut dst);
     assert_eq!(dst, [1, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F]);
 }
-
-/// The deprecated name `Cutoff::Default` is `Cutoff::Standard`, in expressions and patterns,
-/// and the default stays that filter.
-#[test]
-#[allow(deprecated)]
-fn old_cutoff_name_is_the_standard_filter() {
-    assert_eq!(Cutoff::Default, Cutoff::Standard);
-    assert_eq!(Cutoff::default(), Cutoff::Standard);
-    assert!(matches!(Cutoff::Standard, Cutoff::Default));
-    assert_eq!(Cutoff::ALL[0], Cutoff::Standard);
-    let hz = match Cutoff::Standard {
-        Cutoff::Default => Cutoff::Default.passband_hz(),
-        _ => 0,
-    };
-    assert_eq!(hz, 40_000);
-}

@@ -196,6 +196,7 @@ machine.
 | rustup-init 1.29.2 (x86_64-unknown-linux-gnu and -musl, inside the images above, 2026-10-30) | static.rust-lang.org `rustup/archive/1.29.2/`, checked against its pinned SHA-256 | installing Rust 1.99.1 in the build images (#42) |
 | GNU binutils 2.46.1 (`objdump`, `readelf`, `nm`; already installed) and binutils of the PyPA images | Fedora 44 package `binutils-2.46.1-1.fc44`; the images | checking glibc symbol versions, SONAME, dependencies and exports of our libraries (#42). `otool`, `nm` and MinGW `objdump` ran only on the GitHub runners. |
 | zizmor 1.31.1 (published 2026-10-15) | crates.io (`cargo install --locked`), 2026-10-30 | linting the workflows locally before pushing (#46) |
+| `llvm-tools` and `rust-src` for rustc 1.99.1 (LLVM 23.1.1), on the Zen 2 benchmark host, 2026-11-22 | rustup components | `llvm-profdata`, and `-Zbuild-std` with the profiler runtime, for the i686 PGO measurement (#376); nothing built with them was published |
 
 ### Repository services and CI tools (#46)
 
@@ -234,6 +235,7 @@ codecov.io and api.scorecard.dev; each URL was checked to return an SVG.
 | crates.io (`cargo search`, `GET /api/v1/crates/scarletbook`) | dependency versions; the crate name check |
 | DSD-to-PCM conversion (#130), 2026-10-31: the papers and books listed under "General references consulted", "DSD-to-PCM conversion (#130)"; sacd-spec specification 0, 0.6 (bit and byte order of DSD bytes) | `scarletbook-pcm`; PCM conversion is outside the specifications |
 | Evidence record (#40), 2026-11-06: Elnozahy et al. 2002, Moffat & Zobel 1996, Kung & Robinson 1981, Pike et al. 1993, Moler & Van Loan 1978, Balinski & Young 1977; see `docs/provenance/EVIDENCE.md` for URLs, dates and hashes | earlier dated sources for rows S1, O3, P14 and P15 of the record, and a note on S3, read after the code was written, so not the source of any code |
+| PGO measurement (#376), 2026-11-22: llvm-project tag `llvmorg-23.1.1` (https://github.com/llvm/llvm-project), only `compiler-rt/lib/profile` and `compiler-rt/include/profile`; Alpine 3.22 `musl-dev-1.2.5-r13.apk` and its `APKINDEX` (https://dl-cdn.alpinelinux.org/alpine/v3.22/main/x86/), headers only; the Rust toolchain's own `library/profiler_builtins/build.rs` and `library/sysroot/Cargo.toml` | building the profiling runtime for an instrumented i686 musl `bench`, measured and not adopted (#376); no SACD or DST source |
 
 The crate name check used `cargo search scarletbook` and the crates.io API only.
 `cargo search` listed an unrelated crate, `sacd-rs`, by name and one-line description; it

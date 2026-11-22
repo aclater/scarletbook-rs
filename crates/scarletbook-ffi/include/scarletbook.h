@@ -1017,7 +1017,7 @@ enum SbOutputOption
    */
   SB_OUTPUT_OPTION_DSDIFF_DEPARTURE_D2 = 36,
   /*
-   W32 (specification 8, 8.6 row 32; 8.2.7, sacd-spec e069569): -1 (the default) for a
+   W32 (specification 8, 8.6 row 32; 8.2.7, sacd-spec 67b8563): -1 (the default) for a
    DSF file holding its range of positions; otherwise, with
    `SB_OUTPUT_OPTION_DSF_CHAIN_END`, the file holds the byte range of its range
    `[a_i, b_i)` in a chain whose first range starts at this frame `a_1`.
@@ -4658,7 +4658,7 @@ SbStatus sb_output_options_clear_chunks(const struct SbOutputOptions *options);
 
 /*
  Plans the DSF files of a chain of ranges of the area from `slot` (specification 8,
- 8.2.7 and 8.6 row 32, sacd-spec e069569), from the TOC alone: `bounds` are the `count`
+ 8.2.7 and 8.6 row 32, sacd-spec 67b8563), from the TOC alone: `bounds` are the `count`
  frames `a_1, a_2, ..., a_K, b_K`, so range `i` is `[bounds[i - 1], bounds[i])`, for
  example the tracks with pause (`sb_track_range_with_pause`) of consecutive tracks
  that meet end to end. `files` receives one `SbDsfChainFile` per range, `count - 1` of

@@ -905,22 +905,10 @@ impl AreaCursor {
         self.claim.as_ref().map(|c| c.id)
     }
 
-    /// The old name of [`Self::claim`].
-    #[deprecated(since = "0.6.0", note = "renamed `claim`; to be removed before 1.0")]
-    pub fn speculation_id(&self) -> Option<u64> {
-        self.claim()
-    }
-
     /// The sector the malformed count and warnings begin at: `None` for the area's first
     /// sector, `Some(L)` for a provisional reading (specification 4, 4.4.5 item 5).
     pub fn claim_lsn(&self) -> Option<u64> {
         self.claim.as_ref().map(|c| c.lsn()).filter(|&l| l > 0)
-    }
-
-    /// The old name of [`Self::claim_lsn`].
-    #[deprecated(since = "0.6.0", note = "renamed `claim_lsn`; to be removed before 1.0")]
-    pub fn counts_from(&self) -> Option<u64> {
-        self.claim_lsn()
     }
 
     /// The provisional reading, the first time it is asked for once `L` is chosen.
@@ -2191,35 +2179,6 @@ impl TrackCursor {
         })
     }
 
-    /// As [`TrackCursor::open_range`] with the default options.
-    ///
-    /// # Errors
-    ///
-    /// As [`check_range`].
-    #[deprecated(since = "0.6.0", note = "use `TrackCursor::open_range` with `CursorOptions::new()`")]
-    pub fn for_range(area: &Area, first: u32, end: u32, image_sectors: u64) -> Result<Self, Error> {
-        Self::open_range(area, first, end, image_sectors, CursorOptions::new())
-    }
-
-    /// As [`TrackCursor::open_range`] with [`CursorOptions::with_index`].
-    ///
-    /// # Errors
-    ///
-    /// As [`TrackCursor::open_range`].
-    #[deprecated(
-        since = "0.6.0",
-        note = "use `TrackCursor::open_range` with `CursorOptions::new().with_index(index)`"
-    )]
-    pub fn for_range_indexed(
-        area: &Area,
-        first: u32,
-        end: u32,
-        image_sectors: u64,
-        index: &AreaIndex,
-    ) -> Result<Self, Error> {
-        Self::open_range(area, first, end, image_sectors, CursorOptions::new().with_index(index))
-    }
-
     /// A scan of `area` for the range `[first, end)`, already checked, from `index` (of
     /// that area, checked).
     pub(crate) fn start_indexed(
@@ -2274,29 +2233,6 @@ impl TrackCursor {
     /// [`Progress`]): the sectors read since it was made or continued.
     pub fn progress(&mut self) -> Progress {
         self.area.progress()
-    }
-
-    /// As [`TrackCursor::open_range`] with [`SeekPolicy::Speculative`] and, if given,
-    /// [`CursorOptions::with_index`].
-    ///
-    /// # Errors
-    ///
-    /// As [`TrackCursor::open_range`].
-    #[deprecated(
-        since = "0.6.0",
-        note = "use `TrackCursor::open_range` with `CursorOptions::new().with_index(index).with_policy(SeekPolicy::Speculative(options))`"
-    )]
-    pub fn for_range_speculative(
-        area: &Area,
-        first: u32,
-        end: u32,
-        image_sectors: u64,
-        index: Option<&AreaIndex>,
-        options: crate::seek::SpeculativeOptions,
-    ) -> Result<Self, Error> {
-        let mut with = CursorOptions::new().with_policy(SeekPolicy::Speculative(options));
-        with.index = index;
-        Self::open_range(area, first, end, image_sectors, with)
     }
 
     /// A cursor of the range, already checked, from `index` (of the area, checked) or the
@@ -2405,22 +2341,10 @@ impl TrackCursor {
         self.area.claim_lsn()
     }
 
-    /// The old name of [`Self::claim_lsn`].
-    #[deprecated(since = "0.6.0", note = "renamed `claim_lsn`; to be removed before 1.0")]
-    pub fn counts_from(&self) -> Option<u64> {
-        self.claim_lsn()
-    }
-
     /// The number of the provisional reading, as events name it ([`crate::SeekEvent`]);
     /// `None` for exact positions.
     pub fn claim(&self) -> Option<u64> {
         self.area.claim()
-    }
-
-    /// The old name of [`Self::claim`].
-    #[deprecated(since = "0.6.0", note = "renamed `claim`; to be removed before 1.0")]
-    pub fn speculation_id(&self) -> Option<u64> {
-        self.claim()
     }
 
     /// Where this cursor's scan started (see [`ResumedFrom`]); continued cursors keep it.
@@ -2766,22 +2690,10 @@ impl<'a, R: Read + Seek> TrackFrames<'a, R> {
         self.cursor.claim_lsn()
     }
 
-    /// The old name of [`Self::claim_lsn`].
-    #[deprecated(since = "0.6.0", note = "renamed `claim_lsn`; to be removed before 1.0")]
-    pub fn counts_from(&self) -> Option<u64> {
-        self.claim_lsn()
-    }
-
     /// The number of the provisional reading, as events name it ([`crate::SeekEvent`]);
     /// `None` for exact positions.
     pub fn claim(&self) -> Option<u64> {
         self.cursor.claim()
-    }
-
-    /// The old name of [`Self::claim`].
-    #[deprecated(since = "0.6.0", note = "renamed `claim`; to be removed before 1.0")]
-    pub fn speculation_id(&self) -> Option<u64> {
-        self.claim()
     }
 
     /// The progress of the reading, readable from other threads (see [`Progress`]).
@@ -2947,16 +2859,6 @@ pub enum Stored {
 }
 
 impl Stored {
-    /// The old name of [`Stored::Dsd`]. It still works in expressions and in patterns
-    /// written `Stored::Plain` on a `Stored` value; `use Stored::Plain` does not.
-    ///
-    /// **Under `use Stored::*`, a pattern `Plain` is not this constant.** It is a new binding
-    /// that matches every value, so that arm also takes `Dst` and `Missing`, with only
-    /// warnings (`unreachable_patterns`, `unused_variables`). Write `Dsd`.
-    #[deprecated(since = "0.6.0", note = "renamed `Stored::Dsd`; to be removed before 1.0")]
-    #[allow(non_upper_case_globals)]
-    pub const Plain: Stored = Stored::Dsd;
-
     /// The position's [`FrameContent`], given its decoded `frame` (which a plain one's
     /// bytes are copied from).
     pub fn content(&self, frame: &AudioFrame) -> FrameContent {
@@ -3058,61 +2960,9 @@ impl TrackAudioCursor {
         Ok(Self::from_frames(TrackCursor::open_range(area, first, end, image_sectors, options)?))
     }
 
-    /// As [`TrackAudioCursor::open_range`] with the default options.
-    ///
-    /// # Errors
-    ///
-    /// As [`check_range`].
-    #[deprecated(since = "0.6.0", note = "use `TrackAudioCursor::open_range` with `CursorOptions::new()`")]
-    pub fn for_range(area: &Area, first: u32, end: u32, image_sectors: u64) -> Result<Self, Error> {
-        Self::open_range(area, first, end, image_sectors, CursorOptions::new())
-    }
-
-    /// As [`TrackAudioCursor::open_range`] with [`CursorOptions::with_index`].
-    ///
-    /// # Errors
-    ///
-    /// As [`TrackCursor::open_range`].
-    #[deprecated(
-        since = "0.6.0",
-        note = "use `TrackAudioCursor::open_range` with `CursorOptions::new().with_index(index)`"
-    )]
-    pub fn for_range_indexed(
-        area: &Area,
-        first: u32,
-        end: u32,
-        image_sectors: u64,
-        index: &AreaIndex,
-    ) -> Result<Self, Error> {
-        Self::open_range(area, first, end, image_sectors, CursorOptions::new().with_index(index))
-    }
-
     /// Where this cursor's scan started (see [`ResumedFrom`]).
     pub fn resumed_from(&self) -> ResumedFrom {
         self.frames.resumed_from()
-    }
-
-    /// As [`TrackAudioCursor::open_range`] with [`SeekPolicy::Speculative`] and, if given,
-    /// [`CursorOptions::with_index`].
-    ///
-    /// # Errors
-    ///
-    /// As [`TrackCursor::open_range`].
-    #[deprecated(
-        since = "0.6.0",
-        note = "use `TrackAudioCursor::open_range` with `CursorOptions::new().with_index(index).with_policy(SeekPolicy::Speculative(options))`"
-    )]
-    pub fn for_range_speculative(
-        area: &Area,
-        first: u32,
-        end: u32,
-        image_sectors: u64,
-        index: Option<&AreaIndex>,
-        options: crate::seek::SpeculativeOptions,
-    ) -> Result<Self, Error> {
-        let mut with = CursorOptions::new().with_policy(SeekPolicy::Speculative(options));
-        with.index = index;
-        Self::open_range(area, first, end, image_sectors, with)
     }
 
     /// The slot of this cursor's area.
@@ -3136,22 +2986,10 @@ impl TrackAudioCursor {
         self.frames.claim_lsn()
     }
 
-    /// The old name of [`Self::claim_lsn`].
-    #[deprecated(since = "0.6.0", note = "renamed `claim_lsn`; to be removed before 1.0")]
-    pub fn counts_from(&self) -> Option<u64> {
-        self.claim_lsn()
-    }
-
     /// The number of the provisional reading, as events name it ([`crate::SeekEvent`]);
     /// `None` for exact positions.
     pub fn claim(&self) -> Option<u64> {
         self.frames.claim()
-    }
-
-    /// The old name of [`Self::claim`].
-    #[deprecated(since = "0.6.0", note = "renamed `claim`; to be removed before 1.0")]
-    pub fn speculation_id(&self) -> Option<u64> {
-        self.claim()
     }
 
     /// A cursor at the start of `track`, continuing this one's reading state where that
@@ -3874,22 +3712,10 @@ impl<'a, R: Read + Seek> TrackAudio<'a, R> {
         self.cursor.claim_lsn()
     }
 
-    /// The old name of [`Self::claim_lsn`].
-    #[deprecated(since = "0.6.0", note = "renamed `claim_lsn`; to be removed before 1.0")]
-    pub fn counts_from(&self) -> Option<u64> {
-        self.claim_lsn()
-    }
-
     /// The number of the provisional reading, as events name it ([`crate::SeekEvent`]);
     /// `None` for exact positions.
     pub fn claim(&self) -> Option<u64> {
         self.cursor.claim()
-    }
-
-    /// The old name of [`Self::claim`].
-    #[deprecated(since = "0.6.0", note = "renamed `claim`; to be removed before 1.0")]
-    pub fn speculation_id(&self) -> Option<u64> {
-        self.claim()
     }
 
     /// The progress of the reading, readable from other threads (see [`Progress`]).
@@ -3977,20 +3803,6 @@ pub(crate) mod tests_support {
 pub(crate) mod tests {
     use super::*;
     use crate::toc::Timecode;
-
-    /// The deprecated name `Stored::Plain` is `Stored::Dsd`, in expressions and patterns.
-    #[test]
-    #[allow(deprecated)]
-    fn old_stored_name_is_the_new_one() {
-        assert_eq!(Stored::Plain, Stored::Dsd);
-        // Exhaustive with the old name in place of the variant.
-        let name = |s: Stored| match s {
-            Stored::Dst(_) => "dst",
-            Stored::Plain => "dsd",
-            Stored::Missing => "missing",
-        };
-        assert_eq!(name(Stored::Dsd), "dsd");
-    }
 
     fn sector(header: u8, packets: &[(bool, u8, u16)], records: &[[u8; 4]], dst: bool) -> [u8; 2048] {
         let mut s = [0u8; 2048];

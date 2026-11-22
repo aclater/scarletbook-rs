@@ -26,7 +26,7 @@ Both examples read a small synthetic image from this repository's conformance co
 [`full-text.iso`](https://github.com/aclater/scarletbook-rs/blob/v0.6.2/corpus/images/full-text.iso)
 (1.1 MB, CC0-1.0, [corpus/LICENSE](corpus/LICENSE)): a stereo area with three tracks of one or two
 frames each, and every text field filled in. It holds generated test signals, no real audio.
-Every command below was run against v0.6.1 on 2026-11-18. 0.6.2 changes nothing they use, and they are re-run against it after its release.
+Every command below was run against v0.6.2 on 2026-11-22.
 
 ### Rust
 
@@ -149,7 +149,8 @@ code of yours should do the same, as the docs of
 The program records `libscarletbook_ffi.so.2`, the library's name for C ABI 2, and finds it through
 the rpath, so it runs from this directory without the link. To ship it, copy
 `lib/libscarletbook_ffi.so.2` next to the program, as [Linking](#linking) says. See [C library](#c-library)
-for the rest of the API, and [Migrating to 0.6.0](docs/migrating-0.6.md) from an earlier release.
+for the rest of the API, and [Migrating to 0.7.0](docs/migrating-0.7.md) and
+[Migrating to 0.6.0](docs/migrating-0.6.md) from an earlier release.
 
 ## Installing
 
@@ -1275,7 +1276,8 @@ the C ABI is in [ABI compatibility](#abi-compatibility).
 Before 1.0, as in Cargo, the `y` step of `0.y.z` is the major one and may break the API, and
 the `z` step is the minor one and may only add to it. The interface is not frozen yet:
 [#39](https://github.com/aclater/scarletbook-rs/issues/39) tracks the changes planned before
-1.0, and [Migrating to 0.6.0](docs/migrating-0.6.md) gives a before-and-after for each.
+1.0, and [Migrating to 0.6.0](docs/migrating-0.6.md) and [Migrating to 0.7.0](docs/migrating-0.7.md)
+give a before-and-after for each.
 
 Not covered:
 

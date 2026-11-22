@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! DSF (specification 8, 8.2), and byte ranges built from a chain (8.2.7, sacd-spec
-//! e069569).
+//! e069569 as amended at 67b8563).
 
 use std::ops::Range;
 
@@ -59,7 +59,7 @@ impl DsfData {
 }
 
 /// One file of a chain of ranges of positions (specification 8, 8.2.7 item 3; sacd-spec
-/// e069569), as [`plan_dsf_chain`] gives it: range `[a_i, b_i)`, the chain `[a_1, b_K)`
+/// 67b8563), as [`plan_dsf_chain`] gives it: range `[a_i, b_i)`, the chain `[a_1, b_K)`
 /// it belongs to after any split, and the byte range `[p_i, p_{i+1})` the file holds.
 ///
 /// Its layout is [`Layout::new`] of [`DsfChainFile::range`] as a [`super::Format::Dsf`]
@@ -86,10 +86,13 @@ impl DsfChainFile {
 }
 
 /// `p_i` of a range starting at frame `a` in a chain starting at frame `a1` (8.2.7 item
-/// 3): `4704 a1 + 4096 floor(4704 (a - a1) / 4096)`, which is `4704 a1` for `a = a1`.
+/// 3, as amended for #359 at sacd-spec 67b8563): `4704 a1 + 4096 floor((4704 (a - a1) - 1) /
+/// 4096)` for `a > a1`, and `4704 a1` for `a = a1`. A file that would end exactly on a
+/// block boundary ends one block earlier and carries that block into the next (item 4).
 fn chain_start(a1: u32, a: u32) -> u64 {
     let per = FRAME_BYTES_PER_CHANNEL as u64;
-    per * u64::from(a1) + BLOCK * (per * u64::from(a - a1) / BLOCK)
+    let offset = per * u64::from(a - a1);
+    per * u64::from(a1) + if offset == 0 { 0 } else { BLOCK * ((offset - 1) / BLOCK) }
 }
 
 /// `[p_i, p_{i+1})` of the range `[a, b)` in the chain `[a1, end)` (8.2.7 item 3), with
@@ -100,7 +103,7 @@ pub(super) fn chain_bytes(a1: u32, end: u32, a: u32, b: u32) -> (u64, u64) {
 }
 
 /// Plans the DSF byte ranges of a chain (specification 8, 8.2.7 item 3; sacd-spec
-/// e069569, as clarified at fa558a8): `bounds` are `a_1, a_2, ..., a_K, b_K`, so range `i` is
+/// e069569, as clarified at fa558a8 and amended at 67b8563): `bounds` are `a_1, a_2, ..., a_K, b_K`, so range `i` is
 /// `[bounds[i - 1], bounds[i])` and each ends where the next starts. The tracks with pause
 /// of consecutive tracks (4.7.1 item 5) give such bounds when they meet end to end.
 ///
@@ -195,7 +198,7 @@ pub(super) fn build(
     let c = u64::from(layout.channels);
     let per = FRAME_BYTES_PER_CHANNEL as u64;
     // A range of positions holds [4704 a, 4704 b); a file of a chain, its byte range
-    // (8.2.7 items 2 and 3), which starts at most 4095 bytes before 4704 a, inside the
+    // (8.2.7 items 2 and 3), which starts at most 4096 bytes before 4704 a, inside the
     // position before a, and so it reads from that position (8.2.7 item 4).
     let (start, end) = match layout.chain {
         Some((a1, chain_end)) => chain_bytes(a1, chain_end, layout.first, layout.end),
@@ -493,9 +496,63 @@ mod tests {
     use std::borrow::Cow;
 
     use super::super::{Checked, PositionSource};
-    use super::{BLOCK, DsfData};
+    use super::{BLOCK, DsfData, chain_bytes};
     use crate::audio::FRAME_BYTES_PER_CHANNEL;
     use crate::error::Error;
+
+    /// The chain arithmetic of 8.2.7 item 3 as amended at sacd-spec 67b8563 (#359): the sound
+    /// data per channel of each file, in whole blocks, for the chains a consumer measured against another program's
+    /// output, in frames of 4704 bytes per channel. A file that would end exactly on a block
+    /// boundary (128 frames = 147 blocks) ends one block earlier and carries it into the next,
+    /// also through two such files in a row; a file that doesn't (127 frames) is unchanged;
+    /// the last file is never shortened. Every file but the last is a whole number of blocks
+    /// and at least one, each file after the first starts 1 to 4096 bytes before its range,
+    /// and the files concatenate to the chain's bytes exactly.
+    #[test]
+    fn chain_boundary_on_a_block_carries_the_block_on() {
+        let per = FRAME_BYTES_PER_CHANNEL as u64;
+        // (frames of the chain's ranges in order, first frame of the chain, expected bytes).
+        let cases: &[(&[u32], u32, &[u64])] = &[
+            (&[128, 50, 60], 0, &[598_016, 237_568, 286_720]),
+            (&[127, 50, 60], 0, &[593_920, 237_568, 286_720]),
+            (&[128, 128, 60], 0, &[598_016, 602_112, 286_720]),
+            (&[256, 50, 60], 0, &[1_200_128, 237_568, 286_720]),
+            (&[50, 78, 60], 0, &[233_472, 364_544, 286_720]),
+            // Tracks 2 and 3 of 50, 128, 60: the chain starts at frame 50.
+            (&[128, 60], 50, &[598_016, 286_720]),
+            // The area's last track ends on a block: nothing held back.
+            (&[50, 78], 0, &[233_472, 368_640]),
+            // A chain that stops on a block before the area's end keeps its last block.
+            (&[128], 0, &[602_112]),
+        ];
+        for &(frames, a1, want) in cases {
+            let mut bounds = vec![a1];
+            for f in frames {
+                bounds.push(bounds.last().unwrap() + f);
+            }
+            let end = *bounds.last().unwrap();
+            let files: Vec<(u64, u64)> =
+                bounds.windows(2).map(|r| chain_bytes(a1, end, r[0], r[1])).collect();
+            // Each file's blocks per channel, the last one padded (8.2.2), as measured.
+            let sizes: Vec<u64> = files.iter().map(|(p, q)| BLOCK * (q - p).div_ceil(BLOCK)).collect();
+            assert_eq!(sizes, want, "chain {frames:?} from frame {a1}");
+            // Concatenation of 8.2.7 item 4: contiguous, from 4704 a_1 to 4704 b_K.
+            assert_eq!(files.first().unwrap().0, per * u64::from(a1));
+            assert_eq!(files.last().unwrap().1, per * u64::from(end));
+            for (i, w) in files.windows(2).enumerate() {
+                assert_eq!(w[0].1, w[1].0, "chain {frames:?}: gap after file {i}");
+            }
+            for (i, &(p, q)) in files.iter().enumerate() {
+                if i + 1 < files.len() {
+                    assert!((q - p) % BLOCK == 0 && q - p >= BLOCK, "chain {frames:?}, file {i}: {}", q - p);
+                }
+                if i > 0 {
+                    let carried = per * u64::from(bounds[i]) - p;
+                    assert!((1..=BLOCK).contains(&carried), "chain {frames:?}, file {i}: carries {carried}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn reversal_matches_the_example_of_8_2_3() {
