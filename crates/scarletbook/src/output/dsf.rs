@@ -635,27 +635,27 @@ mod tests {
     /// time asks for, all of them within [`DsfData::positions`] and its ends among them,
     /// and fill the same bytes: every channel count, a stream that starts inside a
     /// position and ends inside a row, reads of 1 byte to over a row, at offsets around
-    /// block and position boundaries. Under Miri: 2 and 6 channels, three sizes at five
-    /// offsets.
+    /// block and position boundaries. Under Miri, where making position content is what
+    /// takes the time: 2 channels, 2 positions, two sizes at three offsets.
     #[test]
     fn partial_rows_ask_for_the_positions_of_blocks() {
         let per = FRAME_BYTES_PER_CHANNEL;
-        let channels: &[u8] = if cfg!(miri) { &[2, 6] } else { &[1, 2, 3, 4, 5, 6] };
-        let sizes: &[usize] =
-            if cfg!(miri) { &[1, 600, 4097] } else { &[1, 64, 600, 1024, 4000, 4097, 9000] };
+        let channels: &[u8] = if cfg!(miri) { &[2] } else { &[1, 2, 3, 4, 5, 6] };
+        let sizes: &[usize] = if cfg!(miri) { &[600, 4097] } else { &[1, 64, 600, 1024, 4000, 4097, 9000] };
         for &channels in channels {
             let c = usize::from(channels);
-            let (skip, stream) = (1000, 3 * per as u64 + 17);
+            let stream = if cfg!(miri) { per + 17 } else { 3 * per + 17 } as u64;
+            let skip = 1000;
             let data = DsfData { channels, start: skip, stream, skip, reverse: false };
             let size = (BLOCK * stream.div_ceil(BLOCK)) as usize * c;
             let len = c * per;
             let mut made = Made(channels, Vec::new());
             // Around block ends, and stream bytes 3704 and 8408, where positions 1 and 2
-            // start (in rows 0 and 2).
+            // start (in rows 0 and 2; the stream is 2 positions under Miri).
             let row = 4096 * c;
             let mut starts: Vec<usize> = Vec::new();
             if cfg!(miri) {
-                starts.extend([4096 - 30, row - 30, per - 1030, 2 * row + 186, size - 40]);
+                starts.extend([4096 - 30, row - 30, per - 1030]);
             } else {
                 let positions = [per - 1000, per - 1000 + 4096 * (c - 1), 2 * row + 216];
                 for edge in (0..size).step_by(BLOCK as usize).chain(positions) {
