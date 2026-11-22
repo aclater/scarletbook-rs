@@ -186,6 +186,55 @@ mod avx2 {
     }
 }
 
+/// PROTOTYPE (#372 item 3, not for merge): [`crate::proto_int`]'s SSE2 Fir1.
+#[cfg(all(
+    feature = "proto-int-372",
+    any(target_arch = "x86", target_arch = "x86_64"),
+    target_feature = "sse2"
+))]
+pub(crate) fn proto_fir1_int<const G: usize>(s: &crate::proto_int::IntSym, x: &[i16], out: &mut [i32]) {
+    // SAFETY: SSE2 is enabled for the whole build (the `cfg` above), so every CPU this code
+    // runs on has it.
+    unsafe { proto::fir1::<G>(s, x, out) }
+}
+
+/// PROTOTYPE (#372 item 3, not for merge): [`crate::proto_int`]'s SSE2 Dec2.
+#[cfg(all(
+    feature = "proto-int-372",
+    any(target_arch = "x86", target_arch = "x86_64"),
+    target_feature = "sse2"
+))]
+pub(crate) fn proto_dec2_int<const G: usize>(
+    s: &crate::proto_int::IntSym,
+    xe: &[i16],
+    xo: &[i16],
+    out: &mut [i32],
+) {
+    // SAFETY: SSE2 is enabled for the whole build (the `cfg` above), so every CPU this code
+    // runs on has it.
+    unsafe { proto::dec2::<G>(s, xe, xo, out) }
+}
+
+/// PROTOTYPE wrappers: the SSE2 bodies in `proto_int`.
+#[cfg(all(
+    feature = "proto-int-372",
+    any(target_arch = "x86", target_arch = "x86_64"),
+    target_feature = "sse2"
+))]
+mod proto {
+    use crate::proto_int::{IntSym, sse2};
+
+    #[target_feature(enable = "sse2")]
+    pub(super) unsafe fn fir1<const G: usize>(s: &IntSym, x: &[i16], out: &mut [i32]) {
+        sse2::fir1::<G>(s, x, out)
+    }
+
+    #[target_feature(enable = "sse2")]
+    pub(super) unsafe fn dec2<const G: usize>(s: &IntSym, xe: &[i16], xo: &[i16], out: &mut [i32]) {
+        sse2::dec2::<G>(s, xe, xo, out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

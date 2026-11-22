@@ -19,6 +19,15 @@ thiserror = "2"
 criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
 proptest = { version = "1", default-features = false, features = ["std"] }
 
+[features]
+# PROTOTYPE for #372 item 3, not for merge: exact integer SSE2 kernels (`src/proto_int.rs`),
+# measured by `examples/int_kernels.rs`.
+proto-int-372 = []
+
+[[example]]
+name = "int_kernels"
+required-features = ["proto-int-372"]
+
 [[bench]]
 name = "convert"
 harness = false

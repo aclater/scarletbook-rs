@@ -112,6 +112,14 @@
 mod design;
 mod dispatch;
 mod kernel;
+#[cfg(all(
+    feature = "proto-int-372",
+    any(target_arch = "x86", target_arch = "x86_64"),
+    target_feature = "sse2"
+))]
+#[doc(hidden)]
+#[allow(missing_docs)]
+pub mod proto_int;
 #[cfg(test)]
 mod quality;
 #[cfg(test)]
