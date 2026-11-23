@@ -1,3 +1,6 @@
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+[scarletbook](../README.md) › [Documentation](README.md) › Migrating to 0.7.0
+
 # Migrating to 0.7.0
 
 0.7.0 removes the 36 items that 0.6.0 deprecated, as [Migrating to 0.6.0](migrating-0.6.md)
@@ -217,3 +220,10 @@ let config = PcmConfig::new(PcmRate::Hz176400, Cutoff::Standard, 2);
 ## C library
 
 Nothing to do: the header and the ABI are unchanged, and `SB_ABI_VERSION` stays 2.
+
+## See also
+
+- [Migrating to 0.6.0](migrating-0.6.md)
+- [Stability and versions](stability.md)
+- [CHANGELOG.md](../CHANGELOG.md)
+- [Documentation index](README.md)
