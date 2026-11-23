@@ -79,6 +79,12 @@ def require(base):
         p.startswith(f"{CHANGELOG_D}/") or p.startswith(f"{CLEANROOM_D}/") for p in deleted
     ):
         return
+    # A release with no fragments to fold in (1.0.1: the same code as 1.0.0) deletes none. It
+    # is recognised by both of its marks together: a new `## [X.Y.Z] - DATE` heading in
+    # CHANGELOG.md and a changed `version` in the root Cargo.toml. Either alone is not enough,
+    # so a code change cannot pass by editing CHANGELOG.md or the version by itself.
+    if release_marks(base):
+        return
     code = [p for p in changed if re.match(r"^crates/[^/]+/src/", p) or p in ("Cargo.toml", "Cargo.lock")]
     if not code:
         return
@@ -92,6 +98,22 @@ def require(base):
             + ") but adds no fragment to " + " and ".join(f"{d}/" for d in missing)
             + "; see CONTRIBUTING.md, \"Change records\""
         )
+
+
+def release_marks(base):
+    """Whether the change since `base` adds a release heading to CHANGELOG.md and changes the
+    workspace version in Cargo.toml."""
+
+    def added_lines(path):
+        out = subprocess.run(
+            ["git", "diff", "--unified=0", f"{base}...HEAD", "--", path],
+            check=True, capture_output=True, text=True,
+        ).stdout
+        return [l[1:] for l in out.splitlines() if l.startswith("+") and not l.startswith("+++")]
+
+    heading = any(re.match(r"^## \[\d+\.\d+\.\d+\] - \d{4}-\d{2}-\d{2}$", l) for l in added_lines("CHANGELOG.md"))
+    version = any(re.match(r'^version = "\d+\.\d+\.\d+"$', l) for l in added_lines("Cargo.toml"))
+    return heading and version
 
 
 def assemble(version, date):
