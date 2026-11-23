@@ -14,6 +14,10 @@ proceeds; each stage adds to the log at the end.
   implementation, including pysacd, sacd-ripper, `sacd_extract`, FFmpeg's DST decoder,
   sacd-rs, the dst-decoder crate and the Philips/ISO reference decoder. No web search for
   SACD or DST implementations was made.
+- Never opened: the repositories `aclater/sacd` (renamed `aclater/dsd-toolbox` on
+  2026-11-23, #407; GitHub redirects the old name, and neither name is opened), `pysacd`,
+  `sacdfs` and `beets-pysacd`, nor the consumers' own DSD-to-PCM crate (#398). Only black-box
+  figures their maintainers post on this repository's issues are used.
 - Where the specification is ambiguous or incomplete, an issue is opened on
   `aclater/sacd-spec`, the affected code is marked with a `TODO` naming the issue, and work
   continues elsewhere. The issues are listed below.
