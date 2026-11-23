@@ -98,8 +98,10 @@
  *   call, sb_track_audio_set_pool and the _free functions included.)
  *
  * - Types. Every integer is fixed-width (<stdint.h>) except size_t, used only for the
- *   lengths of caller buffers (and of the strings and data copied into them). Flags are
- *   uint8_t, 1 or 0. No enumeration type is passed by value or stored in a struct:
+ *   lengths of caller buffers (and of the strings and data copied into them) and for
+ *   SbPositionData's content_len and dst_equivalent_len, the lengths of the bytes its
+ *   two pointers refer to. Flags are uint8_t, 1 or 0. No enumeration type is passed by
+ *   value or stored in a struct:
  *   SbStatus is int32_t, and the other enumerations (SbSlot, SbFrameStatus, ...) only
  *   name the values of uint32_t arguments and fields. In C23 and C++ they are
  *   enumerations with those fixed underlying types. The one floating-point argument,
