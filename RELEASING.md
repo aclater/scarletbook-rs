@@ -36,11 +36,15 @@ that fails, or any change to `abi/abi-2.txt` other than an addition, stops the r
 Rust check of it is for completeness. Check `scarletbook-pcm` too while it is still released.
 
 It also moves the README's Quick start (#364) to the new version: the `cargo add` pin, the
-tag in the image URL, the release asset name, and any API the examples use that changed. The
-Quick start fetches the published release, so it can only run once the tag is out. After the
-release, run both of its command blocks exactly as written in an empty directory, and if they
-fail, or their output differs from what the README shows, fix the README in a follow-up pull
-request.
+tag in the image URL, the release asset name, and any API the examples use that changed. It also
+sets the sentence "Every command below was run against vX.Y.Z on DATE." to the new version and
+the release date. The Quick start fetches the published release, so it can only run once the
+tag is out. `.github/workflows/quickstart.yml` runs it when the tag's Release run has
+succeeded (crates.io then has the crates), and again weekly: `.github/scripts/quickstart.py`
+runs both command blocks exactly as written, each in a new empty directory, compares their
+output with what the README shows, and checks that the pin, that sentence and the tag name one
+version. That run is what makes the sentence true. If it fails, it opens an issue "Quick start
+failed against vX.Y.Z" (or comments on it); fix the README in a follow-up pull request.
 
 Pushing the tag runs `.github/workflows/release.yml`:
 

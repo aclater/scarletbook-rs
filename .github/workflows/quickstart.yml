@@ -1,0 +1,122 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+name: Quick start
+
+# Runs both command blocks of the README's Quick start exactly as written, each in a new empty
+# directory, and compares their output with the README's (.github/scripts/quickstart.py has
+# the rules; #412). They fetch the published crate and the published C library archive, so
+# this cannot run on pull requests. It runs after each release (against the README of the
+# released tag, which must pin the released version), weekly and on demand (against the
+# README of the branch run, main for the schedule). On failure, the `report` job opens an
+# issue "Quick start failed against vX.Y.Z", or comments on that issue if it is still open.
+#
+# After a release it is triggered by the completion of release.yml, not by the `release`
+# event: release.yml creates the release with the workflow's GITHUB_TOKEN, and events caused
+# by that token start no workflow runs, so `release: published` would never fire. A
+# successful Release run has also finished its `publish` job, so crates.io has the crates
+# (cargo publish waits until the index lists them) and the Rust block does not race the
+# publish. A failed or cancelled Release run starts nothing here; the weekly run then checks
+# whatever was released. Prerelease tags (with a `-`) are skipped: the Quick start names the
+# latest release only.
+#
+# `workflow_run` runs this file from the default branch with the default branch's context.
+# The only workflow that triggers it is release.yml, which runs on `v*` tags only, and the
+# code checked out is the tag's; nothing comes from a pull request.
+
+on:
+  workflow_run: # zizmor: ignore[dangerous-triggers] only release.yml (v* tags) triggers it; see above
+    workflows: [Release]
+    types: [completed]
+  schedule:
+    - cron: "29 6 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_branch || github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  quickstart:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' && !contains(github.event.workflow_run.head_branch, '-'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      attestations: read # gh attestation verify in the C block
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      report: ${{ steps.run.outputs.report }}
+    steps:
+      # After a release, the released tag's commit; otherwise the branch run.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - id: version
+        env:
+          TAG: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == workflow_run ]]; then
+            version=${TAG#v}
+          else
+            version=$(sed -n 's/^cargo add scarletbook@=\(.*\)$/\1/p' README.md | head -n 1)
+          fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::no release version X.Y.Z found: '$version'"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - id: run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECT: ${{ github.event_name == 'workflow_run' && steps.version.outputs.version || '' }}
+        run: |
+          status=0
+          python3 -I .github/scripts/quickstart.py ${EXPECT:+--expect-version "$EXPECT"} > "$RUNNER_TEMP/quickstart.txt" || status=$?
+          cat "$RUNNER_TEMP/quickstart.txt"
+          {
+            echo "report<<QUICKSTART_REPORT_EOF"
+            head -c 60000 "$RUNNER_TEMP/quickstart.txt" | grep -v '^QUICKSTART_REPORT_EOF$' || true
+            echo "QUICKSTART_REPORT_EOF"
+          } >> "$GITHUB_OUTPUT"
+          exit "$status"
+
+  # The only job with write access, to issues only; it checks nothing out and runs no
+  # repository code.
+  report:
+    needs: quickstart
+    if: failure() && needs.quickstart.result == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.quickstart.outputs.version }}
+          REPORT: ${{ needs.quickstart.outputs.report }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Quick start failed against v${VERSION:-?}"
+          {
+            echo "The README's Quick start failed in [this run]($RUN_URL) (event: \`$GITHUB_EVENT_NAME\`, ref: \`$GITHUB_REF\`)."
+            echo "Its log has the commands' standard error; \`.github/scripts/quickstart.py\` has the comparison rules."
+            echo
+            echo '```'
+            if [[ -n "$REPORT" ]]; then printf '%s\n' "$REPORT"; else echo "(no report: the run stopped before the comparison, see the log)"; fi
+            echo '```'
+          } > "$RUNNER_TEMP/body.md"
+          number=$(gh issue list -R "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" \
+            --json number,title --jq "map(select(.title == \"$title\"))[0].number // empty")
+          if [[ -n "$number" ]]; then
+            gh issue comment "$number" -R "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/body.md"
+          else
+            gh issue create -R "$GITHUB_REPOSITORY" --title "$title" --body-file "$RUNNER_TEMP/body.md"
+          fi
