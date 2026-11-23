@@ -1,4 +1,6 @@
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+[scarletbook](../README.md) › [Documentation](README.md) › Rust guide
+
 # Rust guide
 
 Using the `scarletbook` crate from Rust. For C and other languages, see the
@@ -241,3 +243,10 @@ rayon 2 would need a new major version of `scarletbook`. A program's pool must c
 
 The names that differ between the Rust API and the C ABI are listed under
 [Rust and C names](c-abi.md#rust-and-c-names).
+
+## See also
+
+- [Using the C library](c-abi.md)
+- [Stability and versions](stability.md)
+- [Performance and benchmarks](performance.md)
+- [Documentation index](README.md)

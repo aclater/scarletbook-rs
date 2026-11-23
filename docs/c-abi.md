@@ -1,4 +1,6 @@
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+[scarletbook](../README.md) › [Documentation](README.md) › C ABI guide
+
 # C ABI guide
 
 Using the C library, `scarletbook-ffi`, from C and other languages. Get it from the
@@ -393,3 +395,10 @@ follows every point:
 
 The check `sb_abi_version() == SB_ABI_VERSION` refuses a library of the other ABI either
 way round.
+
+## See also
+
+- [Using from Python (ctypes)](python.md)
+- [Release assets](releases.md#release-assets)
+- [Rust guide](rust.md)
+- [Documentation index](README.md)
