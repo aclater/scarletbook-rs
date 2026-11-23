@@ -21,6 +21,7 @@ The audit's item numbers are in
 
 `toc::Toc`, `MasterToc`, `Area`, `Track`, `Locale`, `DiscText`, `AreaText` and `TrackText`.
 
+<a id="the-toc-structs-cant-be-built-by-literal-or-destructured-without--298"></a>
 **The TOC structs can't be built by literal or destructured without `..` (#298)**
 
 Changed in 0.6.0, with no deprecation first. This affects code outside the crate that uses struct
@@ -48,6 +49,7 @@ text.title = Some(title);
 `error::Warning`, `audio::AreaFrame`, `TrackFrame` and `AudioFrame`, and the new
 `TrackFrame::new`.
 
+<a id="trackframe-is-built-with-trackframenew-and-patterns-need--301"></a>
 **`TrackFrame` is built with `TrackFrame::new`, and patterns need `..` (#301)**
 
 Changed in 0.6.0, with no deprecation first. This affects code outside the crate that uses struct
@@ -73,6 +75,7 @@ let AudioFrame { number, status, data, .. } = decode_frame(&mut decoder, frame, 
 
 `seek::Speculation`, `seek::ResumedFrom` and the `Error` variants with fields.
 
+<a id="patterns-on-twelve-variants-need--and-the-variants-cant-be-built-302"></a>
 **Patterns on twelve variants need `..`, and the variants can't be built (#302)**
 
 Changed in 0.6.0, with no deprecation first. The variants are
@@ -109,6 +112,7 @@ if let Err(Error::NoSuchTrack { slot, track, .. }) = result { report(slot, track
 `audio::FrameStatus`, `audio::DecodeOn`, `image::SectorFormat`, `toc::LoudspeakerLayout`,
 `toc::Speaker` and `toc::TrackTextItem`, and the enums documented as frozen.
 
+<a id="a-match-on-six-enums-needs-a-wildcard-arm-304"></a>
 **A `match` on six enums needs a wildcard arm (#304)**
 
 Changed in 0.6.0, with no deprecation first. This affects `FrameStatus`, `DecodeOn`, `SectorFormat`,
@@ -138,6 +142,7 @@ let good = match frame.status {
 };
 ```
 
+<a id="loudspeakerlayoutunspecified-needs--and-cant-be-built-304"></a>
 **`LoudspeakerLayout::Unspecified` needs `..` and can't be built (#304)**
 
 Changed in 0.6.0, with no deprecation first. A pattern needs `..` even when it names both fields.
@@ -157,6 +162,7 @@ let layout = LoudspeakerLayout::new(4, 0);
 if let LoudspeakerLayout::Unspecified { channels, config, .. } = layout { report(channels, config) }
 ```
 
+<a id="comparing-with-a-built-speculation-or-resumedfrom-needs-matches-302-304"></a>
 **Comparing with a built `Speculation` or `ResumedFrom` needs `matches!` (#302, #304)**
 
 Changed in 0.6.0, with no deprecation first. This follows from M3: both types are still `PartialEq`,
@@ -183,6 +189,7 @@ assert!(matches!(cursor.resumed_from(), ResumedFrom::Discarded { lsn: 16, .. }))
 The FFI-only methods of `audio::Continuation`, the decoder and scheduler tuning constants, and
 the low-level `text` helpers.
 
+<a id="plumbing-tuning-values-and-text-helpers-are-hidden-297"></a>
 **Plumbing, tuning values and text helpers are hidden (#297)**
 
 Hidden in 0.6.0 with `#[doc(hidden)]`, and out of the semver promise: each may change or go in any
@@ -260,6 +267,7 @@ After: the decoded fields of `Toc`, `Area` and `Track` and their text, instead o
 
 The range, track and stored-frame entry points of `Disc`, `TrackAudioCursor` and `TrackCursor`.
 
+<a id="the-cursor-twins-of-disc-become-audio_cursor-and-frames_cursor-305"></a>
 **The cursor twins of `Disc` become `audio_cursor` and `frames_cursor` (#305)**
 
 Deprecated in 0.6.0 and removed before 1.0. The old names still work and give the same frames,
@@ -292,6 +300,7 @@ let d = disc.frames_cursor(slot, FrameSpan::Range(first, end), CursorOptions::ne
 let a = disc.track_audio(slot, n)?.into_cursor();
 ```
 
+<a id="the-callers-index-moves-to-cursoroptions-305"></a>
 **The caller's index moves to `CursorOptions` (#305)**
 
 Deprecated in 0.6.0 and removed before 1.0.
@@ -311,6 +320,7 @@ let a = disc.audio_cursor(slot, span, CursorOptions::new().with_index(&index))?;
 let f = disc.frames_cursor(slot, span, CursorOptions::new().with_index(&index))?;
 ```
 
+<a id="for_range-for_range_indexed-and-for_range_speculative-become-open_range-305"></a>
 **`for_range`, `for_range_indexed` and `for_range_speculative` become `open_range` (#305)**
 
 Deprecated in 0.6.0 and removed before 1.0, on `TrackCursor` and `TrackAudioCursor` alike. For
@@ -334,6 +344,7 @@ let with = CursorOptions::new().with_index(&index).with_policy(SeekPolicy::Specu
 let c = TrackCursor::open_range(&area, first, end, n, with)?;
 ```
 
+<a id="continue_to-and-continue_to_range-keep-working-for-callers-without-a-disc-305"></a>
 **`continue_to` and `continue_to_range` keep working, for callers without a `Disc` (#305)**
 
 Not deprecated, so there is nothing to migrate. `TrackCursor::new`, `TrackAudioCursor::new` and
@@ -345,6 +356,7 @@ same size apart, while `continue_to` always opens exact, with no index and no lo
 
 The provisional-reading id, the start sector, the `*with_format*` constructors, and `Stored::Plain`.
 
+<a id="speculation_id-is-now-claim-and-counts_from-is-now-claim_lsn-300"></a>
 **`speculation_id()` is now `claim()`, and `counts_from()` is now `claim_lsn()` (#300)**
 
 Deprecated in 0.6.0 and removed before 1.0, on `AreaCursor`, `TrackCursor`, `TrackFrames`,
@@ -363,6 +375,7 @@ After:
 let (id, from) = (cursor.claim(), cursor.claim_lsn());
 ```
 
+<a id="the-with_log-and-with_format-constructors-give-way-to-options-300"></a>
 **The `*with_log` and `*with_format*` constructors give way to `options()` (#300)**
 
 Deprecated in 0.6.0 and removed before 1.0: `Image::open_with_log`, `Image::with_format`,
@@ -388,6 +401,7 @@ let c = Disc::options().with_format(format).with_log(log).open(reader)?;
 let d = Image::options().with_format(format).open(reader)?;
 ```
 
+<a id="storedplain-is-now-storeddsd-300"></a>
 **`Stored::Plain` is now `Stored::Dsd` (#300)**
 
 **Check this first: a match can silently take the wrong branch.** Under `use Stored::*`, a pattern
@@ -435,6 +449,7 @@ match stored {
 
 `AreaIndex::{checkpoints, hints, confirmations, pending_claims}`.
 
+<a id="areaindexs-count-methods-are-now-_count-299"></a>
 **`AreaIndex`'s count methods are now `*_count` (#299)**
 
 Deprecated in 0.6.0 and removed before 1.0: `checkpoints`, `hints`, `confirmations` and
@@ -461,6 +476,7 @@ let kept = (
 
 ### S3. `Image::read_sectors`
 
+<a id="imageread_sectors-returns-result-error-303"></a>
 **`Image::read_sectors` returns `Result<(), Error>` (#303)**
 
 Changed in 0.6.0, with no deprecation first, because the name stays and only the return type changes.
@@ -505,6 +521,7 @@ match image.read_sectors(lsn, &mut buf) {
 
 `MAX_CHANNELS`, `dst::FL` and `audio::FRAME_BYTES_PER_CHANNEL`.
 
+<a id="dstmax_channels-and-dstfl-give-way-to-the-audio-constants-293"></a>
 **`dst::MAX_CHANNELS` and `dst::FL` give way to the `audio` constants (#293)**
 
 Deprecated in 0.6.0 and removed before 1.0. `audio::MAX_CHANNELS` is a `u8`, where
@@ -527,6 +544,7 @@ let buf = vec![0u8; audio::FRAME_BYTES_PER_CHANNEL * usize::from(audio::MAX_CHAN
 
 ### N5. `Cutoff::Default`
 
+<a id="cutoffdefault-is-now-cutoffstandard-291"></a>
 **`Cutoff::Default` is now `Cutoff::Standard` (#291)**
 
 **Check this first: a match can silently take the wrong branch.** Under `use Cutoff::*`, a pattern
@@ -569,6 +587,7 @@ let config = PcmConfig::new(PcmRate::Hz176400, Cutoff::Standard, 2);
 ABI 2 is the 1.0 ABI, so the header and the ABI do not change, and `SB_ABI_VERSION` stays 2. The
 shared library's name now carries the ABI version on Linux and macOS.
 
+<a id="libscarletbook_ffiso-is-now-libscarletbook_ffiso2-294"></a>
 **`libscarletbook_ffi.so` is now `libscarletbook_ffi.so.2` (#294)**
 
 Changed in 0.6.0, and breaking for how a program is packaged, not for its source. No C source
