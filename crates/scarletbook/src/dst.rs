@@ -1353,11 +1353,11 @@ fn run_inline<const K: usize, const NCH: usize, W: Word>(
                     let spred = base[$l][$ch].0[$r].wrapping_add(probe.partial[idx]);
                     let y = if const { byte_lut(NCH) } {
                         let (p, sign) = probability(spred, &probe.lut);
-                        // One frame alone (K = 1) of 5 or 6 channels takes Q by shifts, the
-                        // same to the bit: with no other frame to overlap with, the table's
-                        // load lengthens its serial chain (#378). Measured on Zen 2: 4 to
-                        // 5 % faster for 5 and 6 channels, 1 to 4 % slower for 1 and 2.
-                        if K == 1 && NCH >= 5 {
+                        // 5 and 6 channels take Q by shifts at every K, the same to the
+                        // bit: the table's load lengthens the serial chain (#378), and on
+                        // Raptor Lake P-cores grouped 5 and 6 channels are slower than
+                        // before the table too (#383). 1 and 2 channels keep the table.
+                        if NCH >= 5 {
                             sign ^ ar[$l].decode(p)
                         } else {
                             sign ^ ar[$l].decode_table(p, W::q(&probes[$l][0]))
@@ -1403,11 +1403,11 @@ fn run_inline<const K: usize, const NCH: usize, W: Word>(
                     let spred = base[$l][$ch].0[$r].wrapping_add(probe.partial[idx]);
                     let y = if const { byte_lut(NCH) } {
                         let (p, sign) = probability(spred, &probe.lut);
-                        // One frame alone (K = 1) of 5 or 6 channels takes Q by shifts, the
-                        // same to the bit: with no other frame to overlap with, the table's
-                        // load lengthens its serial chain (#378). Measured on Zen 2: 4 to
-                        // 5 % faster for 5 and 6 channels, 1 to 4 % slower for 1 and 2.
-                        if K == 1 && NCH >= 5 {
+                        // 5 and 6 channels take Q by shifts at every K, the same to the
+                        // bit: the table's load lengthens the serial chain (#378), and on
+                        // Raptor Lake P-cores grouped 5 and 6 channels are slower than
+                        // before the table too (#383). 1 and 2 channels keep the table.
+                        if NCH >= 5 {
                             sign ^ ar[$l].decode(p)
                         } else {
                             sign ^ ar[$l].decode_table(p, W::q(&probes[$l][0]))
