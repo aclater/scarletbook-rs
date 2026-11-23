@@ -16,15 +16,16 @@ Every release publishes two archives, built by `.github/workflows/benchkit.yml`:
 | `scarletbook-benchkit-<version>-x86_64-linux.tar.gz` | generic x86-64 | any x86_64 Linux |
 | `scarletbook-benchkit-<version>-x86_64-linux-v3.tar.gz` | `-C target-cpu=x86-64-v3` | x86-64-v3 CPUs only (AVX2, BMI1/2, FMA, MOVBE, ...) |
 
-Each has a `.sha256` checksum and the release's build provenance attestation; verify both
-before extracting (see "The sandboxed-runner contract", step 0). Match the names **exactly**: a prefix or glob of the generic name also matches the
-`-v3` one, which stops with SIGILL on older CPUs. The names share no prefix with the
-`bench-<version>-...` benchmark assets of sacd-spec or the `scarletbook-ffi-<version>-...` C
-library archives. Every push to main uploads the same two archives as workflow artifacts,
-`benchkit-x86_64-linux[-v3]-<commit>`, with archives named
-`scarletbook-benchkit-<version>-<commit>-x86_64-linux[-v3].tar.gz` (the short commit after
-the last released version), so they cannot be taken for release kits. They carry no
-attestation; use them for development only.
+Each has a `.sha256` checksum and the release's build provenance attestation; verify both before
+extracting (see "The sandboxed-runner contract", step 0). Match the names **exactly**: a prefix
+or glob of the generic name also matches the `-v3` one, which stops with SIGILL on older CPUs.
+The names share no prefix with the `bench-<version>-...` benchmark program assets of the same
+release (named as sacd-spec's benchmark interface requires) or the
+`scarletbook-ffi-<version>-...` C library archives. Every push to main uploads the same two
+archives as workflow artifacts, `benchkit-x86_64-linux[-v3]-<commit>`, with archives named
+`scarletbook-benchkit-<version>-<commit>-x86_64-linux[-v3].tar.gz` (the short commit after the
+last released version), so they cannot be taken for release kits. They carry no attestation; use
+them for development only.
 
 An archive holds one directory:
 
@@ -40,14 +41,14 @@ An archive holds one directory:
 | `table.py` | prints the Markdown table of `RESULTS.md` from the runner's output |
 | `README.txt`, `README.md`, `LICENSE-*` | version, commit and build; this file; the licences |
 
-The programs are statically linked against glibc (`x86_64-unknown-linux-gnu` with
-`-C target-feature=+crt-static`, `profile dist`): they need no shared library, no network and
-no privileges, and run on any x86_64 Linux kernel 3.2 or later. They are not musl builds: on
-lennon (3950X) musl builds of `bench` took 11 % longer than glibc ones, from musl's allocator
-(all-thread DST decoding: 4.46 s against 4.02 s) and memcpy (plain DSD to DSF: 2.03 s
-against 1.81 s), while the static glibc build timed the same as the dynamic one (4.02 s and
-1.81 s). Both builds pick the same run-time paths as any other build of their level: the
-generic one also runs the AVX2 DST decoder and PCM kernels on CPUs that have them.
+The programs are statically linked against glibc (`x86_64-unknown-linux-gnu` with `-C
+target-feature=+crt-static`, `profile dist`): they need no shared library, no network and no
+privileges, and run on any x86_64 Linux kernel 3.2 or later. They are not musl builds: on the
+Zen 2 benchmark host (Ryzen 9 3950X), musl builds of `bench` took 11 % longer than glibc ones,
+from musl's allocator (all-thread DST decoding: 4.46 s against 4.02 s) and memcpy (plain DSD to
+DSF: 2.03 s against 1.81 s), while the static glibc build timed the same as the dynamic one
+(4.02 s and 1.81 s). Both builds pick the same run-time paths as any other build of their level:
+the generic one also runs the AVX2 DST decoder and PCM kernels on CPUs that have them.
 
 ## The run list
 
@@ -137,10 +138,13 @@ image (up to 5 × 3.3 GB); nothing else. **Network:** none, after the download a
    ```sh
    sha256sum -c scarletbook-benchkit-<version>-x86_64-linux.tar.gz.sha256
    gh attestation verify scarletbook-benchkit-<version>-x86_64-linux.tar.gz -R aclater/scarletbook-rs \
-     --signer-workflow aclater/scarletbook-rs/.github/workflows/release.yml --deny-self-hosted-runners
+     --signer-workflow aclater/scarletbook-rs/.github/workflows/release.yml \
+     --source-ref refs/tags/v<version> --deny-self-hosted-runners
    ```
 
-   and the same for the `-v3` archive. Stop if either fails.
+   and the same for the `-v3` archive. Stop if either fails. `--source-ref` accepts only a
+   kit built from the tag `v<version>`, not one attested by a run on another branch or tag
+   (SECURITY.md, "Release assets").
 
 1. For each image a selected case needs: `<kit>/scarletbook-synth <work>/<image id>.iso <synth
    arguments>`, with either kit (the bytes are the same). Images can be kept between versions
@@ -179,13 +183,14 @@ Extra fields are welcome (for example the machine's name, the date or the storag
 
 ## Fresh copies
 
-On lennon (3950X), one file of `bench` decoded a DST area 42 % slower than byte-identical
-copies of it: 1.77 s of CPU against 1.24 s, with the same instruction count, on every run, until
-that file's page cache was dropped (`posix_fadvise(POSIX_FADV_DONTNEED)`), after which it ran at
-1.24 s too. Eight further copies all ran at 1.23-1.25 s. The physical pages that happen to hold
-a program's code can cost that much, and the cost sticks to the file while it stays cached. A
-run list that started the same file for every round would carry such an offset through all of
-them; a fresh copy per run makes it a rare outlier, which the median of the rounds absorbs.
+On the Zen 2 benchmark host (Ryzen 9 3950X), one file of `bench` decoded a DST area 42 % slower
+than byte-identical copies of it: 1.77 s of CPU against 1.24 s, with the same instruction count,
+on every run, until that file's page cache was dropped (`posix_fadvise(POSIX_FADV_DONTNEED)`),
+after which it ran at 1.24 s too. Eight further copies all ran at 1.23-1.25 s. The physical
+pages that happen to hold a program's code can cost that much, and the cost sticks to the file
+while it stays cached. A run list that started the same file for every round would carry such an
+offset through all of them; a fresh copy per run makes it a rare outlier, which the median of
+the rounds absorbs.
 
 **Images too (#248).** The first 0.5.7 table timed plain-DSD-to-DSF 10-18 % slower through
 `run.py` than direct runs of the same binaries, and the runner was not the cause: on the same
@@ -198,7 +203,7 @@ written right after other large files were deleted were slower in the same way, 
 round or two. Which physical pages hold an image matters for the cases that stream gigabytes
 from the page cache. So the runner writes a fresh copy of the image in each round and keeps the
 copies until the case ends, so that no copy takes pages another just freed; the median of the
-rounds absorbs a slow first round. On lennon the plain-DSD rows then agree with direct runs on
+rounds absorbs a slow first round. On that host the plain-DSD rows then agree with direct runs on
 images in the fast state within 1.5 %.
 
 **Fresh copies differ too (#259).** A fresh copy removes the stuck offset, but not the spread between
@@ -284,8 +289,8 @@ plain shell command (`sh -c 'exec bench ... >/dev/null 2>&1'`), ABBA, both on on
 the image, and exits with status 1 if the median of the per-round ratios is off 1 by more than
 `--selftest-tolerance` percent (default 5). That catches anything the runner adds to a timed
 run, which is what a kit's figures rely on. 5 % is above the run-to-run noise of this short case
-(on lennon the rounds varied by up to 4 % and the median ratio was 0.99) and well below the 10-18 %
-of #248. `--no-selftest` skips it; `--selftest-only` runs only it.
+(on the Zen 2 benchmark host the rounds varied by up to 4 % and the median ratio was 0.99)
+and well below the 10-18 % of #248. `--no-selftest` skips it; `--selftest-only` runs only it.
 
 In `benchkit.yml` the self-check does not gate the build: the smoke step runs `--smoke
 --no-selftest`, and a separate step with `continue-on-error: true` runs `--selftest-only` and
@@ -319,6 +324,7 @@ as a Markdown table.
 
 ## Published numbers
 
-[`RESULTS.md`](RESULTS.md) holds the measured figures per release on lennon (3950X), generic
-and x86-64-v3, with the method and what was not measured. `compare.sh` reproduces a section:
-it builds kits from two revisions and times them against each other with this run list.
+[`RESULTS.md`](RESULTS.md) holds the measured figures per release on the Zen 2 benchmark host
+(Ryzen 9 3950X), generic and x86-64-v3, with the method and what was not measured. `compare.sh`
+reproduces a section: it builds kits from two revisions and times them against each other with
+this run list.
