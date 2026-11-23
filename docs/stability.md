@@ -1,5 +1,10 @@
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+[scarletbook](../README.md) › [Documentation](README.md) › Stability and versions
+
 # Stability and versions
+
+What stays compatible between releases: the 1.0 promise for the Rust API and the C ABI,
+how the crates' versions move, and the minimum supported Rust version.
 
 ## Stability
 
@@ -61,3 +66,10 @@ The minimum supported Rust version (MSRV) is 1.85, declared as `rust-version` in
 CI's `msrv` job checks `scarletbook`, `scarletbook-pcm` and `scarletbook-ffi` with all features
 on this version, using the repository's `Cargo.lock`. It does not check the lowest dependency
 versions that the crates declare, and it does not run the tests on this version.
+
+## See also
+
+- [ABI compatibility](c-abi.md#abi-compatibility)
+- [Migrating to 0.7.0](migrating-0.7.md)
+- [CHANGELOG.md](../CHANGELOG.md)
+- [Documentation index](README.md)

@@ -1,3 +1,6 @@
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+[scarletbook](../README.md) › [Documentation](README.md) › Migrating to 0.6.0
+
 # Migrating to 0.6.0
 
 0.6.0 is the release that changes the interface before it is frozen for 1.0: one migration, then
@@ -18,7 +21,7 @@ The audit's item numbers are in
 
 `toc::Toc`, `MasterToc`, `Area`, `Track`, `Locale`, `DiscText`, `AreaText` and `TrackText`.
 
-#### The TOC structs can't be built by literal or destructured without `..` (#298)
+**The TOC structs can't be built by literal or destructured without `..` (#298)**
 
 Changed in 0.6.0, with no deprecation first. This affects code outside the crate that uses struct
 patterns or struct literals on these types. Reading a field works as before, and the fields stay
@@ -45,7 +48,7 @@ text.title = Some(title);
 `error::Warning`, `audio::AreaFrame`, `TrackFrame` and `AudioFrame`, and the new
 `TrackFrame::new`.
 
-#### `TrackFrame` is built with `TrackFrame::new`, and patterns need `..` (#301)
+**`TrackFrame` is built with `TrackFrame::new`, and patterns need `..` (#301)**
 
 Changed in 0.6.0, with no deprecation first. This affects code outside the crate that uses struct
 patterns or struct literals on `Warning`, `AreaFrame`, `TrackFrame` or `AudioFrame`. Reading a field
@@ -70,7 +73,7 @@ let AudioFrame { number, status, data, .. } = decode_frame(&mut decoder, frame, 
 
 `seek::Speculation`, `seek::ResumedFrom` and the `Error` variants with fields.
 
-#### Patterns on twelve variants need `..`, and the variants can't be built (#302)
+**Patterns on twelve variants need `..`, and the variants can't be built (#302)**
 
 Changed in 0.6.0, with no deprecation first. The variants are
 `Speculation::{Pending, Confirmed, Refuted, Unverified}`,
@@ -106,7 +109,7 @@ if let Err(Error::NoSuchTrack { slot, track, .. }) = result { report(slot, track
 `audio::FrameStatus`, `audio::DecodeOn`, `image::SectorFormat`, `toc::LoudspeakerLayout`,
 `toc::Speaker` and `toc::TrackTextItem`, and the enums documented as frozen.
 
-#### A `match` on six enums needs a wildcard arm (#304)
+**A `match` on six enums needs a wildcard arm (#304)**
 
 Changed in 0.6.0, with no deprecation first. This affects `FrameStatus`, `DecodeOn`, `SectorFormat`,
 `LoudspeakerLayout`, `Speaker` and `TrackTextItem`, so that later variants aren't breaking changes.
@@ -135,7 +138,7 @@ let good = match frame.status {
 };
 ```
 
-#### `LoudspeakerLayout::Unspecified` needs `..` and can't be built (#304)
+**`LoudspeakerLayout::Unspecified` needs `..` and can't be built (#304)**
 
 Changed in 0.6.0, with no deprecation first. A pattern needs `..` even when it names both fields.
 `LoudspeakerLayout::new` makes the same value.
@@ -154,7 +157,7 @@ let layout = LoudspeakerLayout::new(4, 0);
 if let LoudspeakerLayout::Unspecified { channels, config, .. } = layout { report(channels, config) }
 ```
 
-#### Comparing with a built `Speculation` or `ResumedFrom` needs `matches!` (#302, #304)
+**Comparing with a built `Speculation` or `ResumedFrom` needs `matches!` (#302, #304)**
 
 Changed in 0.6.0, with no deprecation first. This follows from M3: both types are still `PartialEq`,
 but code outside the crate can't build their variants with fields, so `assert_eq!` against one no
@@ -180,7 +183,7 @@ assert!(matches!(cursor.resumed_from(), ResumedFrom::Discarded { lsn: 16, .. }))
 The FFI-only methods of `audio::Continuation`, the decoder and scheduler tuning constants, and
 the low-level `text` helpers.
 
-#### Plumbing, tuning values and text helpers are hidden (#297)
+**Plumbing, tuning values and text helpers are hidden (#297)**
 
 Hidden in 0.6.0 with `#[doc(hidden)]`, and out of the semver promise: each may change or go in any
 release, with no deprecation first. Calls still compile, and output and the C ABI do not change.
@@ -257,7 +260,7 @@ After: the decoded fields of `Toc`, `Area` and `Track` and their text, instead o
 
 The range, track and stored-frame entry points of `Disc`, `TrackAudioCursor` and `TrackCursor`.
 
-#### The cursor twins of `Disc` become `audio_cursor` and `frames_cursor` (#305)
+**The cursor twins of `Disc` become `audio_cursor` and `frames_cursor` (#305)**
 
 Deprecated in 0.6.0 and removed before 1.0. The old names still work and give the same frames,
 errors and log lines; each call warns. `Disc::{track_audio, range_audio, track_frames, range_frames,
@@ -289,7 +292,7 @@ let d = disc.frames_cursor(slot, FrameSpan::Range(first, end), CursorOptions::ne
 let a = disc.track_audio(slot, n)?.into_cursor();
 ```
 
-#### The caller's index moves to `CursorOptions` (#305)
+**The caller's index moves to `CursorOptions` (#305)**
 
 Deprecated in 0.6.0 and removed before 1.0.
 
@@ -308,7 +311,7 @@ let a = disc.audio_cursor(slot, span, CursorOptions::new().with_index(&index))?;
 let f = disc.frames_cursor(slot, span, CursorOptions::new().with_index(&index))?;
 ```
 
-#### `for_range`, `for_range_indexed` and `for_range_speculative` become `open_range` (#305)
+**`for_range`, `for_range_indexed` and `for_range_speculative` become `open_range` (#305)**
 
 Deprecated in 0.6.0 and removed before 1.0, on `TrackCursor` and `TrackAudioCursor` alike. For
 cursors without a `Disc`. The defaults are no index and `SeekPolicy::Exact`.
@@ -331,7 +334,7 @@ let with = CursorOptions::new().with_index(&index).with_policy(SeekPolicy::Specu
 let c = TrackCursor::open_range(&area, first, end, n, with)?;
 ```
 
-#### `continue_to` and `continue_to_range` keep working, for callers without a `Disc` (#305)
+**`continue_to` and `continue_to_range` keep working, for callers without a `Disc` (#305)**
 
 Not deprecated, so there is nothing to migrate. `TrackCursor::new`, `TrackAudioCursor::new` and
 `AreaCursor::new` stay as well. With a `Disc`, `Disc::continue_*` is the usual form. It isn't the
@@ -342,7 +345,7 @@ same size apart, while `continue_to` always opens exact, with no index and no lo
 
 The provisional-reading id, the start sector, the `*with_format*` constructors, and `Stored::Plain`.
 
-#### `speculation_id()` is now `claim()`, and `counts_from()` is now `claim_lsn()` (#300)
+**`speculation_id()` is now `claim()`, and `counts_from()` is now `claim_lsn()` (#300)**
 
 Deprecated in 0.6.0 and removed before 1.0, on `AreaCursor`, `TrackCursor`, `TrackFrames`,
 `TrackAudioCursor` and `TrackAudio`. They return the same values. Nothing stops building until the
@@ -360,7 +363,7 @@ After:
 let (id, from) = (cursor.claim(), cursor.claim_lsn());
 ```
 
-#### The `*with_log` and `*with_format*` constructors give way to `options()` (#300)
+**The `*with_log` and `*with_format*` constructors give way to `options()` (#300)**
 
 Deprecated in 0.6.0 and removed before 1.0: `Image::open_with_log`, `Image::with_format`,
 `Image::with_format_and_log`, `Disc::open_with_log`, `Disc::open_with_format` and
@@ -385,7 +388,7 @@ let c = Disc::options().with_format(format).with_log(log).open(reader)?;
 let d = Image::options().with_format(format).open(reader)?;
 ```
 
-#### `Stored::Plain` is now `Stored::Dsd` (#300)
+**`Stored::Plain` is now `Stored::Dsd` (#300)**
 
 **Check this first: a match can silently take the wrong branch.** Under `use Stored::*`, a pattern
 `Plain` no longer names a variant. It becomes a new binding that matches every value, so that arm
@@ -432,7 +435,7 @@ match stored {
 
 `AreaIndex::{checkpoints, hints, confirmations, pending_claims}`.
 
-#### `AreaIndex`'s count methods are now `*_count` (#299)
+**`AreaIndex`'s count methods are now `*_count` (#299)**
 
 Deprecated in 0.6.0 and removed before 1.0: `checkpoints`, `hints`, `confirmations` and
 `pending_claims` become `checkpoint_count`, `hint_count`, `confirmation_count` and
@@ -458,7 +461,7 @@ let kept = (
 
 ### S3. `Image::read_sectors`
 
-#### `Image::read_sectors` returns `Result<(), Error>` (#303)
+**`Image::read_sectors` returns `Result<(), Error>` (#303)**
 
 Changed in 0.6.0, with no deprecation first, because the name stays and only the return type changes.
 A range past the image's last sector, formerly `Ok(false)`, is now
@@ -502,7 +505,7 @@ match image.read_sectors(lsn, &mut buf) {
 
 `MAX_CHANNELS`, `dst::FL` and `audio::FRAME_BYTES_PER_CHANNEL`.
 
-#### `dst::MAX_CHANNELS` and `dst::FL` give way to the `audio` constants (#293)
+**`dst::MAX_CHANNELS` and `dst::FL` give way to the `audio` constants (#293)**
 
 Deprecated in 0.6.0 and removed before 1.0. `audio::MAX_CHANNELS` is a `u8`, where
 `dst::MAX_CHANNELS` was a `usize`, so a size needs a conversion. The values do not change. Nothing
@@ -524,7 +527,7 @@ let buf = vec![0u8; audio::FRAME_BYTES_PER_CHANNEL * usize::from(audio::MAX_CHAN
 
 ### N5. `Cutoff::Default`
 
-#### `Cutoff::Default` is now `Cutoff::Standard` (#291)
+**`Cutoff::Default` is now `Cutoff::Standard` (#291)**
 
 **Check this first: a match can silently take the wrong branch.** Under `use Cutoff::*`, a pattern
 `Default` no longer names a filter. It becomes a new binding that matches every filter, so that arm
@@ -566,7 +569,7 @@ let config = PcmConfig::new(PcmRate::Hz176400, Cutoff::Standard, 2);
 ABI 2 is the 1.0 ABI, so the header and the ABI do not change, and `SB_ABI_VERSION` stays 2. The
 shared library's name now carries the ABI version on Linux and macOS.
 
-#### `libscarletbook_ffi.so` is now `libscarletbook_ffi.so.2` (#294)
+**`libscarletbook_ffi.so` is now `libscarletbook_ffi.so.2` (#294)**
 
 Changed in 0.6.0, and breaking for how a program is packaged, not for its source. No C source
 changes, and neither do archive file names. In an archive's `lib/`, the versioned name is now the
@@ -618,3 +621,10 @@ After:
 ```python
 lib = ctypes.CDLL("/path/to/libscarletbook_ffi.so.2")  # libscarletbook_ffi.2.dylib on macOS
 ```
+
+## See also
+
+- [Migrating to 0.7.0](migrating-0.7.md)
+- [Stability and versions](stability.md)
+- [CHANGELOG.md](../CHANGELOG.md)
+- [Documentation index](README.md)
