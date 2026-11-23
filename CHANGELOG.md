@@ -10,6 +10,21 @@ from 0.5.8).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-23
+
+### Changed
+
+- **DSF chain boundaries move.** A file of a DSF chain (`plan_dsf_chain`, `OutputOptions::with_dsf_chain`, `sb_output_dsf_chain_plan`) whose range would end exactly on a 4096-byte block boundary now ends one block earlier, and the next file starts with that block: each file after the first now carries 1 to 4096 bytes of the range before it instead of 0 to 4095 (specification 8, 8.2.7 items 3 and 4 as amended at sacd-spec `67b8563`). Only such files and the file after each change bytes, for example ranges of 128 frames from the chain's start; every other file is byte-for-byte unchanged, the last file of a chain is never shortened, and the files still concatenate to the chain's bytes in the same order with the same total. The Rust API and the C ABI are unchanged, but files written by earlier versions differ at those boundaries, which is why this is in 0.7.0 (#359, #388).
+- A new `DstDecoder`, or a frame with more filters or ptables than any before it, now writes each new byte table and probability table once, rather than filling it with zeros first and then computing over the zeros. Output unchanged (#383, #392).
+
+### Removed
+
+- **Breaking:** the 36 items deprecated in 0.6.0 are removed, as announced (#39, R1). `scarletbook`: `Disc::{track_audio_cursor, range_audio_cursor, range_audio_cursor_indexed, track_frames_cursor, range_frames_cursor, range_frames_cursor_indexed}`; `for_range`, `for_range_indexed` and `for_range_speculative` on `TrackCursor` and `TrackAudioCursor`; `speculation_id()` and `counts_from()` on `AreaCursor`, `TrackCursor`, `TrackFrames`, `TrackAudioCursor` and `TrackAudio`; `Image::{open_with_log, with_format, with_format_and_log}` and `Disc::{open_with_log, open_with_format, open_with_format_and_log}`; `Stored::Plain`; `AreaIndex::{checkpoints, hints, confirmations, pending_claims}`; `dst::{FL, MAX_CHANNELS}`. `scarletbook-pcm`: `Cutoff::Default`. Each was another name or call for one that stays (`Disc::{audio_cursor, frames_cursor}`, `open_range`, `claim()`/`claim_lsn()`, `Image::options()`/`Disc::options()`, `Stored::Dsd`, the `*_count` methods, the `audio` constants, `Cutoff::Standard`), so no behaviour changes. The C ABI does not change (`SB_ABI_VERSION` 2). Migration: [`docs/migrating-0.7.md`](docs/migrating-0.7.md) (#39, #389).
+
+### Fixed
+
+- DSF partial rows ask only for the positions a read covers again: a read of part of a DSF row fills only the stream bytes it covers, so a bad neighbouring position no longer fails a read whose own bytes lie elsewhere or are pad, `Layout::positions_for` (and `sb_output_layout_positions`) gives only those positions, and reads under 4 KiB from a DST area no longer fetch and decode the row's other position. The output is unchanged (#307, #390).
+
 ## [0.6.2] - 2026-11-20
 
 **Single-frame DST decoding of 5 and 6 channels is back to its 0.5.x speed (#378), and DSD-to-PCM conversion is faster on 32-bit x86 (#372). Output is identical to the bit. No API or ABI change: a drop-in update from 0.6.0 and 0.6.1.**
@@ -1052,7 +1067,10 @@ First release: a clean-room reader for SACD images, written from sacd-spec, pass
 - DST decoding about 3.8 times faster on one thread, and parallel decoding that overlaps
   demultiplexing with decoding within a bounded memory (#16, #17, #19).
 
-[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/aclater/scarletbook-rs/compare/v0.6.2...v0.7.0
+[0.6.2]: https://github.com/aclater/scarletbook-rs/compare/v0.6.1...v0.6.2
+[0.6.1]: https://github.com/aclater/scarletbook-rs/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/aclater/scarletbook-rs/compare/v0.5.9...v0.6.0
 [0.5.9]: https://github.com/aclater/scarletbook-rs/compare/v0.5.8...v0.5.9
 [0.5.8]: https://github.com/aclater/scarletbook-rs/compare/v0.5.7...v0.5.8

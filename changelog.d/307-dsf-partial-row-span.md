@@ -1,2 +1,0 @@
-Fixed
-- DSF partial rows ask only for the positions a read covers again: a read of part of a DSF row fills only the stream bytes it covers, so a bad neighbouring position no longer fails a read whose own bytes lie elsewhere or are pad, `Layout::positions_for` (and `sb_output_layout_positions`) gives only those positions, and reads under 4 KiB from a DST area no longer fetch and decode the row's other position. The output is unchanged (#307, #390).
