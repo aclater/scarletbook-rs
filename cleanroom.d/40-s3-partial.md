@@ -1,0 +1,1 @@
+| 2026-11-23 | evidence record: S3 to PARTIAL (Part of #40) | Documentation only: row S3 of `docs/provenance/EVIDENCE.md` goes from OPEN to PARTIAL by the status legend, on the source read for #395. No new sources consulted. |
