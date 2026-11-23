@@ -108,7 +108,7 @@ scarletbook-ffi-<version>-<target>/   (scarletbook-ffi-<version>-<target>-v3/ fo
 sha256sum -c scarletbook-ffi-<version>-<target>.tar.gz.sha256      # macOS: shasum -a 256 -c
 gh attestation verify scarletbook-ffi-<version>-<target>.tar.gz -R aclater/scarletbook-rs \
   --signer-workflow aclater/scarletbook-rs/.github/workflows/release.yml \
-  --source-ref refs/tags/v<version>
+  --source-ref refs/tags/v<version> --deny-self-hosted-runners
 ```
 
 The checksum detects a damaged download, not a replaced one: it is neither signed nor
@@ -131,7 +131,7 @@ build provenance attestation:
 ```sh
 gh attestation verify bench-<version>-x86_64-linux.tar.gz -R aclater/scarletbook-rs \
   --signer-workflow aclater/scarletbook-rs/.github/workflows/release.yml \
-  --source-ref refs/tags/v<version>
+  --source-ref refs/tags/v<version> --deny-self-hosted-runners
 ```
 
 The checksum detects a damaged download, not a replaced one; the attestation, checked with

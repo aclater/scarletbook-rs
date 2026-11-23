@@ -137,7 +137,7 @@ image (up to 5 × 3.3 GB); nothing else. **Network:** none, after the download a
    ```sh
    sha256sum -c scarletbook-benchkit-<version>-x86_64-linux.tar.gz.sha256
    gh attestation verify scarletbook-benchkit-<version>-x86_64-linux.tar.gz -R aclater/scarletbook-rs \
-     --signer-workflow aclater/scarletbook-rs/.github/workflows/release.yml
+     --signer-workflow aclater/scarletbook-rs/.github/workflows/release.yml --deny-self-hosted-runners
    ```
 
    and the same for the `-v3` archive. Stop if either fails.

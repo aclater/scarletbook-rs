@@ -89,7 +89,8 @@ mkdir quickstart-c && cd quickstart-c
 gh release download v1.0.1 -R aclater/scarletbook-rs -p 'scarletbook-ffi-1.0.1-x86_64-unknown-linux-gnu.tar.gz*'
 sha256sum -c scarletbook-ffi-1.0.1-x86_64-unknown-linux-gnu.tar.gz.sha256
 gh attestation verify scarletbook-ffi-1.0.1-x86_64-unknown-linux-gnu.tar.gz -R aclater/scarletbook-rs \
-  --signer-workflow aclater/scarletbook-rs/.github/workflows/release.yml --source-ref refs/tags/v1.0.1
+  --signer-workflow aclater/scarletbook-rs/.github/workflows/release.yml --source-ref refs/tags/v1.0.1 \
+  --deny-self-hosted-runners
 tar xzf scarletbook-ffi-1.0.1-x86_64-unknown-linux-gnu.tar.gz
 curl -fsSLO https://raw.githubusercontent.com/aclater/scarletbook-rs/v1.0.1/corpus/images/full-text.iso
 cat > toc.c <<'EOF'
