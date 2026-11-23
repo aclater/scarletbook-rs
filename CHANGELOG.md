@@ -4,11 +4,47 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The version
-is shared by every crate of the workspace; releases carry the `bench` program and, from
+is shared by every crate of the workspace, except `scarletbook-pcm`, which stays at 0.7.0 from
+1.0.0 (#398); releases carry the `bench` program and, from
 0.3.0, the C library, as binary assets. The crates are on crates.io from 0.5.7 (`scarletbook-ffi`
 from 0.5.8).
 
 ## [Unreleased]
+
+## [1.0.0] - 2026-11-23
+
+**1.0.0 is the 0.7 interface, frozen.** `scarletbook` and `scarletbook-ffi` are 0.7.0's code under a 1.0 version: no API change, no ABI change, no change in behaviour or output. Code that builds against 0.7 builds against 1.0.0 with only the version changed; C programs need no change at all (`SB_ABI_VERSION` 2, the same header).
+
+- **What 1.0 promises (#39).** From 1.0.0 the Rust API of `scarletbook` and the C ABI of `scarletbook-ffi` follow Semantic Versioning: no breaking change without 2.0.0. A `1.Y.0` release may add to them, a `1.y.Z` release only fixes; each release is checked with `cargo semver-checks` against the one before (RELEASING.md). The C library keeps `SB_ABI_VERSION` 2 and the names `libscarletbook_ffi.so.2` and `libscarletbook_ffi.2.dylib` throughout 1.x; ABI 2 is the 1.0 ABI. Not covered, as before: `#[doc(hidden)]` items, the `fuzzing` feature of `scarletbook-ffi`, its Rust items (its interface is the C ABI), and the unpublished crates. README, "Stability".
+- **Checked against 0.7.0:** `cargo semver-checks --baseline-rev v0.7.0 --release-type patch` finds no change at all in `scarletbook` or `scarletbook-ffi` (default and all features), and `scarletbook.h` is byte-identical to v0.7.0's. The crates' sources are unchanged since v0.7.0; only versions, notes and the release workflow moved.
+- **`scarletbook-pcm` stays at 0.7.0, outside the freeze.** It is not part of 1.0: it keeps its own version, 0.7.0, which this release does not publish again, and it is being deprecated (#398): DSD-to-PCM conversion moves to its consumers, and its deprecation lands in a later release. Until then it follows Cargo's `0.y.z` rules and promises nothing beyond its deprecation. `scarletbook-ffi` 1.0.0 depends on it at `=0.7.0`. The `sb_pcm_*` functions of the C library belong to ABI 2 and stay, even once they are marked deprecated.
+- **Coming from 0.6 or earlier:** read [`docs/migrating-0.7.md`](docs/migrating-0.7.md) (and [`docs/migrating-0.6.md`](docs/migrating-0.6.md) before it). From 0.7, change the version only.
+- **Release workflow:** the three crates no longer need to share one version. The release workflow takes each crate's version from its manifest, and the `publish` job skips any whose version is already on crates.io (`release-crates.py`, tested in CI).
+- **Measured** on the Zen 2 benchmark host (AMD Ryzen 9 3950X), generic build, 1.0.0 against 0.7.0 (the same code, so no change is expected):
+
+  | Path | Build | 0.7.0 wall s | 0.7.0 CPU s | 1.0.0 wall s | 1.0.0 CPU s | 1.0.0 / 0.7.0 | Median of per-round ratios [range] |
+  |---|---|---|---|---|---|---|---|
+  | DST decode, one thread, 2 channels | generic | 5.575 | 5.53 | 5.586 | 5.56 | 1.002 | 1.003 [0.989-1.085] |
+  | DST decode, one thread, 2 channels, corpus frames | generic | 18.494 | 18.40 | 18.498 | 18.40 | 1.000 | 1.000 [0.978-1.002] |
+  | DST decode, all threads, 2 channels | generic | 4.234 | 109.12 | 4.232 | 109.24 | 1.000 | 1.000 [0.995-1.004] |
+  | DST decode, one thread, 6 channels | generic | 7.627 | 7.59 | 7.590 | 7.54 | 0.995 | 0.996 [0.973-1.004] |
+  | DST decode, all threads, 6 channels | generic | 2.770 | 72.58 | 2.779 | 72.47 | 1.003 | 1.004 [0.992-1.025] |
+  | plain-DSD area to DSF, 2 channels | generic | 0.490 | 0.48 | 0.488 | 0.48 | 0.997 | 0.997 [0.991-1.017] |
+  | plain-DSD area to DSF, 5 channels | generic | 0.538 | 0.53 | 0.538 | 0.53 | 1.001 | 1.001 [0.991-1.009] |
+  | DST area to DSF, all threads | generic | 3.560 | 112.86 | 3.566 | 112.71 | 1.002 | 1.003 [0.990-1.007] |
+  | DSD to PCM, stereo DSD64 to 176.4 kHz 24-bit, one thread | generic | 3.90 / 3.82 / 3.82 ms per s | - | 3.89 / 3.82 / 3.82 ms per s | - | 1.000 | - |
+  | open to parsed TOC, page cache | generic | 14.9 µs | - | 14.7 µs | - | 0.987 | -, within spread |
+  | open to parsed TOC, evicted | generic | 214.7 µs | - | 216.8 µs | - | 1.010 | -, within spread |
+  | first 128 KiB, 2 channels, plain DSD, page cache | generic | 24.9 µs | - | 24.7 µs | - | 0.994 | - |
+  | first 128 KiB, 2 channels, plain DSD, evicted | generic | 269.2 µs | - | 275.0 µs | - | 1.021 | -, within spread |
+  | first 128 KiB, 2 channels, DST, one thread, page cache | generic | 3696.2 µs | - | 3695.5 µs | - | 1.000 | - |
+  | first 128 KiB, 2 channels, DST, one thread, evicted | generic | 4091.9 µs | - | 4091.7 µs | - | 1.000 | - |
+  | first 128 KiB, 2 channels, DST, all threads, page cache | generic | 2201.3 µs | - | 2215.6 µs | - | 1.007 | - |
+  | first 128 KiB, 2 channels, DST, all threads, evicted | generic | 4214.5 µs | - | 4298.4 µs | - | 1.020 | -, within spread |
+
+  `benchmarks/compare.sh` with v0.7.0 against this release's tree, the standard run list at 7 rounds per case, alternating, a fresh copy of each program per run, under the machine's shared benchmark lock; 238 runs, none failed. **No change:** every whole-area median of per-round ratios is between 0.996 and 1.004, and every `open`, `first` and DSD-to-PCM cell is within its spread between rounds. Absolute all-thread seconds differ from the 0.7.0 section's (other load on the machine on another day), for both versions alike; compare within this table. Method and spreads: `benchmarks/RESULTS.md`, "1.0.0".
+- **Unmeasured:** the x86-64-v3, `znver5` and AVX-512 builds; Zen 5 and Intel CPUs on this release (the code is 0.7.0's, so 0.7.0's consumer figures stand); real output files; the first 128 KiB of 5 or 6 channels; cold runs of whole areas; the C interface; `bench realtime`.
+- **Known item: single-frame 6-channel DST decoding on Intel P-cores (#383), carried over from 0.7.0.** On an Intel Core i9-13900H (Raptor Lake) P-core, one thread, single-frame 6-channel `DstDecoder::decode` of a real disc's frames was measured by sacdfs at about 7 % slower than 0.5.9 for 0.7.0's code (median of per-round ratios 1.071), and grouped `decode_many` about 2.5 % (1.027); E-cores and Zen 2 are at parity. pysacd, which decodes through the C ABI in groups, measures the 6-channel P-core gap at about 1.5-1.9 % with 0.7.0. 1.0.0 has the same decoder, so these stand. Tracked in #383.
 
 ## [0.7.0] - 2026-11-23
 
@@ -1099,7 +1135,8 @@ First release: a clean-room reader for SACD images, written from sacd-spec, pass
 - DST decoding about 3.8 times faster on one thread, and parallel decoding that overlaps
   demultiplexing with decoding within a bounded memory (#16, #17, #19).
 
-[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/aclater/scarletbook-rs/compare/v0.7.0...v1.0.0
 [0.7.0]: https://github.com/aclater/scarletbook-rs/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/aclater/scarletbook-rs/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/aclater/scarletbook-rs/compare/v0.6.0...v0.6.1

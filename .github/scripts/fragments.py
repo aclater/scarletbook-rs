@@ -73,8 +73,11 @@ def require(base):
         elif status == "D":
             deleted.add(path)
     # A release assembly (`assemble`) folds the fragments into CHANGELOG.md and bumps the
-    # version in the manifests: it removes fragments rather than adding them.
-    if "CHANGELOG.md" in changed and any(p.startswith(f"{CHANGELOG_D}/") for p in deleted):
+    # version in the manifests: it removes fragments rather than adding them. A release can
+    # fold in only cleanroom.d/ rows (1.0.0: no changelog entries, two clean-room rows).
+    if "CHANGELOG.md" in changed and any(
+        p.startswith(f"{CHANGELOG_D}/") or p.startswith(f"{CLEANROOM_D}/") for p in deleted
+    ):
         return
     code = [p for p in changed if re.match(r"^crates/[^/]+/src/", p) or p in ("Cargo.toml", "Cargo.lock")]
     if not code:
