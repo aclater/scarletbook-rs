@@ -33,14 +33,19 @@ python3 .github/scripts/abi-check.py   # the C ABI; SB_ABI_VERSION stays 2 throu
 
 Both must report "no semver update required"; give the result in the pull request. A check
 that fails, or any change to `abi/abi-2.txt` other than an addition, stops the release. `scarletbook-ffi`'s contract is the C ABI, so `abi-check.py` is its real check; the
-Rust check of it is for completeness. Check `scarletbook-pcm` too while it is still released.
+Rust check of it is for completeness. Check `scarletbook-pcm` the same way in a release that
+changes its version.
 
 It also moves the README's Quick start (#364) to the new version: the `cargo add` pin, the
-tag in the image URL, the release asset name, and any API the examples use that changed. The
-Quick start fetches the published release, so it can only run once the tag is out. After the
-release, run both of its command blocks exactly as written in an empty directory, and if they
-fail, or their output differs from what the README shows, fix the README in a follow-up pull
-request.
+tag in the image URL, the release asset name, and any API the examples use that changed. It also
+sets the sentence "Every command below was run against vX.Y.Z on DATE." to the new version and
+the release date. The Quick start fetches the published release, so it can only run once the
+tag is out. `.github/workflows/quickstart.yml` runs it when the tag's Release run has
+succeeded (crates.io then has the crates), and again weekly: `.github/scripts/quickstart.py`
+runs both command blocks exactly as written, each in a new empty directory, compares their
+output with what the README shows, and checks that the pin, that sentence and the tag name one
+version. That run is what makes the sentence true. If it fails, it opens an issue "Quick start
+failed against vX.Y.Z" (or comments on it); fix the README in a follow-up pull request.
 
 Pushing the tag runs `.github/workflows/release.yml`:
 
@@ -87,9 +92,10 @@ is then the file `build` verified.
 
 `release-crates.py lockcheck` checks this on the packed files: every published crate a
 packaged `Cargo.lock` pins must carry crates.io's checksum if crates.io has that version, and
-the checksum of the file packed beside it if not. `build` runs it, and CI runs a dry run of
-the packing on every pull request and push (`release-publish.sh dry-run`: `--no-verify`, no
-token, no upload). `release-crates-test.py` covers the 1.0.0 case.
+the checksum of the file packed beside it if not. `build` runs it, and CI's `lint` job runs a
+dry run of the packing on every pull request and every push to `main`
+(`release-publish.sh dry-run`: `--no-verify`, no token, no upload). `release-crates-test.py`
+covers the 1.0.0 case.
 
 **The 1.0.0 incident.** `build` packed all three crates together, `scarletbook-pcm` 0.7.0
 included, although that version was already on crates.io. `scarletbook-ffi`'s packaged
@@ -98,7 +104,8 @@ published one (`ffa22529...`). `publish` skipped `scarletbook-pcm`, published `s
 1.0.0, then repacked `scarletbook-ffi` against the crates.io `scarletbook-pcm`, and the
 byte-identity check refused it (`6ce1c36...` against `build`'s `c94e18b...`), rightly: the
 package `build` verified pinned a checksum crates.io does not have. crates.io has
-`scarletbook` 1.0.0 but no `scarletbook-ffi` 1.0.0; 1.0.1 publishes both.
+`scarletbook` 1.0.0 but no `scarletbook-ffi` 1.0.0. 1.0.1 published both through trusted
+publishing (2026-11-23), with `scarletbook-pcm` 0.7.0 skipped.
 
 **A release whose `publish` stopped partway is finished by the next version.** A tag runs the
 workflow of its own commit, and a re-run of `publish` takes `build`'s packages of the same
@@ -114,10 +121,12 @@ attestation would then sign them and `publish` would publish them as they are.
 The workflow runs only on tag pushes, never on pull requests or branches.
 
 The required checks are read from `main`'s branch ruleset, and matched against the GitHub
-Actions check runs of the tagged commit. `dependency-review` is the exception: it runs only
-on pull requests, so a commit on `main` never has it; the ruleset required it on the pull
-request that merged. If `preflight` fails because a check failed or was still running after
-45 minutes, fix that on `main`, or re-run the release workflow once the checks have passed.
+Actions check runs of the tagged commit. On 2026-11-23 the ruleset `default branch` required
+`lint`, `test (ubuntu-latest)`, `deny`, `msrv`, `analyze (rust)`, `analyze (actions)` and
+`dependency-review`. `dependency-review` is the exception: it runs only on pull requests, so a
+commit on `main` never has it; the ruleset required it on the pull request that merged. If
+`preflight` fails because a check failed or was still running after 45 minutes, fix that on
+`main`, or re-run the release workflow once the checks have passed.
 
 **main's CI was cancelled on the tagged commit.** `ci.yml` cancels a running push run on
 `main` when the next push starts one, so if another pull request merges before the
@@ -139,6 +148,10 @@ Releases are fully automated (owner, 2026-11-15): a pushed tag that passes `pref
 publishes with no approval step. The agents manage the code and the releases. The owner
 decided on 2026-11-16 to keep one setting, the environment below, and not to restrict the
 crates.io trusted publishers to an environment or to restrict who can create a tag.
+
+**The ruleset `release tags`** (Settings, Rules, Rulesets) covers `refs/tags/v*`: it forbids deleting,
+moving (updating) and force-pushing a `v*` tag, with no bypass. It does not restrict creating
+one.
 
 **The environment `release`** (Settings, Environments): no required reviewers; deployment
 branches and tags: Selected branches and tags, with one rule of **Ref type: Tag**, pattern
@@ -171,9 +184,20 @@ what does.
 cargo package --list -p scarletbook-pcm
 cargo package --list -p scarletbook
 cargo package --list -p scarletbook-ffi
-# All three together: cargo verifies scarletbook-ffi against the other two as packaged.
-cargo publish --dry-run --locked -p scarletbook-pcm -p scarletbook -p scarletbook-ffi
+# Which crates the release will pack and publish: those whose version is not on crates.io.
+python3 -I .github/scripts/release-crates.py pending /dev/stdout
+# Packs those together as `build` does (--no-verify) and checks their Cargo.lock pins.
+bash .github/scripts/release-publish.sh dry-run
+# Then build-verify the same crates together, as `build` does; for a release that leaves
+# scarletbook-pcm at 0.7.0:
+cargo package --locked -p scarletbook -p scarletbook-ffi
 ```
+
+Leave out every crate whose version is already on crates.io. This section used to pack all
+three together (`cargo publish --dry-run --locked -p scarletbook-pcm -p scarletbook -p
+scarletbook-ffi`). That still passes, but it verifies `scarletbook-ffi` against a repack of
+`scarletbook-pcm` 0.7.0 rather than the file crates.io holds, which is how 1.0.0's `publish`
+stopped (above, "Pack only what is published").
 
 Each crate's `include` in its `Cargo.toml` decides what ships: the sources, what the build
 reads (`build.rs`, `build/`, the header, the CC0-1.0 charset tables of `scarletbook`, each
@@ -267,4 +291,5 @@ gh secret delete CRATES_IO_BOOTSTRAP_TOKEN --env release --repo aclater/scarletb
 1. Revoke the token at `https://crates.io/settings/tokens`.
 2. Set up the trusted publisher for `scarletbook-ffi` (above), and optionally require
    trusted publishing for it.
-3. Update the table above. From then on every tag publishes all three crates by itself.
+3. Update the table above. From then on every tag publishes by itself each of the three
+   crates whose version is not on crates.io yet.

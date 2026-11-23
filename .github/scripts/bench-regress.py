@@ -19,11 +19,11 @@ A case the base build cannot run (a command it does not have yet) is skipped wit
 every case is skipped nothing was checked: that is an error with `--require-some` (pushes to
 main and nightly runs) and a warning otherwise (pull requests).
 
-Fresh copies: on lennon (3950X), one file of `bench` decoded DST 42 % slower than byte-identical
-copies of it (1.77 s against 1.24 s of CPU, the same instruction count), every time, until its
-page cache was dropped: the physical pages that hold a program's code can cost that much. A
-copy per run turns that into noise that the median absorbs, instead of a fixed offset of one
-build.
+Fresh copies: on the Zen 2 benchmark host (3950X), one file of `bench` decoded DST 42 % slower
+than byte-identical copies of it (1.77 s against 1.24 s of CPU, the same instruction count),
+every time, until its page cache was dropped: the physical pages that hold a program's code can
+cost that much. A copy per run turns that into noise that the median absorbs, instead of a fixed
+offset of one build.
 
 Absolute times vary several-fold between runner machines; the ratio of two builds timed in
 turns on one machine does not (benchmarks/README.md of #226 has the noise measured).

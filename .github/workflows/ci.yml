@@ -185,6 +185,19 @@ jobs:
           python3 -I .github/scripts/changelog-section.py CHANGELOG.md 0.2.0 > /dev/null
           ! python3 -I .github/scripts/changelog-section.py CHANGELOG.md 0.0.0 2> /dev/null
 
+  # Links inside the repository (#412): every relative path and #anchor in the tracked
+  # Markdown files must resolve (.github/scripts/linkcheck.py, which lists the files it
+  # leaves out and why). Offline and deterministic, in well under a second; external URLs
+  # are checked weekly by external-links.yml, so a third-party outage never blocks a merge.
+  link-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: python3 -I .github/scripts/linkcheck-test.py
+      - run: python3 -I .github/scripts/linkcheck.py
+
   # The criterion benchmarks are compiled so that they do not rot; timing them on shared
   # runners would mean nothing (docs/performance.md, "Measuring performance").
   bench-build:
