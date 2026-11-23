@@ -144,6 +144,7 @@ cc -std=c99 -Wall -Wextra -pedantic -I$P/include toc.c -L$P/lib -lscarletbook_ff
 ```
 
 ```
+scarletbook-ffi-1.0.1-x86_64-unknown-linux-gnu.tar.gz: OK
 ABI 2, album: Album title
 area slot 0: 2 channels, 3 tracks
   track 1: 1 frames, Title 1
