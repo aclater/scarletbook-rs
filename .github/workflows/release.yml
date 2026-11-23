@@ -90,8 +90,10 @@ jobs:
           persist-credentials: false
       # Issue #341: the tagged commit must be on the default branch and have passed its
       # required checks. This stops a stray or mistaken tag, not a tag on a commit that edits
-      # this workflow (that commit's copy runs); the `release` environment and the tag
-      # ruleset's creation rule (RELEASING.md, "Repository and crates.io settings") cover that.
+      # this workflow (that commit's copy runs); the `release` environment covers that
+      # (RELEASING.md, "Repository and crates.io settings"). The `release tags` ruleset stops
+      # a pushed `v*` tag from being deleted, moved or force-pushed, but does not restrict
+      # creating one.
       - name: The tagged commit is on the default branch and passed its required checks
         env:
           GH_TOKEN: ${{ github.token }}
