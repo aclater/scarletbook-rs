@@ -12,17 +12,6 @@ use crate::dispatch::{self, Isa};
 /// Bits (samples) per channel per frame, `NB` (specification 5, 5.1.2).
 pub const NB: usize = 37_632;
 
-/// Bytes per channel per frame, `FL`: the old name of
-/// [`audio::FRAME_BYTES_PER_CHANNEL`](crate::audio::FRAME_BYTES_PER_CHANNEL).
-#[deprecated(since = "0.6.0", note = "use `audio::FRAME_BYTES_PER_CHANNEL`; to be removed before 1.0")]
-pub const FL: usize = FRAME_BYTES_PER_CHANNEL;
-
-/// Largest channel count, `Nch`, as a `usize`: the old name of
-/// [`audio::MAX_CHANNELS`](crate::audio::MAX_CHANNELS), which is a `u8` like every channel
-/// count of this interface.
-#[deprecated(since = "0.6.0", note = "use `audio::MAX_CHANNELS`, a `u8`; to be removed before 1.0")]
-pub const MAX_CHANNELS: usize = MAX_NCH;
-
 /// [`audio::MAX_CHANNELS`](crate::audio::MAX_CHANNELS) for array sizes and indexes, `Nch`.
 const MAX_NCH: usize = crate::audio::MAX_CHANNELS as usize;
 

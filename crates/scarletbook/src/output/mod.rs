@@ -465,7 +465,7 @@ pub struct OutputOptions {
     /// reproduce the files some existing programs write; see [`DsdiffDeparture`]. DSF files
     /// ignore them.
     pub dsdiff_departures: BTreeSet<DsdiffDeparture>,
-    /// W32, what a DSF file holds (8.2.7, sacd-spec e069569 and fa558a8): with this and
+    /// W32, what a DSF file holds (8.2.7, sacd-spec e069569, fa558a8 and 67b8563): with this and
     /// [`OutputOptions::dsf_chain_end`], the byte range of the range `[a_i, b_i)` in a
     /// chain whose first range starts at frame `a_1`, this. Default `None`: the range of
     /// positions itself. [`plan_dsf_chain`] gives both values per file. The byte range is
@@ -1063,8 +1063,9 @@ impl Layout {
     /// The errors of `source`, and [`Error::InvalidArgument`] if it gives content of the
     /// wrong size. `out` is then partly filled.
     ///
-    /// A DSF read asks for every position of the rows it touches ([`Layout::positions_for`]),
-    /// so it fails if any of them fails, also one that holds none of the bytes read.
+    /// A DSF read asks only for the positions of the stream bytes it covers
+    /// ([`Layout::positions_for`]), so a failing position that holds none of the bytes read
+    /// doesn't fail it.
     pub fn fill(&self, offset: u64, out: &mut [u8], source: &mut dyn PositionSource) -> Result<usize, Error> {
         self.fill_with(Isa::detect(), offset, out, source)
     }

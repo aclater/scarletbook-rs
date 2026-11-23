@@ -118,9 +118,6 @@ fn track_frames_report_a_provisional_reading() {
     assert_eq!(it.claim_lsn(), Some(lsn));
     assert_eq!(it.suspect(), None, "a well-formed area read in increasing order");
     let id = it.claim().expect("a provisional reading is numbered");
-    #[allow(deprecated)]
-    let old_names = (it.counts_from(), it.speculation_id());
-    assert_eq!(old_names, (Some(lsn), Some(id)));
     let (read_so_far, _) = it.progress().get();
     assert!(read_so_far > 0);
     assert_eq!(&*it.dst_equivalent(&FrameContent::Missing), missing_equivalent(2).as_slice());

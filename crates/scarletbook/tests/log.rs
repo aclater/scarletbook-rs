@@ -499,21 +499,3 @@ fn every_corpus_image_logs_what_it_returns() {
         assert!(lines.iter().all(|(l, _)| *l != Level::Error), "{id}");
     }
 }
-
-/// The deprecated constructors still open a disc. Under Miri,
-/// `image::tests::old_constructors_still_work` covers what they delegate to.
-#[test]
-#[cfg_attr(miri, ignore = "three opens of a 1.4 MB image; the image module's test covers the delegates")]
-#[allow(deprecated)]
-fn old_constructors_still_work() {
-    let f = scarletbook::SectorFormat::Raw2064;
-    let img = image("layout-2064");
-    let reader = || Cursor::new(img.clone());
-    for disc in [
-        Disc::open_with_log(reader(), Log::none()),
-        Disc::open_with_format(reader(), f),
-        Disc::open_with_format_and_log(reader(), f, Log::none()),
-    ] {
-        assert_eq!(disc.unwrap().image_mut().format(), f);
-    }
-}

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Each deprecated way to open a reading against its replacement (#39): the same frames, the
-//! same errors and the same log lines. Goes with the deprecated entry points, before 1.0.
+//! The entry points that replaced the deprecated ones of 0.6 (#39): the borrowing iterators
+//! against the cursors, and `CursorOptions` against the disc's defaults.
 
-#![allow(deprecated, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;
 
@@ -14,8 +14,8 @@ use common::{PFrame, Spec, TrackSpec, pack};
 use scarletbook::audio::FRAME_BYTES_PER_CHANNEL;
 use scarletbook::log::{Level, Log};
 use scarletbook::{
-    AreaIndex, AudioFrame, CursorOptions, Disc, Error, FrameSpan, IndexOptions, ResumedFrom, SeekPolicy,
-    Slot, SpeculativeOptions, TrackAudioCursor, TrackCursor, TrackFrame,
+    AreaIndex, CursorOptions, Disc, Error, FrameSpan, IndexOptions, ResumedFrom, SeekPolicy, Slot,
+    SpeculativeOptions, TrackCursor, TrackFrame,
 };
 
 const SLOT: Slot = Slot::TwoChannel;
@@ -67,15 +67,6 @@ fn built_index() -> AreaIndex {
 /// What a reading gives: its frames or the error opening it, and every line logged.
 type Outcome<F> = (Result<Vec<F>, String>, Vec<String>);
 
-fn audio(open: impl Fn(&Disc<Image>) -> Result<TrackAudioCursor, Error>) -> Outcome<AudioFrame> {
-    let (mut disc, lines) = disc();
-    let got = open(&disc)
-        .map_err(|e| format!("{e:?}"))
-        .map(|c| disc.read_track_audio(c).map(Result::unwrap).collect::<Vec<_>>());
-    let lines = lines.lock().unwrap().clone();
-    (got, lines)
-}
-
 fn frames(open: impl Fn(&Disc<Image>) -> Result<TrackCursor, Error>) -> Outcome<TrackFrame> {
     let (mut disc, lines) = disc();
     let got = open(&disc)
@@ -83,97 +74,6 @@ fn frames(open: impl Fn(&Disc<Image>) -> Result<TrackCursor, Error>) -> Outcome<
         .map(|c| disc.read_frames(c).map(Result::unwrap).collect::<Vec<_>>());
     let lines = lines.lock().unwrap().clone();
     (got, lines)
-}
-
-/// `Disc`'s `*_cursor` methods, for a track, a range, one that fails, and with the caller's
-/// index. Under Miri, decoded audio only: each reading takes seconds there, and the frames
-/// forms share the same opening.
-#[test]
-fn disc_cursors_match_their_replacements() {
-    let none = CursorOptions::new;
-    let (first, end) = RANGE;
-    let range = FrameSpan::Range(first, end);
-    assert_eq!(
-        audio(|d| d.track_audio_cursor(SLOT, 2)),
-        audio(|d| d.audio_cursor(SLOT, FrameSpan::Track(2), none()))
-    );
-    let (good, bad) =
-        (audio(|d| d.range_audio_cursor(SLOT, first, end)), audio(|d| d.range_audio_cursor(SLOT, end, 9)));
-    assert!(good.0.is_ok() && bad.0.is_err());
-    assert_eq!(good, audio(|d| d.audio_cursor(SLOT, range, none())));
-    assert_eq!(bad, audio(|d| d.audio_cursor(SLOT, FrameSpan::Range(end, 9), none())));
-    let index = built_index();
-    let with = none().with_index(&index);
-    assert_eq!(
-        audio(|d| d.range_audio_cursor_indexed(SLOT, first, end, &index)),
-        audio(|d| d.audio_cursor(SLOT, range, with))
-    );
-    if cfg!(miri) {
-        return;
-    }
-
-    assert_eq!(
-        audio(|d| d.track_audio_cursor(SLOT, 9)),
-        audio(|d| d.audio_cursor(SLOT, FrameSpan::Track(9), none()))
-    );
-    for n in [2, 9] {
-        assert_eq!(
-            frames(|d| d.track_frames_cursor(SLOT, n)),
-            frames(|d| d.frames_cursor(SLOT, FrameSpan::Track(n), none()))
-        );
-    }
-    assert_eq!(
-        frames(|d| d.range_frames_cursor(SLOT, first, end)),
-        frames(|d| d.frames_cursor(SLOT, range, none()))
-    );
-    assert_eq!(
-        frames(|d| d.range_frames_cursor_indexed(SLOT, first, end, &index)),
-        frames(|d| d.frames_cursor(SLOT, range, with))
-    );
-    // An index of another image size is refused both ways, with the same line.
-    let area = disc().0.toc().areas[0].clone();
-    let other = AreaIndex::new(&area, disc().0.toc().sectors + 1, IndexOptions::new()).unwrap();
-    let refused = frames(|d| d.range_frames_cursor_indexed(SLOT, first, end, &other));
-    assert!(refused.0.is_err());
-    assert_eq!(refused, frames(|d| d.frames_cursor(SLOT, range, none().with_index(&other))));
-}
-
-/// The constructors of cursors without a disc.
-#[test]
-#[cfg_attr(miri, ignore = "many readings; disc_cursors_match_their_replacements covers the comparison")]
-fn free_cursors_match_their_replacements() {
-    let (d, _) = disc();
-    let (area, n) = (d.toc().areas[0].clone(), d.toc().sectors);
-    let (first, end) = RANGE;
-    let none = CursorOptions::new;
-    assert_eq!(
-        frames(|_| TrackCursor::for_range(&area, first, end, n)),
-        frames(|_| TrackCursor::open_range(&area, first, end, n, none()))
-    );
-    assert_eq!(
-        audio(|_| TrackAudioCursor::for_range(&area, first, end, n)),
-        audio(|_| TrackAudioCursor::open_range(&area, first, end, n, none()))
-    );
-    let index = built_index();
-    let with = none().with_index(&index);
-    assert_eq!(
-        frames(|_| TrackCursor::for_range_indexed(&area, first, end, n, &index)),
-        frames(|_| TrackCursor::open_range(&area, first, end, n, with))
-    );
-    assert_eq!(
-        audio(|_| TrackAudioCursor::for_range_indexed(&area, first, end, n, &index)),
-        audio(|_| TrackAudioCursor::open_range(&area, first, end, n, with))
-    );
-    let o = SpeculativeOptions::new().with_min_gap_sectors(0);
-    let policy = SeekPolicy::Speculative(o);
-    assert_eq!(
-        frames(|_| TrackCursor::for_range_speculative(&area, first, end, n, None, o)),
-        frames(|_| TrackCursor::open_range(&area, first, end, n, none().with_policy(policy)))
-    );
-    assert_eq!(
-        audio(|_| TrackAudioCursor::for_range_speculative(&area, first, end, n, Some(&index), o)),
-        audio(|_| TrackAudioCursor::open_range(&area, first, end, n, with.with_policy(policy)))
-    );
 }
 
 /// The borrowing iterators and `into_cursor` give the cursor of the shared-borrow form.
