@@ -11,6 +11,16 @@ from 0.5.8).
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-11-23
+
+**1.0.1 is 1.0.0's code, released again so that `scarletbook-ffi` 1.x reaches crates.io.** No API change, no ABI change, no change in behaviour or output: the crates' sources are those of 1.0.0, under a new version. Rust code that builds against 1.0.0 builds against 1.0.1 with only the version changed; C programs need no change at all (`SB_ABI_VERSION` 2, the same header).
+
+- **The first `scarletbook-ffi` 1.x on crates.io (#401).** v1.0.0's publish stopped partway: `scarletbook` 1.0.0 is on crates.io, but `scarletbook-ffi` 1.0.0 never was. The release had packed it against a locally packed `scarletbook-pcm` 0.7.0 instead of the one on crates.io, and the check before upload, which compares each package with the one the build verified, correctly refused it. 1.0.1 publishes `scarletbook` and `scarletbook-ffi`; `scarletbook-pcm` stays at 0.7.0, already on crates.io, and is not published again.
+- **The v1.0.0 GitHub release and its C library archives are fine as they are.** They are unchanged and need nothing; 1.0.1's archives are built from the same sources.
+- **Checked against 1.0.0:** `cargo semver-checks --baseline-rev v1.0.0 --release-type patch` finds no change at all in `scarletbook` or `scarletbook-ffi` (default and all features), `scarletbook.h` is byte-identical to v1.0.0's, and `abi-check.py` passes with `SB_ABI_VERSION` 2. Since v1.0.0, only the versions, the notes and the release workflow moved.
+- **Release workflow (#402).** The `build` job packs and verifies only the crates whose version is not on crates.io yet, so a crate that is skipped resolves from crates.io, as it does for users. `release-crates.py lockcheck` checks the `Cargo.lock` pins of the packed crates, and CI runs the same packing as a dry run on every pull request and push (`release-publish.sh dry-run`). RELEASING.md, "Pack only what is published".
+- **No benchmark table:** no code changed since 1.0.0, so nothing was measured for this release; 1.0.0's table stands.
+
 ## [1.0.0] - 2026-11-23
 
 **1.0.0 is the 0.7 interface, frozen.** `scarletbook` and `scarletbook-ffi` are 0.7.0's code under a 1.0 version: no API change, no ABI change, no change in behaviour or output. Code that builds against 0.7 builds against 1.0.0 with only the version changed; C programs need no change at all (`SB_ABI_VERSION` 2, the same header).
@@ -1135,7 +1145,8 @@ First release: a clean-room reader for SACD images, written from sacd-spec, pass
 - DST decoding about 3.8 times faster on one thread, and parallel decoding that overlaps
   demultiplexing with decoding within a bounded memory (#16, #17, #19).
 
-[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/aclater/scarletbook-rs/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/aclater/scarletbook-rs/compare/v0.7.0...v1.0.0
 [0.7.0]: https://github.com/aclater/scarletbook-rs/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/aclater/scarletbook-rs/compare/v0.6.1...v0.6.2
