@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! `sb_disc_toc`, the whole TOC in one buffer (#132): its layout is pinned (golden
-//! offsets and sizes, the numbers the header and README document), and on every corpus
+//! offsets and sizes, the numbers the header and docs/python.md document), and on every corpus
 //! image each field read from the buffer equals what the per-field call returns.
 //!
 //! The buffer is parsed here with the documented offsets, not through the Rust structs, so

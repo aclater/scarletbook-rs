@@ -1,0 +1,2 @@
+Changed
+- The README is short and user-facing, in the layout shared with the related projects: badges, platforms, the tested Quick start for Rust and C, links to the guides, the licence. The rest moved unchanged into guides under `docs/`: `rust.md`, `c-abi.md` (with "Linking" and "ABI compatibility"), `python.md` (the ctypes bindings, which `clib-smoke.py` now reads from there), `releases.md` (release assets and verifying a download), `stability.md`, `performance.md` and `contributing.md` (#408, #410).

@@ -10,7 +10,7 @@
 //!   strings, text channels and stored play time; for each track its information, strings
 //!   and stored timecodes. Then `sb_disc_free`.
 //! - `c-bulk/IMAGE`: the same open, then the whole TOC in one `sb_disc_toc` call, as the
-//!   README recommends (a 64 KiB buffer reused from disc to disc, a second call if it is too
+//!   docs/python.md recommends (a 64 KiB buffer reused from disc to disc, a second call if it is too
 //!   small), and a walk over the layout's areas, tracks and string refs.
 //! - `rust/IMAGE`: the same through the Rust API, `Disc::open` over a `ReadAtReader`.
 //!
@@ -173,7 +173,7 @@ fn read_c(image: &Image) -> u32 {
 }
 
 /// Opens `image` through the C interface and reads its whole TOC with one `sb_disc_toc`
-/// call, as the README recommends: into `buf` (64 KiB, reused from disc to disc), again
+/// call, as the docs/python.md recommends: into `buf` (64 KiB, reused from disc to disc), again
 /// with the size given if that is too small. Then walks the layout as a consumer does: every
 /// area, every track and every string ref. Returns the layout's size.
 fn read_c_bulk(image: &Image, buf: &mut Vec<u8>) -> usize {

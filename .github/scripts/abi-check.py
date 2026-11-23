@@ -7,7 +7,7 @@ crates/scarletbook-ffi/abi/ holds one baseline per ABI version, abi-N.txt: the
 declarations of include/scarletbook.h with comments and layout removed, so that only a
 change to the ABI itself (a function, a struct field, an enum value, a macro) shows. The
 baseline of the header's SB_ABI_VERSION must exist, be the newest, and match the header
-(README, "ABI compatibility"):
+(docs/c-abi.md, "ABI compatibility"):
 
 - an addition (new functions, types, enum values or macros; no existing declaration
   removed or changed, no struct field added) keeps SB_ABI_VERSION: the same change

@@ -7,8 +7,8 @@
 //!
 //! `CORPUS_PCM_SHA256` is the expected digest of one corpus frame's conversion, checked
 //! here against the Rust converter and used by `.github/scripts/clib-smoke.py` (which
-//! reads it from this file) to check the packaged library through the README's ctypes
-//! bindings.
+//! reads it from this file) to check the packaged library through the ctypes
+//! bindings of docs/python.md.
 //!
 //! Each unsafe call sits in a small wrapper that states why its arguments meet the
 //! function's contract; the tests themselves are safe code.
