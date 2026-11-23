@@ -18,6 +18,11 @@ output = []
 # Decode DST frames on rayon's thread pool, ahead of the caller.
 parallel = ["dep:rayon"]
 
+# docs.rs builds the default features only; this adds `parallel`, so that `DecodeOn` and
+# the `TrackAudioCursor` methods that take it are documented too.
+[package.metadata.docs.rs]
+features = ["parallel"]
+
 [dependencies]
 rayon = { version = "1.10", optional = true }
 thiserror = "2"
