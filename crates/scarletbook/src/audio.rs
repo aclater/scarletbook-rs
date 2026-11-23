@@ -3136,7 +3136,8 @@ impl TrackAudioCursor {
         self.frames.progress()
     }
 
-    /// Where DST frames are decoded (see [`DecodeOn`]); continuations keep it.
+    /// Where DST frames are decoded (see [`DecodeOn`]); continuations keep it. With the
+    /// `parallel` feature only.
     #[cfg(feature = "parallel")]
     pub fn decode_on(&self) -> &DecodeOn {
         &self.decode_on
@@ -3145,7 +3146,8 @@ impl TrackAudioCursor {
     /// Chooses where the DST frames demultiplexed from now on are decoded (see
     /// [`DecodeOn`]); continuations ([`crate::Disc::continue_track_audio`] and the like) keep
     /// the choice. Frames already sent to a pool finish there and are returned in order,
-    /// so the frames returned are the same whenever this is called.
+    /// so the frames returned are the same whenever this is called. With the `parallel`
+    /// feature only.
     #[cfg(feature = "parallel")]
     pub fn set_decode_on(&mut self, on: DecodeOn) {
         self.decode_on = on;
