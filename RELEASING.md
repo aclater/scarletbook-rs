@@ -121,10 +121,11 @@ attestation would then sign them and `publish` would publish them as they are.
 The workflow runs only on tag pushes, never on pull requests or branches.
 
 The required checks are read from `main`'s branch ruleset, and matched against the GitHub
-Actions check runs of the tagged commit. On 2026-11-23 the ruleset `default branch` required
-`lint`, `test (ubuntu-latest)`, `deny`, `msrv`, `analyze (rust)`, `analyze (actions)` and
-`dependency-review`. `dependency-review` is the exception: it runs only on pull requests, so a
-commit on `main` never has it; the ruleset required it on the pull request that merged. If
+Actions check runs of the tagged commit. On 2026-11-24 the ruleset `default branch` required
+`lint`, `test (ubuntu-latest)`, `deny`, `msrv`, `analyze (rust)`, `analyze (actions)`,
+`link-check` (since 2026-11-24, #413) and `dependency-review`. `dependency-review` is the
+exception: it runs only on pull requests, so a commit on `main` never has it; the ruleset
+required it on the pull request that merged. If
 `preflight` fails because a check failed or was still running after 45 minutes, fix that on
 `main`, or re-run the release workflow once the checks have passed.
 
