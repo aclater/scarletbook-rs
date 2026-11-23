@@ -150,6 +150,12 @@ jobs:
               grep -qx "$f" <<< "$files" || { echo "::error::$f is missing from the $pkg package"; exit 1; }
             done
           done
+      # A dry run of the release's crates.io packing (release.yml `build`): the crates whose
+      # version is not on crates.io yet, packed together with --no-verify (compiling nothing),
+      # and their Cargo.lock pins checked against the crates.io index. Read-only; no token.
+      # Stops a packing like 1.0.0's before a tag (RELEASING.md, "Pack only what is published").
+      - name: Dry run of the release's crates.io packing
+        run: bash .github/scripts/release-publish.sh dry-run
       # Change records live in changelog.d/ and cleanroom.d/ until a release folds them in
       # (#76; CONTRIBUTING.md, "Change records"): their format, and on pull requests that a
       # change to library or program code adds one of each.
