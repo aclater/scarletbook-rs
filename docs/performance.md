@@ -1,4 +1,6 @@
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+[scarletbook](../README.md) › [Documentation](README.md) › Performance and benchmarks
+
 # Performance and benchmarks
 
 How fast scarletbook is, and the tools to measure it. Published figures, with the machines
@@ -145,3 +147,10 @@ alternately on one runner, and fails when the median of the per-round ratios hea
 CPU time exceeds 1.15 (`.github/scripts/bench-regress.py`, #226). It runs on pull requests that
 touch the library sources or build settings, on main (against the previous main) and nightly
 (against the latest release), and is informational, not a required check.
+
+## See also
+
+- [benchmarks/RESULTS.md](../benchmarks/RESULTS.md)
+- [benchmarks/README.md](../benchmarks/README.md)
+- [Rust guide: Seeking within an area](rust.md#seeking-within-an-area)
+- [Documentation index](README.md)

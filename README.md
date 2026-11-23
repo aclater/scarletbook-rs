@@ -168,6 +168,8 @@ for the rest of the API, and [Migrating to 0.7.0](docs/migrating-0.7.md) and
 
 ## Documentation
 
+The [documentation index](docs/README.md) groups every guide by task.
+
 - [Rust guide](docs/rust.md): installing, reading audio, stored frames, DSF and DSDIFF files,
   seek indexes and provisional reading, features
 - [C ABI guide](docs/c-abi.md): the C library, [Linking](docs/c-abi.md#linking) and
