@@ -33,7 +33,7 @@ attestation (SLSA Build Level 2), which can be checked with:
 ```sh
 gh attestation verify bench-<version>-x86_64-linux.tar.gz -R aclater/scarletbook-rs \
   --signer-workflow aclater/scarletbook-rs/.github/workflows/release.yml \
-  --source-ref refs/tags/v<version>
+  --source-ref refs/tags/v<version> --deny-self-hosted-runners
 ```
 
 Give both `--signer-workflow` and `--source-ref`. Without them the command accepts a file
