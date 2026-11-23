@@ -7,9 +7,10 @@ From the README's "## Quick start" section it takes, under "### Rust" and under 
 first ```sh block (the commands) and the first plain ``` block after it (the output the README
 shows). Each command block runs unchanged, as a file, with `bash -euo pipefail`, in a new empty
 directory of its own under $RUNNER_TEMP (or the system temporary directory), with stdin from
-/dev/null. That directory must have no Cargo.toml, rust-toolchain file or .cargo directory
-above it: cargo would join the block's project to that workspace or take its settings, and
-the run would not be a reader's.
+/dev/null. That directory must have no Cargo.toml, rust-toolchain file or .cargo/config
+file above it: cargo would join the block's project to that workspace or take its settings,
+and the run would not be a reader's. Cargo's own home ($CARGO_HOME, by default ~/.cargo) is
+not counted: cargo reads its config wherever it runs, as it does for a reader (#428).
 
 The comparison, per block: the command block's standard output, decoded as UTF-8, against the
 README's output block, line by line, after removing trailing whitespace from every line and
@@ -93,15 +94,31 @@ def normalise(text):
     return lines
 
 
-CARGO_FILES = ("Cargo.toml", "rust-toolchain", "rust-toolchain.toml", ".cargo")
+PROJECT_FILES = ("Cargo.toml", "rust-toolchain", "rust-toolchain.toml")
+CONFIG_FILES = ("config", "config.toml")
 
 
-def cargo_ancestor(path):
-    """The first of CARGO_FILES in `path` or a directory above it, or None."""
+def cargo_home():
+    """Cargo's home directory: $CARGO_HOME, or ~/.cargo."""
+    home = os.environ.get("CARGO_HOME")
+    return pathlib.Path(home).resolve() if home else (pathlib.Path.home() / ".cargo").resolve()
+
+
+def cargo_ancestor(path, home):
+    """The first project file, or .cargo/config file outside `home`, in `path` or above it, or None.
+
+    A .cargo directory that is cargo's home (`home`) is not counted: cargo reads its config
+    from there wherever it runs, so it doesn't make the run differ from a reader's (#428).
+    """
     for d in (path, *path.parents):
-        for f in CARGO_FILES:
+        for f in PROJECT_FILES:
             if (d / f).exists():
                 return d / f
+        dot = d / ".cargo"
+        if dot.resolve() != home:
+            for f in CONFIG_FILES:
+                if (dot / f).exists():
+                    return dot / f
     return None
 
 
@@ -133,7 +150,7 @@ def main():
     args = ap.parse_args()
 
     base = pathlib.Path(os.environ.get("RUNNER_TEMP") or tempfile.gettempdir()).resolve()
-    if found := cargo_ancestor(base):
+    if found := cargo_ancestor(base, cargo_home()):
         print(f"quickstart: {found} is above the work directory {base}; set RUNNER_TEMP elsewhere", file=sys.stderr)
         return 2
     try:

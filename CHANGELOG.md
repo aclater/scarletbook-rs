@@ -11,6 +11,24 @@ from 0.5.8).
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-11-23
+
+**1.0.2 changes documentation and comments only.** No code change, no API change, no ABI change, no change in behaviour or output: besides the versions, the sources of `scarletbook` and `scarletbook-ffi` differ from 1.0.1 only in doc comments, the C header's comments and the docs.rs settings. Rust code that builds against 1.0.1 builds against 1.0.2 with only the version changed; C programs need no change at all (`SB_ABI_VERSION` 2; the header differs from 1.0.1 only in comments).
+
+- **docs.rs builds `scarletbook` with the `parallel` feature (#415).** `DecodeOn` and the `parallel` APIs (`TrackAudioCursor::decode_on` and `set_decode_on`) now appear on docs.rs, each marked as `parallel`-only.
+- **The C library archives' `README.txt` links docs pages that exist (#419).** It linked a README anchor that the README split (#410) removed; it now links `docs/c-abi.md` (linking and the compatibility policy) and `docs/releases.md` ("Verifying a download"), both at the archive's own tag. The 1.0.1 archives keep the dead link.
+- **The documentation audit (#412: #416, #417, #418, #421, #423, #424).** The README, the guides under `docs/`, SECURITY.md, CONTRIBUTING.md, RELEASING.md, the benchmark README, the crate docs and the C header comments were checked against 1.0.1 and corrected where they were wrong; `docs/` has an index and a shared layout (#417). The README itself is now short, with the rest moved into guides under `docs/` (#408, #410). Details under "Changed" below.
+- **Attestation commands pass `--deny-self-hosted-runners` (#411).** Every `gh attestation verify` command in the README, the guides, SECURITY.md, the benchmark README and the release notes now refuses a provenance signed on a self-hosted runner.
+- **CI additions.** An internal link check runs on every pull request and every push to `main` and fails on a broken relative link or anchor in the repository's Markdown, with a weekly check of external URLs (#413); contributors run it with `python3 -I .github/scripts/linkcheck.py` (#424). The README's Quick start now runs by itself after each release, and weekly, and its output is compared with the README's (#414).
+- **Checked against 1.0.1:** `cargo semver-checks --baseline-rev v1.0.1 --release-type patch` finds no semver update required for `scarletbook` or `scarletbook-ffi` (default and all features), and `abi-check.py` passes with `SB_ABI_VERSION` 2.
+- **No benchmark table:** no code changed since 1.0.1, so nothing was measured for this release; 1.0.0's table stands.
+
+### Changed
+
+- The README is short and user-facing, in the layout shared with the related projects: badges, platforms, the tested Quick start for Rust and C, links to the guides, the licence. The rest moved unchanged into guides under `docs/`, except one corrected command: the `decode_pool` benchmark in `docs/performance.md` now passes an absolute image path (`cargo bench` runs in the crate's directory, so the relative path failed with `SB_STATUS_IO`) and builds `scarletbook-synth` first. The guides: `rust.md`, `c-abi.md` (with "Linking" and "ABI compatibility"), `python.md` (the ctypes bindings, which `clib-smoke.py` now reads from there), `releases.md` (release assets and verifying a download), `stability.md`, `performance.md` and `contributing.md` (#408, #410).
+- The benchmark results, the changelog and the benchmark scripts' comments name the benchmark machine only as the Zen 2 benchmark host (AMD Ryzen 9 3950X), and describe its exclusive timing lock instead of naming a private script. No figure, date or fact changed (#412, #421).
+- Documentation only: the crate docs and the C header comments, checked against 1.0.1. The header's references to the README now name `docs/c-abi.md` ("ABI compatibility") and `docs/python.md` ("The whole TOC in one call"), where #410 moved those sections. The header's "Layouts" convention names all four structs whose size differs on 32-bit targets (`SbMarker`, `SbComment` and `SbPositionData` as well as `SbWarning`). Its "Threads" convention lists all the global state: the counter of provisional readings and the character-set and PCM filter tables were missing. The `output` module says it needs the `output` feature (on by default). docs.rs now builds `scarletbook` with `parallel`, so `DecodeOn` and `TrackAudioCursor::decode_on`/`set_decode_on` appear there, each marked as `parallel`-only. No C ABI change (#412, #415).
+
 ## [1.0.1] - 2026-11-23
 
 **1.0.1 is 1.0.0's code, released again so that `scarletbook-ffi` 1.x reaches crates.io.** No API change, no ABI change, no change in behaviour or output: the crates' sources are those of 1.0.0, under a new version. Rust code that builds against 1.0.0 builds against 1.0.1 with only the version changed; C programs need no change at all (`SB_ABI_VERSION` 2, the same header).
@@ -1146,7 +1164,8 @@ First release: a clean-room reader for SACD images, written from sacd-spec, pass
 - DST decoding about 3.8 times faster on one thread, and parallel decoding that overlaps
   demultiplexing with decoding within a bounded memory (#16, #17, #19).
 
-[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/aclater/scarletbook-rs/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/aclater/scarletbook-rs/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/aclater/scarletbook-rs/compare/v0.7.0...v1.0.0
 [0.7.0]: https://github.com/aclater/scarletbook-rs/compare/v0.6.2...v0.7.0
