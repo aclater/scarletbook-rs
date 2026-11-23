@@ -64,6 +64,10 @@ In the run list, but not in every table:
   DSF and DSD to PCM are blank, unless an equivalent revision is compared instead (0.5.6
   below uses `3eb96dc` for 0.5.5).
 
+## 1.0.2
+
+Not measured. 1.0.2 changes documentation and comments only (#412): no code changed since `v1.0.1`, so the 1.0.0 section below stands for 1.0.2.
+
 ## 1.0.1
 
 Not measured. 1.0.1 is 1.0.0's code under a new version, released to publish `scarletbook-ffi` 1.x on crates.io (#401): the crates' sources are unchanged since `v1.0.0`, so the 1.0.0 section below stands for 1.0.1.

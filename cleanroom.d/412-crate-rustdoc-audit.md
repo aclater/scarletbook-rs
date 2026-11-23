@@ -1,1 +1,0 @@
-| 2026-11-23 | crate rustdoc and C header audit (#412) | Documentation only: doc comments of `scarletbook` and `scarletbook-ffi`, the header conventions in `cbindgen.toml` and the regenerated header, and docs.rs metadata, checked against the code on main, v1.0.1, crates.io and docs.rs. No new sources consulted. |
