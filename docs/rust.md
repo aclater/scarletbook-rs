@@ -8,14 +8,15 @@ Using the `scarletbook` crate from Rust. For C and other languages, see the
 ## Installing
 
 The crates are on crates.io: [`scarletbook`](https://crates.io/crates/scarletbook) (the
-reader), [`scarletbook-pcm`](https://crates.io/crates/scarletbook-pcm) (DSD to PCM; deprecation
-planned ([#398](https://github.com/aclater/scarletbook-rs/issues/398)); no new features) and
+reader), [`scarletbook-pcm`](https://crates.io/crates/scarletbook-pcm) (DSD to PCM;
+decommissioned ([#398](https://github.com/aclater/scarletbook-rs/issues/398)): frozen at 0.7.0
+on crates.io, no further releases; consumers convert DSD to PCM in their own crate instead) and
 [`scarletbook-ffi`](https://crates.io/crates/scarletbook-ffi) (the C ABI, from 0.5.8, for Rust programs
 that build the C library themselves; C users take the [release assets](releases.md#release-assets)).
 
 ```sh
 cargo add scarletbook
-cargo add scarletbook-pcm   # only for PCM output
+cargo add scarletbook-pcm   # only for PCM output; decommissioned, frozen at 0.7.0 (#398)
 ```
 
 ```rust
@@ -33,12 +34,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-**Byte stability.** `scarletbook-pcm` stays at 0.7.0 from 1.0.0 (outside the 1.0 freeze, see
-[Stability](stability.md#stability)). While its version is 0.x, a new 0.7.y release may change the PCM bytes
-that `scarletbook-pcm` (and the C library's `sb_pcm_*`) produce; the decoded DSD bytes are
-fixed by the specification. Cargo treats `0.7.y` as compatible with `0.7.x`, so a plain
-`scarletbook-pcm = "0.7"` picks up such changes on `cargo update`. A consumer that needs the
-same PCM bytes across builds (stored hashes, reproducible files) pins the exact version:
+**Byte stability.** `scarletbook-pcm` is decommissioned
+([#398](https://github.com/aclater/scarletbook-rs/issues/398)): frozen at 0.7.0 on crates.io,
+no further releases (outside the 1.0 freeze, see [Stability](stability.md#stability)). So the
+PCM bytes that `scarletbook-pcm` (and the C library's `sb_pcm_*`) produce stay those of 0.7.0;
+the decoded DSD bytes are fixed by the specification. A plain `scarletbook-pcm = "0.7"`
+resolves to 0.7.0, as does the exact pin:
 
 ```toml
 scarletbook-pcm = "=0.7.0"

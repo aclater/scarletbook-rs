@@ -8,9 +8,6 @@
 //! areas of 1 to 6 channels. The digest of all of it is the output of `scarletbook-pcm`
 //! 0.5.3, so a change to the converter's code that changes any sample or count fails here.
 
-// scarletbook-pcm is deprecated (#398); this code still uses it until it is removed.
-#![allow(deprecated)]
-
 use std::fs::File;
 use std::io::BufReader;
 

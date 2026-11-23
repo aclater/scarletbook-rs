@@ -7,7 +7,8 @@ Each release is a tag `vX.Y.Z` with a GitHub release that carries the C library,
 program and the benchmark kit. The crates are published to crates.io by the same release
 workflow, with crates.io trusted publishing, only after all of its checks have passed
 ([RELEASING.md](../RELEASING.md)); a crate whose version is already on crates.io
-(`scarletbook-pcm` at 0.7.0 from 1.0.0) is not published again. What changed in each release
+(`scarletbook-pcm`, decommissioned and frozen at 0.7.0,
+[#398](https://github.com/aclater/scarletbook-rs/issues/398)) is not published again. What changed in each release
 is in [CHANGELOG.md](../CHANGELOG.md).
 
 ## Release assets

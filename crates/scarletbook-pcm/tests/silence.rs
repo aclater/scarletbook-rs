@@ -5,8 +5,6 @@
 //! with and without neighbours, and a neighbour of `None` gives exactly the output of a
 //! neighbour frame of 0x69 bytes, whatever the frame holds.
 
-// scarletbook-pcm is deprecated (#398); this code still uses it until it is removed.
-#![allow(deprecated)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use scarletbook_pcm::{

@@ -1,14 +1,5 @@
 # scarletbook-pcm
 
-> **This crate is deprecated** (since 0.7.1,
-> [#398](https://github.com/aclater/scarletbook-rs/issues/398)). DSD-to-PCM conversion is
-> no longer developed in scarletbook-rs: its consumers convert on their own side. The crate
-> and the C library's `sb_pcm_*` functions stay and keep working, but get no new features,
-> only security and build fixes; `Converter`, `PcmConfig` and
-> `pack_s24le` (and the C functions) warn (`#[deprecated]` in Rust,
-> `SB_DEPRECATED` in `scarletbook.h`). Removing them later would bump the C library's
-> `SB_ABI_VERSION`. New code should take the DSD from `scarletbook` and convert it itself.
-
 DSD64 to 24-bit PCM conversion for Super Audio CD audio, at 88.2, 176.4 and 352.8 kHz,
 deterministic per frame: converting frame `f` from frames `f - 1`, `f` and `f + 1` gives
 exactly the bytes of frame `f` in a conversion of the whole area. It is part of

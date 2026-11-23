@@ -122,8 +122,8 @@ header = """/* SPDX-License-Identifier: MIT OR Apache-2.0 */
  * - Deprecation. A deprecated function is declared with SB_DEPRECATED("reason"), which
  *   makes GCC, Clang and MSVC warn where it is called; define SB_DEPRECATED(msg) as
  *   nothing before including this header to silence it. A deprecated function keeps
- *   working and keeps its ABI until a later SB_ABI_VERSION removes it. Deprecated now:
- *   the sb_pcm_* functions and SbPcmConverter (#398).
+ *   working and keeps its ABI until a later SB_ABI_VERSION removes it. Deprecated since
+ *   scarletbook-ffi 1.1.0: the sb_pcm_* functions and SbPcmConverter (#398).
  */"""
 cpp_compat = true
 documentation = true

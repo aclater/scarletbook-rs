@@ -173,8 +173,9 @@ for the rest of the API, and [Migrating to 0.7.0](docs/migrating-0.7.md) and
 - [Releases and verification](docs/releases.md): the release assets, checksums, attestations
   and crates.io publishing
 - [Stability and versions](docs/stability.md): the 1.0 promise, versions, the minimum
-  supported Rust version, and `scarletbook-pcm` (deprecation planned
-  ([#398](https://github.com/aclater/scarletbook-rs/issues/398)); no new features)
+  supported Rust version, and `scarletbook-pcm` (decommissioned
+  ([#398](https://github.com/aclater/scarletbook-rs/issues/398)): frozen at 0.7.0 on
+  crates.io, no further releases; consumers convert DSD to PCM in their own crate instead)
 - [Performance and benchmarks](docs/performance.md): the benchmark program, the benchmark
   kit, and measuring performance
 - [Contributing and the clean room](docs/contributing.md): the repository layout, the

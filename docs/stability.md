@@ -18,12 +18,11 @@ The C library keeps `SB_ABI_VERSION` 2 and the library names `libscarletbook_ffi
 `libscarletbook_ffi.2.dylib` throughout 1.x. What counts as a breaking change of the C ABI is
 in [ABI compatibility](c-abi.md#abi-compatibility).
 
-`scarletbook-pcm` is outside this promise. It stays at 0.7.0 and is not part of the 1.0
-freeze. Its deprecation is planned ([#398](https://github.com/aclater/scarletbook-rs/issues/398)),
-as DSD-to-PCM conversion moves to its consumers; it gets no new features. Until then it follows
-Cargo's rules for `0.y.z` (the `y` step may break it, the `z` step may only add). The `sb_pcm_*`
-functions of the C library are part of ABI 2 and stay in it, even once they are marked
-deprecated.
+`scarletbook-pcm` is outside this promise and not part of the 1.0 freeze. It is
+decommissioned ([#398](https://github.com/aclater/scarletbook-rs/issues/398)): frozen at 0.7.0
+on crates.io, no further releases. DSD-to-PCM conversion moves to its consumers, who convert
+in their own crate instead. The `sb_pcm_*` functions of the C library, which wrap it, are
+deprecated from scarletbook-ffi 1.1.0 but are part of ABI 2 and stay in it.
 
 Before 1.0, as in Cargo, the `y` step of `0.y.z` was the major one and could break the API.
 Coming from 0.6 or earlier, [Migrating to 0.7.0](migrating-0.7.md) (and, before it,
@@ -43,8 +42,8 @@ Not covered:
 breaking change in one raises the version of them all, including crates that did not change
 ([#39](https://github.com/aclater/scarletbook-rs/issues/39), owner decision of 2026-11-06).
 `scarletbook-pcm` is the exception from 1.0.0: it keeps its own version, 0.7.0, outside the
-freeze ([#398](https://github.com/aclater/scarletbook-rs/issues/398)), and a release that
-leaves it unchanged does not publish it again.
+freeze. It is decommissioned ([#398](https://github.com/aclater/scarletbook-rs/issues/398)):
+frozen at 0.7.0 on crates.io, no further releases, so no release publishes it again.
 
 ## Minimum supported Rust version
 
