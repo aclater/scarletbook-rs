@@ -63,6 +63,10 @@ In the run list, but not in every table:
   DSF and DSD to PCM are blank, unless an equivalent revision is compared instead (0.5.6
   below uses `3eb96dc` for 0.5.5).
 
+## 1.0.1
+
+Not measured. 1.0.1 is 1.0.0's code under a new version, released to publish `scarletbook-ffi` 1.x on crates.io (#401): the crates' sources are unchanged since `v1.0.0`, so the 1.0.0 section below stands for 1.0.1.
+
 ## 1.0.0
 
 Measured on the Zen 2 benchmark host (AMD Ryzen 9 3950X), 2026-11-23, with `compare.sh` (generic kits, statically linked, profile `dist`): 0.7.0 = `v0.7.0` and 1.0.0 = the release-prep tree (`7a5999d`, main after #396, plus version changes; the crates' sources are byte-identical to v0.7.0). Timed under the machine's shared benchmark lock. The run list is the standard one with every case at 7 rounds (a copy of `runlist.json` with `defaults.rounds` 7 and the per-case `rounds` removed, passed with `--runlist`). 238 runs, none failed.
