@@ -7,6 +7,9 @@
 //! The input is pseudo-random bytes, which cost the same as music: the work per sample does
 //! not depend on the data.
 
+// scarletbook-pcm is deprecated (#398); this code still uses it until it is removed.
+#![allow(deprecated)]
+
 use std::time::Instant;
 
 use scarletbook_pcm::{Converter, Cutoff, FRAME_BYTES_PER_CHANNEL, FrameRun, PcmConfig, PcmRate};

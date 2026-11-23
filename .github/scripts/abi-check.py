@@ -38,6 +38,9 @@ def normalise(text):
     preprocessor line per line, tokens separated by single spaces."""
     text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
     text = re.sub(r"//[^\n]*", " ", text)
+    # SB_DEPRECATED("note") before a declaration is an attribute, not ABI: deprecating a
+    # function keeps the ABI (#398).
+    text = re.sub(r'^SB_DEPRECATED\("(?:[^"\\\n]|\\.)*"\)\s*', "", text, flags=re.M)
     out, tokens = [], []
 
     def flush():

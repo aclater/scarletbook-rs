@@ -9,6 +9,9 @@
 //! `cargo run --release -p scarletbook-pcm --example callpattern [SECONDS [PASSES [SIZES]]]`
 //! (defaults 60 s, 7 passes, sizes `1,2,4,8,16,32,64,128,256`).
 
+// scarletbook-pcm is deprecated (#398); this code still uses it until it is removed.
+#![allow(deprecated)]
+
 use std::time::Instant;
 
 use scarletbook_pcm::{Converter, Cutoff, FRAME_BYTES_PER_CHANNEL, Frames, PcmConfig, PcmOut, PcmRate, Run};

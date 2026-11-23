@@ -2,6 +2,14 @@
 
 //! DSD64 to 24-bit PCM conversion for Super Audio CD audio, deterministic per frame.
 //!
+//! **Deprecated since 0.7.1** ([#398](https://github.com/aclater/scarletbook-rs/issues/398)).
+//! DSD-to-PCM conversion is no longer developed in scarletbook-rs: its consumers convert on
+//! their own side. This crate stays published and keeps working as it is, but gets no new
+//! features, only security and build fixes. [`Converter`], [`PcmConfig`] and
+//! [`pack_s24le`] carry `#[deprecated]`, so code that uses them warns. Removing the crate
+//! later would also remove the `sb_pcm_*` functions of the C library, which is a
+//! scarletbook-ffi ABI bump.
+//!
 //! The input is 1-bit audio at 2 822 400 Hz in Super Audio CD frames: 4704 bytes per channel
 //! per frame (1/75 s), channels interleaved byte by byte (byte `k x C + c` is byte `k` of
 //! channel `c`), the earliest sample of each byte in its most significant bit (sacd-spec,
@@ -105,6 +113,10 @@
 // the filter kernels and the loops around them (taking a channel out of the input, rounding
 // to 24 bits, interleaving the output) after checking for those features (CONTRIBUTING).
 #![deny(unsafe_code)]
+// The crate is deprecated (#398): its own uses of its deprecated entry points, and those of
+// its doc examples, are not warnings.
+#![allow(deprecated)]
+#![doc(test(attr(allow(deprecated))))]
 #![warn(missing_docs)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
@@ -277,6 +289,10 @@ impl Default for Gain {
 /// What a [`Converter`] produces.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[non_exhaustive]
+#[deprecated(
+    since = "0.7.1",
+    note = "scarletbook-pcm is deprecated: DSD-to-PCM conversion is no longer developed here; convert on the consumer side (scarletbook-rs#398)"
+)]
 pub struct PcmConfig {
     /// The output rate.
     pub rate: PcmRate,
@@ -483,6 +499,10 @@ pub enum PcmOut<'o> {
 /// It holds scratch buffers of a bounded size (a few frames of one channel, independent of
 /// the input), which grow on the first conversion and are reused after that.
 #[derive(Debug)]
+#[deprecated(
+    since = "0.7.1",
+    note = "scarletbook-pcm is deprecated: DSD-to-PCM conversion is no longer developed here; convert on the consumer side (scarletbook-rs#398)"
+)]
 pub struct Converter {
     config: PcmConfig,
     plan: Plan,
@@ -615,6 +635,10 @@ impl Converter {
 /// Packs 24-bit samples into 3-byte little-endian (the layout of 24-bit WAV and FLAC
 /// samples). `dst` must hold `3 x src.len()` bytes; any excess is left untouched, and a
 /// short `dst` receives only the samples that fit.
+#[deprecated(
+    since = "0.7.1",
+    note = "scarletbook-pcm is deprecated: DSD-to-PCM conversion is no longer developed here; convert on the consumer side (scarletbook-rs#398)"
+)]
 pub fn pack_s24le(src: &[i32], dst: &mut [u8]) {
     for (s, d) in src.iter().zip(dst.chunks_exact_mut(3)) {
         d.copy_from_slice(&s.to_le_bytes()[..3]);

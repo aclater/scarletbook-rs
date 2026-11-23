@@ -30,6 +30,8 @@
 //! in release mode: `cargo run --release -p scarletbook-ffi --example
 //! soak -- --minutes 60`.
 
+// scarletbook-pcm is deprecated (#398); this code still uses it until it is removed.
+#![allow(deprecated)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::alloc::{GlobalAlloc, Layout as AllocLayout, System};

@@ -2,6 +2,15 @@
 #define SCARLETBOOK_H
 #include <stddef.h>
 #include <stdint.h>
+#if !defined(SB_DEPRECATED)
+#if defined(__GNUC__) || defined(__clang__)
+#define SB_DEPRECATED(msg) __attribute__((deprecated(msg)))
+#elif defined(_MSC_VER)
+#define SB_DEPRECATED(msg) __declspec(deprecated(msg))
+#else
+#define SB_DEPRECATED(msg)
+#endif
+#endif
 #define SB_MAX_FRAME_BYTES 65536
 #define SB_ABI_VERSION 2
 #define SB_LOG_OFF 0

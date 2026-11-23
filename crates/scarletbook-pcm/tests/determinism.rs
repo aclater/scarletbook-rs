@@ -3,6 +3,8 @@
 //! Per-frame and per-run conversions give exactly the bytes of a whole-area conversion, at
 //! every rate and cutoff, for 1 to 6 channels.
 
+// scarletbook-pcm is deprecated (#398); this code still uses it until it is removed.
+#![allow(deprecated)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use proptest::prelude::*;

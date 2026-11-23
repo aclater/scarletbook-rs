@@ -113,6 +113,12 @@
  * - Panics. No panic crosses the boundary: an internal error returns SB_STATUS_PANIC.
  *   The handles involved should then be freed and not used further. If the library is
  *   built with panic=abort, the process aborts instead.
+ *
+ * - Deprecation. A deprecated function is declared with SB_DEPRECATED("reason"), which
+ *   makes GCC, Clang and MSVC warn where it is called; define SB_DEPRECATED(msg) as
+ *   nothing before including this header to silence it. A deprecated function keeps
+ *   working and keeps its ABI until a later SB_ABI_VERSION removes it. Deprecated now:
+ *   the sb_pcm_* functions and SbPcmConverter (#398).
  */
 
 #ifndef SCARLETBOOK_H
@@ -122,6 +128,15 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#if !defined(SB_DEPRECATED)
+#if defined(__GNUC__) || defined(__clang__)
+#define SB_DEPRECATED(msg) __attribute__((deprecated(msg)))
+#elif defined(_MSC_VER)
+#define SB_DEPRECATED(msg) __declspec(deprecated(msg))
+#else
+#define SB_DEPRECATED(msg)
+#endif
+#endif
 
 /*
  The largest frame `sb_raw_frames_read` returns, in bytes (specification 4, 4.4.3): a
@@ -1321,7 +1336,8 @@ typedef struct SbOutputOptions SbOutputOptions;
 /*
  A DSD64 to 24-bit PCM converter (`sb_pcm_converter_new`): one rate, cutoff, channel
  count and gain. It belongs to no disc. Converters share nothing: give each thread
- that converts one of its own.
+ that converts one of its own. Deprecated since 0.7.1 (#398), with the `sb_pcm_*`
+ functions (see `sb_pcm_converter_new`).
  */
 typedef struct SbPcmConverter SbPcmConverter;
 
@@ -3507,10 +3523,17 @@ SbStatus sb_dst_decode(const uint8_t *frame,
  and not dithered. A constant input of all 1 bits is full scale (it clips); Super Audio
  CD content stays well below.
 
+ Deprecated since 0.7.1 (#398), like the other `sb_pcm_*` functions: DSD-to-PCM
+ conversion is no longer developed in scarletbook, and its consumers convert on their own
+ side. The functions keep working but get no new features, only security and build
+ fixes; the header marks them `SB_DEPRECATED`, so C and C++ callers see a warning.
+ Removing them later would bump `SB_ABI_VERSION`.
+
  # Safety
 
  `out` must be NULL or valid for a write.
  */
+SB_DEPRECATED("the sb_pcm_* functions are deprecated: DSD-to-PCM conversion is no longer developed in scarletbook; convert on the consumer side (scarletbook-rs#398)")
 SbStatus sb_pcm_converter_new(uint32_t rate_hz,
                               uint32_t cutoff,
                               uint32_t channels,
@@ -3520,21 +3543,28 @@ SbStatus sb_pcm_converter_new(uint32_t rate_hz,
 /*
  Frees a converter. NULL is ignored.
 
+ Deprecated since 0.7.1 (#398); see `sb_pcm_converter_new`.
+
  # Safety
 
  `conv` must be NULL or a live handle, freed only once.
  */
+SB_DEPRECATED("the sb_pcm_* functions are deprecated: DSD-to-PCM conversion is no longer developed in scarletbook; convert on the consumer side (scarletbook-rs#398)")
 void sb_pcm_converter_free(struct SbPcmConverter *conv);
 
 /*
  The output samples per channel of one frame (`*out`): 1176 at 88 200 Hz, 2352 at
  176 400 Hz, 4704 at 352 800 Hz. A frame is 37 632 DSD samples per channel.
 
+ Deprecated since 0.7.1 (#398); see `sb_pcm_converter_new`.
+
  # Safety
 
  `conv` must be NULL or a live handle; `out` NULL or valid for a write.
  */
-SbStatus sb_pcm_samples_per_frame(const struct SbPcmConverter *conv, uint32_t *out);
+SB_DEPRECATED("the sb_pcm_* functions are deprecated: DSD-to-PCM conversion is no longer developed in scarletbook; convert on the consumer side (scarletbook-rs#398)")
+SbStatus sb_pcm_samples_per_frame(const struct SbPcmConverter *conv,
+                                  uint32_t *out);
 
 /*
  Converts a run of consecutive frames of one area, `frames_len` bytes at `frames` (a
@@ -3561,6 +3591,8 @@ SbStatus sb_pcm_samples_per_frame(const struct SbPcmConverter *conv, uint32_t *o
  is not a whole number of frames, `frames` NULL with a non-zero `frames_len`, or the
  handle in use.
 
+ Deprecated since 0.7.1 (#398); see `sb_pcm_converter_new`.
+
  # Safety
 
  `conv` must be NULL or a live handle; `before` and `after` NULL or valid for
@@ -3568,6 +3600,7 @@ SbStatus sb_pcm_samples_per_frame(const struct SbPcmConverter *conv, uint32_t *o
  reads; `out` NULL or valid for `out_len` bytes of writes and not overlapping the
  inputs; `clipped` NULL or valid for 6 `uint64_t` writes.
  */
+SB_DEPRECATED("the sb_pcm_* functions are deprecated: DSD-to-PCM conversion is no longer developed in scarletbook; convert on the consumer side (scarletbook-rs#398)")
 SbStatus sb_pcm_convert_run(struct SbPcmConverter *conv,
                             const uint8_t *before,
                             const uint8_t *frames,

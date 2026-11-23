@@ -10,6 +10,8 @@
 //! neighbours, to 3-byte little-endian samples: `convert_run` + `pack_s24le` against
 //! `convert` from one buffer and from four separate frames (with per-frame clip counts).
 
+// scarletbook-pcm is deprecated (#398); this code still uses it until it is removed.
+#![allow(deprecated)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::hint::black_box;

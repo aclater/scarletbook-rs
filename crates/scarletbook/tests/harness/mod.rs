@@ -3,6 +3,8 @@
 //! Harness shared by the cargo-fuzz targets (`fuzz/`) and the regression tests, so that
 //! a minimised crash runs the exact same code in both.
 
+// scarletbook-pcm is deprecated (#398); this code still uses it until it is removed.
+#![allow(deprecated)]
 #![allow(dead_code, clippy::panic, clippy::unwrap_used)]
 
 use std::io::{self, Read, Seek, SeekFrom};

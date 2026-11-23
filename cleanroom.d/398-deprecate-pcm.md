@@ -1,0 +1,1 @@
+| 2026-11-23 | deprecate scarletbook-pcm and the `sb_pcm_*` C functions (Part of #398) | Attributes and documentation only; no conversion code or technique changed. Sources: the cbindgen 0.29.4 documentation (`docs.md`, `[fn] deprecated` and `deprecated_with_note`, read from the crate source on 2026-11-23). No SACD, DST or DSD source or code, and no patent, was opened. |

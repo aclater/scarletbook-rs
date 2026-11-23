@@ -1,6 +1,6 @@
 [package]
 name = "scarletbook-pcm"
-description = "DSD64 to 24-bit PCM conversion, deterministic per Super Audio CD frame"
+description = "Deprecated (scarletbook-rs#398): DSD64 to 24-bit PCM conversion, deterministic per Super Audio CD frame"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
