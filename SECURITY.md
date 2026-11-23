@@ -10,7 +10,7 @@ without bound is a security bug.
 | Version | Supported |
 |---|---|
 | 1.0.x, the latest patch release ([releases](https://github.com/aclater/scarletbook-rs/releases)) of `scarletbook` and `scarletbook-ffi` | yes |
-| `scarletbook-pcm` 0.7.0, the version 1.0.x depends on | yes; no new features, deprecation planned ([#398](https://github.com/aclater/scarletbook-rs/issues/398)) |
+| `scarletbook-pcm` 0.7.0, the version 1.0.x depends on | no; frozen at 0.7.0, decommissioned ([#398](https://github.com/aclater/scarletbook-rs/issues/398)); no fixes or releases |
 | `main` | yes |
 | earlier 1.0.x releases, and every 0.x release | no; please check the latest 1.0.x release first |
 
