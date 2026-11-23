@@ -2,7 +2,8 @@
 
 //! Output files: the layout of a DSF or DSDIFF file holding a track, a frame range or a
 //! track with pause (specification 8), for writers and for filesystems that serve such
-//! files without writing them (issue #131).
+//! files without writing them (issue #131). This module, and the [`Disc`] methods that
+//! make a [`Layout`], come with the `output` feature, which is on by default.
 //!
 //! A [`Layout`] is computed from the TOC alone (8.2.5): it knows the file's exact size and
 //! every byte that is not audio before any audio sector is read. Its audio is described,
