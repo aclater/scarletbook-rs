@@ -124,8 +124,10 @@ Static linking: after libscarletbook_ffi.a, link the system libraries in native-
   $native
 $shared_use
 
-Compatibility policy and verification of this archive (SHA-256, build provenance):
-https://github.com/aclater/scarletbook-rs#c-library
+Linking and the compatibility policy:
+https://github.com/aclater/scarletbook-rs/blob/v$version/docs/c-abi.md
+Verification of this archive (SHA-256, build provenance):
+https://github.com/aclater/scarletbook-rs/blob/v$version/docs/releases.md#verifying-a-download
 EOF
 tar -C dist -czf "$pkg.tar.gz" "$name"
 # "<hash>  <file>" (two spaces, text mode) on every platform: Git Bash's sha256sum would
