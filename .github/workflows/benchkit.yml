@@ -7,11 +7,11 @@ name: Benchmark kit
 # reference runner, as scarletbook-benchkit-<version>-x86_64-linux[-v3].tar.gz.
 #
 # They link glibc statically (x86_64-unknown-linux-gnu, `-C target-feature=+crt-static`), not
-# musl: on lennon (Zen 2, 32 threads) musl builds took 11 % longer, from its allocator (all-
-# thread DST decoding: 4.46 s against 4.02 s, 6.4 s of system time against 0.25 s) and its
-# memcpy (plain DSD to DSF: 2.03 s against 1.81 s), while the static glibc builds timed the
-# same as the dynamic ones. The programs use no NSS or dlopen, the parts of glibc that a static
-# link cannot carry.
+# musl: on the Zen 2 benchmark host (32 threads) musl builds took 11 % longer, from its
+# allocator (all-thread DST decoding: 4.46 s against 4.02 s, 6.4 s of system time against
+# 0.25 s) and its memcpy (plain DSD to DSF: 2.03 s against 1.81 s), while the static glibc
+# builds timed the same as the dynamic ones. The programs use no NSS or dlopen, the parts of
+# glibc that a static link cannot carry.
 # The archive names share no prefix with the bench-<version>-... benchmark assets or the
 # scarletbook-ffi-<version>-... C library archives.
 #

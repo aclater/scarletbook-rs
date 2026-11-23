@@ -504,8 +504,8 @@ impl Output for RawOut {
 /// `BufReader::new`: its 8 KiB buffer is smaller than the area reads (32 sectors, 64 KiB),
 /// which therefore go straight into the cursor's buffer, one copy from the kernel, as with
 /// `sb_disc_open` (#202). A buffer larger than those reads, such as 1 MiB, copies every
-/// byte twice: on lennon (3950X) it made a 78-minute plain-DSD stereo area 0.10 s slower to
-/// read.
+/// byte twice: on the Zen 2 benchmark host (3950X) it made a 78-minute plain-DSD stereo
+/// area 0.10 s slower to read.
 fn open(path: &Path) -> Result<Disc<BufReader<File>>, Failure> {
     let file = File::open(path)
         .map_err(|e| Failure { class: "io-error", message: format!("{}: {e}", path.display()) })?;

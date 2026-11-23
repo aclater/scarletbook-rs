@@ -367,8 +367,8 @@ target yet and continue towards 0.6.0.
 | DST area to DSF, all threads | generic | 4.025 | 127.45 | 4.037 | 128.04 | 1.003 |
 | DSD to PCM, stereo DSD64 to 176.4 kHz 24-bit, one thread | generic | 4.23 / 4.12 / 4.12 ms per s | - | 4.25 / 4.15 / 4.14 ms per s | - | 1.007 |
 
-Medians of alternating runs on lennon (AMD Ryzen 9 3950X, Zen 2), generic build, kits from
-`benchmarks/compare.sh`, a fresh copy of each program and image per round, images in the page
+Medians of alternating runs on the Zen 2 benchmark host (AMD Ryzen 9 3950X), generic build, kits
+from `benchmarks/compare.sh`, a fresh copy of each program and image per round, images in the page
 cache: 5 rounds, 3 for the 20-minute DST case and for DSD to PCM.
 
 No row changes by more than 1 %. **Compare within this table only:** its plain-DSD rows read about
@@ -399,11 +399,11 @@ also publishes a benchmark kit for timing scarletbook on other machines, and pul
 touch the library run a benchmark regression check (#226). Output is identical to the bit in
 every case.
 
-Measured on lennon, an AMD Ryzen 9 3950X (Zen 2, 16 cores / 32 threads), generic x86-64 build,
-0.5.6 against 0.5.7, with `benchmarks/compare.sh` (statically linked kits, synthetic images of
-`benchmarks/runlist.json` in the page cache, output to `/dev/null`, a fresh copy of each program
-per run, alternating ABBA rounds: 5 per case, 3 for the 20-minute DST case and PCM). Times are
-the medians of the wall times; changes are the medians of the per-round ratios. Other CPUs may
+Measured on the Zen 2 benchmark host, an AMD Ryzen 9 3950X (16 cores / 32 threads), generic x86-64
+build, 0.5.6 against 0.5.7, with `benchmarks/compare.sh` (statically linked kits, synthetic images
+of `benchmarks/runlist.json` in the page cache, output to `/dev/null`, a fresh copy of each
+program per run, alternating ABBA rounds: 5 per case, 3 for the 20-minute DST case and PCM). Times
+are the medians of the wall times; changes are the medians of the per-round ratios. Other CPUs may
 differ.
 
 | Path | 0.5.6 | 0.5.7 | Change | `bench` change (#239)¹ | Library change¹ |
@@ -439,8 +439,9 @@ The stereo all-threads row was slower in every round (0.3-1.2 %), and 1.3 % slow
 separate run; the split puts it on the tool change, not the library.
 
 **#241 wins back the 0.5.6 regression.** 0.5.6 decoded stereo DST on one thread 2.9 % slower
-than 0.5.5. In #241's fresh-copy measurements on lennon, stereo on one thread is ±0 % against
-0.5.5 and 2.67 % faster than 0.5.6, and 6 channels on one thread 5.9 % faster than 0.5.5.
+than 0.5.5. In #241's fresh-copy measurements on the Zen 2 benchmark host, stereo on one
+thread is ±0 % against 0.5.5 and 2.67 % faster than 0.5.6, and 6 channels on one thread 5.9 %
+faster than 0.5.5.
 
 **Not yet at target:** the DSF output targets of #202 and the DST decoding targets of #203 are
 not met in 0.5.7; the work continues in 0.5.8.
@@ -454,9 +455,9 @@ not met in 0.5.7; the work continues in 0.5.8.
 
 ### Changed
 
-- `bench` opens images with `BufReader::new`, as the documentation does, instead of a 1 MiB `BufReader`: area reads (64 KiB) then go straight into the cursor's buffer, one copy from the kernel, as with `sb_disc_open`. The 1 MiB buffer copied every byte twice. A 78-minute plain-DSD stereo area writes to DSF in 0.50 s instead of 0.61 s on one thread on lennon (3950X). The library is unchanged; compare figures across this change with that in mind (#202, #239).
-- Reading an area no longer copies each 2048-byte audio sector out of the read buffer before demultiplexing it: a 78-minute plain-DSD stereo area reads in 0.47 s instead of 0.58 s, and writes to DSF in 1.66 s instead of 1.79 s, in generic builds on lennon (3950X) (#202, #230).
-- 5-channel DSF output is faster: the channels of a 5-channel row are separated four frames at a time in 32-bit words, which the compiler vectorises, where it had been inserting one byte at a time. A 30-minute plain-DSD 5-channel area writes to DSF in 0.64 s instead of 0.88 s on one thread in generic builds on lennon (3950X). The output is unchanged (#202, #237).
+- `bench` opens images with `BufReader::new`, as the documentation does, instead of a 1 MiB `BufReader`: area reads (64 KiB) then go straight into the cursor's buffer, one copy from the kernel, as with `sb_disc_open`. The 1 MiB buffer copied every byte twice. A 78-minute plain-DSD stereo area writes to DSF in 0.50 s instead of 0.61 s on one thread on the Zen 2 benchmark host (3950X). The library is unchanged; compare figures across this change with that in mind (#202, #239).
+- Reading an area no longer copies each 2048-byte audio sector out of the read buffer before demultiplexing it: a 78-minute plain-DSD stereo area reads in 0.47 s instead of 0.58 s, and writes to DSF in 1.66 s instead of 1.79 s, in generic builds on the Zen 2 benchmark host (3950X) (#202, #230).
+- 5-channel DSF output is faster: the channels of a 5-channel row are separated four frames at a time in 32-bit words, which the compiler vectorises, where it had been inserting one byte at a time. A 30-minute plain-DSD 5-channel area writes to DSF in 0.64 s instead of 0.88 s on one thread in generic builds on the Zen 2 benchmark host (3950X). The output is unchanged (#202, #237).
 - A disc of a raw image (2064 or 2054 bytes per stored sector) no longer keeps the read buffer of its TOC reads once opened or shared: it held the largest TOC read, 20 KiB or more per disc (about 80 KiB on the discs of #228), for as long as the disc was kept. The first audio read allocates it again; the output is unchanged (#228, #234).
 
 ### Fixed

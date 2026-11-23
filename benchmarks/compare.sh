@@ -8,14 +8,15 @@
 #   benchmarks/compare.sh run WORK [run.py options]   time them, alternately, and print the table
 #
 # A and B are git revisions (exported with `git archive` from the repository this script is
-# in) or source directories, such as lennon.sh sync copies. Their labels in the table are the
-# names given. `run` uses this checkout's run.py, run list and table.py, so both versions run
-# the same cases; a case whose program a version lacks (e.g. `bench dsf` before 0.5.6) is
-# left blank for it. Build and run are separate so that, on lennon, the build runs under
-# `lennon.sh run` and only the timing under `lennon.sh bench`:
+# in) or source directories, such as copies of other worktrees. Their labels in the table are
+# the names given. `run` uses this checkout's run.py, run list and table.py, so both versions
+# run the same cases; a case whose program a version lacks (e.g. `bench dsf` before 0.5.6) is
+# left blank for it. Build and run are separate so that, on the Zen 2 benchmark host, the build
+# runs as an ordinary job and only the timing under the host's exclusive lock, which takes timed
+# runs only when the machine is otherwise idle:
 #
-#   lennon.sh run  NAME -- benchmarks/compare.sh build ../cmp ~/sb/wt/v055 ~/sb/wt/v056
-#   lennon.sh bench NAME -- benchmarks/compare.sh run ../cmp > table.md
+#   benchmarks/compare.sh build ../cmp ../v055 ../v056      # an ordinary job
+#   benchmarks/compare.sh run ../cmp > table.md             # under the exclusive lock
 #
 # Needs cargo with the x86_64-unknown-linux-gnu target and a static glibc (libc.a).
 set -euo pipefail
