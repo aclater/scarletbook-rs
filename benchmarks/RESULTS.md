@@ -63,6 +63,38 @@ In the run list, but not in every table:
   DSF and DSD to PCM are blank, unless an equivalent revision is compared instead (0.5.6
   below uses `3eb96dc` for 0.5.5).
 
+## 0.7.0
+
+Measured on the Zen 2 benchmark host (AMD Ryzen 9 3950X), 2026-11-23, with `compare.sh` (generic kits, statically linked, profile `dist`): 0.6.2 = `v0.6.2` and 0.7.0 = the release-prep tree (`446994c`, main after #392, plus version changes). Timed under the machine's shared benchmark lock. The run list is the standard one with every case at 7 rounds (a copy of `runlist.json` with `defaults.rounds` 7 and the per-case `rounds` removed, passed with `--runlist`). 238 runs, none failed.
+
+| Path | Build | 0.6.2 wall s | 0.6.2 CPU s | 0.7.0 wall s | 0.7.0 CPU s | 0.7.0 / 0.6.2 | Median of per-round ratios [range] |
+|---|---|---|---|---|---|---|---|
+| DST decode, one thread, 2 channels | generic | 5.562 | 5.52 | 5.574 | 5.53 | 1.002 | 1.003 [0.997-1.007] |
+| DST decode, one thread, 2 channels, corpus frames | generic | 18.536 | 18.43 | 18.498 | 18.40 | 0.998 | 0.998 [0.994-1.006] |
+| DST decode, all threads, 2 channels | generic | 3.587 | 112.90 | 3.562 | 111.76 | 0.993 | 0.992 [0.986-0.996] |
+| DST decode, one thread, 6 channels | generic | 6.997 | 6.96 | 7.104 | 7.06 | 1.015 | 1.009 [0.992-1.021], unresolved |
+| DST decode, all threads, 6 channels | generic | 2.340 | 73.73 | 2.350 | 73.87 | 1.004 | 1.004 [0.997-1.009] |
+| plain-DSD area to DSF, 2 channels | generic | 0.456 | 0.45 | 0.455 | 0.45 | 0.997 | 0.999 [0.973-1.008] |
+| plain-DSD area to DSF, 5 channels | generic | 0.506 | 0.50 | 0.506 | 0.49 | 1.000 | 0.999 [0.989-1.007] |
+| DST area to DSF, all threads | generic | 3.591 | 113.74 | 3.555 | 112.61 | 0.990 | 0.989 [0.985-0.995] |
+| DSD to PCM, stereo DSD64 to 176.4 kHz 24-bit, one thread | generic | 3.90 / 3.82 / 3.81 ms per s | - | 3.90 / 3.81 / 3.81 ms per s | - | 0.997 | - |
+| open to parsed TOC, page cache | generic | 14.6 µs | - | 14.0 µs | - | 0.960 | -, within spread |
+| open to parsed TOC, evicted | generic | 224.4 µs | - | 231.3 µs | - | 1.031 | -, within spread |
+| first 128 KiB, 2 channels, plain DSD, page cache | generic | 25.1 µs | - | 24.7 µs | - | 0.985 | -, within spread |
+| first 128 KiB, 2 channels, plain DSD, evicted | generic | 273.5 µs | - | 269.9 µs | - | 0.987 | -, within spread |
+| first 128 KiB, 2 channels, DST, one thread, page cache | generic | 3674.2 µs | - | 3702.2 µs | - | 1.008 | - |
+| first 128 KiB, 2 channels, DST, one thread, evicted | generic | 4130.4 µs | - | 4119.2 µs | - | 0.997 | -, within spread |
+| first 128 KiB, 2 channels, DST, all threads, page cache | generic | 2221.5 µs | - | 2210.1 µs | - | 0.995 | - |
+| first 128 KiB, 2 channels, DST, all threads, evicted | generic | 4593.6 µs | - | 4364.4 µs | - | 0.950 | -, within spread |
+
+Medians of 7 rounds, alternating builds, a fresh copy of each program and image per round, images in the page cache unless evicted, output to `/dev/null`. The DSD-to-PCM cells are at 1 / 8 / 256 frames per call. `open` and `first` cells are the program's own median in microseconds; the per-round column is computed from process wall times, so it is left out for them. Spread between rounds above 5 %, so read as a range: open, page cache 13.7 to 16.4 µs (0.6.2) and 13.7 to 17.0 µs (0.7.0); open, evicted 213.2 to 236.3 µs and 207.3 to 257.7 µs; first 128 KiB plain DSD, page cache 24.2 to 25.4 µs (0.7.0); first 128 KiB plain DSD, evicted 264.3 to 278.8 µs and 262.4 to 299.3 µs; first 128 KiB DST one thread, evicted 4055.9 to 4283.5 µs and 4044.2 to 4329.3 µs; first 128 KiB DST all threads, evicted 3890.4 to 4871.3 µs and 4109.0 to 4472.7 µs.
+
+**What changed on measured paths:** #392 (a new decoder's tables written once) and #390 (partial DSF rows, which the run list doesn't exercise; it reads whole areas). #388 changes only where a DSF chain's files split, which the run list doesn't time. No row moves beyond about 2 % or beyond its spread: all-thread stereo DST decoding (0.992) and DST to DSF (0.989) are about 1 % faster in all 7 rounds; one-thread 6-channel DST is 1.009 [0.992-1.021] with 2 of 7 rounds faster, unresolved (#259); `first` DST one thread in the page cache is 1.008, within the noise of the other `first` rows.
+
+**Consumer figures, Intel (#383, not this host):** on an Intel Core i9-13900H (Raptor Lake), one thread on one pinned core, a real disc's 6-channel DST frames, 7 rotated rounds, measured by sacdfs against `446994c`: single-frame `DstDecoder::decode` 22.92 s (0.5.9), 24.53 s (0.6.2), 24.53 s (0.7.0), so still about 7 % slower than 0.5.9 on a P-core (median of per-round ratios 1.071); grouped `decode_many` 17.19, 17.60, 17.65 s (1.027). E-core: single 41.42, 40.95, 40.98 s (0.989); grouped 33.92, 33.51, 33.47 s (0.986), at parity. pysacd, real 5.1 DST disc to DSF through the C ABI on the same CPU's P-cores, 0.6.2 against 0.5.9: 1.8 % slower with one thread, 0.9 % with five. Tracked in #383.
+
+**Not measured for 0.7.0:** the x86-64-v3 build (built, not timed); `znver5` and AVX-512 builds, Zen 5; real output files, including DSF chains; the first 128 KiB of 5 or 6 channels or without a seek index; cold runs of the whole-area cases; the C interface; `bench realtime`; `--lanes`.
+
 ## 0.6.2
 
 Two measurements, neither with `compare.sh`; both on the Zen 2 benchmark host (AMD Ryzen 9 3950X), one thread, in 7 rounds under the exclusive benchmark lock, each round running both programs in the opposite order on even rounds, with a fresh copy of each program.
