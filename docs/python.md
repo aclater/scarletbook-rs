@@ -1,4 +1,6 @@
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+[scarletbook](../README.md) › [Documentation](README.md) › Using from Python
+
 # Using from Python (ctypes)
 
 The C library of the [release assets](releases.md#release-assets) can be used from Python
@@ -356,3 +358,9 @@ for i in range(head.area_count):
 
 The overlay above assumes a little-endian host. On any host, `struct.unpack_from("<I", raw,
 offset)` reads the same fields at the offsets documented in `scarletbook.h`.
+
+## See also
+
+- [C ABI guide](c-abi.md)
+- [Release assets](releases.md#release-assets)
+- [Documentation index](README.md)

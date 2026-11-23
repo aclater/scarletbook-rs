@@ -1,4 +1,6 @@
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+[scarletbook](../README.md) › [Documentation](README.md) › Releases and verification
+
 # Releases and verification
 
 [![SLSA Build L2](https://slsa.dev/images/gh-badge-level2.svg)](#verifying-a-download)
@@ -143,3 +145,11 @@ machines (#224, #226): `scarletbook-benchkit-<version>-x86_64-linux.tar.gz` and 
 `-v3` twin, with statically linked `bench`, `scarletbook-synth` and the scarletbook-pcm
 `callpattern` example, a run list of the cases and a reference runner. What a runner
 executes and what it sends back: [`benchmarks/README.md`](../benchmarks/README.md).
+
+## See also
+
+- [C ABI guide: Linking](c-abi.md#linking)
+- [Stability and versions](stability.md)
+- [RELEASING.md](../RELEASING.md)
+- [CHANGELOG.md](../CHANGELOG.md)
+- [Documentation index](README.md)
