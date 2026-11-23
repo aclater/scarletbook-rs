@@ -13,9 +13,10 @@ and renames the Unreleased section of CHANGELOG.md for the version
 (`.github/scripts/fragments.py assemble X.Y.Z DATE`).
 
 `scarletbook-pcm` has its own `version` in `crates/scarletbook-pcm/Cargo.toml`, not the
-workspace's: from 1.0.0 it stays at 0.7.0, outside the 1.0 freeze, while it is deprecated
-(#398). Its pin in `crates/scarletbook-ffi/Cargo.toml` stays `=0.7.0` with it. A release that
-leaves it unchanged neither packs nor publishes it: its 0.7.0 is on crates.io, so `build`
+workspace's: from 1.0.0 it stays at 0.7.0, outside the 1.0 freeze, while its deprecation is
+planned (#398). Its pin in `crates/scarletbook-ffi/Cargo.toml` stays `=0.7.0` with it. A
+release that leaves it unchanged neither packs nor publishes it: its 0.7.0 is on crates.io,
+so `build`
 packs only the other two and verifies `scarletbook-ffi` against the crates.io 0.7.0, and
 `publish` skips it (below, "Pack only what is published"). If it ever changes, its own
 version and the pin move together, in a release of their own.

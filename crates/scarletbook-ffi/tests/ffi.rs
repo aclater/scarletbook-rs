@@ -889,7 +889,7 @@ macro_rules! assert_layout {
 
 /// The struct layouts documented in the header (each struct's "Layout" line). Callers
 /// allocate the structs, so a change to any of these numbers is a breaking change
-/// (README, "ABI compatibility"). They hold on every target: only `SbWarning.code`, a
+/// (docs/c-abi.md, "ABI compatibility"). They hold on every target: only `SbWarning.code`, a
 /// pointer, and the alignment of `uint64_t` and `int64_t` depend on it.
 #[test]
 fn struct_layouts() {
