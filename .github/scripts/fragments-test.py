@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
-"""Tests of fragments.py `check` and `assemble` on a fixture in a temporary directory."""
+"""Tests of fragments.py `check`, `assemble` and `require` on a fixture in a temporary directory."""
 
 import subprocess
 import sys
@@ -103,6 +103,63 @@ def main():
                                         encoding="utf-8")
         expect(run(d, "assemble", "0.2.0", "2026-02-02").returncode == 1,
                "assemble refuses text before the first section")
+
+    # `require`: a release with no fragments to fold in passes only with both marks (#403).
+    def repo(d):
+        def git(*a):
+            subprocess.run(["git", *a], cwd=d, check=True, capture_output=True)
+        git("init", "-q", "-b", "main")
+        git("config", "user.email", "t@example.invalid")
+        git("config", "user.name", "t")
+        (d / "Cargo.toml").write_text('[workspace.package]\nversion = "1.0.0"\n', encoding="utf-8")
+        (d / "CHANGELOG.md").write_text("# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - 2026-01-01\n", encoding="utf-8")
+        (d / "crates" / "x" / "src").mkdir(parents=True)
+        (d / "crates" / "x" / "src" / "lib.rs").write_text("// v1\n", encoding="utf-8")
+        (d / "changelog.d").mkdir()
+        (d / "cleanroom.d").mkdir()
+        (d / "changelog.d" / "README.md").write_text("r\n", encoding="utf-8")
+        (d / "cleanroom.d" / "README.md").write_text("r\n", encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-q", "-m", "base")
+        git("tag", "base")
+        return git
+
+    heading = "# Changelog\n\n## [Unreleased]\n\n## [1.0.1] - 2026-02-02\n\n## [1.0.0] - 2026-01-01\n"
+    bumped = '[workspace.package]\nversion = "1.0.1"\n'
+    for desc, files, ok in [
+        ("a release with a new heading and a version bump", {"CHANGELOG.md": heading, "Cargo.toml": bumped}, True),
+        ("a code change that only adds a release heading", {"CHANGELOG.md": heading, "crates/x/src/lib.rs": "// v2\n"}, False),
+        ("a version bump without a release heading", {"Cargo.toml": bumped}, False),
+        ("a code change without fragments", {"crates/x/src/lib.rs": "// v2\n"}, False),
+        ("a code change with both fragments",
+         {"crates/x/src/lib.rs": "// v2\n", "changelog.d/x.md": "Fixed\n- x (#1).\n",
+          "cleanroom.d/x.md": "| 2026-02-02 | x | none. |\n"}, True),
+    ]:
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t)
+            git = repo(d)
+            for name, content in files.items():
+                (d / name).write_text(content, encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "change")
+            r = run(d, "require", "base")
+            expect((r.returncode == 0) == ok, f"require {'accepts' if ok else 'refuses'} {desc}: {r.stderr.strip()}")
+
+    # A release that folds fragments in deletes them; that passes without the release marks.
+    with tempfile.TemporaryDirectory() as t:
+        d = Path(t)
+        git = repo(d)
+        (d / "cleanroom.d" / "y.md").write_text("| 2026-01-02 | y | none. |\n", encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-q", "-m", "fragment")
+        git("tag", "-f", "base")
+        (d / "cleanroom.d" / "y.md").unlink()
+        (d / "CHANGELOG.md").write_text("# Changelog\n\n## [Unreleased]\n\nfolded\n\n## [1.0.0] - 2026-01-01\n", encoding="utf-8")
+        (d / "crates" / "x" / "src" / "lib.rs").write_text("// v2\n", encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-q", "-m", "release")
+        r = run(d, "require", "base")
+        expect(r.returncode == 0, f"require accepts a release that deletes folded fragments: {r.stderr.strip()}")
 
     for f in failures:
         print(f"FAIL: {f}", file=sys.stderr)

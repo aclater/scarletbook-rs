@@ -2,14 +2,38 @@
 # Releasing
 
 A release is a tag `vX.Y.Z` on the merge commit of the pull request that prepares it. That
-pull request sets the version in three places (the build fails if they disagree):
+pull request sets the version in two places (the build fails if they disagree):
 
-- `version` under `[workspace.package]` in `Cargo.toml`;
-- the `version = "=X.Y.Z"` of `scarletbook` and `scarletbook-pcm` under `[dependencies]` in
+- `version` under `[workspace.package]` in `Cargo.toml`, which `scarletbook`,
+  `scarletbook-ffi` and the unpublished crates follow, and which the tag must match;
+- the `version = "=X.Y.Z"` of `scarletbook` under `[dependencies]` in
   `crates/scarletbook-ffi/Cargo.toml` (crates.io needs a version beside each path);
 
 and renames the Unreleased section of CHANGELOG.md for the version
 (`.github/scripts/fragments.py assemble X.Y.Z DATE`).
+
+`scarletbook-pcm` has its own `version` in `crates/scarletbook-pcm/Cargo.toml`, not the
+workspace's: from 1.0.0 it stays at 0.7.0, outside the 1.0 freeze, while its deprecation is
+planned (#398). Its pin in `crates/scarletbook-ffi/Cargo.toml` stays `=0.7.0` with it. A
+release that leaves it unchanged neither packs nor publishes it: its 0.7.0 is on crates.io,
+so `build`
+packs only the other two and verifies `scarletbook-ffi` against the crates.io 0.7.0, and
+`publish` skips it (below, "Pack only what is published"). If it ever changes, its own
+version and the pin move together, in a release of their own.
+
+**From 1.0.0, check the semver of every release** (#39, R3) against the previous tag, with the
+release type of the bump, for the two frozen crates:
+
+```sh
+# --release-type: patch for x.y.Z, minor for x.Y.0 (major only for a planned 2.0.0).
+cargo semver-checks -p scarletbook --baseline-rev vX.Y.Z --release-type patch --all-features
+cargo semver-checks -p scarletbook-ffi --baseline-rev vX.Y.Z --release-type patch --all-features
+python3 .github/scripts/abi-check.py   # the C ABI; SB_ABI_VERSION stays 2 throughout 1.x
+```
+
+Both must report "no semver update required"; give the result in the pull request. A check
+that fails, or any change to `abi/abi-2.txt` other than an addition, stops the release. `scarletbook-ffi`'s contract is the C ABI, so `abi-check.py` is its real check; the
+Rust check of it is for completeness. Check `scarletbook-pcm` too while it is still released.
 
 It also moves the README's Quick start (#364) to the new version: the `cargo add` pin, the
 tag in the image URL, the release asset name, and any API the examples use that changed. The
@@ -25,22 +49,62 @@ Pushing the tag runs `.github/workflows/release.yml`:
    matches the workspace version and CHANGELOG.md has its section;
 2. `clib` and `benchkit`: the C libraries and the benchmark kits, built and tested;
 3. `build`, with a read-only token: `bench`, the correctness gates, all assets with their
-   checksums, the release notes, and the three crates.io packages, packed and verified
-   (`cargo package`);
+   checksums, the release notes, and the crates.io packages of the crates whose version is
+   not on crates.io yet, packed together and verified (`cargo package`);
 4. `release`, in the environment `release`: the build provenance attestation and
    the GitHub release, from `build`'s files;
 5. `publish`, in the environment `release`, only if all of the above passed:
    `scarletbook-pcm`, `scarletbook` and `scarletbook-ffi` to crates.io, in that order, with
-   crates.io trusted publishing. A crate whose version is already on crates.io is skipped, so
-   the job can be re-run, and a crate published by hand (below) is not published twice.
+   crates.io trusted publishing. Each crate is published at its own manifest version, and one
+   whose version is already in the crates.io index is skipped
+   (`.github/scripts/release-crates.py`, tested by `release-crates-test.py` in CI): an unchanged
+   crate (`scarletbook-pcm` at 0.7.0 from 1.0.0) is not published again, the job can be re-run,
+   and a crate published by hand (below) is not published twice.
 
 The jobs that sign and publish compile nothing (issue #345): dependencies' build scripts and
 proc macros run only in `build`, which holds no write, signing or publishing permission.
 `cargo publish` always packs from the sources, so `publish` packs each crate again with
 `--no-verify`, which builds nothing, checks that the file is byte-identical to the package
 `build` verified (cargo packs reproducibly), and publishes it with `--no-verify`. Before the
-first upload it repacks all three together and compares them, so a mismatch stops the job
-before any crate is published.
+first upload it repacks all the crates it is about to publish together and compares them, so
+a mismatch stops the job before any crate is published.
+
+### Pack only what is published
+
+`build` looks each crate's version up in the crates.io index (`release-crates.py pending`,
+read-only, no token) and packs only the crates crates.io does not have yet, together:
+`cargo package --locked -p <pending crates>`. A crate whose version is already on crates.io
+(skipped) is not packed; the crates that depend on it resolve it from crates.io, as they will
+for every user. It must not be packed: a repack never matches the published file
+(`.cargo_vcs_info.json` names the commit), and a crate packed beside it would pin the
+repack's checksum in its packaged `Cargo.lock`, a checksum crates.io does not have.
+
+`publish` repacks the same way. Its crates resolve every crate outside the set from
+crates.io, including one it uploaded a moment earlier (or in an earlier run of the job):
+that crate was uploaded only after its repack matched `build`'s file byte for byte, so
+crates.io's checksum of it is the one `build`'s packages pin. The repack of each later crate
+is then the file `build` verified.
+
+`release-crates.py lockcheck` checks this on the packed files: every published crate a
+packaged `Cargo.lock` pins must carry crates.io's checksum if crates.io has that version, and
+the checksum of the file packed beside it if not. `build` runs it, and CI runs a dry run of
+the packing on every pull request and push (`release-publish.sh dry-run`: `--no-verify`, no
+token, no upload). `release-crates-test.py` covers the 1.0.0 case.
+
+**The 1.0.0 incident.** `build` packed all three crates together, `scarletbook-pcm` 0.7.0
+included, although that version was already on crates.io. `scarletbook-ffi`'s packaged
+`Cargo.lock` therefore pinned the repacked `scarletbook-pcm` (`95dbb558...`) instead of the
+published one (`ffa22529...`). `publish` skipped `scarletbook-pcm`, published `scarletbook`
+1.0.0, then repacked `scarletbook-ffi` against the crates.io `scarletbook-pcm`, and the
+byte-identity check refused it (`6ce1c36...` against `build`'s `c94e18b...`), rightly: the
+package `build` verified pinned a checksum crates.io does not have. crates.io has
+`scarletbook` 1.0.0 but no `scarletbook-ffi` 1.0.0; 1.0.1 publishes both.
+
+**A release whose `publish` stopped partway is finished by the next version.** A tag runs the
+workflow of its own commit, and a re-run of `publish` takes `build`'s packages of the same
+run, so a fault in either cannot be fixed for that tag. Do not move or re-push the tag: fix
+the workflow on `main` and release the next patch version, which publishes every crate whose
+version is not on crates.io.
 
 The split keeps the publishing token and the signing out of every step that runs dependency
 code. It does not make `build`'s output trustworthy: a compromised dependency in `build` (or

@@ -63,6 +63,42 @@ In the run list, but not in every table:
   DSF and DSD to PCM are blank, unless an equivalent revision is compared instead (0.5.6
   below uses `3eb96dc` for 0.5.5).
 
+## 1.0.1
+
+Not measured. 1.0.1 is 1.0.0's code under a new version, released to publish `scarletbook-ffi` 1.x on crates.io (#401): the crates' sources are unchanged since `v1.0.0`, so the 1.0.0 section below stands for 1.0.1.
+
+## 1.0.0
+
+Measured on the Zen 2 benchmark host (AMD Ryzen 9 3950X), 2026-11-23, with `compare.sh` (generic kits, statically linked, profile `dist`): 0.7.0 = `v0.7.0` and 1.0.0 = the release-prep tree (`7a5999d`, main after #396, plus version changes; the crates' sources are byte-identical to v0.7.0). Timed under the machine's shared benchmark lock. The run list is the standard one with every case at 7 rounds (a copy of `runlist.json` with `defaults.rounds` 7 and the per-case `rounds` removed, passed with `--runlist`). 238 runs, none failed.
+
+| Path | Build | 0.7.0 wall s | 0.7.0 CPU s | 1.0.0 wall s | 1.0.0 CPU s | 1.0.0 / 0.7.0 | Median of per-round ratios [range] |
+|---|---|---|---|---|---|---|---|
+| DST decode, one thread, 2 channels | generic | 5.575 | 5.53 | 5.586 | 5.56 | 1.002 | 1.003 [0.989-1.085] |
+| DST decode, one thread, 2 channels, corpus frames | generic | 18.494 | 18.40 | 18.498 | 18.40 | 1.000 | 1.000 [0.978-1.002] |
+| DST decode, all threads, 2 channels | generic | 4.234 | 109.12 | 4.232 | 109.24 | 1.000 | 1.000 [0.995-1.004] |
+| DST decode, one thread, 6 channels | generic | 7.627 | 7.59 | 7.590 | 7.54 | 0.995 | 0.996 [0.973-1.004] |
+| DST decode, all threads, 6 channels | generic | 2.770 | 72.58 | 2.779 | 72.47 | 1.003 | 1.004 [0.992-1.025] |
+| plain-DSD area to DSF, 2 channels | generic | 0.490 | 0.48 | 0.488 | 0.48 | 0.997 | 0.997 [0.991-1.017] |
+| plain-DSD area to DSF, 5 channels | generic | 0.538 | 0.53 | 0.538 | 0.53 | 1.001 | 1.001 [0.991-1.009] |
+| DST area to DSF, all threads | generic | 3.560 | 112.86 | 3.566 | 112.71 | 1.002 | 1.003 [0.990-1.007] |
+| DSD to PCM, stereo DSD64 to 176.4 kHz 24-bit, one thread | generic | 3.90 / 3.82 / 3.82 ms per s | - | 3.89 / 3.82 / 3.82 ms per s | - | 1.000 | - |
+| open to parsed TOC, page cache | generic | 14.9 µs | - | 14.7 µs | - | 0.987 | -, within spread |
+| open to parsed TOC, evicted | generic | 214.7 µs | - | 216.8 µs | - | 1.010 | -, within spread |
+| first 128 KiB, 2 channels, plain DSD, page cache | generic | 24.9 µs | - | 24.7 µs | - | 0.994 | - |
+| first 128 KiB, 2 channels, plain DSD, evicted | generic | 269.2 µs | - | 275.0 µs | - | 1.021 | -, within spread |
+| first 128 KiB, 2 channels, DST, one thread, page cache | generic | 3696.2 µs | - | 3695.5 µs | - | 1.000 | - |
+| first 128 KiB, 2 channels, DST, one thread, evicted | generic | 4091.9 µs | - | 4091.7 µs | - | 1.000 | - |
+| first 128 KiB, 2 channels, DST, all threads, page cache | generic | 2201.3 µs | - | 2215.6 µs | - | 1.007 | - |
+| first 128 KiB, 2 channels, DST, all threads, evicted | generic | 4214.5 µs | - | 4298.4 µs | - | 1.020 | -, within spread |
+
+Medians of 7 rounds, alternating builds, a fresh copy of each program and image per round, images in the page cache unless evicted, output to `/dev/null`. The DSD-to-PCM cells are at 1 / 8 / 256 frames per call. `open` and `first` cells are the program's own median in microseconds; the per-round column is computed from process wall times, so it is left out for them. Spread between rounds above 5 %, so read as a range: DST decode one thread 2 channels 5.551 to 6.195 s (1.0.0, one slow round); the corpus-frames case 18.483 to 19.496 s (0.7.0); open, page cache 13.5 to 16.8 µs (0.7.0) and 13.8 to 18.2 µs (1.0.0); open, evicted 205.8 to 255.8 µs and 204.8 to 228.1 µs; first 128 KiB plain DSD, evicted 252.4 to 285.3 µs and 253.2 to 278.2 µs; first 128 KiB DST all threads, evicted 3853.9 to 4487.5 µs and 3879.4 to 4805.7 µs.
+
+**No change, as expected for the same code.** Every whole-area median of per-round ratios is between 0.996 and 1.004 with 2 to 4 of 7 rounds faster; one-thread 2-channel DST has one slow 1.0.0 round (1.085), and its median is 1.003. The all-thread rows are slower in absolute seconds than in the 0.7.0 section (2 channels 4.23 s against 3.56 s there) for both versions alike: the machine's conditions differ between the two days, so compare within one table only.
+
+**Consumer figures:** none new; 1.0.0 is 0.7.0's code, so the 0.7.0 section's Intel figures (#383) stand.
+
+**Not measured for 1.0.0:** the x86-64-v3 build (built, not timed); `znver5` and AVX-512 builds, Zen 5; Intel; real output files; the first 128 KiB of 5 or 6 channels or without a seek index; cold runs of whole areas; the C interface; `bench realtime`; `--lanes`.
+
 ## 0.7.0
 
 Measured on the Zen 2 benchmark host (AMD Ryzen 9 3950X), 2026-11-23, with `compare.sh` (generic kits, statically linked, profile `dist`): 0.6.2 = `v0.6.2` and 0.7.0 = the release-prep tree (`446994c`, main after #392, plus version changes). Timed under the machine's shared benchmark lock. The run list is the standard one with every case at 7 rounds (a copy of `runlist.json` with `defaults.rounds` 7 and the per-case `rounds` removed, passed with `--runlist`). 238 runs, none failed.

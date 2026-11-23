@@ -150,6 +150,12 @@ jobs:
               grep -qx "$f" <<< "$files" || { echo "::error::$f is missing from the $pkg package"; exit 1; }
             done
           done
+      # A dry run of the release's crates.io packing (release.yml `build`): the crates whose
+      # version is not on crates.io yet, packed together with --no-verify (compiling nothing),
+      # and their Cargo.lock pins checked against the crates.io index. Read-only; no token.
+      # Stops a packing like 1.0.0's before a tag (RELEASING.md, "Pack only what is published").
+      - name: Dry run of the release's crates.io packing
+        run: bash .github/scripts/release-publish.sh dry-run
       # Change records live in changelog.d/ and cleanroom.d/ until a release folds them in
       # (#76; CONTRIBUTING.md, "Change records"): their format, and on pull requests that a
       # change to library or program code adds one of each.
@@ -158,6 +164,7 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           python3 -I .github/scripts/fragments-test.py
+          python3 -I .github/scripts/release-crates-test.py
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
             python3 -I .github/scripts/fragments.py require "origin/$BASE_REF"
           else
@@ -179,7 +186,7 @@ jobs:
           ! python3 -I .github/scripts/changelog-section.py CHANGELOG.md 0.0.0 2> /dev/null
 
   # The criterion benchmarks are compiled so that they do not rot; timing them on shared
-  # runners would mean nothing (README, "Measuring performance").
+  # runners would mean nothing (docs/performance.md, "Measuring performance").
   bench-build:
     runs-on: ubuntu-latest
     steps:
@@ -277,7 +284,7 @@ jobs:
           cargo install cbindgen --locked --version 0.29.4
           cbindgen --config cbindgen.toml --crate scarletbook-ffi --output include/scarletbook.h --verify
       # An addition to the ABI regenerates the baseline abi/abi-N.txt; a breaking change
-      # bumps SB_ABI_VERSION and adds abi-(N+1).txt (README, "ABI compatibility"). On a
+      # bumps SB_ABI_VERSION and adds abi-(N+1).txt (docs/contributing.md, "Changing the C ABI"). On a
       # pull request the header is also classified against the base branch's baseline, so a
       # hand-rewritten baseline cannot hide a breaking change, and the baselines of earlier
       # versions must be unchanged.

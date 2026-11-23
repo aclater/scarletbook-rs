@@ -28,7 +28,9 @@ name: Release
 #
 # After the GitHub release, the `publish` job publishes scarletbook-pcm, scarletbook and
 # scarletbook-ffi to crates.io (issue #249) with trusted publishing (a 30-minute token from
-# GitHub OIDC, no stored token), skipping any crate whose version is already there. It runs
+# GitHub OIDC, no stored token), skipping any crate whose version is already there. Each
+# crate has its own version: from 1.0.0, scarletbook-pcm stays at 0.7.0 (#398), so its
+# version is on crates.io and it is skipped; the tag matches the workspace version. It runs
 # only on tag pushes (the only trigger of this workflow) and only after every other job
 # here succeeded. RELEASING.md has the first publish of a crate, which trusted publishing
 # cannot do.
@@ -39,7 +41,7 @@ name: Release
 #
 # Those two compile nothing (issue #345). The `build` job, with a read-only token, builds and
 # gates `bench`, packages and checks all 28 assets, writes the release notes, and packs and
-# verifies the crates.io packages; it hands the files over as the artifact `release-files`.
+# verifies the crates.io packages of the crates not on crates.io yet; it hands the files over as the artifact `release-files`.
 # `release` attests and uploads them; `publish` publishes each crate with --no-verify once
 # its repacked .crate is byte-identical to the verified one.
 #
@@ -230,28 +232,55 @@ jobs:
             echo
             echo "Built from $GITHUB_SHA.
 
-          C library (scarletbook-ffi, C ABI version $(sed -n 's/^#define SB_ABI_VERSION //p' crates/scarletbook-ffi/include/scarletbook.h)): \`scarletbook-ffi-$VERSION-<target>.tar.gz\` holds the shared and static library and \`scarletbook.h\`, for x86_64-unknown-linux-gnu and aarch64-unknown-linux-gnu (glibc 2.17 or later), x86_64-unknown-linux-musl and aarch64-unknown-linux-musl (musl 1.2 or later), x86_64-apple-darwin (macOS 10.12 or later), aarch64-apple-darwin (macOS 11.0 or later) and x86_64-pc-windows-gnu (Windows 10 or later; UCRT, for MinGW-w64 GCC). \`scarletbook-ffi-$VERSION-x86_64-unknown-linux-gnu-v3.tar.gz\` and \`scarletbook-ffi-$VERSION-x86_64-unknown-linux-musl-v3.tar.gz\` are the same two targets built for x86-64-v3 (AVX2, BMI2, FMA and the rest of the level): the same ABI, but they fail on CPUs without those features; check the CPU before loading them (README, \"Release assets\"). Each has a \`.sha256\` checksum and, for a public repository, the build provenance attestation, and was tested on its platform. Linking, the ABI compatibility policy and verification: README, \"C library\".
+          C library (scarletbook-ffi, C ABI version $(sed -n 's/^#define SB_ABI_VERSION //p' crates/scarletbook-ffi/include/scarletbook.h)): \`scarletbook-ffi-$VERSION-<target>.tar.gz\` holds the shared and static library and \`scarletbook.h\`, for x86_64-unknown-linux-gnu and aarch64-unknown-linux-gnu (glibc 2.17 or later), x86_64-unknown-linux-musl and aarch64-unknown-linux-musl (musl 1.2 or later), x86_64-apple-darwin (macOS 10.12 or later), aarch64-apple-darwin (macOS 11.0 or later) and x86_64-pc-windows-gnu (Windows 10 or later; UCRT, for MinGW-w64 GCC). \`scarletbook-ffi-$VERSION-x86_64-unknown-linux-gnu-v3.tar.gz\` and \`scarletbook-ffi-$VERSION-x86_64-unknown-linux-musl-v3.tar.gz\` are the same two targets built for x86-64-v3 (AVX2, BMI2, FMA and the rest of the level): the same ABI, but they fail on CPUs without those features; check the CPU before loading them (docs/releases.md, \"Release assets\"). Each has a \`.sha256\` checksum and, for a public repository, the build provenance attestation, and was tested on its platform. Linking and the ABI compatibility policy: docs/c-abi.md; verification: docs/releases.md.
 
           Benchmark program \`bench\` for sacd-spec benchmarks/README.md:
           - \`bench-$VERSION-x86_64-linux.tar.gz\`: generic x86-64 (the required asset).
           - \`bench-$VERSION-x86_64-linux-znver5.tar.gz\`: built for AMD Zen 5, the measuring machine's CPU (the optional labelled asset of benchmarks/README.md).
           - \`bench-$VERSION-x86-64-v3-linux.tar.gz\`: built for x86-64-v3 (AVX2 and later CPUs), labelled; an extra build for users, not one of the benchmark assets.
-          Each has a \`.sha256\` checksum (it detects a damaged download, not a replaced one) and, for a public repository, a signed build provenance attestation: \`gh attestation verify <asset> -R $GITHUB_REPOSITORY --signer-workflow $GITHUB_REPOSITORY/.github/workflows/release.yml --source-ref $GITHUB_REF\`. The correctness gate (every corpus case, 1 and all threads) passed on the generic and x86-64-v3 builds.
+          Each has a \`.sha256\` checksum (it detects a damaged download, not a replaced one) and, for a public repository, a signed build provenance attestation: \`gh attestation verify <asset> -R $GITHUB_REPOSITORY --signer-workflow $GITHUB_REPOSITORY/.github/workflows/release.yml --source-ref $GITHUB_REF --deny-self-hosted-runners\`. The correctness gate (every corpus case, 1 and all threads) passed on the generic and x86-64-v3 builds.
 
           Benchmark kit for running the benchmarks on your own machines (benchmarks/README.md): \`scarletbook-benchkit-$VERSION-x86_64-linux.tar.gz\` (generic x86-64) and \`scarletbook-benchkit-$VERSION-x86_64-linux-v3.tar.gz\` (x86-64-v3 CPUs only) hold statically linked \`bench\`, \`scarletbook-synth\` and \`callpattern\`, the run list \`runlist.json\` and its reference runner \`run.py\`. Match the names exactly: a prefix of the generic name also matches the v3 one."
           } > release-notes.md
-      # The crates.io packages, verified here: `cargo package` builds each packed crate (all
-      # three together, so scarletbook-ffi is checked against the other two as packed).
+      # The crates.io packages, verified here: `cargo package` builds each packed crate.
       # `publish` repacks them with --no-verify, compiling nothing, and publishes only if
       # the repacked file is byte-identical to the one verified here (cargo packs
       # reproducibly: the same sources and cargo give the same .crate).
+      # Each crate at its own version (release-crates.py): from 1.0.0, scarletbook-pcm keeps
+      # 0.7.0 while the other two follow the tag (#398). Only the crates whose version is
+      # not on crates.io yet are packed, together; the others resolve from crates.io, as they
+      # will for `publish` and for users. A skipped crate must not be packed here: its repack
+      # never matches its published file (.cargo_vcs_info.json names the commit), and a
+      # crate packed beside it would pin the repack's checksum, which crates.io does not
+      # have. That stopped 1.0.0 halfway (RELEASING.md, "Pack only what is published").
+      # The index lookup is read-only and needs no token.
+      - name: Crates whose version is not on crates.io yet
+        id: pending
+        run: python3 -I .github/scripts/release-crates.py pending
       - name: Pack and verify the crates.io packages
+        env:
+          CRATES: ${{ steps.pending.outputs.pending }}
         run: |
-          cargo package --locked -p scarletbook-pcm -p scarletbook -p scarletbook-ffi
           mkdir crates-io
-          cp target/package/scarletbook-pcm-"$VERSION".crate target/package/scarletbook-"$VERSION".crate \
-            target/package/scarletbook-ffi-"$VERSION".crate crates-io/
+          if [[ -z "$CRATES" ]]; then
+            echo "::warning::every crate's version is already on crates.io; nothing to publish"
+            : > crates-io/SHA256SUMS
+            exit 0
+          fi
+          args=()
+          for crate in $CRATES; do args+=(-p "$crate"); done
+          cargo package --locked "${args[@]}"
+          versions=$(python3 -I .github/scripts/release-crates.py versions)
+          for crate in $CRATES; do
+            cp "target/package/$crate-$(awk -v c="$crate" '$1 == c { print $2 }' <<< "$versions").crate" crates-io/
+          done
+          # Every pin of a published crate in their Cargo.lock is what crates.io will hold.
+          python3 -I .github/scripts/release-crates.py lockcheck crates-io
           (cd crates-io && sha256sum *.crate | tee SHA256SUMS)
+          if [[ $(ls crates-io/*.crate | wc -l) != $(wc -w <<< "$CRATES") ]]; then
+            echo "::error::expected one crates.io package for each of: $CRATES"
+            exit 1
+          fi
       - name: Hand over the release files
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -336,40 +365,24 @@ jobs:
         with:
           name: release-files
           path: release-files
+      # Each crate's own version (its manifest, not the tag) looked up in the crates.io
+      # sparse index; a version already there is skipped: a crate this release leaves
+      # unchanged (scarletbook-pcm stays 0.7.0 from 1.0.0, #398), a re-run, or a first
+      # publish done by hand. Tested by release-crates-test.py.
       - name: Crates whose version is not on crates.io yet
         id: pending
-        run: |
-          version=${GITHUB_REF_NAME#v}
-          existing=() new=()
-          for crate in scarletbook-pcm scarletbook scarletbook-ffi; do
-            # The sparse index file of a crate name of 4 or more characters: first two / next two.
-            url="https://index.crates.io/${crate:0:2}/${crate:2:2}/$crate"
-            code=$(curl -sS -o index.json -w '%{http_code}' "$url")
-            if [[ "$code" == 404 ]]; then
-              new+=("$crate")
-            elif [[ "$code" != 200 ]]; then
-              echo "::error::crates.io index returned HTTP $code for $crate"
-              exit 1
-            elif python3 -I -c 'import json,sys; sys.exit(0 if any(json.loads(l)["vers"] == sys.argv[2] for l in open(sys.argv[1]) if l.strip()) else 1)' index.json "$version"; then
-              echo "$crate $version is already on crates.io; skipped"
-            else
-              existing+=("$crate")
-            fi
-          done
-          # Crates already on crates.io publish through trusted publishing; a crate not on
-          # crates.io at all cannot (crates.io has no trusted publisher for it yet).
-          echo "existing=${existing[*]}" >> "$GITHUB_OUTPUT"
-          echo "new=${new[*]}" >> "$GITHUB_OUTPUT"
-      # All three at once, packed as `build` packed them (each against the other two as
-      # packed, not against crates.io), before anything is uploaded: a mismatch stops the job
-      # here rather than after scarletbook-pcm is already published. The script below still
-      # checks each crate again right before its upload.
+        run: python3 -I .github/scripts/release-crates.py pending
+      # The crates still to publish, packed together as `build` packed them, before anything
+      # is uploaded: a mismatch stops the job here rather than after the first crate is
+      # published. On a re-run after a partial publish this is a subset of `build`'s set; the
+      # crates already published resolve from crates.io, which holds the very files `build`
+      # packed (each was published only after matching its file), so the rest repack the
+      # same. release-publish.sh checks each crate again right before its upload.
       - name: The repacked crates match the verified packages
-        if: steps.pending.outputs.existing != '' || steps.pending.outputs.new != ''
-        run: |
-          cargo package --no-verify --locked -p scarletbook-pcm -p scarletbook -p scarletbook-ffi \
-            --target-dir target/precheck
-          (cd target/precheck/package && sha256sum -c "$GITHUB_WORKSPACE/release-files/crates-io/SHA256SUMS")
+        if: steps.pending.outputs.pending != ''
+        env:
+          CRATES: ${{ steps.pending.outputs.pending }}
+        run: bash .github/scripts/release-publish.sh precheck
       - name: Authenticate with crates.io (trusted publishing)
         if: steps.pending.outputs.existing != ''
         id: auth

@@ -1,7 +1,9 @@
 [package]
 name = "scarletbook-pcm"
-description = "Deprecated (scarletbook-rs#398): DSD64 to 24-bit PCM conversion, deterministic per Super Audio CD frame"
-version.workspace = true
+description = "DSD64 to 24-bit PCM conversion, deterministic per Super Audio CD frame"
+# Its own version, not the workspace's: scarletbook-pcm stays at 0.7.0 outside the 1.0
+# freeze of scarletbook and scarletbook-ffi, and is being deprecated (#398).
+version = "0.7.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

@@ -8,10 +8,10 @@ EXPORTS lists the sb_* symbols of the shared library's export table, one per lin
 that the functions the header declares are exactly the exported ones and can be looked up,
 that sb_abi_version() equals the header's SB_ABI_VERSION and sb_version() the
 package version, that sb_build_info() names that version and the package's target, that
-the README's ctypes bindings run and match the header, then opens corpus image
+the ctypes bindings of docs/python.md run and match the header, then opens corpus image
 dst-features-2ch-6ch, compares its TOC with the conformance manifest and decodes track 1
 of each area against the manifest's per-channel SHA-256, checks the TOC fields of #104 and
-reads its master TOC sector (#105). Then, through the README's bindings, reads ranges of it
+reads its master TOC sector (#105). Then, through the bindings of docs/python.md, reads ranges of it
 provisionally (#94) and checks the readings with a disc-kept seek index and with a
 caller-kept one. Then sizes and reads a DSF and a DSDIFF file of it (#131) and compares
 them with the Rust API's output, and converts a plain-DSD corpus frame to PCM against the
@@ -85,18 +85,18 @@ else:
 print(f"sb_build_info() {lib.sb_build_info().decode()}")
 
 
-# The bindings of README.md ("Using from Python (ctypes)"), run against this library: they
+# The bindings of docs/python.md ("Using from Python (ctypes)"), run against this library: they
 # pass the version check, their structs are the header's field for field, and each bound
 # function takes as many arguments as the header declares.
-readme = pathlib.Path("README.md").read_text(encoding="utf-8")
-block = re.search(r"^### Using from Python \(ctypes\)\n.*?^```python\n(.*?)^```", readme, flags=re.M | re.S).group(1)
+readme = pathlib.Path("docs/python.md").read_text(encoding="utf-8")
+block = re.search(r"^# Using from Python \(ctypes\)\n.*?^```python\n(.*?)^```", readme, flags=re.M | re.S).group(1)
 bindings = {}
-# The README names the library of its own ABI: after an ABI bump, this stops until it is updated.
+# The guide names the library of its own ABI: after an ABI bump, this stops until it is updated.
 readme_path = f'"/path/to/libscarletbook_ffi.so.{abi}"'
 if readme_path not in block:
-    sys.exit(f"README.md's ctypes bindings do not load {readme_path} (SB_ABI_VERSION is {abi})")
+    sys.exit(f"docs/python.md's ctypes bindings do not load {readme_path} (SB_ABI_VERSION is {abi})")
 exec(block.replace(readme_path, repr(str(lib_path))), bindings)
-check("README SB_ABI_VERSION", bindings["SB_ABI_VERSION"], int(re.search(r"^#define SB_ABI_VERSION (\d+)$", header, flags=re.M).group(1)))
+check("docs/python.md SB_ABI_VERSION", bindings["SB_ABI_VERSION"], int(re.search(r"^#define SB_ABI_VERSION (\d+)$", header, flags=re.M).group(1)))
 CTYPES = {"uint8_t": C.c_uint8, "uint16_t": C.c_uint16, "uint32_t": C.c_uint32, "uint64_t": C.c_uint64,
           "int32_t": C.c_int32, "int64_t": C.c_int64, "size_t": C.c_size_t, "double": C.c_double, "const char *": C.c_char_p,
           "const uint8_t *": C.POINTER(C.c_uint8)}
@@ -113,13 +113,13 @@ for name, body in structs:
     want = [(m.group(2), ctype(m.group(1)) if m.group(3) is None else ctype(m.group(1)) * int(m.group(3)))
             for m in re.finditer(r"^(.*?)\s*\b(\w+)(?: \[ (\d+) \])?;$", body, flags=re.M)]
     got = [(f, t) for f, t in bindings[name]._fields_] if name in bindings else []
-    check(f"README struct {name}", got, want)
+    check(f"docs/python.md struct {name}", got, want)
 for m in re.finditer(r"^(?!typedef)[^(]*?\b(sb_\w+)\((.*)\);$", decls, flags=re.M):
     fn = getattr(bindings["lib"], m.group(1))
     if fn.argtypes is not None:
         params = 0 if m.group(2) == "void" else m.group(2).count(",") + 1
-        check(f"README argtypes of {m.group(1)}", len(fn.argtypes), params)
-print("README ctypes bindings match the header")
+        check(f"docs/python.md argtypes of {m.group(1)}", len(fn.argtypes), params)
+print("docs/python.md ctypes bindings match the header")
 
 
 class DiscInfo(C.Structure):
@@ -216,7 +216,7 @@ for index, want in enumerate(toc["areas"]):
     lib.sb_track_audio_free(handle)
     check(f"area {want['slot']} track 1 audio", [h.hexdigest() for h in hashes], audio["sha256"])
 
-# The TOC fields of #104, through the README's bindings, against the manifest.
+# The TOC fields of #104, through the bindings of docs/python.md, against the manifest.
 B = bindings["lib"]
 for name, key in ((0, "album_genres"), (1, "disc_genres")):  # SB_GENRE_LIST_ALBUM, _DISC
     got = []
@@ -259,7 +259,7 @@ for want in toc["areas"]:
     check(f"area {slot} locales", channels, want["locales"])
 print("TOC fields (#104) match the manifest")
 
-# Logical sectors (#105), through the README's bindings: the master TOC sector holds its
+# Logical sectors (#105), through the bindings of docs/python.md: the master TOC sector holds its
 # signature, the image's user data; a range past the last sector fails whole.
 sectors = C.create_string_buffer(2 * 2048)
 check("sb_disc_read_sectors", bindings["lib"].sb_disc_read_sectors(disc, 510, 1, sectors, 2048), OK)
@@ -268,7 +268,7 @@ check("sectors past the end", bindings["lib"].sb_disc_read_sectors(disc, info.se
       -18)  # SB_STATUS_SECTOR_RANGE_INVALID
 lib.sb_disc_free(disc)
 
-# Provisional reading (#94), through the README's bindings where they bind the call: ranges
+# Provisional reading (#94), through the bindings of docs/python.md where they bind the call: ranges
 # read provisionally equal exact reads, are reported PENDING, and are confirmed by a
 # disc-kept seek index (sb_disc_seek_verify, sb_disc_seek_event_next) and by a caller-kept
 # one (sb_seek_index_verify, sb_seek_index_event_next).
@@ -370,7 +370,7 @@ R.sb_seek_index_free(index)
 R.sb_disc_free(d)
 print(f"provisional reading: {len(ranges) + 1} ranges read provisionally and confirmed")
 
-# DSF and DSDIFF output (#131), through the README's bindings: each file of
+# DSF and DSDIFF output (#131), through the bindings of docs/python.md: each file of
 # crates/scarletbook-ffi/tests/output-smoke.txt (the Rust API's output, which tests/output.rs
 # checks) has the size sb_output_layout_info reports, regions that tile it, and the bytes
 # sb_output_layout_read produces, read in pieces.
@@ -415,7 +415,7 @@ for line in smoke.splitlines():
 O.sb_output_options_free(opts)
 R.sb_disc_free(d)
 
-# DSD to PCM (#130), through the README's bindings: frame 1 of track 1 of a plain-DSD
+# DSD to PCM (#130), through the bindings of docs/python.md: frame 1 of track 1 of a plain-DSD
 # stereo area, converted with frames 0 and 2 as neighbours at 176.4 kHz (default cutoff,
 # 0 dB, S24LE), has the digest the Rust converter gives it: CORPUS_PCM_SHA256 of
 # crates/scarletbook-ffi/tests/pcm.rs, which checks it with scarletbook_pcm.
