@@ -112,9 +112,12 @@ pool the way a consumer of the C interface does, and prints wall and CPU time pe
 `bench decode --sink raw`:
 
 ```sh
-scarletbook-synth dst50.iso --minutes 50 --area 2ch --kind dst
-cargo bench -p scarletbook-ffi --bench decode_pool -- dst50.iso c-read --threads 0 --rounds 3 --sink raw /dev/shm/out
+cargo build --release -p scarletbook-conformance
+target/release/scarletbook-synth dst50.iso --minutes 50 --area 2ch --kind dst
+cargo bench -p scarletbook-ffi --bench decode_pool -- "$PWD/dst50.iso" c-read --threads 0 --rounds 3 --sink raw /dev/shm/out
 ```
+
+The image path is absolute because `cargo bench` runs the benchmark in the crate's directory.
 
 The scripts in `perf/` need Linux and `perf`:
 
