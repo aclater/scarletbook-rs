@@ -155,7 +155,9 @@ Never run the two crates in one command: feature unification would turn on `para
 both. On pull requests that change a crate, CI runs the short slices: `scarletbook-ffi`'s
 tests and a few of the core crate's. The core crate's full tests and the dispatch modules'
 wrappers run on every push to `main` and nightly (`.github/workflows/miri-full.yml`). If you
-changed dependencies, also run `cargo deny check`. The minimum supported Rust version is 1.85;
+changed dependencies, also run `cargo deny check`. If you changed any Markdown, run CI's
+`link-check`, which checks relative links and anchors offline:
+`python3 -I .github/scripts/linkcheck.py`. The minimum supported Rust version is 1.85;
 [docs/stability.md](docs/stability.md#minimum-supported-rust-version) says when it can rise.
 
 If you changed `scarletbook-ffi`, CI's `lsan` job checks it for memory leaks with
