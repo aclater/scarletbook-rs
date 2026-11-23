@@ -8,11 +8,19 @@
 # each crate is packed again with --no-verify (no build), and published only if that file
 # is byte-identical to the one `build` packed and verified (cargo packs reproducibly). The
 # publish then packs the same sources once more, with --no-verify.
+#
+# Each crate's version comes from its manifest (release-crates.py), not from the tag: the
+# crates need not share one version (scarletbook-pcm stays at 0.7.0 from 1.0.0, #398).
 set -euo pipefail
 
-version=${GITHUB_REF_NAME#v}
 sums=release-files/crates-io/SHA256SUMS
+versions=$(python3 -I .github/scripts/release-crates.py versions)
 for crate in $CRATES; do
+  version=$(awk -v c="$crate" '$1 == c { print $2 }' <<< "$versions")
+  if [[ -z "$version" ]]; then
+    echo "::error::$crate is not one of the published crates"
+    exit 1
+  fi
   file="$crate-$version.crate"
   cargo package --no-verify --locked -p "$crate"
   want=$(awk -v f="$file" '$2 == f { print $1 }' "$sums")

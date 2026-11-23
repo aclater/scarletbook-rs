@@ -28,7 +28,9 @@ name: Release
 #
 # After the GitHub release, the `publish` job publishes scarletbook-pcm, scarletbook and
 # scarletbook-ffi to crates.io (issue #249) with trusted publishing (a 30-minute token from
-# GitHub OIDC, no stored token), skipping any crate whose version is already there. It runs
+# GitHub OIDC, no stored token), skipping any crate whose version is already there. Each
+# crate has its own version: from 1.0.0, scarletbook-pcm stays at 0.7.0 (#398), so its
+# version is on crates.io and it is skipped; the tag matches the workspace version. It runs
 # only on tag pushes (the only trigger of this workflow) and only after every other job
 # here succeeded. RELEASING.md has the first publish of a crate, which trusted publishing
 # cannot do.
@@ -245,13 +247,21 @@ jobs:
       # `publish` repacks them with --no-verify, compiling nothing, and publishes only if
       # the repacked file is byte-identical to the one verified here (cargo packs
       # reproducibly: the same sources and cargo give the same .crate).
+      # Each crate at its own version (release-crates.py): from 1.0.0, scarletbook-pcm keeps
+      # 0.7.0 while the other two follow the tag (#398). An unchanged crate is still packed
+      # and verified here, since scarletbook-ffi is verified against it; `publish` skips it.
       - name: Pack and verify the crates.io packages
         run: |
           cargo package --locked -p scarletbook-pcm -p scarletbook -p scarletbook-ffi
           mkdir crates-io
-          cp target/package/scarletbook-pcm-"$VERSION".crate target/package/scarletbook-"$VERSION".crate \
-            target/package/scarletbook-ffi-"$VERSION".crate crates-io/
+          python3 -I .github/scripts/release-crates.py versions | while read -r crate version; do
+            cp "target/package/$crate-$version.crate" crates-io/
+          done
           (cd crates-io && sha256sum *.crate | tee SHA256SUMS)
+          if [[ $(ls crates-io/*.crate | wc -l) != 3 ]]; then
+            echo "::error::expected 3 crates.io packages"
+            exit 1
+          fi
       - name: Hand over the release files
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -336,34 +346,19 @@ jobs:
         with:
           name: release-files
           path: release-files
+      # Each crate's own version (its manifest, not the tag) looked up in the crates.io
+      # sparse index; a version already there is skipped: a crate this release leaves
+      # unchanged (scarletbook-pcm stays 0.7.0 from 1.0.0, #398), a re-run, or a first
+      # publish done by hand. Tested by release-crates-test.py.
       - name: Crates whose version is not on crates.io yet
         id: pending
-        run: |
-          version=${GITHUB_REF_NAME#v}
-          existing=() new=()
-          for crate in scarletbook-pcm scarletbook scarletbook-ffi; do
-            # The sparse index file of a crate name of 4 or more characters: first two / next two.
-            url="https://index.crates.io/${crate:0:2}/${crate:2:2}/$crate"
-            code=$(curl -sS -o index.json -w '%{http_code}' "$url")
-            if [[ "$code" == 404 ]]; then
-              new+=("$crate")
-            elif [[ "$code" != 200 ]]; then
-              echo "::error::crates.io index returned HTTP $code for $crate"
-              exit 1
-            elif python3 -I -c 'import json,sys; sys.exit(0 if any(json.loads(l)["vers"] == sys.argv[2] for l in open(sys.argv[1]) if l.strip()) else 1)' index.json "$version"; then
-              echo "$crate $version is already on crates.io; skipped"
-            else
-              existing+=("$crate")
-            fi
-          done
-          # Crates already on crates.io publish through trusted publishing; a crate not on
-          # crates.io at all cannot (crates.io has no trusted publisher for it yet).
-          echo "existing=${existing[*]}" >> "$GITHUB_OUTPUT"
-          echo "new=${new[*]}" >> "$GITHUB_OUTPUT"
+        run: python3 -I .github/scripts/release-crates.py pending
       # All three at once, packed as `build` packed them (each against the other two as
       # packed, not against crates.io), before anything is uploaded: a mismatch stops the job
-      # here rather than after scarletbook-pcm is already published. The script below still
-      # checks each crate again right before its upload.
+      # here rather than after scarletbook-pcm is already published. A crate that is skipped
+      # (already on crates.io) is repacked and compared too: unchanged sources give the same
+      # file, and scarletbook-ffi is packed against it. The script below still checks each
+      # crate again right before its upload.
       - name: The repacked crates match the verified packages
         if: steps.pending.outputs.existing != '' || steps.pending.outputs.new != ''
         run: |

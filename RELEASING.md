@@ -2,14 +2,36 @@
 # Releasing
 
 A release is a tag `vX.Y.Z` on the merge commit of the pull request that prepares it. That
-pull request sets the version in three places (the build fails if they disagree):
+pull request sets the version in two places (the build fails if they disagree):
 
-- `version` under `[workspace.package]` in `Cargo.toml`;
-- the `version = "=X.Y.Z"` of `scarletbook` and `scarletbook-pcm` under `[dependencies]` in
+- `version` under `[workspace.package]` in `Cargo.toml`, which `scarletbook`,
+  `scarletbook-ffi` and the unpublished crates follow, and which the tag must match;
+- the `version = "=X.Y.Z"` of `scarletbook` under `[dependencies]` in
   `crates/scarletbook-ffi/Cargo.toml` (crates.io needs a version beside each path);
 
 and renames the Unreleased section of CHANGELOG.md for the version
 (`.github/scripts/fragments.py assemble X.Y.Z DATE`).
+
+`scarletbook-pcm` has its own `version` in `crates/scarletbook-pcm/Cargo.toml`, not the
+workspace's: from 1.0.0 it stays at 0.7.0, outside the 1.0 freeze, while it is deprecated
+(#398). Its pin in `crates/scarletbook-ffi/Cargo.toml` stays `=0.7.0` with it. A release that
+leaves it unchanged packs and verifies it as usual (`scarletbook-ffi` is verified against it)
+and does not publish it again: the `publish` job finds 0.7.0 on crates.io and skips it. If it
+ever changes, its own version and the pin move together, in a release of their own.
+
+**From 1.0.0, check the semver of every release** (#39, R3) against the previous tag, with the
+release type of the bump, for the two frozen crates:
+
+```sh
+# --release-type: patch for x.y.Z, minor for x.Y.0 (major only for a planned 2.0.0).
+cargo semver-checks -p scarletbook --baseline-rev vX.Y.Z --release-type patch --all-features
+cargo semver-checks -p scarletbook-ffi --baseline-rev vX.Y.Z --release-type patch --all-features
+python3 .github/scripts/abi-check.py   # the C ABI; SB_ABI_VERSION stays 2 throughout 1.x
+```
+
+Both must report "no semver update required"; give the result in the pull request. A check
+that fails, or any change to `abi/abi-2.txt` other than an addition, stops the release. `scarletbook-ffi`'s contract is the C ABI, so `abi-check.py` is its real check; the
+Rust check of it is for completeness. Check `scarletbook-pcm` too while it is still released.
 
 It also moves the README's Quick start (#364) to the new version: the `cargo add` pin, the
 tag in the image URL, the release asset name, and any API the examples use that changed. The
@@ -31,8 +53,11 @@ Pushing the tag runs `.github/workflows/release.yml`:
    the GitHub release, from `build`'s files;
 5. `publish`, in the environment `release`, only if all of the above passed:
    `scarletbook-pcm`, `scarletbook` and `scarletbook-ffi` to crates.io, in that order, with
-   crates.io trusted publishing. A crate whose version is already on crates.io is skipped, so
-   the job can be re-run, and a crate published by hand (below) is not published twice.
+   crates.io trusted publishing. Each crate is published at its own manifest version, and one
+   whose version is already in the crates.io index is skipped
+   (`.github/scripts/release-crates.py`, tested by `release-crates-test.py` in CI): an unchanged
+   crate (`scarletbook-pcm` at 0.7.0 from 1.0.0) is not published again, the job can be re-run,
+   and a crate published by hand (below) is not published twice.
 
 The jobs that sign and publish compile nothing (issue #345): dependencies' build scripts and
 proc macros run only in `build`, which holds no write, signing or publishing permission.

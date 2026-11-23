@@ -158,6 +158,7 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           python3 -I .github/scripts/fragments-test.py
+          python3 -I .github/scripts/release-crates-test.py
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
             python3 -I .github/scripts/fragments.py require "origin/$BASE_REF"
           else
