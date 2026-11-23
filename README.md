@@ -23,17 +23,18 @@ in [CHANGELOG.md](CHANGELOG.md), and vulnerabilities are reported as described i
 ## Quick start
 
 Both examples read a small synthetic image from this repository's conformance corpus,
-[`full-text.iso`](https://github.com/aclater/scarletbook-rs/blob/v0.7.0/corpus/images/full-text.iso)
+[`full-text.iso`](https://github.com/aclater/scarletbook-rs/blob/v1.0.0/corpus/images/full-text.iso)
 (1.1 MB, CC0-1.0, [corpus/LICENSE](corpus/LICENSE)): a stereo area with three tracks of one or two
 frames each, and every text field filled in. It holds generated test signals, no real audio.
-Every command below was run against v0.7.0 on 2026-11-23.
+Every command below was run against v0.7.0 on 2026-11-23; 1.0.0 has the same interface, so it
+changes nothing they use.
 
 ### Rust
 
 ```sh
 cargo new quickstart && cd quickstart
-cargo add scarletbook@=0.7.0
-curl -fsSLO https://raw.githubusercontent.com/aclater/scarletbook-rs/v0.7.0/corpus/images/full-text.iso
+cargo add scarletbook@=1.0.0
+curl -fsSLO https://raw.githubusercontent.com/aclater/scarletbook-rs/v1.0.0/corpus/images/full-text.iso
 cat > src/main.rs <<'EOF'
 use std::{fs::File, io::BufReader};
 
@@ -65,7 +66,7 @@ TwoChannel area: 2 channels, 3 tracks
   track 3: 2 frames, "Track 3 title, second item"
 ```
 
-The `=0.7.0` pin is the one recommended under [Installing](#installing); a frame is 1/75 s.
+The `=1.0.0` pin is the one recommended under [Installing](#installing); a frame is 1/75 s.
 `{:?}` quotes a string and escapes control characters, including U+007F and U+0080 to U+009F,
 while keeping other text (Japanese, say) readable, which `escape_default()` would turn into
 `\u{..}` escapes. For audio, see [Using the library](#using-the-library).
@@ -77,12 +78,12 @@ those of [Release assets](#release-assets) and [Verifying a download](#verifying
 
 ```sh
 mkdir quickstart-c && cd quickstart-c
-gh release download v0.7.0 -R aclater/scarletbook-rs -p 'scarletbook-ffi-0.7.0-x86_64-unknown-linux-gnu.tar.gz*'
-sha256sum -c scarletbook-ffi-0.7.0-x86_64-unknown-linux-gnu.tar.gz.sha256
-gh attestation verify scarletbook-ffi-0.7.0-x86_64-unknown-linux-gnu.tar.gz -R aclater/scarletbook-rs \
-  --signer-workflow aclater/scarletbook-rs/.github/workflows/release.yml --source-ref refs/tags/v0.7.0
-tar xzf scarletbook-ffi-0.7.0-x86_64-unknown-linux-gnu.tar.gz
-curl -fsSLO https://raw.githubusercontent.com/aclater/scarletbook-rs/v0.7.0/corpus/images/full-text.iso
+gh release download v1.0.0 -R aclater/scarletbook-rs -p 'scarletbook-ffi-1.0.0-x86_64-unknown-linux-gnu.tar.gz*'
+sha256sum -c scarletbook-ffi-1.0.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+gh attestation verify scarletbook-ffi-1.0.0-x86_64-unknown-linux-gnu.tar.gz -R aclater/scarletbook-rs \
+  --signer-workflow aclater/scarletbook-rs/.github/workflows/release.yml --source-ref refs/tags/v1.0.0
+tar xzf scarletbook-ffi-1.0.0-x86_64-unknown-linux-gnu.tar.gz
+curl -fsSLO https://raw.githubusercontent.com/aclater/scarletbook-rs/v1.0.0/corpus/images/full-text.iso
 cat > toc.c <<'EOF'
 #include <stdio.h>
 #include "scarletbook.h"
@@ -126,7 +127,7 @@ int main(void) {
     return 0;
 }
 EOF
-P=scarletbook-ffi-0.7.0-x86_64-unknown-linux-gnu
+P=scarletbook-ffi-1.0.0-x86_64-unknown-linux-gnu
 cc -std=c99 -Wall -Wextra -pedantic -I$P/include toc.c -L$P/lib -lscarletbook_ffi -Wl,-rpath,'$ORIGIN/'$P/lib -o toc
 ./toc
 ```
@@ -142,7 +143,7 @@ area slot 0: 2 channels, 3 tracks
 Titles and other text come from the disc and can hold control characters (U+007F, U+0080 to U+009F,
 and U+009B starts a control sequence on some terminals), so both examples escape what they print;
 code of yours should do the same, as the docs of
-[`DiscText`](https://docs.rs/scarletbook/0.7.0/scarletbook/toc/struct.DiscText.html) and of
+[`DiscText`](https://docs.rs/scarletbook/1.0.0/scarletbook/toc/struct.DiscText.html) and of
 [`sb_disc_string`](crates/scarletbook-ffi/include/scarletbook.h) say.
 
 `gh attestation verify` prints nothing when it succeeds (a non-zero exit status is a failure).
@@ -179,7 +180,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-**Byte stability.** While the version is 0.x, a new 0.7.y release may change the PCM bytes
+**Byte stability.** `scarletbook-pcm` stays at 0.7.0 from 1.0.0 (outside the 1.0 freeze, see
+[Stability](#stability)). While its version is 0.x, a new 0.7.y release may change the PCM bytes
 that `scarletbook-pcm` (and the C library's `sb_pcm_*`) produce; the decoded DSD bytes are
 fixed by the specification. Cargo treats `0.7.y` as compatible with `0.7.x`, so a plain
 `scarletbook-pcm = "0.7"` picks up such changes on `cargo update`. A consumer that needs the
@@ -1162,7 +1164,7 @@ offset)` reads the same fields at the offsets documented in `scarletbook.h`.
 ### ABI compatibility
 
 **ABI 2 is the 1.0 ABI** ([#39](https://github.com/aclater/scarletbook-rs/issues/39), owner
-decision of 2026-11-06). 1.0.0 will have `SB_ABI_VERSION` 2, and no ABI 3 is planned: no planned
+decision of 2026-11-06). 1.0.0 has `SB_ABI_VERSION` 2, and no ABI 3 is planned: no planned
 work needs an ABI 2 struct to grow, because new data comes through new functions and types. On
 Linux and macOS the shared library is named after this number (see "Linking"), so
 `libscarletbook_ffi.so.2` and `libscarletbook_ffi.2.dylib` are the 1.0 names too.
@@ -1205,7 +1207,7 @@ that loads the library at run time can look the symbol up instead.
 | `SB_ABI_VERSION` | First release |
 |---|---|
 | 1 | 0.1.0 to 0.3.0 (additions only in 0.3.0) |
-| 2 | 0.4.0 (additions in 0.4.1, 0.5.0, 0.5.1, 0.5.2, 0.5.3, 0.5.4 and 0.6.0); the 1.0 ABI |
+| 2 | 0.4.0 (additions in 0.4.1, 0.5.0, 0.5.1, 0.5.2, 0.5.3, 0.5.4 and 0.6.0); unchanged in 1.0.0, the 1.0 ABI |
 
 CI enforces this. `crates/scarletbook-ffi/abi/abi-N.txt` is the baseline of ABI version N:
 the header's declarations without comments or layout. `.github/scripts/abi-check.py`
@@ -1266,18 +1268,31 @@ way round.
 
 ## Stability
 
-From 1.0, the Rust API of `scarletbook` and `scarletbook-pcm` and the C ABI of
-`scarletbook-ffi` follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html): they stay
-compatible within a major version, by the rules of
-[Cargo's SemVer reference](https://doc.rust-lang.org/cargo/reference/semver.html), and every
-breaking change is listed in [CHANGELOG.md](CHANGELOG.md). What counts as a breaking change of
-the C ABI is in [ABI compatibility](#abi-compatibility).
+1.0.0 freezes the interface: it is the 0.7 interface, with no API or ABI change
+([#39](https://github.com/aclater/scarletbook-rs/issues/39)). From 1.0.0, the Rust API of
+`scarletbook` and the C ABI of `scarletbook-ffi` follow
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html): they stay compatible within a major
+version, by the rules of
+[Cargo's SemVer reference](https://doc.rust-lang.org/cargo/reference/semver.html), so there is
+no breaking change without 2.0.0, and every breaking change is listed in
+[CHANGELOG.md](CHANGELOG.md). A `1.y.z` release may add to the interface (a minor release,
+`1.Y.0`) or only fix it (a patch release, `1.y.Z`); each release is checked with
+`cargo semver-checks` against the previous one ([RELEASING.md](RELEASING.md)).
 
-Before 1.0, as in Cargo, the `y` step of `0.y.z` is the major one and may break the API, and
-the `z` step is the minor one and may only add to it. The interface is not frozen yet:
-[#39](https://github.com/aclater/scarletbook-rs/issues/39) tracks the changes planned before
-1.0, and [Migrating to 0.6.0](docs/migrating-0.6.md) and [Migrating to 0.7.0](docs/migrating-0.7.md)
-give a before-and-after for each.
+The C library keeps `SB_ABI_VERSION` 2 and the library names `libscarletbook_ffi.so.2` and
+`libscarletbook_ffi.2.dylib` throughout 1.x. What counts as a breaking change of the C ABI is
+in [ABI compatibility](#abi-compatibility).
+
+`scarletbook-pcm` is outside this promise. It stays at 0.7.0, is not part of the 1.0 freeze,
+and is being deprecated ([#398](https://github.com/aclater/scarletbook-rs/issues/398)):
+DSD-to-PCM conversion moves to its consumers. Until then it follows Cargo's rules for `0.y.z`
+(the `y` step may break it, the `z` step may only add). The `sb_pcm_*` functions of the C
+library are part of ABI 2 and stay in it, even once they are marked deprecated.
+
+Before 1.0, as in Cargo, the `y` step of `0.y.z` was the major one and could break the API.
+Coming from 0.6 or earlier, [Migrating to 0.7.0](docs/migrating-0.7.md) (and, before it,
+[Migrating to 0.6.0](docs/migrating-0.6.md)) gives a before-and-after for each change; 0.7 to
+1.0.0 needs only the version.
 
 Not covered:
 
@@ -1288,9 +1303,12 @@ Not covered:
 
 ### Versions
 
-Every crate of the workspace shares one version, so a breaking change in one crate raises the
-version of them all, including crates that did not change. This stays so from 1.0
+`scarletbook`, `scarletbook-ffi` and the unpublished crates share the workspace version, so a
+breaking change in one raises the version of them all, including crates that did not change
 ([#39](https://github.com/aclater/scarletbook-rs/issues/39), owner decision of 2026-11-06).
+`scarletbook-pcm` is the exception from 1.0.0: it keeps its own version, 0.7.0, outside the
+freeze ([#398](https://github.com/aclater/scarletbook-rs/issues/398)), and a release that
+leaves it unchanged does not publish it again.
 
 ### Minimum supported Rust version
 

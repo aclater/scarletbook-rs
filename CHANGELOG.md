@@ -4,11 +4,15 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The version
-is shared by every crate of the workspace; releases carry the `bench` program and, from
+is shared by every crate of the workspace, except `scarletbook-pcm`, which stays at 0.7.0 from
+1.0.0 (#398); releases carry the `bench` program and, from
 0.3.0, the C library, as binary assets. The crates are on crates.io from 0.5.7 (`scarletbook-ffi`
 from 0.5.8).
 
 ## [Unreleased]
+
+## [1.0.0] - 2026-11-23
+
 
 ## [0.7.0] - 2026-11-23
 
