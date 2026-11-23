@@ -625,39 +625,38 @@ impl Lane {
     /// each byte value, its share at each of the 8 values of `r`.
     fn build_tables(&mut self, filters: &[Filter]) {
         // Tables beyond a filter's order are zero; only those a previous frame filled are
-        // cleared again.
-        self.tables.resize(filters.len() * HISTORY_BYTES, [[0; 8]; 256]);
-        self.filled.resize(filters.len(), 0);
-        self.partial.resize(filters.len(), [0; 256]);
+        // cleared again. The slots of filters no previous frame had are appended, each
+        // table written once (#383): filling them with zeros first, then computing over
+        // them, wrote a new decoder's tables twice.
+        let had = self.filled.len();
+        if filters.len() > had {
+            self.tables.reserve_exact((filters.len() - had) * HISTORY_BYTES);
+            self.partial.reserve_exact(filters.len() - had);
+        }
         for (f, filter) in filters.iter().enumerate() {
             // Coefficients beyond the order (and beyond 127) are 0; every |a_i| <= 256.
             let a = |i: usize| filter.coefs.get(i).map_or(0, |&v| v as i16);
             let used = filter.order.div_ceil(8);
-            for d in 0..used {
-                let table = &mut self.tables[f * HISTORY_BYTES + d];
-                // A history bit of 1 contributes +a_i and 0 contributes -a_i: entry 0 is
-                // minus the sum over the byte's bits, and setting bit b adds 2 a_i. Every
-                // entry is at most 8 x 256 in magnitude.
-                let mut first = [0i16; 8];
-                let mut cols = [[0i16; 8]; 8];
-                for (r, f) in first.iter_mut().enumerate() {
-                    for (b, col) in cols.iter_mut().enumerate() {
-                        let v = a(8 * d + r + b);
-                        *f -= v;
-                        col[r] = 2 * v;
+            if f < had {
+                for d in 0..used {
+                    byte_table(&mut self.tables[f * HISTORY_BYTES + d], d, a);
+                }
+                for d in used..self.filled[f] {
+                    self.tables[f * HISTORY_BYTES + d] = [[0; 8]; 256];
+                }
+                self.filled[f] = used;
+            } else {
+                for d in 0..HISTORY_BYTES {
+                    self.tables.push([[0; 8]; 256]);
+                    if d < used {
+                        if let Some(table) = self.tables.last_mut() {
+                            byte_table(table, d, a);
+                        }
                     }
                 }
-                table[0] = first;
-                for byte in 1..256usize {
-                    let col = &cols[byte.trailing_zeros() as usize];
-                    let prev = table[byte & (byte - 1)];
-                    table[byte] = core::array::from_fn(|r| prev[r].wrapping_add(col[r]));
-                }
+                self.filled.push(used);
+                self.partial.push([0; 256]);
             }
-            for d in used..self.filled[f] {
-                self.tables[f * HISTORY_BYTES + d] = [[0; 8]; 256];
-            }
-            self.filled[f] = used;
             // The newest r bits of the current byte, at most 7 terms.
             let partial = &mut self.partial[f];
             for r in 0..8 {
@@ -670,16 +669,50 @@ impl Lane {
     }
 
     fn build_luts(&mut self, ptables: &[Vec<u32>]) {
-        self.luts.resize(ptables.len(), [0; LUT_LEN]);
-        for (lut, p) in self.luts.iter_mut().zip(ptables) {
+        // The tables of ptables no previous frame had are appended, each written once.
+        let had = self.luts.len();
+        self.luts.reserve_exact(ptables.len().saturating_sub(had));
+        for (q, p) in ptables.iter().enumerate() {
             // In place; entries past 4096 are never read and keep whatever they hold.
             // Entries are 1 to 128 (5.3.6); a ptable has 1 to 64, and the last one repeats.
-            let used = &mut lut[..LUT_USED];
-            used.fill(p.last().copied().unwrap_or(128) as u8);
-            for (slot, &v) in used.iter_mut().zip(p) {
+            let last = p.last().copied().unwrap_or(128) as u8;
+            let lut = if q < had {
+                let lut = &mut self.luts[q];
+                lut[..LUT_USED].fill(last);
+                lut
+            } else {
+                self.luts.push([last; LUT_LEN]);
+                let Some(lut) = self.luts.last_mut() else { return };
+                lut
+            };
+            for (slot, &v) in lut.iter_mut().zip(p) {
                 *slot = v as u8;
             }
         }
+    }
+}
+
+/// Builds table `d` of a filter with coefficients `a` (see [`Lane::build_tables`]) into
+/// `table`, overwriting every entry.
+#[inline(always)]
+fn byte_table(table: &mut ByteTable, d: usize, a: impl Fn(usize) -> i16) {
+    // A history bit of 1 contributes +a_i and 0 contributes -a_i: entry 0 is minus the sum
+    // over the byte's bits, and setting bit b adds 2 a_i. Every entry is at most 8 x 256 in
+    // magnitude.
+    let mut first = [0i16; 8];
+    let mut cols = [[0i16; 8]; 8];
+    for (r, f) in first.iter_mut().enumerate() {
+        for (b, col) in cols.iter_mut().enumerate() {
+            let v = a(8 * d + r + b);
+            *f -= v;
+            col[r] = 2 * v;
+        }
+    }
+    table[0] = first;
+    for byte in 1..256usize {
+        let col = &cols[byte.trailing_zeros() as usize];
+        let prev = table[byte & (byte - 1)];
+        table[byte] = core::array::from_fn(|r| prev[r].wrapping_add(col[r]));
     }
 }
 
