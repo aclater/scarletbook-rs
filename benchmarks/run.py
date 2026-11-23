@@ -364,7 +364,7 @@ def main():
                 # (README, "Fresh copies"): the page-cache pages that hold one image file can
                 # make every read of it slower, for as long as that file stays cached. The
                 # copies are kept until the case ends, so that none reuses pages another
-                # just freed, which were the slow ones on lennon (#248).
+                # just freed, which were the slow ones on the Zen 2 benchmark host (#248).
                 image = stage(source, os.path.join(copies, f"{c['id']}-{r}.iso"))
             free_after = free_by_order()
             if r == 0:

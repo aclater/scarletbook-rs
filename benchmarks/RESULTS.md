@@ -2,9 +2,9 @@
 # Measured performance, per release
 
 Numbers for consumers deciding which version and which build to use. Each release adds a
-section, newest first, measured on **lennon**: AMD Ryzen 9 3950X (Zen 2, 16 cores / 32
-threads, SMT on), 125 GB RAM, NVMe, `performance` governor, Linux. That is the consumers' Zen 2
-class; other CPUs differ (#224 also measures Zen 5 and Raptor Lake, through the kit).
+section, newest first, measured on **the Zen 2 benchmark host**: AMD Ryzen 9 3950X (16 cores /
+32 threads, SMT on), 125 GB RAM, NVMe, `performance` governor, Linux. That is the consumers' Zen
+2 class; other CPUs differ (#224 also measures Zen 5 and Raptor Lake, through the kit).
 
 ## Method
 
@@ -24,8 +24,9 @@ class; other CPUs differ (#224 also measures Zen 5 and Raptor Lake, through the 
 - **Ratio:** the newer version's median wall time over the older one's, per build; below 1
   is faster.
 
-To reproduce, from a checkout of the newer version (on lennon, build under `lennon.sh run`
-and time under `lennon.sh bench`):
+To reproduce, from a checkout of the newer version (on the Zen 2 benchmark host, build and
+time under the host's exclusive lock, which takes timed runs only when the machine is otherwise
+idle):
 
 ```sh
 benchmarks/compare.sh build ../cmp 3eb96dc v0.5.6   # git revisions or source directories
@@ -268,11 +269,11 @@ Not measured for 0.5.9: the x86-64-v3 build; AVX-512 builds, Zen 5 and Raptor La
 
 ## 0.5.8
 
-Measured on lennon (3950X), 2026-11-05, with `compare.sh` (generic kits, statically linked, profile
-`dist`): 0.5.7 = `v0.5.7` and 0.5.8 = the release-prep tree. No path's code changed for speed in this
-release, and no row moves by more than 1 % in this run. On the plain-DSD rows that isn't a resolved
-figure: differences under about 2 % are unresolved (see "Compare within this section only"), so their
-ratios mean "no change resolved", not "within 1 %".
+Measured on the Zen 2 benchmark host (3950X), 2026-11-05, with `compare.sh` (generic kits,
+statically linked, profile `dist`): 0.5.7 = `v0.5.7` and 0.5.8 = the release-prep tree. No path's
+code changed for speed in this release, and no row moves by more than 1 % in this run. On the
+plain-DSD rows that isn't a resolved figure: differences under about 2 % are unresolved (see
+"Compare within this section only"), so their ratios mean "no change resolved", not "within 1 %".
 
 | Path | Build | 0.5.7 wall s | 0.5.7 CPU s | 0.5.8 wall s | 0.5.8 CPU s | 0.5.8 / 0.5.7 |
 |---|---|---|---|---|---|---|
@@ -306,7 +307,8 @@ smaller ones are unresolved.
 
 ### `bench realtime` (#255, new)
 
-One thread, `lennon.sh bench`, pinned with `taskset -c 2`, 5 runs of a fresh copy; median [range]:
+One thread, under the host's exclusive lock, pinned with `taskset -c 2`, 5 runs of a fresh copy;
+median [range]:
 
 | Figure | 6ch DST stress, 10 min | Stereo DST stress, 50 min |
 |---|---|---|
@@ -327,14 +329,14 @@ seeks and all-thread decoding.
 
 ## 0.5.7
 
-Measured on lennon (3950X), 2026-11-02, with `compare.sh` (generic kits, statically linked,
-profile `dist`): the **generic** build of each version, medians of alternating runs (5 rounds; 3
-for `dst-decode-2ch-t1-corpus` and `callpattern`), a fresh copy of each program per run, images in
-the page cache. The library revisions are 0.5.6 = `v0.5.6` (`61aecd0`) and 0.5.7 = `da90c24`
-(its library and `bench` sources are those of the release commit). A third kit, **0.5.6 with
-0.5.7's `bench`** (the v0.5.6 tree with `crates/scarletbook-bench` of `da90c24`), ran in the same
-rounds to separate the tool change below from the library change. Ratios are the medians of the
-per-round ratios of wall times.
+Measured on the Zen 2 benchmark host (3950X), 2026-11-02, with `compare.sh` (generic kits,
+statically linked, profile `dist`): the **generic** build of each version, medians of alternating
+runs (5 rounds; 3 for `dst-decode-2ch-t1-corpus` and `callpattern`), a fresh copy of each program
+per run, images in the page cache. The library revisions are 0.5.6 = `v0.5.6` (`61aecd0`) and
+0.5.7 = `da90c24` (its library and `bench` sources are those of the release commit). A third kit,
+**0.5.6 with 0.5.7's `bench`** (the v0.5.6 tree with `crates/scarletbook-bench` of `da90c24`), ran
+in the same rounds to separate the tool change below from the library change. Ratios are the
+medians of the per-round ratios of wall times.
 
 | Path | Run-list case | 0.5.6 | 0.5.6, new `bench` | 0.5.7 | 0.5.7 / 0.5.6 | tool¹ | library¹ |
 |---|---|---|---|---|---|---|---|
@@ -359,7 +361,7 @@ gain: "tool" is 0.5.6 with the new `bench` over 0.5.6, "library" is 0.5.7 over 0
 
 The stereo all-threads case was slower in every round (by 0.3-1.2 %), and by 1.3 % (median of
 per-round ratios) in an earlier separate run of 0.5.6 against 0.5.7 only; the third kit puts it on
-the tool change. An earlier run of the one-thread cases in a `lennon.sh bench1` slot (one core
+the tool change. An earlier run of the one-thread cases in a one-thread timing slot (one core
 complex) gave the same ratios within 1 %.
 
 **Correction (#248).** The seconds of the three plain-DSD rows in the first version of this
@@ -369,21 +371,22 @@ section. The images it timed were byte-identical files whose page-cache pages ma
 them slower: `dd bs=8k` read the stereo image in 0.50 s against 0.41 s for a copy of it, and once
 the same file was re-read into other pages it timed like the copy. `run.py` now times a fresh
 copy of the image in each round (`README.md`, "Fresh copies"). The rows above are a re-run of the
-same three kits with the fixed runner, on lennon, 2026-11-02, and agree within 1.5 % with direct
-`bench dsf` runs. The 0.5.7 / 0.5.6 changes moved by at most 2 points; the split between tool and
-library moved by up to 5 points (stereo: tool 0.805 to 0.857, library 0.834 to 0.805). The DST
-rows did not move (two re-run within 0.8 %), and the DSD-to-PCM row reads no image.
+same three kits with the fixed runner, on the Zen 2 benchmark host, 2026-11-02, and agree within
+1.5 % with direct `bench dsf` runs. The 0.5.7 / 0.5.6 changes moved by at most 2 points; the split
+between tool and library moved by up to 5 points (stereo: tool 0.805 to 0.857, library 0.834 to
+0.805). The DST rows did not move (two re-run within 0.8 %), and the DSD-to-PCM row reads no
+image.
 
 Not measured for 0.5.7: the x86-64-v3 build; DST to DSF; TOC open, first 128 KiB, cold runs and
 the C interface (see "Not measured").
 
 ## 0.5.6
 
-Measured on lennon (3950X) by the owner, 2026-11-02: the **generic** build of each version,
-medians of alternating runs (5 rounds for DSF, 3 for DST and DSD to PCM; the rounds of each
-cell within 1 % of each other), images in the page cache. The library revisions are 0.5.5 =
-`3eb96dc` (the merge of #212: the library is identical to v0.5.5, and it is the first revision
-with `bench dsf`) and 0.5.6 = `6765ff2`. The images are those of the run list, written by
+Measured on the Zen 2 benchmark host (3950X) by the owner, 2026-11-02: the **generic** build of
+each version, medians of alternating runs (5 rounds for DSF, 3 for DST and DSD to PCM; the rounds
+of each cell within 1 % of each other), images in the page cache. The library revisions are
+0.5.5 = `3eb96dc` (the merge of #212: the library is identical to v0.5.5, and it is the first
+revision with `bench dsf`) and 0.5.6 = `6765ff2`. The images are those of the run list, written by
 `scarletbook-synth`; each is byte-identical to the run list's recipe (checked with `cmp`).
 
 | Path | Run-list case | Command | 0.5.5 | 0.5.6 | 0.5.6 / 0.5.5 |

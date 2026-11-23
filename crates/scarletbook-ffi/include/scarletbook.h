@@ -74,11 +74,13 @@
  *   are used on several threads. A log callback (sb_disc_set_log) also runs there and on the
  *   threads of the pools decoding for the disc's track handles (sb_track_audio_set_pool;
  *   in a library built with the parallel feature, rayon's global pool by default). The
- *   library has no other threads, and no global state besides the per-thread error
- *   message, two atomic counters that number the discs and images opened (so that a
+ *   library has no other threads. Its only global state is: the per-thread error
+ *   message; two atomic counters that number the discs and images opened (so that a
  *   handle can tell the disc and image it belongs to; a clone keeps its original's
- *   numbers), and, on each pool thread, a DST
- *   decoder reused from frame to frame (a cache, not shared between threads).
+ *   numbers); one that numbers provisional readings (SbSpeculation's claim); the tables
+ *   of the text character sets and of the PCM filters, built once on first use and only
+ *   read after; and, on each thread that decodes for a pool, a DST decoder reused from
+ *   frame to frame (a cache, not shared between threads).
  *
  * - Stack. Calls may use up to 68 KiB of the calling thread's stack (measured on x86-64
  *   Linux; sb_output_layout_read on a CPU with AVX2 is the deepest), and the callbacks
@@ -108,7 +110,9 @@
  *   pragmas, and no padding: fields are ordered so that each sits at its natural
  *   alignment, and reserved fields (written as 0) fill the rest. Each struct states its
  *   size and offsets, which the library's tests check; they are the same on every
- *   target, except that SbWarning ends with a pointer (4 bytes on a 32-bit target).
+ *   target, except in the four structs with a pointer: SbWarning ends with one (4 bytes
+ *   on a 32-bit target), and SbMarker, SbComment and SbPositionData state their sizes
+ *   for 64-bit and 32-bit targets.
  *
  * - Panics. No panic crosses the boundary: an internal error returns SB_STATUS_PANIC.
  *   The handles involved should then be freed and not used further. If the library is
@@ -135,8 +139,8 @@
  behaviour changed incompatibly. Additions (new functions, types, enum values, macros)
  keep it. 1 is the first released ABI; 2 made statuses, sizes and flags fixed-width
  integers and the structs free of padding, and bounds `sb_dst_decode`'s input. The
- compatibility policy, and what changed from 1 to 2, are in the repository's README
- ("ABI compatibility").
+ compatibility policy, and what changed from 1 to 2, are in the repository's
+ docs/c-abi.md ("ABI compatibility" and "From ABI 1 to ABI 2").
  */
 #define SB_ABI_VERSION 2
 
@@ -4161,8 +4165,8 @@ void sb_progress_free(struct SbProgress *progress);
  `SbTocHeader` (at offset 0), `SbTocDisc`, `SbTocArea`, `SbTocTrack`, `SbTocWarning` and
  `SbTocStr`: every integer is little-endian whatever the host, every field is at a fixed
  offset that is a multiple of its size, and a buffer aligned to 8 bytes can be read
- through these structs on a little-endian host. The README describes it, with a ctypes
- example.
+ through these structs on a little-endian host. The repository's docs/python.md
+ describes it, with a ctypes example ("The whole TOC in one call").
 
  `flags` must be 0. `*len` (required) receives the layout's size, the same on every call
  for a disc and its clones. If `buf` is NULL or `cap < *len`, nothing is written and the
