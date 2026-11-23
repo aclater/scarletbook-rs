@@ -10,6 +10,53 @@ from 0.5.8).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-23
+
+**0.7.0 removes the 36 Rust items deprecated in 0.6.0, as announced, and moves the boundaries between the files of a gapless DSF chain to where the specification now puts them (#359). It also stops partial DSF rows from asking for positions they don't cover (#307). Decoded DSD and PCM output is unchanged. The C ABI is unchanged (`SB_ABI_VERSION` 2; the header differs from 0.6.2 only in comments).**
+
+- **Breaking: read [`docs/migrating-0.7.md`](docs/migrating-0.7.md).** The 36 items deprecated in 0.6.0 are removed from `scarletbook` (35) and `scarletbook-pcm` (`Cutoff::Default`); the page gives the replacement for each. Each was another name or call for one that stays, so code that builds on 0.6 without deprecation warnings builds on 0.7.0 unchanged, and nothing behaves differently. C programs are not affected (#39, #389).
+- **DSF chain boundaries move (#359, #388).** This affects only gapless DSF chains, planned with `plan_dsf_chain` / `OutputOptions::with_dsf_chain` in Rust or `sb_output_dsf_chain_plan` in C. A file of a chain that ended exactly on a 4096-byte block boundary now ends one block earlier, and the next file starts with that block (specification 8, 8.2.7 items 3 and 4, amended at sacd-spec `67b8563`). Only such a file and the file after it differ from 0.6.2 (for example ranges of 128 frames from the chain's start); every other file is byte-for-byte the same, the last file is never shortened, and the files still concatenate to the same bytes in the same order. Single DSF files, DSDIFF, PCM and raw DSD are not affected. If you store hashes or sizes of chain files, expect those boundary files to change.
+- **DSF partial rows (#307, #390).** A read of part of a DSF row now asks only for the positions it covers: a bad neighbouring position no longer fails it, `Layout::positions_for` and `sb_output_layout_positions` give only those positions, and reads under 4 KiB from a DST area no longer decode the row's other position. The bytes are unchanged.
+- **DST decoder tables (#383, #392).** A new `DstDecoder` writes its tables once instead of zeroing them first. Output unchanged; neutral on the Zen 2 benchmark host.
+- **Measured** on the Zen 2 benchmark host (AMD Ryzen 9 3950X), generic build, 0.7.0 against 0.6.2:
+
+  | Path | Build | 0.6.2 wall s | 0.6.2 CPU s | 0.7.0 wall s | 0.7.0 CPU s | 0.7.0 / 0.6.2 | Median of per-round ratios [range] |
+  |---|---|---|---|---|---|---|---|
+  | DST decode, one thread, 2 channels | generic | 5.562 | 5.52 | 5.574 | 5.53 | 1.002 | 1.003 [0.997-1.007] |
+  | DST decode, one thread, 2 channels, corpus frames | generic | 18.536 | 18.43 | 18.498 | 18.40 | 0.998 | 0.998 [0.994-1.006] |
+  | DST decode, all threads, 2 channels | generic | 3.587 | 112.90 | 3.562 | 111.76 | 0.993 | 0.992 [0.986-0.996] |
+  | DST decode, one thread, 6 channels | generic | 6.997 | 6.96 | 7.104 | 7.06 | 1.015 | 1.009 [0.992-1.021], unresolved |
+  | DST decode, all threads, 6 channels | generic | 2.340 | 73.73 | 2.350 | 73.87 | 1.004 | 1.004 [0.997-1.009] |
+  | plain-DSD area to DSF, 2 channels | generic | 0.456 | 0.45 | 0.455 | 0.45 | 0.997 | 0.999 [0.973-1.008] |
+  | plain-DSD area to DSF, 5 channels | generic | 0.506 | 0.50 | 0.506 | 0.49 | 1.000 | 0.999 [0.989-1.007] |
+  | DST area to DSF, all threads | generic | 3.591 | 113.74 | 3.555 | 112.61 | 0.990 | 0.989 [0.985-0.995] |
+  | DSD to PCM, stereo DSD64 to 176.4 kHz 24-bit, one thread | generic | 3.90 / 3.82 / 3.81 ms per s | - | 3.90 / 3.81 / 3.81 ms per s | - | 0.997 | - |
+  | open to parsed TOC, page cache | generic | 14.6 µs | - | 14.0 µs | - | 0.960 | -, within spread |
+  | open to parsed TOC, evicted | generic | 224.4 µs | - | 231.3 µs | - | 1.031 | -, within spread |
+  | first 128 KiB, 2 channels, plain DSD, page cache | generic | 25.1 µs | - | 24.7 µs | - | 0.985 | -, within spread |
+  | first 128 KiB, 2 channels, plain DSD, evicted | generic | 273.5 µs | - | 269.9 µs | - | 0.987 | -, within spread |
+  | first 128 KiB, 2 channels, DST, one thread, page cache | generic | 3674.2 µs | - | 3702.2 µs | - | 1.008 | - |
+  | first 128 KiB, 2 channels, DST, one thread, evicted | generic | 4130.4 µs | - | 4119.2 µs | - | 0.997 | -, within spread |
+  | first 128 KiB, 2 channels, DST, all threads, page cache | generic | 2221.5 µs | - | 2210.1 µs | - | 0.995 | - |
+  | first 128 KiB, 2 channels, DST, all threads, evicted | generic | 4593.6 µs | - | 4364.4 µs | - | 0.950 | -, within spread |
+
+  `benchmarks/compare.sh` with v0.6.2 against this release's tree, the standard run list at 7 rounds per case, alternating, a fresh copy of each program per run, under the machine's shared benchmark lock; 238 runs, none failed. No row moves by more than about 2 % beyond its spread between rounds: all-thread stereo DST decoding and DST to DSF are about 1 % faster in every round; one-thread 6-channel DST is 1.009 [0.992-1.021], unresolved (#259). `open` and `first` are the program's own microseconds; the per-round column is left out for them. Method and spreads: `benchmarks/RESULTS.md`, "0.7.0".
+- **Unmeasured:** the x86-64-v3, `znver5` and AVX-512 builds; Zen 5, and Intel CPUs other than the #383 figures below; real output files, including DSF chains; the first 128 KiB of 5 or 6 channels; cold runs of whole areas; the C interface; `bench realtime`.
+- **Known item: single-frame 6-channel DST decoding on Intel P-cores (#383).** On an Intel Core i9-13900H (Raptor Lake) P-core, one thread, single-frame 6-channel `DstDecoder::decode` of a real disc's frames is still about 7 % slower than 0.5.9 (24.53 s against 22.92 s; median of per-round ratios 1.071), and grouped `decode_many` about 2.5 % (1.027). On its E-cores, and on Zen 2, 0.7.0 is at parity with 0.5.9 (E-core single 0.989, grouped 0.986). #392 leaves the P-core figure where 0.6.2 had it (1.000 single, 1.003 grouped against 0.6.2). sacdfs measured this on #383 against `446994c`, the code of this release; the table is in its latest comment. pysacd, which decodes through the C ABI in groups of frames, measured a real 5.1 disc to DSF on the same CPU's P-cores at 1.8 % slower than 0.5.9 with one thread and 0.9 % with five (0.6.2; #383). The gap is tracked in #383.
+
+### Changed
+
+- **DSF chain boundaries move.** A file of a DSF chain (`plan_dsf_chain`, `OutputOptions::with_dsf_chain`, `sb_output_dsf_chain_plan`) whose range would end exactly on a 4096-byte block boundary now ends one block earlier, and the next file starts with that block: each file after the first now carries 1 to 4096 bytes of the range before it instead of 0 to 4095 (specification 8, 8.2.7 items 3 and 4 as amended at sacd-spec `67b8563`). Only such files and the file after each change bytes, for example ranges of 128 frames from the chain's start; every other file is byte-for-byte unchanged, the last file of a chain is never shortened, and the files still concatenate to the chain's bytes in the same order with the same total. The Rust API and the C ABI are unchanged, but files written by earlier versions differ at those boundaries, which is why this is in 0.7.0 (#359, #388).
+- A new `DstDecoder`, or a frame with more filters or ptables than any before it, now writes each new byte table and probability table once, rather than filling it with zeros first and then computing over the zeros. Output unchanged (#383, #392).
+
+### Removed
+
+- **Breaking:** the 36 items deprecated in 0.6.0 are removed, as announced (#39, R1). `scarletbook`: `Disc::{track_audio_cursor, range_audio_cursor, range_audio_cursor_indexed, track_frames_cursor, range_frames_cursor, range_frames_cursor_indexed}`; `for_range`, `for_range_indexed` and `for_range_speculative` on `TrackCursor` and `TrackAudioCursor`; `speculation_id()` and `counts_from()` on `AreaCursor`, `TrackCursor`, `TrackFrames`, `TrackAudioCursor` and `TrackAudio`; `Image::{open_with_log, with_format, with_format_and_log}` and `Disc::{open_with_log, open_with_format, open_with_format_and_log}`; `Stored::Plain`; `AreaIndex::{checkpoints, hints, confirmations, pending_claims}`; `dst::{FL, MAX_CHANNELS}`. `scarletbook-pcm`: `Cutoff::Default`. Each was another name or call for one that stays (`Disc::{audio_cursor, frames_cursor}`, `open_range`, `claim()`/`claim_lsn()`, `Image::options()`/`Disc::options()`, `Stored::Dsd`, the `*_count` methods, the `audio` constants, `Cutoff::Standard`), so no behaviour changes. The C ABI does not change (`SB_ABI_VERSION` 2). Migration: [`docs/migrating-0.7.md`](docs/migrating-0.7.md) (#39, #389).
+
+### Fixed
+
+- DSF partial rows ask only for the positions a read covers again: a read of part of a DSF row fills only the stream bytes it covers, so a bad neighbouring position no longer fails a read whose own bytes lie elsewhere or are pad, `Layout::positions_for` (and `sb_output_layout_positions`) gives only those positions, and reads under 4 KiB from a DST area no longer fetch and decode the row's other position. The output is unchanged (#307, #390).
+
 ## [0.6.2] - 2026-11-20
 
 **Single-frame DST decoding of 5 and 6 channels is back to its 0.5.x speed (#378), and DSD-to-PCM conversion is faster on 32-bit x86 (#372). Output is identical to the bit. No API or ABI change: a drop-in update from 0.6.0 and 0.6.1.**
@@ -1052,7 +1099,10 @@ First release: a clean-room reader for SACD images, written from sacd-spec, pass
 - DST decoding about 3.8 times faster on one thread, and parallel decoding that overlaps
   demultiplexing with decoding within a bounded memory (#16, #17, #19).
 
-[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/aclater/scarletbook-rs/compare/v0.6.2...v0.7.0
+[0.6.2]: https://github.com/aclater/scarletbook-rs/compare/v0.6.1...v0.6.2
+[0.6.1]: https://github.com/aclater/scarletbook-rs/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/aclater/scarletbook-rs/compare/v0.5.9...v0.6.0
 [0.5.9]: https://github.com/aclater/scarletbook-rs/compare/v0.5.8...v0.5.9
 [0.5.8]: https://github.com/aclater/scarletbook-rs/compare/v0.5.7...v0.5.8

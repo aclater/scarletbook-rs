@@ -1,1 +1,0 @@
-| 2026-11-23 | DST tables written once on first use (#383) | This crate's own decoder (`dst.rs`, `Lane::build_tables`, `Lane::build_luts`) and a profile of it on the Zen 2 benchmark host. No new sources consulted. |
