@@ -74,7 +74,9 @@ TwoChannel area: 2 channels, 3 tracks
   track 3: 2 frames, "Track 3 title, second item"
 ```
 
-The `=1.0.1` pin is the one recommended under [Installing](docs/rust.md#installing); a frame is 1/75 s.
+The `=1.0.1` pin keeps the example on the release whose output is shown. For a project of your
+own, [Installing](docs/rust.md#installing) gives a plain `cargo add scarletbook`, and pins only
+`scarletbook-pcm` exactly. A frame is 1/75 s.
 `{:?}` quotes a string and escapes control characters, including U+007F and U+0080 to U+009F,
 while keeping other text (Japanese, say) readable, which `escape_default()` would turn into
 `\u{..}` escapes. For audio, see [Using the library](docs/rust.md#using-the-library).
@@ -155,7 +157,9 @@ code of yours should do the same, as the docs of
 [`DiscText`](https://docs.rs/scarletbook/1.0.1/scarletbook/toc/struct.DiscText.html) and of
 [`sb_disc_string`](crates/scarletbook-ffi/include/scarletbook.h) say.
 
-`gh attestation verify` prints nothing when it succeeds (a non-zero exit status is a failure).
+`gh attestation verify` exits with status 0 when it succeeds, and non-zero on a failure. In a
+terminal it also prints the policy it checked and "Verification succeeded!"; when its output is
+not a terminal, as in a script, it prints nothing on success.
 The program records `libscarletbook_ffi.so.2`, the library's name for C ABI 2, and finds it through
 the rpath, so it runs from this directory without the link. To ship it, copy
 `lib/libscarletbook_ffi.so.2` next to the program, as [Linking](docs/c-abi.md#linking) says. See the [C ABI guide](docs/c-abi.md)
