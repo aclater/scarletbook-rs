@@ -4,10 +4,10 @@ name: Quick start
 # Runs both command blocks of the README's Quick start exactly as written, each in a new empty
 # directory, and compares their output with the README's (.github/scripts/quickstart.py has
 # the rules; #412). They fetch the published crate and the published C library archive, so
-# this cannot run on pull requests. It runs after each release (against the README of the
-# released tag, which must pin the released version), weekly and on demand (against the
-# README of the branch run, main for the schedule). On failure, the `report` job opens an
-# issue "Quick start failed against vX.Y.Z", or comments on that issue if it is still open.
+# this cannot run on pull requests. It runs after each release (against main's README, which
+# must then pin the released version), weekly and on demand (against the README of the branch
+# run, main for the schedule). On failure, the `report` job opens an issue "Quick start failed
+# against vX.Y.Z", or comments on that issue if it is still open.
 #
 # After a release it is triggered by the completion of release.yml, not by the `release`
 # event: release.yml creates the release with the workflow's GITHUB_TOKEN, and events caused
@@ -24,10 +24,13 @@ name: Quick start
 # the run was of this repository's .github/workflows/release.yml
 # (`workflow_run.path`), for a `push` event (`workflow_run.event`) from this repository
 # (`workflow_run.head_repository.full_name`), of a `v*` tag without a `-`
-# (`workflow_run.head_branch`), and it succeeded. The run job then checks out
-# refs/tags/<head_branch> of this repository, not the raw head_sha, and stops unless that tag
-# is the commit the Release run built (`workflow_run.head_sha`). Nothing from a pull request
-# or a fork is checked out or run, and the report job opens no issue for a skipped run.
+# (`workflow_run.head_branch`), and it succeeded; the report job opens no issue for a skipped
+# run. Nothing is checked out from the triggering run: the checkout has no `ref:`, so it is
+# github.sha, the default branch's head, as for the schedule. The tag name is used only as a
+# string, through `env`: it must match ^v[0-9]+\.[0-9]+\.[0-9]+$, and without its `v` it is
+# passed as --expect-version, so the run fails unless main's README pins the released version.
+# That README is the right one to run: the release preparation moves the Quick start to the
+# new version on main before the tag is pushed (RELEASING.md).
 #
 # The schedule and workflow_dispatch need no such guard. The schedule runs only on the default
 # branch; workflow_dispatch can be started only by users with write access, on a ref of this
@@ -36,8 +39,8 @@ name: Quick start
 
 on:
   # Guarded in both jobs: path release.yml, event push, head repository this one, a v* tag,
-  # success; the run job checks out that tag and checks it against head_sha. See above.
-  workflow_run: # zizmor: ignore[dangerous-triggers] guarded by path, event, head repo, v* tag, success, head_sha
+  # success. Nothing of the triggering run is checked out; its tag is only a validated string.
+  workflow_run: # zizmor: ignore[dangerous-triggers] guarded; checks out the default branch only, see above
     workflows: [Release]
     types: [completed]
   schedule:
@@ -74,27 +77,20 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       report: ${{ steps.run.outputs.report }}
     steps:
-      # After a release, the released tag of this repository; otherwise the branch run.
+      # github.sha in every case: after a release the default branch, never the triggering run.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ github.event_name == 'workflow_run' && format('refs/tags/{0}', github.event.workflow_run.head_branch) || github.sha }}
-      - name: The tag is the commit the Release run built
-        if: github.event_name == 'workflow_run'
-        env:
-          TAG: ${{ github.event.workflow_run.head_branch }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-        run: |
-          tagged=$(git rev-parse --verify -q "refs/tags/$TAG^{commit}") || { echo "::error::no tag $TAG"; exit 1; }
-          if [[ "$tagged" != "$HEAD_SHA" || "$(git rev-parse HEAD)" != "$HEAD_SHA" ]]; then
-            echo "::error::tag $TAG is $tagged, checked out $(git rev-parse HEAD), but the Release run built $HEAD_SHA"
-            exit 1
-          fi
       - id: version
         env:
           TAG: ${{ github.event.workflow_run.head_branch }}
         run: |
           if [[ "$GITHUB_EVENT_NAME" == workflow_run ]]; then
+            # The released tag, as a string only.
+            if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::not a release tag vX.Y.Z: '$TAG'"
+              exit 1
+            fi
             version=${TAG#v}
           else
             version=$(sed -n 's/^cargo add scarletbook@=\(.*\)$/\1/p' README.md | head -n 1)
