@@ -3951,12 +3951,12 @@ unsafe fn pcm_handle<'a>(conv: *const SbPcmConverter) -> Result<&'a SbPcmConvert
 /// # Safety
 ///
 /// `out` must be NULL or valid for a write.
-#[unsafe(no_mangle)]
 #[deprecated(
     since = "0.7.1",
     note = "the sb_pcm_* functions are deprecated: DSD-to-PCM conversion is no longer developed in scarletbook; convert on the consumer side (scarletbook-rs#398)"
 )]
 #[allow(deprecated, reason = "scarletbook-pcm is deprecated (#398)")]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn sb_pcm_converter_new(
     rate_hz: u32,
     cutoff: u32,
@@ -4000,11 +4000,11 @@ pub unsafe extern "C" fn sb_pcm_converter_new(
 /// # Safety
 ///
 /// `conv` must be NULL or a live handle, freed only once.
-#[unsafe(no_mangle)]
 #[deprecated(
     since = "0.7.1",
     note = "the sb_pcm_* functions are deprecated: DSD-to-PCM conversion is no longer developed in scarletbook; convert on the consumer side (scarletbook-rs#398)"
 )]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn sb_pcm_converter_free(conv: *mut SbPcmConverter) {
     guard_free(|| {
         // SAFETY: forwarded contract.
@@ -4026,11 +4026,11 @@ pub unsafe extern "C" fn sb_pcm_converter_free(conv: *mut SbPcmConverter) {
 /// # Safety
 ///
 /// `conv` must be NULL or a live handle; `out` NULL or valid for a write.
-#[unsafe(no_mangle)]
 #[deprecated(
     since = "0.7.1",
     note = "the sb_pcm_* functions are deprecated: DSD-to-PCM conversion is no longer developed in scarletbook; convert on the consumer side (scarletbook-rs#398)"
 )]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn sb_pcm_samples_per_frame(conv: *const SbPcmConverter, out: *mut u32) -> SbStatus {
     guard(|| {
         // SAFETY: forwarded contract.
@@ -4076,12 +4076,12 @@ pub unsafe extern "C" fn sb_pcm_samples_per_frame(conv: *const SbPcmConverter, o
 /// reads; `out` NULL or valid for `out_len` bytes of writes and not overlapping the
 /// inputs; `clipped` NULL or valid for 6 `uint64_t` writes.
 #[allow(clippy::too_many_arguments, reason = "the run, its two neighbours, the output and the counts")]
-#[unsafe(no_mangle)]
 #[deprecated(
     since = "0.7.1",
     note = "the sb_pcm_* functions are deprecated: DSD-to-PCM conversion is no longer developed in scarletbook; convert on the consumer side (scarletbook-rs#398)"
 )]
 #[allow(deprecated, reason = "scarletbook-pcm is deprecated (#398)")]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn sb_pcm_convert_run(
     conv: *mut SbPcmConverter,
     before: *const u8,
