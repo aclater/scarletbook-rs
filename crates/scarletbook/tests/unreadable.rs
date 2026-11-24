@@ -174,7 +174,7 @@ fn sweep(image: &[u8], audio: &[[u8; S]], decode: bool) -> (usize, (usize, usize
     let mut clean_disc = Disc::open(Cursor::new(image.to_vec())).unwrap();
     let (clean, _, _) = raw(&mut clean_disc, all);
     let (mut cases, mut partial) = (0, (0, 0));
-    let runs: &[usize] = if cfg!(miri) { &[1, 2] } else { &[1, 2, 3, 5] };
+    let runs: &[usize] = if cfg!(miri) { &[1] } else { &[1, 2, 3, 5] };
     for &k in runs {
         for a in 0..=audio.len() - k {
             let bad = (a, a + k);
@@ -234,10 +234,11 @@ fn sweep(image: &[u8], audio: &[[u8; S]], decode: bool) -> (usize, (usize, usize
 }
 
 /// The sweep of #435 on a generated disc of 150 coded DST stereo frames: no position whose
-/// frame touches an unreadable sector is ever decoded; under Miri, 6 short frames.
+/// frame touches an unreadable sector is ever decoded; under Miri, 3 short frames and runs
+/// of one sector.
 #[test]
 fn dst_sweep_reports_lost_never_decodes() {
-    let (image, audio) = dst_disc(if cfg!(miri) { 6 } else { 150 });
+    let (image, audio) = dst_disc(if cfg!(miri) { 3 } else { 150 });
     let (cases, (decodes, invalid)) = sweep(&image, &audio, true);
     // For the pull request: what the marks prevent.
     eprintln!(
@@ -250,7 +251,7 @@ fn dst_sweep_reports_lost_never_decodes() {
 /// The same on plain DSD frames.
 #[test]
 fn dsd_sweep_reports_lost() {
-    let (image, audio) = dsd_disc(if cfg!(miri) { 3 } else { 24 });
+    let (image, audio) = dsd_disc(if cfg!(miri) { 2 } else { 24 });
     sweep(&image, &audio, !cfg!(miri));
 }
 
@@ -369,7 +370,7 @@ fn readers_report_unreadable_sectors() {
 /// error, and a cursor does not resume from a checkpoint at or past a mark made later.
 #[test]
 fn seek_indexes_hold_nothing_past_unreadable_sectors() {
-    let (image, audio) = dst_disc(if cfg!(miri) { 6 } else { 40 });
+    let (image, audio) = dst_disc(if cfg!(miri) { 4 } else { 40 });
     let spans = spans(&audio);
     let playtime = spans.len() as u32;
     let bad = (audio.len() / 2, audio.len() / 2 + 1);
@@ -408,12 +409,13 @@ fn seek_indexes_hold_nothing_past_unreadable_sectors() {
 /// before its `L` is never confirmed.
 #[test]
 fn provisional_readings_with_unreadable_sectors() {
-    let n = if cfg!(miri) { 8 } else { 60 };
+    let n = if cfg!(miri) { 6 } else { 60 };
     let (image, audio) = dst_disc(n);
     let playtime = spans(&audio).len() as u32;
     let k = audio.len();
     let options = SpeculativeOptions::new().with_min_gap_sectors(0);
-    for bad in [(k / 4, k / 4 + 1), (k * 3 / 4, k * 3 / 4 + 2)] {
+    let cases = [(k / 4, k / 4 + 1), (k * 3 / 4, k * 3 / 4 + 2)];
+    for &bad in &cases[..if cfg!(miri) { 1 } else { 2 }] {
         let first = playtime / 2;
         let mut exact = marked(image.clone(), bad);
         let want = raw(&mut exact, (first, playtime));
@@ -453,7 +455,7 @@ proptest! {
     /// exactly where a frame touches them, every other position as without them.
     #[test]
     fn lost_exactly_where_frames_touch(
-        kinds in proptest::collection::vec((any::<bool>(), 1usize..9000, any::<u8>()), 1..if cfg!(miri) { 4 } else { 16 }),
+        kinds in proptest::collection::vec((any::<bool>(), 1usize..if cfg!(miri) { 3000 } else { 9000 }, any::<u8>()), 1..if cfg!(miri) { 3 } else { 16 }),
         marks in proptest::collection::vec((0usize..64, 1usize..4), 0..4),
     ) {
         let frames: Vec<PFrame> = kinds
