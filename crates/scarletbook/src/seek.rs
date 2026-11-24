@@ -703,6 +703,10 @@ pub(crate) struct Speculate {
     /// number, the end of the read to make there, and the digest the sector must have when
     /// a saved confirmation covers the range).
     pub(crate) hint: Option<Hint>,
+    /// The start LSN of a track that begins at `first`, past the hint's sector and before
+    /// the end of its read: begun at instead of the hint when its first record is at most
+    /// `first` (issue #431).
+    pub(crate) track_start: Option<u64>,
 }
 
 /// The first frame record of a sector, as a frame number (specification 4, 4.3.2).
