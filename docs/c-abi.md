@@ -211,8 +211,14 @@ from, so polling it never collides with the reading thread; free each with its `
 
 ### DSD to PCM
 
-`scarletbook-pcm` and the `sb_pcm_*` functions: deprecation planned
-([#398](https://github.com/aclater/scarletbook-rs/issues/398)); no new features.
+`scarletbook-pcm` is decommissioned
+([#398](https://github.com/aclater/scarletbook-rs/issues/398)): frozen at 0.7.0 on crates.io,
+no further releases. The `sb_pcm_*` functions, which wrap it, are deprecated from
+scarletbook-ffi 1.1.0: the header declares them with `SB_DEPRECATED`, so C and C++ compilers
+warn where they are called (define `SB_DEPRECATED(msg)` as nothing to silence it). They keep
+working, unchanged, and stay in ABI 2; removing them would take a new `SB_ABI_VERSION`.
+Instead, take the DSD from `sb_track_audio_read` and convert it to PCM in your own code, as
+the consumers in #398 do with their own crate.
 
 The library also converts the decoded DSD64 audio to 24-bit PCM (crate
 `scarletbook-pcm`) at 88.2, 176.4 or 352.8 kHz, through a converter handle that belongs

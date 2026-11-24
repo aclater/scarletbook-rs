@@ -73,6 +73,12 @@ CASES = [
     ("renamed parameter", [(r"^void sb_disc_free\(struct SbDisc \*disc\);", "void sb_disc_free(struct SbDisc *d);")],
      None, [], BREAKING, 1),
     ("removed function", [(r"^void sb_disc_free\(struct SbDisc \*disc\);\n", "")], None, [], BREAKING, 1),
+    # SB_DEPRECATED is an attribute, not ABI (#398); what it marks is still checked.
+    ("deprecated function", [(r"^void sb_disc_free\(", 'SB_DEPRECATED("no longer developed (#1)")\n\\g<0>')],
+     None, [], OK, 0),
+    ("deprecated function, changed signature",
+     [(r"^void sb_disc_free\(struct SbDisc \*disc\);", 'SB_DEPRECATED("x")\nvoid sb_disc_free(struct SbDisc *d);')],
+     None, [], BREAKING, 1),
     ("changed enum value", [(r"^  SB_STATUS_PANIC = -14,", "  SB_STATUS_PANIC = -15,")], None, [], BREAKING, 1),
     ("version skipped", [(rf"^{CURRENT}$", f"#define SB_ABI_VERSION {VERSION + 2}")],
      None, ["--write"], "no baseline", 1),

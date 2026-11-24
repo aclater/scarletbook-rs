@@ -124,6 +124,12 @@ header = """/* SPDX-License-Identifier: MIT OR Apache-2.0 */
  * - Panics. No panic crosses the boundary: an internal error returns SB_STATUS_PANIC.
  *   The handles involved should then be freed and not used further. If the library is
  *   built with panic=abort, the process aborts instead.
+ *
+ * - Deprecation. A deprecated function is declared with SB_DEPRECATED("reason"), which
+ *   makes GCC, Clang and MSVC warn where it is called; define SB_DEPRECATED(msg) as
+ *   nothing before including this header to silence it. A deprecated function keeps
+ *   working and keeps its ABI until a later SB_ABI_VERSION removes it. Deprecated since
+ *   scarletbook-ffi 1.1.0: the sb_pcm_* functions and SbPcmConverter (#398).
  */"""
 cpp_compat = true
 documentation = true
@@ -131,6 +137,23 @@ documentation_style = "c"
 usize_is_size_t = true
 sys_includes = ["stddef.h", "stdint.h"]
 no_includes = true
+# SB_DEPRECATED marks deprecated functions (#[deprecated] in Rust; the sb_pcm_* functions,
+# #398), so that C and C++ compilers warn where they are called. An attribute, not part of
+# the ABI: abi-check.py leaves it out of the baseline.
+after_includes = """
+#if !defined(SB_DEPRECATED)
+#if defined(__GNUC__) || defined(__clang__)
+#define SB_DEPRECATED(msg) __attribute__((deprecated(msg)))
+#elif defined(_MSC_VER)
+#define SB_DEPRECATED(msg) __declspec(deprecated(msg))
+#else
+#define SB_DEPRECATED(msg)
+#endif
+#endif"""
+
+[fn]
+deprecated = "SB_DEPRECATED(\"deprecated\")"
+deprecated_with_note = "SB_DEPRECATED({})"
 
 [enum]
 rename_variants = "ScreamingSnakeCase"

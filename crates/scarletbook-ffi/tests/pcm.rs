@@ -13,6 +13,8 @@
 //! Each unsafe call sits in a small wrapper that states why its arguments meet the
 //! function's contract; the tests themselves are safe code.
 
+// The sb_pcm_* functions are deprecated (#398); this code still tests them until they are removed.
+#![allow(deprecated)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::ffi::{CStr, CString};

@@ -3900,7 +3900,8 @@ const PCM_CHUNK_FRAMES: usize = 8;
 
 /// A DSD64 to 24-bit PCM converter (`sb_pcm_converter_new`): one rate, cutoff, channel
 /// count and gain. It belongs to no disc. Converters share nothing: give each thread
-/// that converts one of its own.
+/// that converts one of its own. Deprecated since scarletbook-ffi 1.1.0 (#398), with the
+/// `sb_pcm_*` functions (see `sb_pcm_converter_new`).
 #[derive(Debug)]
 pub struct SbPcmConverter {
     inner: RefCell<PcmState>,
@@ -3938,9 +3939,20 @@ unsafe fn pcm_handle<'a>(conv: *const SbPcmConverter) -> Result<&'a SbPcmConvert
 /// and not dithered. A constant input of all 1 bits is full scale (it clips); Super Audio
 /// CD content stays well below.
 ///
+/// Deprecated since scarletbook-ffi 1.1.0 (#398), like the other `sb_pcm_*` functions:
+/// DSD-to-PCM conversion moves to the consumer side, and `scarletbook-pcm`, which these
+/// functions wrap, is decommissioned: frozen at 0.7.0 on crates.io, with no further
+/// releases. The functions keep working, unchanged; the header marks them
+/// `SB_DEPRECATED`, so C and C++ callers see a warning. Removing them later would bump
+/// `SB_ABI_VERSION`.
+///
 /// # Safety
 ///
 /// `out` must be NULL or valid for a write.
+#[deprecated(
+    since = "1.1.0",
+    note = "the sb_pcm_* functions are deprecated: scarletbook-pcm is decommissioned, frozen at 0.7.0 with no further releases; convert DSD to PCM on the consumer side (scarletbook-rs#398)"
+)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sb_pcm_converter_new(
     rate_hz: u32,
@@ -3980,9 +3992,15 @@ pub unsafe extern "C" fn sb_pcm_converter_new(
 
 /// Frees a converter. NULL is ignored.
 ///
+/// Deprecated since scarletbook-ffi 1.1.0 (#398); see `sb_pcm_converter_new`.
+///
 /// # Safety
 ///
 /// `conv` must be NULL or a live handle, freed only once.
+#[deprecated(
+    since = "1.1.0",
+    note = "the sb_pcm_* functions are deprecated: scarletbook-pcm is decommissioned, frozen at 0.7.0 with no further releases; convert DSD to PCM on the consumer side (scarletbook-rs#398)"
+)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sb_pcm_converter_free(conv: *mut SbPcmConverter) {
     guard_free(|| {
@@ -4000,9 +4018,15 @@ pub unsafe extern "C" fn sb_pcm_converter_free(conv: *mut SbPcmConverter) {
 /// The output samples per channel of one frame (`*out`): 1176 at 88 200 Hz, 2352 at
 /// 176 400 Hz, 4704 at 352 800 Hz. A frame is 37 632 DSD samples per channel.
 ///
+/// Deprecated since scarletbook-ffi 1.1.0 (#398); see `sb_pcm_converter_new`.
+///
 /// # Safety
 ///
 /// `conv` must be NULL or a live handle; `out` NULL or valid for a write.
+#[deprecated(
+    since = "1.1.0",
+    note = "the sb_pcm_* functions are deprecated: scarletbook-pcm is decommissioned, frozen at 0.7.0 with no further releases; convert DSD to PCM on the consumer side (scarletbook-rs#398)"
+)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sb_pcm_samples_per_frame(conv: *const SbPcmConverter, out: *mut u32) -> SbStatus {
     guard(|| {
@@ -4040,6 +4064,8 @@ pub unsafe extern "C" fn sb_pcm_samples_per_frame(conv: *const SbPcmConverter, o
 /// is not a whole number of frames, `frames` NULL with a non-zero `frames_len`, or the
 /// handle in use.
 ///
+/// Deprecated since scarletbook-ffi 1.1.0 (#398); see `sb_pcm_converter_new`.
+///
 /// # Safety
 ///
 /// `conv` must be NULL or a live handle; `before` and `after` NULL or valid for
@@ -4047,6 +4073,10 @@ pub unsafe extern "C" fn sb_pcm_samples_per_frame(conv: *const SbPcmConverter, o
 /// reads; `out` NULL or valid for `out_len` bytes of writes and not overlapping the
 /// inputs; `clipped` NULL or valid for 6 `uint64_t` writes.
 #[allow(clippy::too_many_arguments, reason = "the run, its two neighbours, the output and the counts")]
+#[deprecated(
+    since = "1.1.0",
+    note = "the sb_pcm_* functions are deprecated: scarletbook-pcm is decommissioned, frozen at 0.7.0 with no further releases; convert DSD to PCM on the consumer side (scarletbook-rs#398)"
+)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sb_pcm_convert_run(
     conv: *mut SbPcmConverter,
@@ -5934,6 +5964,7 @@ pub fn fuzz_disc_toc(prefix: usize, data: &[u8]) {
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 #[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used, clippy::too_many_arguments)]
+#[allow(deprecated, reason = "it calls the deprecated sb_pcm_* functions (#398)")]
 pub fn fuzz_pcm_convert_run(
     rate_hz: u32,
     cutoff: u32,
