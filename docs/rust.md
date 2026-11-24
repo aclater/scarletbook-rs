@@ -125,6 +125,14 @@ let needed = layout.positions_for(offset..offset + buf.len() as u64);
 let n = layout.fill(offset, &mut buf, &mut my_source)?;
 ```
 
+From 0.7.0 on, `positions_for` gives only the positions of the bytes asked for (#307), not
+those of every 4096 x C-byte DSF row the bytes touch, as 0.6.2 did. A position cache that
+fetches what each request is missing can then fetch the rest of a row on a later request,
+which costs one more fetch and seek: sacdfs measured +3.6 % image reads for the head and
+tail of every file of a library (#431). To fetch as 0.6.2 did, round the range out to
+whole rows of the `SoundData` region (`Layout::regions`) before calling `positions_for`.
+On synthetic images, that gives 0.6.2's fetches, reads and bytes exactly.
+
 A DST file's size needs the frames' lengths too: `DstLengths::scan` reads them without
 decoding (they can be saved and loaded), and `Disc::output_layout_dst` lays the file out
 from them. Every point where the formats allow more than one valid output (8.6, "writer's
