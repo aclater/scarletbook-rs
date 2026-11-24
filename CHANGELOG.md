@@ -21,6 +21,7 @@ from 0.5.8).
 - **RELEASING.md lists `link-check` among the checks `preflight` requires (#412, #427),** since it is now a required check on `main`.
 - **Checked against 1.0.2:** `cargo semver-checks --baseline-rev v1.0.2 --release-type minor` finds no semver update required for `scarletbook` or `scarletbook-ffi` (default and all features). With `--release-type patch`, `scarletbook` passes and `scarletbook-ffi` fails only `function_marked_deprecated` on the four `sb_pcm_*` functions ("semver requires new minor version"), which is why this is 1.1.0. `abi-check.py` passes with `SB_ABI_VERSION` 2: `abi/abi-2.txt` gains only the `SB_DEPRECATED` macro's preprocessor lines, and the attribute itself is not ABI.
 - **No benchmark table:** no code path that runs changed since 1.0.2 (attributes and documentation only), so nothing was measured for this release; 1.0.0's table stands.
+- **Known item (#431):** since 0.7.0, a consumer measures about 8 % more image bytes (+3.6 % reads) when reading the head and tail of every DSF file in a library, with identical output. The cause is in the library and is being located; 1.1.0 reads exactly as 0.7.0 to 1.0.2 do. A fix, if one is needed, follows in a patch release.
 
 ### Deprecated
 
