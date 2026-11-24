@@ -457,17 +457,18 @@ fn head_then_tail(
 /// began, with one read call; the frames are an exact read's. The reads are pinned.
 #[test]
 fn a_track_head_after_a_tail_starts_at_the_track() {
-    let (n, tracks) = if cfg!(miri) { (90, 3) } else { (240, 4) };
+    let (n, tracks) = if cfg!(miri) { (60, 2) } else { (240, 4) };
     let (img, starts) = image_tracked(false, n, tracks, 0);
     let (_, _, saved) = head_then_tail(&img, None, (14, 7));
     let (got, reads, _) = head_then_tail(&img, Some(&saved), (14, 7));
+    // Under Miri, without the exact reads (the next test compares under Miri).
     let mut plain = Disc::open(Cursor::new(img.clone())).unwrap();
     let area = plain.toc().areas[0].clone();
     let ranges = area
         .tracks
         .iter()
         .flat_map(|t| [(t.start_frame, t.start_frame + 14), (t.end_frame() - 7, t.end_frame())]);
-    for ((first, end), got) in ranges.zip(&got) {
+    for ((first, end), got) in ranges.zip(&got).filter(|_| !cfg!(miri)) {
         assert_eq!(*got, read(&mut plain, (first, end)).0, "[{first}, {end})");
     }
     for (i, &l) in starts.iter().enumerate().skip(1) {
@@ -497,12 +498,17 @@ fn a_track_head_after_a_tail_starts_at_the_track() {
 /// sectors past the tracks' first frames (the reading then begins at the hint).
 #[test]
 fn speculative_equals_exact_from_every_frame_with_track_starts() {
-    let (n, tracks, step) = if cfg!(miri) { (60, 2, 29) } else { (240, 4, 1) };
-    for (dst, shift) in [(false, 0), (true, 0), (false, 3), (true, 2)] {
+    // Under Miri: plain DSD with the start LSNs moved, from the second track's first frame
+    // and the next (the previous test covers the start LSNs as they are).
+    let (n, tracks) = if cfg!(miri) { (60, 2) } else { (240, 4) };
+    let variants: &[(bool, u32)] =
+        if cfg!(miri) { &[(false, 3)] } else { &[(false, 0), (true, 0), (false, 3), (true, 2)] };
+    for &(dst, shift) in variants {
         let (img, _) = image_tracked(dst, n, tracks, shift);
         let (_, _, saved) = head_then_tail(&img, None, (14, 7));
         let mut plain = Disc::open(Cursor::new(img.clone())).unwrap();
-        for first in (0..n).step_by(step) {
+        let firsts: Vec<u32> = if cfg!(miri) { vec![n / tracks, n / tracks + 1] } else { (0..n).collect() };
+        for first in firsts {
             let end = (first + 3).min(n);
             let (mut disc, _, _) = open(img.clone());
             let area = disc.toc().areas[0].clone();
