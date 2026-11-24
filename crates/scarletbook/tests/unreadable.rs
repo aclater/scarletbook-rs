@@ -673,7 +673,9 @@ fn verification_ends_with_unreadable_sectors() {
     drop(frames);
     let Speculation::Pending { lsn, .. } = speculation else {
         // Under Miri the area is too short for a provisional start.
-        assert!(cfg!(miri), "not provisional: {speculation:?}");
+        if !cfg!(miri) {
+            panic!("not provisional: {speculation:?}");
+        }
         return;
     };
     *bad.lock().unwrap() = ((lsn as usize * S) as u64, ((lsn as usize + 1) * S) as u64);
