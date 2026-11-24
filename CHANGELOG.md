@@ -11,6 +11,22 @@ from 0.5.8).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-24
+
+**1.1.0 deprecates the C library's DSD-to-PCM functions; nothing breaks.** It is a semver minor release because a deprecation is an addition: no API is removed, no ABI changes, and nothing changes in behaviour or output. Besides the versions, `scarletbook` is unchanged since 1.0.2, and `scarletbook-ffi` differs only in attributes and documentation. Rust code that builds against 1.0.2 builds against 1.1.0 with only the version changed (calls to the `sb_pcm_*` functions from Rust now get a deprecation warning). C programs need no change (`SB_ABI_VERSION` 2); a program that calls an `sb_pcm_*` function gets a compiler warning, which `-DSB_DEPRECATED(m)=` (or defining `SB_DEPRECATED(msg)` as nothing before including the header) silences.
+
+- **The four `sb_pcm_*` C functions are deprecated (#398, #399).** `sb_pcm_converter_new`, `sb_pcm_converter_free`, `sb_pcm_samples_per_frame` and `sb_pcm_convert_run` are `#[deprecated(since = "1.1.0")]` in `scarletbook-ffi`, and `scarletbook.h` declares them with the new `SB_DEPRECATED(msg)` attribute macro, so GCC, Clang and MSVC warn where they are called. They keep working, unchanged, and stay in ABI 2; removing them would take a new `SB_ABI_VERSION`. Take the DSD from `sb_track_audio_read` and convert it to PCM in your own code instead. Details under "Deprecated" below.
+- **`scarletbook-pcm` is decommissioned (#398).** It is frozen at 0.7.0 on crates.io, with no further releases; this release neither changes nor publishes it, and `scarletbook-ffi` 1.1.0 still depends on `scarletbook-pcm` `=0.7.0`. Consumers convert DSD to PCM in their own crate instead. The README and the guides (`docs/c-abi.md`, `docs/rust.md`, `docs/stability.md`, `docs/releases.md`, `docs/contributing.md`) and RELEASING.md say so.
+- **The Quick start runner no longer stops on cargo's own home (#428, #429).** Its work-directory guard refused any `.cargo` directory above the work directory, so its first run after v1.0.2 stopped before running anything on the runner's `~/.cargo`; it now refuses only a `Cargo.toml`, `rust-toolchain` or `rust-toolchain.toml` above the work directory, or a `.cargo/config` or `.cargo/config.toml` above it that is not in `$CARGO_HOME`. `quickstart-test.py` (7 checks) runs in CI.
+- **RELEASING.md lists `link-check` among the checks `preflight` requires (#412, #427),** since it is now a required check on `main`.
+- **Checked against 1.0.2:** `cargo semver-checks --baseline-rev v1.0.2 --release-type minor` finds no semver update required for `scarletbook` or `scarletbook-ffi` (default and all features). With `--release-type patch`, `scarletbook` passes and `scarletbook-ffi` fails only `function_marked_deprecated` on the four `sb_pcm_*` functions ("semver requires new minor version"), which is why this is 1.1.0. `abi-check.py` passes with `SB_ABI_VERSION` 2: `abi/abi-2.txt` gains only the `SB_DEPRECATED` macro's preprocessor lines, and the attribute itself is not ABI.
+- **No benchmark table:** no code path that runs changed since 1.0.2 (attributes and documentation only), so nothing was measured for this release; 1.0.0's table stands.
+- **Known item (#431):** since 0.7.0, a consumer measures about 8 % more image bytes (+3.6 % reads) when reading the head and tail of every DSF file in a library, with identical output. The cause is in the library and is being located; 1.1.0 reads exactly as 0.7.0 to 1.0.2 do. A fix, if one is needed, follows in a patch release.
+
+### Deprecated
+
+- The C library's `sb_pcm_converter_new`, `sb_pcm_converter_free`, `sb_pcm_samples_per_frame` and `sb_pcm_convert_run` are deprecated (`#[deprecated(since = "1.1.0")]` in scarletbook-ffi). `scarletbook.h` declares them with the new `SB_DEPRECATED(msg)` attribute macro, so GCC, Clang and MSVC warn where they are called; define it as nothing before including the header to silence it. They keep working, unchanged, and stay in the C ABI (`SB_ABI_VERSION` stays 2; `abi-check.py` ignores the attribute); removing them later would be a scarletbook-ffi ABI bump. `scarletbook-pcm`, which they wrap, is decommissioned: frozen at 0.7.0 on crates.io, no further releases, and unchanged by this release. Consumers convert DSD to PCM in their own crate instead (#398, #399).
+
 ## [1.0.2] - 2026-11-23
 
 **1.0.2 changes documentation and comments only.** No code change, no API change, no ABI change, no change in behaviour or output: besides the versions, the sources of `scarletbook` and `scarletbook-ffi` differ from 1.0.1 only in doc comments, the C header's comments and the docs.rs settings. Rust code that builds against 1.0.1 builds against 1.0.2 with only the version changed; C programs need no change at all (`SB_ABI_VERSION` 2; the header differs from 1.0.1 only in comments).
@@ -1164,7 +1180,8 @@ First release: a clean-room reader for SACD images, written from sacd-spec, pass
 - DST decoding about 3.8 times faster on one thread, and parallel decoding that overlaps
   demultiplexing with decoding within a bounded memory (#16, #17, #19).
 
-[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v1.0.2...HEAD
+[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/aclater/scarletbook-rs/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/aclater/scarletbook-rs/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/aclater/scarletbook-rs/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/aclater/scarletbook-rs/compare/v0.7.0...v1.0.0
