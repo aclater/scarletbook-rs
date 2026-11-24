@@ -1,1 +1,0 @@
-| 2026-11-24 | provisional search goes on after a final read that misses (#434) | Specification 4, 4.2 items 8 and 9, and 7, 7.1 item 3, at sacd-spec `8519fad`: the reader chooses `L` as it likes, and the search stays within a constant times log2(n + 1) sectors. Measured black-box with read counts on synthetic images from `scarletbook-synth`. No new sources consulted. |
