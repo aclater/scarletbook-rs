@@ -929,13 +929,12 @@ pub(crate) fn locate<R: Read + Seek>(
         // side where the bit rate changes, and frame `first` takes some sectors after its
         // start). If it finds no sector below `first`, the search goes on.
         let rest = LAST_READ_BUDGET.saturating_sub(used);
-        let mut chance = false;
         if reads + 1 == SEARCH_CALLS && rest > size {
             if final_read {
                 size = rest.min(hi.saturating_add(PROBE_SPAN) - guess).max(size);
             } else {
                 guess = (guess + per / 2).saturating_sub(rest * 5 / 8).max(lo + 1);
-                (size, final_read, chance) = (rest, true, true);
+                (size, final_read) = (rest, true);
             }
         }
         let mut at = guess;
@@ -990,7 +989,11 @@ pub(crate) fn locate<R: Read + Seek>(
             }
             (None, None) => hi = guess,
         }
-        if final_read && (found_now || !chance) {
+        // A final read that finds no sector below `first` ends the search only if it began
+        // at or before `lo`, so that no sector is left to search before it (issue #434): it
+        // started past frame `first`'s start, its records are a new upper bound, and the
+        // search goes on below it, within the probes left.
+        if final_read && (found_now || guess <= lo) {
             break;
         }
         // Two steps in a row that did not at least halve the frames between `first` and the
@@ -2416,6 +2419,45 @@ mod tests {
         );
         assert_eq!(ix.hint(505, 520, 1000).map(|h| h.0), Some(150));
         assert_eq!(ix.hint(700, 710, 1000), None, "beyond the reach");
+    }
+
+    /// Issue #434: where the bit rate rises, a read back from the first probe sized at the
+    /// area's average density can begin just past the frame before the one wanted and find
+    /// no sector below it. The search goes on below that read instead of giving up (which
+    /// made a cursor scan the area from its first sector). Every frame of an area whose
+    /// frames take 1 sector, then 4 to 6, gets a sector whose first record is below it.
+    #[test]
+    fn search_goes_on_below_a_read_that_missed() {
+        // Frame sizes in sectors: 600 quiet frames, then 300 loud ones of uneven size.
+        let sizes: Vec<u64> =
+            (0..900u64).map(|t| if t < 600 { 1 } else { 4 + (t * 7 + t / 5) % 3 }).collect();
+        let n: u64 = sizes.iter().sum();
+        let mut bytes = vec![0u8; n as usize * SECTOR_SIZE];
+        let mut lsn = 0;
+        for (t, &size) in sizes.iter().enumerate() {
+            let t = t as u32;
+            let sector = &mut bytes[lsn as usize * SECTOR_SIZE..];
+            // One frame record (4.3.2): a frame starts here, no packet records before it.
+            sector[0] = 1 << 2;
+            sector[1..4].copy_from_slice(&[(t / 75 / 60) as u8, (t / 75 % 60) as u8, (t % 75) as u8]);
+            lsn += size;
+        }
+        let mut image = Image::options()
+            .with_format(crate::SectorFormat::Plain)
+            .open(std::io::Cursor::new(bytes))
+            .unwrap();
+        let options = SpeculativeOptions::new();
+        // Under Miri, two frames: 858, where the read back fell short, and one in the quiet
+        // part. Near the area's start the search stops with an interval too short to probe.
+        let frames: Vec<u32> = if cfg!(miri) { vec![300, 858] } else { (50..900).collect() };
+        for first in frames {
+            let mut sectors = 0;
+            let found =
+                locate(&mut image, (0, n), (first, 900), &[(0, 0)], &options, &mut |c| sectors += c).unwrap();
+            assert!(found.lsn > 0, "frame {first}: nothing found ({} reads)", found.reads);
+            assert!(found.frame < first && found.reads <= options.max_probes, "frame {first}: {found:?}");
+            assert!(sectors <= u64::from(found.reads) * LAST_READ_BUDGET, "frame {first}: {sectors} sectors");
+        }
     }
 
     #[test]
