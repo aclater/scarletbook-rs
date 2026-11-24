@@ -5,10 +5,10 @@
 use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::control::CancelToken;
+use crate::control::{CancelToken, UnreadableSectors};
 use crate::error::Error;
 use crate::log::{Log, sb_log};
-use crate::read_at::{ReadAt, ReadAtReader};
+use crate::read_at::{ReadAt, ReadAtReader, is_unreadable_error};
 
 /// Size of a logical sector in bytes (specification 0, 0.3).
 pub const SECTOR_SIZE: usize = 2048;
@@ -72,6 +72,8 @@ pub struct Image<R> {
     log: Log,
     /// Shared with the images of the same source made from this one.
     cancel: CancelToken,
+    /// Shared with the images of the same source made from this one.
+    unreadable: UnreadableSectors,
 }
 
 /// The outcome of a sector read that did not fail with an I/O error.
@@ -226,6 +228,7 @@ impl<R: Read + Seek> Image<R> {
             scratch: Vec::new(),
             log,
             cancel: CancelToken::new(),
+            unreadable: UnreadableSectors::new(),
         }
     }
 
@@ -252,6 +255,12 @@ impl<R: Read + Seek> Image<R> {
     /// the images of [`crate::Disc::share`] and of `clone`.
     pub fn cancel_token(&self) -> CancelToken {
         self.cancel.clone()
+    }
+
+    /// The sectors of this image that cannot be read (see [`UnreadableSectors`]), shared
+    /// with the images of [`crate::Disc::share`] and of `clone`.
+    pub fn unreadable_sectors(&self) -> UnreadableSectors {
+        self.unreadable.clone()
     }
 
     /// [`crate::Error::Cancelled`] if cancellation of this image's reads is requested.
@@ -314,6 +323,7 @@ impl<R: Read + Seek> Image<R> {
             scratch: Vec::new(),
             log,
             cancel: self.cancel.clone(),
+            unreadable: self.unreadable.clone(),
         }
     }
 
@@ -348,9 +358,12 @@ impl<R: Read + Seek> Image<R> {
     /// # Errors
     ///
     /// [`Error::SectorRangeInvalid`] if any of the sectors does not exist, with `buf` left
-    /// as it was. [`Error::InvalidArgument`] for a bad buffer length. [`Error::Io`] if the
-    /// reader fails (including a reader that is shorter than it reported), after which what
-    /// `buf` holds is unspecified.
+    /// as it was. [`Error::InvalidArgument`] for a bad buffer length.
+    /// [`Error::SectorUnreadable`] if one of the sectors is marked unreadable
+    /// ([`Image::unreadable_sectors`]; nothing is read) or the reader reports it so
+    /// ([`crate::read_at::unreadable_error`]; the sector is then marked). [`Error::Io`] if
+    /// the reader fails (including a reader that is shorter than it reported). After either
+    /// of the last two, what `buf` holds is unspecified.
     pub fn read_sectors(&mut self, lsn: u64, buf: &mut [u8]) -> Result<(), Error> {
         if buf.len() % SECTOR_SIZE != 0 {
             return Err(Error::InvalidArgument("buffer length must be a multiple of 2048"));
@@ -358,7 +371,24 @@ impl<R: Read + Seek> Image<R> {
         if buf.is_empty() && self.contains(lsn, 0) {
             return Ok(());
         }
-        match self.read_into(lsn, buf)? {
+        let count = (buf.len() / SECTOR_SIZE) as u64;
+        if self.contains(lsn, count) {
+            if let Some(bad) = self.unreadable.first_in(lsn, lsn + count) {
+                return Err(Error::SectorUnreadable { lsn: bad });
+            }
+        }
+        let outcome = match self.read_into(lsn, buf) {
+            Err(e) if is_unreadable_error(&e) => {
+                let mut bad = Vec::new();
+                self.read_audio(lsn, buf, &mut bad)?;
+                return match bad.first() {
+                    Some(&(s, _)) => Err(Error::SectorUnreadable { lsn: s }),
+                    None => Ok(()),
+                };
+            }
+            r => r?,
+        };
+        match outcome {
             ReadOutcome::Ok => Ok(()),
             ReadOutcome::OutOfRange => Err(Error::SectorRangeInvalid {
                 lsn,
@@ -395,11 +425,79 @@ impl<R: Read + Seek> Image<R> {
                 Ok(ReadOutcome::Ok)
             }
             Err(e) => {
-                sb_log!(&self.log, Error, "read of {count} sectors at LSN {lsn} (byte {start}) failed: {e}");
+                if is_unreadable_error(&e) {
+                    sb_log!(&self.log, Debug, "read of {count} sectors at LSN {lsn} (byte {start}): {e}");
+                } else {
+                    sb_log!(
+                        &self.log,
+                        Error,
+                        "read of {count} sectors at LSN {lsn} (byte {start}) failed: {e}"
+                    );
+                }
                 self.pos = None;
                 Err(e)
             }
         }
+    }
+
+    /// [`Image::read_into`] for audio sectors, with unreadable sectors (#435): the marked
+    /// sectors of the range are not read but filled with zeros, and a read the reader
+    /// reports as unreadable ([`crate::read_at::unreadable_error`]) is made again one sector
+    /// at a time, each sector that still fails being marked and filled with zeros. `bad`
+    /// receives the unreadable runs of the range, as half-open ranges in increasing order:
+    /// the sectors of `buf` that hold no bytes of the image.
+    pub(crate) fn read_audio(
+        &mut self,
+        lsn: u64,
+        buf: &mut [u8],
+        bad: &mut Vec<(u64, u64)>,
+    ) -> io::Result<ReadOutcome> {
+        bad.clear();
+        let count = (buf.len() / SECTOR_SIZE) as u64;
+        if !self.contains(lsn, count) {
+            return self.read_into(lsn, buf);
+        }
+        let end = lsn + count;
+        if self.unreadable.is_empty() {
+            match self.read_into(lsn, buf) {
+                Err(e) if is_unreadable_error(&e) => {}
+                r => return r,
+            }
+        }
+        let marked = self.unreadable.runs_in(lsn, end);
+        let mut at = lsn;
+        for (s, e) in marked.iter().copied().chain([(end, end)]) {
+            if at < s {
+                self.read_run(at, &mut buf[slot(lsn, at)..slot(lsn, s)])?;
+            }
+            buf[slot(lsn, s)..slot(lsn, e)].fill(0);
+            at = e;
+        }
+        *bad = self.unreadable.runs_in(lsn, end);
+        Ok(ReadOutcome::Ok)
+    }
+
+    /// Reads the sectors of `buf` from `lsn`, all in the image, marking and zeroing those
+    /// the reader reports unreadable.
+    fn read_run(&mut self, lsn: u64, buf: &mut [u8]) -> io::Result<()> {
+        match self.read_into(lsn, buf) {
+            Ok(_) => return Ok(()),
+            Err(e) if is_unreadable_error(&e) => {}
+            Err(e) => return Err(e),
+        }
+        for (i, sector) in buf.chunks_exact_mut(SECTOR_SIZE).enumerate() {
+            let at = lsn + i as u64;
+            match self.read_into(at, sector) {
+                Ok(_) => {}
+                Err(e) if is_unreadable_error(&e) => {
+                    sb_log!(&self.log, Warn, "sector LSN {at}: unreadable (reported by the reader), marked");
+                    self.unreadable.insert(at, 1);
+                    sector.fill(0);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
     }
 
     fn read_raw(&mut self, start: u64, count: u64, p: u64, d: u64, buf: &mut [u8]) -> io::Result<u64> {
@@ -437,6 +535,11 @@ impl<R: Read + Seek> Image<R> {
         }
         Ok(())
     }
+}
+
+/// The offset in a buffer of sectors from `first` of sector `lsn`.
+fn slot(first: u64, lsn: u64) -> usize {
+    (lsn - first) as usize * SECTOR_SIZE
 }
 
 /// Another reader of the same source, with a position and buffer of its own and the same

@@ -209,6 +209,33 @@ and the sectors it expects to read (an estimate, equal to the count read once do
 track, range and raw frames handles. Neither handle borrows the disc or the handle it came
 from, so polling it never collides with the reading thread; free each with its `_free`.
 
+### Unreadable sectors
+
+A reader of a damaged disc marks the sectors it could not read (1.2.0, #435). There are two
+ways to do it, and both feed one set per disc, which its clones share:
+
+```c
+sb_disc_unreadable_add(disc, lsn, count);    /* before opening the handles that read them */
+/* or, in a read callback, for bytes it cannot read: */
+return SB_READ_UNREADABLE;                   /* -2; any other negative value is an I/O error */
+```
+
+Every position whose frame has a byte in a marked sector, or starts in one, is then lost:
+`SB_FRAME_STATUS_LOST` in `sb_track_audio_read` (filled with 0x69), and `SB_FRAME_KIND_LOST`
+with no bytes in `sb_raw_frames_read`. Its DST equivalent is a missing position's. The
+stored frame list gets one `LOST` entry for each lost position below the play time.
+`sb_track_audio_lost` and `sb_raw_frames_lost` count lost positions; they are not in the
+missing counts. Reading resumes at the next frame that starts in a readable sector, at its
+own frame number, and nothing else changes. None of these values appear for a disc with no
+marked sectors.
+
+The library never asks the image for a marked sector. When a callback returns
+`SB_READ_UNREADABLE`, the library reads the request again one sector at a time and marks
+each sector that still fails; `sb_disc_unreadable_range` lists the marked runs.
+`sb_disc_read_sectors` refuses marked sectors with `SB_STATUS_SECTOR_UNREADABLE`, and the
+seek index extension calls stop at the first marked sector with the same status, because a
+seek index never holds state from past one. `sb_disc_unreadable_remove` unmarks sectors.
+
 ### DSD to PCM
 
 `scarletbook-pcm` is decommissioned
@@ -275,6 +302,8 @@ Where the two interfaces name the same thing differently:
 | `claim()` on a cursor, `None` for exact positions | `SbSpeculation.claim`, 0 for exact positions |
 | `claim_lsn()` on a cursor, `None` before the start is chosen and for exact positions | `SbSpeculation.lsn`, 0 in those cases |
 | `Stored::Dsd`, `FrameKind::Dsd`, `FrameStatus::Dsd` | `SB_FRAME_KIND_DSD` |
+| `FrameStatus::Lost`; `TrackFrame::is_lost()` with `FrameContent::Missing` | `SB_FRAME_STATUS_LOST`; `SB_FRAME_KIND_LOST` |
+| `read_at::unreadable_error()` | `SB_READ_UNREADABLE` |
 
 
 ## Linking

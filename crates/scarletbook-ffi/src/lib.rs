@@ -92,6 +92,11 @@ pub enum SbStatus {
     /// An edited master can't be written for the area or range (specification 8, 8.4.11);
     /// the message names the check that failed (`sb_output_layout_new`).
     NotEditedMaster = -21,
+    /// A sector is unreadable: marked so (`sb_disc_unreadable_add`) or reported so by a
+    /// read callback (`SB_READ_UNREADABLE`). Returned by `sb_disc_read_sectors`, which gives
+    /// no bytes in its place, and by the seek index extension calls, which record nothing
+    /// at or past it.
+    SectorUnreadable = -22,
 }
 
 /// Area slots, as passed in `slot` arguments.
@@ -116,6 +121,10 @@ pub enum SbFrameStatus {
     Missing = 2,
     /// An invalid DST frame: filled with 0x55.
     Invalid = 3,
+    /// Lost to unreadable sectors (`sb_disc_unreadable_add`, `SB_READ_UNREADABLE`): filled
+    /// with 0x69, as a missing position. Never reported for a disc with no unreadable
+    /// sectors.
+    Lost = 4,
 }
 
 /// What a timeline position holds, undecoded (`SbRawFrameInfo.kind`).
@@ -128,6 +137,10 @@ pub enum SbFrameKind {
     Dst = 1,
     /// No frame fills the position: no bytes (decoded reads fill it with 0x69).
     Missing = 2,
+    /// Lost to unreadable sectors: no bytes, as a missing position (decoded reads fill it
+    /// with 0x69 and report `SB_FRAME_STATUS_LOST`). Never reported for a disc with no
+    /// unreadable sectors.
+    Lost = 3,
 }
 
 /// Disc-level strings for `sb_disc_string`: the 16 disc text items of specification 2,
@@ -532,6 +545,25 @@ struct RawFrames {
     source: Source,
     /// A frame the caller's buffer was too small for, returned by the next read.
     held: Option<TrackFrame>,
+    /// Lost positions of a stored frame list still to return, and the frame after them.
+    lost_run: Option<((u32, u32), Option<scarletbook::AreaFrame>)>,
+    /// The lost positions a stored frame list has returned.
+    list_lost: u64,
+    /// The stretch open at the end of the area has been taken.
+    tail_done: bool,
+}
+
+impl RawFrames {
+    fn new(source: Source) -> Self {
+        RawFrames { source, held: None, lost_run: None, list_lost: 0, tail_done: false }
+    }
+
+    fn lost_frames(&self) -> u64 {
+        match &self.source {
+            Source::Range(c) => c.lost_frames(),
+            Source::List(..) => self.list_lost,
+        }
+    }
 }
 
 /// Where a raw frames handle's positions come from (specification 4, 4.6.1 item 2).
@@ -539,31 +571,59 @@ struct RawFrames {
 enum Source {
     /// The stored content of a frame range: every position, missing ones included.
     Range(TrackCursor),
-    /// The area's stored frame list, of an area of this many channels: every accepted
-    /// frame, no missing positions.
-    List(AreaCursor, u8),
+    /// The area's stored frame list, of an area of this many channels and play time: every
+    /// accepted frame, no missing positions; with unreadable sectors, a lost entry for each
+    /// lost position below the play time.
+    List(AreaCursor, u8, u32),
 }
 
 impl RawFrames {
     fn channels(&self) -> u8 {
         match &self.source {
             Source::Range(c) => c.channels(),
-            Source::List(_, channels) => *channels,
+            Source::List(_, channels, _) => *channels,
         }
     }
 
     fn next_frame(&mut self, image: &mut scarletbook::Image<Reader>) -> Option<Result<TrackFrame, Error>> {
         match &mut self.source {
             Source::Range(c) => c.next_frame(image),
-            Source::List(c, _) => c.next_frame(image).map(|f| {
-                f.map(|f| {
+            Source::List(c, _, playtime) => {
+                let stored = |f: scarletbook::AreaFrame| {
                     let content = match f.kind {
                         FrameKind::Dst => FrameContent::Dst(f.data),
                         FrameKind::Dsd => FrameContent::Dsd(f.data),
                     };
                     TrackFrame::new(f.number, content)
-                })
-            }),
+                };
+                loop {
+                    // A lost stretch (#435), one entry per position below the play time,
+                    // then the frame that closed it.
+                    if let Some(((from, to), after)) = self.lost_run.take() {
+                        if from < to {
+                            self.lost_run = Some(((from + 1, to), after));
+                            self.list_lost += 1;
+                            return Some(Ok(TrackFrame::lost(from)));
+                        }
+                        if let Some(f) = after {
+                            return Some(Ok(stored(f)));
+                        }
+                    }
+                    match c.next_frame(image) {
+                        Some(Ok(f)) => match f.lost_from.filter(|&l| l < f.number.min(*playtime)) {
+                            Some(l) => self.lost_run = Some(((l, f.number.min(*playtime)), Some(f))),
+                            None => return Some(Ok(stored(f))),
+                        },
+                        None => {
+                            // The stretch still open at the end of the area, once.
+                            let tail = c.lost_from().filter(|&l| l < *playtime && !self.tail_done);
+                            self.tail_done = true;
+                            self.lost_run = Some(((tail?, *playtime), None));
+                        }
+                        other => return other.map(|r| r.map(stored)),
+                    }
+                }
+            }
         }
     }
 
@@ -585,21 +645,21 @@ impl RawFrames {
     fn malformed_sectors(&self) -> u64 {
         match &self.source {
             Source::Range(c) => c.malformed_sectors(),
-            Source::List(c, _) => c.malformed_sectors(),
+            Source::List(c, ..) => c.malformed_sectors(),
         }
     }
 
     fn warnings(&self) -> &[scarletbook::Warning] {
         match &self.source {
             Source::Range(c) => c.warnings(),
-            Source::List(c, _) => c.warnings(),
+            Source::List(c, ..) => c.warnings(),
         }
     }
 
     fn progress(&mut self) -> Progress {
         match &mut self.source {
             Source::Range(c) => c.progress(),
-            Source::List(c, _) => c.progress(),
+            Source::List(c, ..) => c.progress(),
         }
     }
 }
@@ -743,6 +803,7 @@ impl From<Error> for Failure {
             Error::InvalidArgument(_) | Error::DstLanesInvalid { .. } => SbStatus::InvalidArgument,
             Error::Io(_) => SbStatus::Io,
             Error::Cancelled => SbStatus::Cancelled,
+            Error::SectorUnreadable { .. } => SbStatus::SectorUnreadable,
             Error::OutputRefused(scarletbook::OutputRefusal::UnspecifiedLayout { .. }) => {
                 SbStatus::OutputLayoutUnspecified
             }
@@ -1206,6 +1267,7 @@ pub extern "C" fn sb_status_name(status: i32) -> *const c_char {
         -19 => c"cancelled",
         -20 => c"output-layout-unspecified",
         -21 => c"not-edited-master",
+        -22 => c"sector-unreadable",
         _ => c"unknown",
     };
     name.as_ptr()
@@ -1323,7 +1385,15 @@ pub unsafe extern "C" fn sb_disc_open_memory_with_log(
     })
 }
 
-/// Reads up to `len` bytes into `buf`; returns the count (0 at the end) or -1 on error.
+/// What a read callback (`SbReadFn`, `SbReadAtFn`) returns for bytes it cannot read, when the
+/// sectors they belong to are to be treated as unreadable instead of the read failing: the
+/// library reads those sectors again one at a time, marks each that still returns this as
+/// unreadable (see `sb_disc_unreadable_add`) and reads on. Any other negative value fails
+/// the read with `SB_STATUS_IO`.
+pub const SB_READ_UNREADABLE: i64 = -2;
+
+/// Reads up to `len` bytes into `buf`; returns the count (0 at the end), -1 on error, or
+/// `SB_READ_UNREADABLE`.
 pub type SbReadFn = Option<unsafe extern "C" fn(user: *mut c_void, buf: *mut u8, len: usize) -> i64>;
 
 /// Seeks to `offset` from `whence` (0: start, 1: current, 2: end); returns the new
@@ -1348,6 +1418,9 @@ impl Read for Callbacks {
         // SAFETY: the caller of sb_disc_open_callbacks guaranteed that `read` may be
         // called with `user` and a buffer valid for `len` bytes of writes, which `buf` is.
         let n = unsafe { (self.read)(self.user, buf.as_mut_ptr(), buf.len()) };
+        if n == SB_READ_UNREADABLE {
+            return Err(scarletbook::read_at::unreadable_error());
+        }
         usize::try_from(n)
             .ok()
             .filter(|&n| n <= buf.len())
@@ -1370,7 +1443,7 @@ impl Seek for Callbacks {
 }
 
 /// Reads up to `len` bytes at byte `offset` of the image into `buf`; returns the count (0
-/// at or past the end) or -1 on error. May be called from several threads at once (see
+/// at or past the end), -1 on error, or `SB_READ_UNREADABLE`. May be called from several threads at once (see
 /// `sb_disc_open_callbacks_at`).
 pub type SbReadAtFn =
     Option<unsafe extern "C" fn(user: *mut c_void, offset: u64, buf: *mut u8, len: usize) -> i64>;
@@ -1397,6 +1470,9 @@ impl ReadAt for AtCallbacks {
         // called with `user`, from any thread, concurrently, and a buffer valid for `len`
         // bytes of writes, which `buf` is.
         let n = unsafe { (self.read_at)(self.user, offset, buf.as_mut_ptr(), buf.len()) };
+        if n == SB_READ_UNREADABLE {
+            return Err(scarletbook::read_at::unreadable_error());
+        }
         usize::try_from(n)
             .ok()
             .filter(|&n| n <= buf.len())
@@ -2557,6 +2633,81 @@ const _: () = assert!(SB_SECTOR_SIZE as usize == scarletbook::SECTOR_SIZE);
 const _: () = assert!(MAX_CHANNELS == scarletbook::audio::MAX_CHANNELS);
 const _: () = assert!(FRAME_BYTES_PER_CHANNEL == scarletbook::audio::FRAME_BYTES_PER_CHANNEL);
 
+/// Marks the `count` sectors from `lsn` of the disc's image as unreadable (#435), for the
+/// disc and its clones, which share one set. Every track audio or raw frames handle that
+/// reads them afterwards (opened before or after this call) never asks the image for
+/// them and never decodes from part of a frame: each timeline position whose frame has a
+/// byte in them, or starts in them, is reported lost (`SB_FRAME_STATUS_LOST`,
+/// `SB_FRAME_KIND_LOST`) and counted by `sb_track_audio_lost` and `sb_raw_frames_lost`,
+/// not as missing; reading resumes at the next frame that starts in a readable sector, at
+/// its own frame number, and every other position is as without the mark. A handle that
+/// already read a sector keeps what it read. A seek index never takes reading state from
+/// past a marked sector. The TOC, read when the disc was opened, is not affected. A range
+/// past `UINT64_MAX` ends there; `count` 0 marks nothing.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_disc_unreadable_add(disc: *const SbDisc, lsn: u64, count: u64) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?;
+        d.get()?.unreadable_sectors().insert(lsn, count);
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// Marks the `count` sectors from `lsn` readable again (see `sb_disc_unreadable_add`).
+/// Handles that already read them keep what they read.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_disc_unreadable_remove(disc: *const SbDisc, lsn: u64, count: u64) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?;
+        d.get()?.unreadable_sectors().remove(lsn, count);
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// The `index`th run of unreadable sectors of the disc's image, in increasing order:
+/// its first sector in `*lsn` and its length in `*count`. Runs are merged, and include
+/// the sectors a read callback reported (`SB_READ_UNREADABLE`). Returns `SB_STATUS_ABSENT`
+/// past the last run, writing nothing.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle; `lsn` and `count` NULL or valid for writes
+/// (both are required).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_disc_unreadable_range(
+    disc: *const SbDisc,
+    index: u64,
+    lsn: *mut u64,
+    count: *mut u64,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?;
+        if lsn.is_null() || count.is_null() {
+            return Err(Failure::arg("NULL output pointer"));
+        }
+        let ranges = d.get()?.unreadable_sectors().ranges();
+        let Some(&(first, n)) = usize::try_from(index).ok().and_then(|i| ranges.get(i)) else {
+            return Ok(SbStatus::Absent);
+        };
+        // SAFETY: forwarded contract (checked non-NULL above).
+        unsafe { write_out(lsn, first) }?;
+        // SAFETY: forwarded contract (checked non-NULL above).
+        unsafe { write_out(count, n) }?;
+        Ok(SbStatus::Ok)
+    })
+}
+
 /// Copies the user data of the logical sectors `[lsn, lsn + count)` into `buf`, 2048
 /// bytes (`SB_SECTOR_SIZE`) per sector in order, whatever the image's stored sector size
 /// (`SbDiscInfo.sector_size`): the data a 2048-byte-sector image holds at those sectors.
@@ -2568,7 +2719,11 @@ const _: () = assert!(FRAME_BYTES_PER_CHANNEL == scarletbook::audio::FRAME_BYTES
 /// writes nothing; with `buf` NULL or `cap < count x 2048`, `SB_STATUS_BUFFER_TOO_SMALL`,
 /// and writes nothing. `count` 0 reads nothing and returns `SB_STATUS_OK` for any `lsn`
 /// up to `SbDiscInfo.sectors`. Nothing is ever written past `count x 2048` bytes of
-/// `buf`; after `SB_STATUS_IO`, what those bytes hold is unspecified.
+/// `buf`; after `SB_STATUS_IO`, what those bytes hold is unspecified. A range holding a
+/// sector marked unreadable (`sb_disc_unreadable_add`) returns
+/// `SB_STATUS_SECTOR_UNREADABLE` without reading; so does one the read callback reports
+/// unreadable (`SB_READ_UNREADABLE`), whose sectors are then marked, and the bytes are
+/// then unspecified.
 ///
 /// The image is read many sectors at a time, not sector by sector: a range of an image of
 /// 2048-byte stored sectors in one read, of other images in reads of 64 stored sectors.
@@ -3000,6 +3155,7 @@ fn decoded_info(frame: &AudioFrame, size: usize) -> SbFrameInfo {
         FrameStatus::Decoded => (SbFrameStatus::Decoded, 0),
         FrameStatus::Missing => (SbFrameStatus::Missing, 0),
         FrameStatus::Invalid(e) => (SbFrameStatus::Invalid, u32::from(e.rule())),
+        FrameStatus::Lost => (SbFrameStatus::Lost, 0),
         // An outcome this interface does not know yet is never reported as good audio.
         _ => (SbFrameStatus::Invalid, 0),
     };
@@ -3169,6 +3325,27 @@ pub unsafe extern "C" fn sb_track_audio_counts(
         unsafe { write_out(missing, cursor.missing_frames() - held_missing) }?;
         // SAFETY: forwarded contract (checked non-NULL above).
         unsafe { write_out(invalid, cursor.invalid_dst_frames() - held_invalid) }?;
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// The number of positions returned so far that were lost to unreadable sectors
+/// (`SB_FRAME_STATUS_LOST`, see `sb_disc_unreadable_add`); they are not in the missing
+/// count of `sb_track_audio_counts`.
+///
+/// # Safety
+///
+/// `audio` must be NULL or a live handle; `lost` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_track_audio_lost(audio: *const SbTrackAudio, lost: *mut u64) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let a = unsafe { audio_handle(audio) }?;
+        let cursor = a.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
+        let held = a.held.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
+        let held_lost = held.as_ref().is_some_and(|(f, _)| f.status == FrameStatus::Lost);
+        // SAFETY: forwarded contract.
+        unsafe { write_out(lost, cursor.lost_frames() - u64::from(held_lost)) }?;
         Ok(SbStatus::Ok)
     })
 }
@@ -3534,7 +3711,7 @@ unsafe fn raw_open_next(
             }
         };
         let raw = Box::new(SbRawFrames {
-            inner: RefCell::new(RawFrames { source: Source::Range(cursor), held: None }),
+            inner: RefCell::new(RawFrames::new(Source::Range(cursor))),
             disc_id: handle.id,
         });
         // SAFETY: non-NULL and valid for a write by this function's contract.
@@ -3546,7 +3723,10 @@ unsafe fn raw_open_next(
 /// Opens the **stored frame list** of the area from `slot` (specification 4, 4.6.1 item
 /// 2): every accepted frame of the area in frame number order, including frames numbered
 /// at or past the play time, read with `sb_raw_frames_read` (each as stored, never
-/// `SB_FRAME_KIND_MISSING`: positions not listed are missing). Every audio sector is
+/// `SB_FRAME_KIND_MISSING`: positions not listed are missing). With unreadable sectors
+/// (`sb_disc_unreadable_add`), each lost position below the play time is listed too, in
+/// frame number order, as `SB_FRAME_KIND_LOST` with no bytes; `sb_raw_frames_lost`
+/// counts them. Every audio sector is
 /// processed. `sb_raw_frames_missing` gives 0 and `sb_raw_frames_read_dst_equivalent`
 /// refuses: DST equivalents are written only for tracks and ranges (4.6.1 item 4). Fails
 /// with `SB_STATUS_NO_SUCH_AREA` or `SB_STATUS_CHANNEL_COUNT_UNSUPPORTED` (4.6.1 item 1);
@@ -3573,9 +3753,10 @@ pub unsafe extern "C" fn sb_stored_frame_list_open(
         let d = handle.get()?;
         let slot = slot_from(slot)?;
         let cursor = d.stored_frame_list_cursor(slot)?;
-        let channels = d.toc().area(slot).map_or(0, |a| a.channel_count);
+        let (channels, playtime) =
+            d.toc().area(slot).map_or((0, 0), |a| (a.channel_count, a.playtime_frames()));
         let raw = Box::new(SbRawFrames {
-            inner: RefCell::new(RawFrames { source: Source::List(cursor, channels), held: None }),
+            inner: RefCell::new(RawFrames::new(Source::List(cursor, channels, playtime))),
             disc_id: handle.id,
         });
         // SAFETY: non-NULL and valid for a write by this function's contract.
@@ -3599,7 +3780,7 @@ pub unsafe extern "C" fn sb_raw_frames_channels(raw: *const SbRawFrames) -> u32 
 
 /// Copies the next position's frame, as stored, into `buf` and describes it in `*info`:
 /// its number, its `SbFrameKind` and its size (`channels x 4704` for a plain frame, the
-/// DST frame's length for a DST frame, 0 for a missing position, never more than
+/// DST frame's length for a DST frame, 0 for a missing or lost position, never more than
 /// `SB_MAX_FRAME_BYTES`). Returns `SB_STATUS_END` after the last position. `disc` must be
 /// the live disc the handle was opened from or a clone of it; its read callbacks, if any,
 /// run during this call. Invalid DST frames are not reported: validity is known only by decoding
@@ -3705,6 +3886,7 @@ unsafe fn raw_read(
         let kind = match &frame.content {
             FrameContent::Dsd(_) => SbFrameKind::Dsd,
             FrameContent::Dst(_) => SbFrameKind::Dst,
+            FrameContent::Missing if frame.is_lost() => SbFrameKind::Lost,
             FrameContent::Missing => SbFrameKind::Missing,
         };
         let bytes: std::borrow::Cow<'_, [u8]> = match (&frame.content, equivalent) {
@@ -3748,10 +3930,30 @@ pub unsafe extern "C" fn sb_raw_frames_missing(raw: *const SbRawFrames, missing:
         // SAFETY: forwarded contract.
         let r = unsafe { raw_handle(raw) }?;
         let state = r.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
-        // A held missing position has been counted by the cursor but not yet returned.
-        let held = state.held.as_ref().is_some_and(|f| f.content == FrameContent::Missing);
+        // A held missing position has been counted by the cursor but not yet returned (a
+        // missing or lost position has no bytes: never held, but kept exact all the same).
+        let held = state.held.as_ref().is_some_and(|f| f.content == FrameContent::Missing && !f.is_lost());
         // SAFETY: forwarded contract.
         unsafe { write_out(missing, state.missing_frames() - u64::from(held)) }?;
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// The number of lost positions returned so far by `sb_raw_frames_read`
+/// (`SB_FRAME_KIND_LOST`, see `sb_disc_unreadable_add`); they are not in the count of
+/// `sb_raw_frames_missing`. For a stored frame list, its lost entries.
+///
+/// # Safety
+///
+/// `raw` must be NULL or a live handle; `lost` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_raw_frames_lost(raw: *const SbRawFrames, lost: *mut u64) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let r = unsafe { raw_handle(raw) }?;
+        let state = r.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?;
+        // SAFETY: forwarded contract.
+        unsafe { write_out(lost, state.lost_frames()) }?;
         Ok(SbStatus::Ok)
     })
 }

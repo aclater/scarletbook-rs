@@ -13,6 +13,7 @@
 #endif
 #define SB_MAX_FRAME_BYTES 65536
 #define SB_ABI_VERSION 2
+#define SB_READ_UNREADABLE -2
 #define SB_LOG_OFF 0
 #define SB_LOG_ERROR 1
 #define SB_LOG_WARN 2
@@ -88,6 +89,7 @@ SB_STATUS_SECTOR_RANGE_INVALID = -18,
 SB_STATUS_CANCELLED = -19,
 SB_STATUS_OUTPUT_LAYOUT_UNSPECIFIED = -20,
 SB_STATUS_NOT_EDITED_MASTER = -21,
+SB_STATUS_SECTOR_UNREADABLE = -22,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -105,6 +107,7 @@ SB_FRAME_STATUS_DSD = 0,
 SB_FRAME_STATUS_DECODED = 1,
 SB_FRAME_STATUS_MISSING = 2,
 SB_FRAME_STATUS_INVALID = 3,
+SB_FRAME_STATUS_LOST = 4,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -121,6 +124,7 @@ enum SbFrameKind
 SB_FRAME_KIND_DSD = 0,
 SB_FRAME_KIND_DST = 1,
 SB_FRAME_KIND_MISSING = 2,
+SB_FRAME_KIND_LOST = 3,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -667,6 +671,9 @@ SbStatus sb_area_text_channel(const struct SbDisc *disc, uint32_t slot, uint32_t
 SbStatus sb_track_info(const struct SbDisc *disc, uint32_t slot, uint32_t number, struct SbTrackInfo *out);
 SbStatus sb_track_string(const struct SbDisc *disc, uint32_t slot, uint32_t number, uint32_t field, char *buf, size_t cap, size_t *len);
 SbStatus sb_disc_warning(const struct SbDisc *disc, uint32_t index, struct SbWarning *out);
+SbStatus sb_disc_unreadable_add(const struct SbDisc *disc, uint64_t lsn, uint64_t count);
+SbStatus sb_disc_unreadable_remove(const struct SbDisc *disc, uint64_t lsn, uint64_t count);
+SbStatus sb_disc_unreadable_range(const struct SbDisc *disc, uint64_t index, uint64_t *lsn, uint64_t *count);
 SbStatus sb_disc_read_sectors(const struct SbDisc *disc, uint64_t lsn, uint32_t count, uint8_t *buf, size_t cap);
 SbStatus sb_track_check(const struct SbDisc *disc, uint32_t slot, uint32_t number);
 SbStatus sb_track_audio_open(const struct SbDisc *disc, uint32_t slot, uint32_t number, struct SbTrackAudio **out);
@@ -680,6 +687,7 @@ SbStatus sb_track_audio_read(const struct SbTrackAudio *audio, const struct SbDi
 SbStatus sb_track_audio_keep_stored(const struct SbTrackAudio *audio);
 SbStatus sb_track_audio_read_with_stored(const struct SbTrackAudio *audio, const struct SbDisc *disc, uint8_t *buf, size_t cap, struct SbFrameInfo *info, uint8_t *raw_buf, size_t raw_cap, struct SbRawFrameInfo *raw_info, uint8_t dst_equivalent);
 SbStatus sb_track_audio_counts(const struct SbTrackAudio *audio, uint64_t *missing, uint64_t *invalid);
+SbStatus sb_track_audio_lost(const struct SbTrackAudio *audio, uint64_t *lost);
 SbStatus sb_track_audio_malformed_sectors(const struct SbTrackAudio *audio, uint64_t *count);
 SbStatus sb_track_audio_warning(const struct SbTrackAudio *audio, uint32_t index, struct SbWarning *out);
 void sb_track_audio_free(struct SbTrackAudio *audio);
@@ -694,6 +702,7 @@ uint32_t sb_raw_frames_channels(const struct SbRawFrames *raw);
 SbStatus sb_raw_frames_read(const struct SbRawFrames *raw, const struct SbDisc *disc, uint8_t *buf, size_t cap, struct SbRawFrameInfo *info);
 SbStatus sb_raw_frames_read_dst_equivalent(const struct SbRawFrames *raw, const struct SbDisc *disc, uint8_t *buf, size_t cap, struct SbRawFrameInfo *info);
 SbStatus sb_raw_frames_missing(const struct SbRawFrames *raw, uint64_t *missing);
+SbStatus sb_raw_frames_lost(const struct SbRawFrames *raw, uint64_t *lost);
 SbStatus sb_raw_frames_malformed_sectors(const struct SbRawFrames *raw, uint64_t *count);
 SbStatus sb_raw_frames_warning(const struct SbRawFrames *raw, uint32_t index, struct SbWarning *out);
 void sb_raw_frames_free(struct SbRawFrames *raw);

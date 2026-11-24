@@ -284,6 +284,14 @@ impl<R: Read + Seek> Disc<R> {
         self.image.cancel_token()
     }
 
+    /// The audio sectors of this disc's image that cannot be read (see
+    /// [`crate::UnreadableSectors`], #435), shared with the discs of [`Disc::share`] and
+    /// `clone`: mark sectors there and every cursor that reads them afterwards reports
+    /// their frames lost instead of decoding them from part of their data.
+    pub fn unreadable_sectors(&self) -> crate::UnreadableSectors {
+        self.image.unreadable_sectors()
+    }
+
     /// The start and duration timecodes of track `number` (1-based) of the area from `slot`
     /// as stored in the area TOC's `SACDTRL2` (specification 3, 3.7.2), byte for byte:
     /// before the clamping of 3.9.2 and whatever their range, so that a stored timecode
@@ -422,7 +430,8 @@ impl<R: Read + Seek> Disc<R> {
     /// # Errors
     ///
     /// [`Error::InvalidArgument`] if no seek index is kept for `slot` or it does not match
-    /// the image, [`Error::Io`] if a read fails.
+    /// the image, [`Error::Io`] if a read fails, [`Error::SectorUnreadable`] at an
+    /// unreadable sector (see [`AreaIndex::extend`]).
     pub fn extend_seek_index(&mut self, slot: Slot, max_sectors: u64) -> Result<bool, Error> {
         // A copy is extended, then merged back: the index stays usable meanwhile (by discs
         // that share it) and no lock is held while the image is read.

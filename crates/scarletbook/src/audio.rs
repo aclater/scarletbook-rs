@@ -212,6 +212,10 @@ pub struct AreaFrame {
     pub kind: FrameKind,
     /// Its bytes: `C x 4704` for plain DSD, 1 to 65 536 for DST.
     pub data: Vec<u8>,
+    /// With unreadable sectors ([`crate::UnreadableSectors`]): the positions from this
+    /// number up to `number - 1` are **lost**, the stretch an unreadable sector opened
+    /// before this frame; `None` otherwise (and always without unreadable sectors).
+    pub lost_from: Option<u32>,
 }
 
 #[derive(Debug)]
@@ -261,6 +265,9 @@ pub struct Demuxer {
     /// One more than the largest number of a complete frame delivered, accepted or not; 0
     /// before any (for provisional checkpoints).
     seen: u32,
+    /// The next acceptable frame number when an unreadable sector was processed, until the
+    /// next frame is accepted: the start of the lost stretch it opened (#435).
+    lost_from: Option<u32>,
 }
 
 impl Demuxer {
@@ -276,7 +283,54 @@ impl Demuxer {
             reason: None,
             discarded_lines: LineCap::default(),
             seen: 0,
+            lost_from: None,
         }
+    }
+
+    /// Processes an audio sector that cannot be read ([`crate::UnreadableSectors`], #435)
+    /// in place of its bytes: a frame under assembly is delivered if it is complete (4.4.2:
+    /// all its declared bytes were read) and dropped otherwise, so that its later pieces,
+    /// which have no start bit, are ignored (4.4.3 item 5) and it is never completed from
+    /// part of its data; and the positions from the next acceptable frame number on are
+    /// lost until the next frame is accepted ([`AreaFrame::lost_from`],
+    /// [`Demuxer::lost_from`]). The sector is not malformed.
+    // TODO(sacd-spec#55): reading with unreadable sectors is not yet in the specification.
+    pub fn push_unreadable(&mut self) {
+        self.push_unreadable_at(self.at(&Log::none(), 0));
+    }
+
+    fn push_unreadable_at(&mut self, at: At<'_>) {
+        self.reason = None;
+        let complete = self.assembling.as_ref().is_some_and(|a| self.is_complete(a));
+        if complete {
+            self.deliver_if_complete(at);
+        } else if let Some(a) = self.assembling.take() {
+            sb_log!(
+                at.log,
+                Debug,
+                "area {} frame {} (from LSN {}): lost, runs into unreadable LSN {}",
+                at.slot(),
+                a.number,
+                a.start_lsn,
+                at.lsn
+            );
+        }
+        self.lost_from.get_or_insert(self.next_acceptable);
+    }
+
+    /// The start of the lost stretch an unreadable sector opened, while no frame has been
+    /// accepted since ([`Demuxer::push_unreadable`]); after the end of the area, every
+    /// position from it on is lost.
+    pub fn lost_from(&self) -> Option<u32> {
+        self.lost_from
+    }
+
+    fn is_complete(&self, a: &Assembly) -> bool {
+        !a.data.is_empty()
+            && match a.kind {
+                FrameKind::Dst => a.remaining == 0,
+                FrameKind::Dsd => a.data.len() == usize::from(self.channels) * FRAME_BYTES_PER_CHANNEL,
+            }
     }
 
     fn at<'a>(&self, log: &'a Log, lsn: u64) -> At<'a> {
@@ -392,11 +446,7 @@ impl Demuxer {
 
     fn deliver_if_complete(&mut self, at: At<'_>) {
         let Some(a) = self.assembling.take() else { return };
-        let complete = !a.data.is_empty()
-            && match a.kind {
-                FrameKind::Dst => a.remaining == 0,
-                FrameKind::Dsd => a.data.len() == usize::from(self.channels) * FRAME_BYTES_PER_CHANNEL,
-            };
+        let complete = self.is_complete(&a);
         if complete {
             self.seen = self.seen.max(a.number.saturating_add(1));
         }
@@ -404,7 +454,9 @@ impl Demuxer {
             let (start_lsn, len) = (a.start_lsn, a.data.len());
             // Frame numbers are at most 1 166 880.
             self.next_acceptable = a.number + 1;
-            self.ready.push_back(AreaFrame { number: a.number, kind: a.kind, data: a.data });
+            // Frames accepted are numbered at least the stretch's start (4.5 item 1).
+            let lost_from = self.lost_from.take().filter(|&l| l < a.number);
+            self.ready.push_back(AreaFrame { number: a.number, kind: a.kind, data: a.data, lost_from });
             // Logged once the frame is queued, so that a sink that panics loses nothing.
             sb_log!(
                 at.log,
@@ -513,6 +565,15 @@ pub struct AreaCursor {
     progress_end: u64,
     /// The counts published for other threads, once asked for.
     progress: Option<Progress>,
+    /// The unreadable runs of `buf`, as half-open LSN ranges ([`Image::read_audio`]).
+    buf_bad: Vec<(u64, u64)>,
+    /// The first unreadable sector this cursor processed (#435), if any.
+    damaged: Option<u64>,
+    /// Scanning only to record checkpoints ([`AreaIndex::extend`]): it resumes at its
+    /// checkpoint whatever sectors before it are unreadable.
+    for_index: bool,
+    /// Lines written about unreadable sectors.
+    unreadable_lines: LineCap,
 }
 
 /// The state a resumed scan takes once its replay reaches the checkpoint.
@@ -574,7 +635,75 @@ impl AreaCursor {
             sectors_read: 0,
             progress_end: end,
             progress: None,
+            buf_bad: Vec::new(),
+            damaged: None,
+            for_index: false,
+            unreadable_lines: LineCap::default(),
         }
+    }
+
+    /// Whether sector `lsn`, held in the buffer, is unreadable.
+    #[inline]
+    fn is_bad(&self, lsn: u64) -> bool {
+        !self.buf_bad.is_empty() && self.buf_bad.iter().any(|&(s, e)| (s..e).contains(&lsn))
+    }
+
+    /// The first unreadable sector this cursor processed, if any (#435).
+    pub(crate) fn damaged(&self) -> Option<u64> {
+        self.damaged
+    }
+
+    /// Marks this cursor as one that only records checkpoints (see `for_index`).
+    pub(crate) fn for_index(&mut self) {
+        self.for_index = true;
+    }
+
+    /// Starts afresh at the area's first audio sector, without the seek index this cursor
+    /// started from, which stays good: an unreadable sector lies at or before its
+    /// checkpoint (`lsn`), so that the frames from the checkpoint on are not those of a
+    /// scan from the first sector that meets it (#435). Nothing was returned from it yet.
+    fn restart_unindexed(&mut self, log: &Log, lsn: u64) {
+        let (image_id, stop, counts) = (self.image_id, self.stop_lsn, self.take_progress());
+        let (hints, stale) = (self.hints.take(), self.hints_stale);
+        let checkpoint = match self.resumed {
+            ResumedFrom::Checkpoint { lsn, .. } => lsn,
+            _ => self.end_lsn,
+        };
+        *self = Self::with_key(self.key);
+        self.image_id = image_id;
+        self.keep_progress(counts);
+        (self.hints, self.hints_stale) = (hints, stale);
+        if stop != u64::MAX {
+            self.stop_lsn = self.next_lsn;
+        }
+        sb_log!(
+            log,
+            Info,
+            "area {}: unreadable sector LSN {lsn} at or before the seek index's checkpoint at LSN {checkpoint}: \
+             scanning from LSN {}",
+            self.slot,
+            self.next_lsn
+        );
+    }
+
+    /// Processes the unreadable sector `lsn` (#435): no checkpoint, provisional
+    /// checkpoint or hint is recorded from it on, and the reassembler takes it as
+    /// [`Demuxer::push_unreadable`] says.
+    fn process_unreadable(&mut self, log: &Log, lsn: u64) {
+        if self.damaged.is_none() {
+            self.damaged = Some(lsn);
+            if let Some(r) = self.recorder.as_deref_mut() {
+                r.halt();
+            }
+            if let Some(p) = self.provisional.as_deref_mut() {
+                p.halt();
+            }
+        }
+        if self.unreadable_lines.admit(log, Level::Warn, self.slot.name(), "unreadable-sector") {
+            sb_log!(log, Warn, "area {} audio sector LSN {lsn}: unreadable; its frames are lost", self.slot);
+        }
+        let at = self.demux.at(log, lsn);
+        self.demux.push_unreadable_at(at);
     }
 
     /// The progress of this cursor's reading, readable from other threads (see
@@ -683,13 +812,21 @@ impl AreaCursor {
                 }
                 r => r?,
             };
-            if first_record(&sector) == Some(t) && t < sp.first {
+            if self.is_bad(l) {
+                // Unreadable (#435): the hint is not wrong, only of no use now.
+                sb_log!(image.log(), Debug, "area {}: seek hint at LSN {l} unreadable: searching", self.slot);
+                self.read_to = 0;
+                sp.hint = None;
+            } else if first_record(&sector) == Some(t) && t < sp.first {
                 self.start_provisional(start, (l, 0), &sp);
                 // Specification 4, 4.2 item 9 (sacd-spec `cb9530b`): (a) and (b) were
                 // established at `l` for a `u_L` at most this range's first frame by a pass
                 // over the image this index is bound to (its TOC fingerprint and key), and
-                // sector `l` is as that pass read it: they hold for this reading too.
-                if confirmed.is_some_and(|d| d == digest(&sector)) {
+                // sector `l` is as that pass read it: they hold for this reading too. Not
+                // with an unreadable sector before `l` (#435): the exact reading then has
+                // lost positions this one cannot know of.
+                let marked = image.unreadable_sectors().first_in(start, l).is_some();
+                if !marked && confirmed.is_some_and(|d| d == digest(&sector)) {
                     if let Some(claim) = &self.claim {
                         claim.confirm_saved();
                     }
@@ -701,18 +838,19 @@ impl AreaCursor {
                     );
                 }
                 return Ok(());
+            } else {
+                sb_log!(
+                    image.log(),
+                    Warn,
+                    "area {}: seek hint at LSN {l} (frame {t}) does not match the image (first record {:?}): \
+                     hints dropped, searching",
+                    self.slot,
+                    first_record(&sector)
+                );
+                self.hints_stale = true;
+                self.read_to = 0;
+                sp.hint = None;
             }
-            sb_log!(
-                image.log(),
-                Warn,
-                "area {}: seek hint at LSN {l} (frame {t}) does not match the image (first record {:?}): \
-                 hints dropped, searching",
-                self.slot,
-                first_record(&sector)
-            );
-            self.hints_stale = true;
-            self.read_to = 0;
-            sp.hint = None;
         }
         let range = (sp.from, self.end_lsn);
         let located = locate(image, range, (sp.first, sp.playtime), &sp.knots, &sp.options, &mut |n| {
@@ -753,10 +891,11 @@ impl AreaCursor {
             self.suspect = Some(crate::seek::Suspect::FrameNumbersDecrease);
         }
         // Reads on from the probe that found `l`, without reading it again.
-        if let Some((at, bytes)) = located.chunk {
+        if let Some((at, bytes, bad)) = located.chunk {
             self.buf_sectors = (bytes.len() / SECTOR_SIZE) as u64;
             self.buf_lsn = at;
             self.buf = bytes;
+            self.buf_bad = bad;
         }
         // The next read reaches the range's estimated end: its frames from `l` at the
         // density found, plus a quarter and a few sectors.
@@ -878,16 +1017,24 @@ impl AreaCursor {
             cursor.resume_at(index, index.plan_at(j));
         }
         cursor.recorder = None;
+        cursor.for_index();
         cursor.scan_to(image, lsn)?;
         if let ResumedFrom::Discarded { .. } = cursor.resumed {
+            return Ok(None);
+        }
+        // An unreadable sector the reader reported: the state is not the image's (#435).
+        if cursor.damaged.is_some() {
             return Ok(None);
         }
         // The scan stops before sector `lsn`: when that is the checkpoint's own sector,
         // its digest is still to compare (a stale index, or one of another image of the
         // same size, must not confirm anything).
         if let Some((at, want)) = cursor.verify {
-            if at < cursor.end_lsn && digest(&cursor.sector(image, at)?) != want {
-                return Ok(None);
+            if at < cursor.end_lsn {
+                let sector = cursor.sector(image, at)?;
+                if cursor.is_bad(at) || digest(&sector) != want {
+                    return Ok(None);
+                }
             }
         }
         let d = &cursor.demux;
@@ -1039,6 +1186,14 @@ impl AreaCursor {
         self.resumed
     }
 
+    /// The start of the lost stretch that an unreadable sector opened and no accepted
+    /// frame has closed yet ([`Demuxer::lost_from`], #435): once the cursor has returned
+    /// `None`, every position from it on is lost. Each frame returned carries the stretch
+    /// it closes ([`AreaFrame::lost_from`]).
+    pub fn lost_from(&self) -> Option<u32> {
+        self.demux.lost_from()
+    }
+
     /// Scans up to (not including) sector `stop`, or to the end, dropping the frames:
     /// whether the end was reached.
     pub(crate) fn scan_to<R: Read + Seek>(&mut self, image: &mut Image<R>, stop: u64) -> Result<bool, Error> {
@@ -1149,7 +1304,7 @@ impl AreaCursor {
             self.buf.resize(n as usize * SECTOR_SIZE, 0);
             // For the image the cursor was made for, the range lies below its sector
             // count; another image may be shorter, which is reported, not assumed.
-            if image.read_into(lsn, &mut self.buf)? == ReadOutcome::OutOfRange {
+            if image.read_audio(lsn, &mut self.buf, &mut self.buf_bad)? == ReadOutcome::OutOfRange {
                 sb_log!(
                     image.log(),
                     Error,
@@ -1188,6 +1343,19 @@ impl AreaCursor {
                         }
                         return Some(Err(e));
                     }
+                }
+                // A seek index holds the reading state of the image's bytes: from a
+                // checkpoint at or after an unreadable sector, or from the end state, the
+                // frames are not those of a scan that meets the sector (#435).
+                let (start, end) = self.key.audio_sector_range();
+                let upto = match self.resumed {
+                    ResumedFrom::Checkpoint { lsn, .. } => Some(lsn.saturating_add(1)),
+                    ResumedFrom::End => Some(end),
+                    _ => None,
+                };
+                let marked = upto.and_then(|upto| image.unreadable_sectors().first_in(start, upto));
+                if let Some(bad) = marked.filter(|_| !self.for_index) {
+                    self.restart_unindexed(image.log(), bad);
                 }
                 match self.resumed {
                     ResumedFrom::Start => sb_log!(
@@ -1253,6 +1421,20 @@ impl AreaCursor {
                 let lsn = self.next_lsn;
                 self.next_lsn += 1;
                 match self.load(image, lsn) {
+                    Ok(_) if self.is_bad(lsn) => {
+                        let replaying = self.replay.is_some_and(|r| lsn < r.until);
+                        let verifying = self.verify.is_some_and(|(at, _)| at == lsn);
+                        if (replaying || verifying) && !self.for_index {
+                            // Reported by the reader while rebuilding the state at a
+                            // checkpoint, or at the checkpoint itself: start afresh.
+                            self.restart_unindexed(image.log(), lsn);
+                            continue;
+                        }
+                        if verifying {
+                            self.verify = None;
+                        }
+                        self.process_unreadable(image.log(), lsn);
+                    }
                     Ok(at) => {
                         let s = held(&self.buf, at);
                         if let Some(r) = self.replay {
@@ -1397,6 +1579,11 @@ impl<'a, R: Read + Seek> AreaFrames<'a, R> {
     /// The progress of the reading, readable from other threads (see [`Progress`]).
     pub fn progress(&mut self) -> Progress {
         self.cursor.progress()
+    }
+
+    /// The lost stretch still open (see [`AreaCursor::lost_from`]).
+    pub fn lost_from(&self) -> Option<u32> {
+        self.cursor.lost_from()
     }
 }
 
@@ -2072,6 +2259,8 @@ pub struct TrackFrame {
     pub number: u32,
     /// Its content.
     pub content: FrameContent,
+    /// Lost to unreadable sectors (#435); the content is then [`FrameContent::Missing`].
+    lost: bool,
 }
 
 impl TrackFrame {
@@ -2087,7 +2276,31 @@ impl TrackFrame {
     /// assert_eq!(audio.data, vec![0x69; 2 * 4704]);
     /// ```
     pub fn new(number: u32, content: FrameContent) -> Self {
-        TrackFrame { number, content }
+        TrackFrame { number, content, lost: false }
+    }
+
+    /// A **lost** timeline position (#435): one that an unreadable sector
+    /// ([`crate::UnreadableSectors`]) may have held a frame for, or held part of the frame
+    /// for. Its content is [`FrameContent::Missing`], its DST equivalent and decoding those
+    /// of a missing position, and [`decode_frame`] reports it as [`FrameStatus::Lost`].
+    ///
+    /// ```
+    /// use scarletbook::{DstDecoder, FrameContent, FrameStatus, TrackFrame, audio::decode_frame};
+    ///
+    /// let frame = TrackFrame::lost(7);
+    /// assert!(frame.is_lost() && frame.content == FrameContent::Missing);
+    /// let audio = decode_frame(&mut DstDecoder::new(), frame, 2).unwrap();
+    /// assert_eq!((audio.number, audio.status), (7, FrameStatus::Lost));
+    /// assert_eq!(audio.data, vec![0x69; 2 * 4704]);
+    /// ```
+    pub fn lost(number: u32) -> Self {
+        TrackFrame { number, content: FrameContent::Missing, lost: true }
+    }
+
+    /// Whether the position is lost to unreadable sectors (see [`TrackFrame::lost`]);
+    /// never without them.
+    pub fn is_lost(&self) -> bool {
+        self.lost
     }
 }
 
@@ -2111,6 +2324,8 @@ pub struct TrackCursor {
     failed: bool,
     /// Missing positions returned since the cursor was made or continued.
     missing: u64,
+    /// Lost positions returned since the cursor was made or continued (#435).
+    lost: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2368,6 +2583,7 @@ impl TrackCursor {
             exhausted: false,
             failed: false,
             missing: 0,
+            lost: 0,
         };
         cursor.estimated(area)
     }
@@ -2463,7 +2679,7 @@ impl TrackCursor {
         let reusable = self.reusable(area, first, image_sectors, image_id);
         match (opening, index) {
             (Opening::Continues, _) if reusable => {
-                let mut next = TrackCursor { next: first, end, missing: 0, ..self };
+                let mut next = TrackCursor { next: first, end, missing: 0, lost: 0, ..self };
                 next.area.restart_progress();
                 next.estimated(area)
             }
@@ -2500,10 +2716,12 @@ impl TrackCursor {
         index: Option<&AreaIndex>,
     ) -> bool {
         self.reusable(area, first, image_sectors, image_id)
-            && index.is_none_or(|index| {
+            // Past an unreadable sector, a start from the index would scan from the first
+            // sector (#435): reading on costs less.
+            && (self.area.damaged().is_some() || index.is_none_or(|index| {
                 let ahead = 2 * u64::from(index.interval());
                 index.plan_lsn(first).is_some_and(|lsn| lsn <= self.area.scan_lsn().saturating_add(ahead))
-            })
+            }))
     }
 
     /// Whether [`TrackCursor::continue_in`] keeps this cursor's reading state.
@@ -2529,8 +2747,17 @@ impl TrackCursor {
 
     /// Positions returned so far that no accepted frame fills ([`FrameContent::Missing`]);
     /// 0 again after [`crate::Disc::continue_track_frames`] or [`crate::Disc::continue_range_frames`].
+    /// Lost positions ([`TrackFrame::is_lost`]) are not counted here but in
+    /// [`TrackCursor::lost_frames`].
     pub fn missing_frames(&self) -> u64 {
         self.missing
+    }
+
+    /// Positions returned so far that were lost to unreadable sectors
+    /// ([`TrackFrame::is_lost`], #435); 0 again after a continuation, as
+    /// [`TrackCursor::missing_frames`].
+    pub fn lost_frames(&self) -> u64 {
+        self.lost
     }
 
     /// The frame range still to come, `[next, end)`.
@@ -2595,11 +2822,21 @@ impl TrackCursor {
                 FrameKind::Dst => FrameContent::Dst(f.data),
             },
             None => {
+                // Lost (#435): within the stretch an unreadable sector opened before the
+                // next frame accepted, or after the area's end if none was.
+                let from = match &self.peeked {
+                    Some(f) => f.lost_from,
+                    None => self.area.demux.lost_from(),
+                };
+                if from.is_some_and(|from| from <= t) {
+                    self.lost += 1;
+                    return Some(Ok(TrackFrame::lost(t)));
+                }
                 self.missing += 1;
                 FrameContent::Missing
             }
         };
-        Some(Ok(TrackFrame { number: t, content }))
+        Some(Ok(TrackFrame { number: t, content, lost: false }))
     }
 }
 
@@ -2646,6 +2883,12 @@ impl<'a, R: Read + Seek> TrackFrames<'a, R> {
     /// [`TrackCursor::missing_frames`]).
     pub fn missing_frames(&self) -> u64 {
         self.cursor.missing_frames()
+    }
+
+    /// Positions returned so far that were lost to unreadable sectors (see
+    /// [`TrackCursor::lost_frames`]).
+    pub fn lost_frames(&self) -> u64 {
+        self.cursor.lost_frames()
     }
 
     /// The DST equivalent of a position of this track or range (specification 4, 4.6.1
@@ -2726,6 +2969,9 @@ pub enum FrameStatus {
     Missing,
     /// An invalid DST frame: filled with 0x55.
     Invalid(DstError),
+    /// Lost to unreadable sectors ([`crate::UnreadableSectors`], #435): filled with 0x69,
+    /// as a missing position. Never without unreadable sectors.
+    Lost,
 }
 
 /// One decoded timeline position: `C x 4704` bytes in interleaved layout.
@@ -2764,6 +3010,7 @@ pub fn decode_frame(decoder: &mut DstDecoder, frame: TrackFrame, channels: u8) -
 fn decode_checked(decoder: &mut DstDecoder, frame: TrackFrame, channels: u8) -> AudioFrame {
     let (status, data) = match frame.content {
         FrameContent::Dsd(data) => (FrameStatus::Dsd, data),
+        FrameContent::Missing if frame.lost => (FrameStatus::Lost, fill_frame(channels, MISSING_FILL)),
         FrameContent::Missing => (FrameStatus::Missing, fill_frame(channels, MISSING_FILL)),
         FrameContent::Dst(bytes) => {
             let mut out = vec![0u8; usize::from(channels) * FRAME_BYTES_PER_CHANNEL];
@@ -2915,10 +3162,14 @@ pub struct TrackAudioCursor {
     stored: Option<VecDeque<Stored>>,
     missing: u64,
     invalid: u64,
+    /// Lost positions returned (#435).
+    lost: u64,
     /// Lines written about missing frames.
     missing_lines: LineCap,
     /// Lines written about invalid DST frames.
     invalid_lines: LineCap,
+    /// Lines written about lost frames.
+    lost_lines: LineCap,
 }
 
 /// A position demultiplexed ahead of the caller.
@@ -3094,8 +3345,10 @@ impl TrackAudioCursor {
             stored: None,
             missing: 0,
             invalid: 0,
+            lost: 0,
             missing_lines: LineCap::default(),
             invalid_lines: LineCap::default(),
+            lost_lines: LineCap::default(),
         }
     }
 
@@ -3112,6 +3365,12 @@ impl TrackAudioCursor {
     /// Frames returned so far that were invalid DST frames (filled with 0x55).
     pub fn invalid_dst_frames(&self) -> u64 {
         self.invalid
+    }
+
+    /// Frames returned so far that were lost to unreadable sectors
+    /// ([`FrameStatus::Lost`], filled with 0x69; #435). They are not counted as missing.
+    pub fn lost_frames(&self) -> u64 {
+        self.lost
     }
 
     /// Number of malformed sectors processed so far by this cursor's scan of its area. The
@@ -3429,7 +3688,7 @@ impl TrackAudioCursor {
         // caller, whatever the window, and frame problems are logged in timeline order.
         let log = image.log();
         let level = match frame.status {
-            FrameStatus::Missing | FrameStatus::Invalid(_) => Level::Warn,
+            FrameStatus::Missing | FrameStatus::Invalid(_) | FrameStatus::Lost => Level::Warn,
             FrameStatus::Dsd | FrameStatus::Decoded => Level::Trace,
         };
         if log.enabled(level) {
@@ -3454,6 +3713,15 @@ impl TrackAudioCursor {
                         );
                     }
                 }
+                FrameStatus::Lost => {
+                    if self.lost_lines.admit(log, level, slot.name(), "lost-frame") {
+                        sb_log!(
+                            log,
+                            Warn,
+                            "area {slot} frame {number}: lost to unreadable sectors, filled with 0x69"
+                        );
+                    }
+                }
                 FrameStatus::Dsd | FrameStatus::Decoded => {
                     sb_log!(log, Trace, "area {slot} frame {number}: {status:?}");
                 }
@@ -3463,6 +3731,7 @@ impl TrackAudioCursor {
         match frame.status {
             FrameStatus::Missing => self.missing += 1,
             FrameStatus::Invalid(_) => self.invalid += 1,
+            FrameStatus::Lost => self.lost += 1,
             FrameStatus::Dsd | FrameStatus::Decoded => {}
         }
         Some(Ok(frame))
@@ -3681,6 +3950,12 @@ impl<'a, R: Read + Seek> TrackAudio<'a, R> {
     /// Frames returned so far that were invalid DST frames (filled with 0x55).
     pub fn invalid_dst_frames(&self) -> u64 {
         self.cursor.invalid_dst_frames()
+    }
+
+    /// Frames returned so far that were lost to unreadable sectors (see
+    /// [`TrackAudioCursor::lost_frames`]).
+    pub fn lost_frames(&self) -> u64 {
+        self.cursor.lost_frames()
     }
 
     /// Number of malformed sectors processed so far by this cursor's scan of its area. The
@@ -4074,11 +4349,11 @@ pub(crate) mod tests {
     #[test]
     fn decode_frame_rejects_bad_arguments() {
         let mut d = DstDecoder::new();
-        let missing = || TrackFrame { number: 0, content: FrameContent::Missing };
+        let missing = || TrackFrame::new(0, FrameContent::Missing);
         for channels in [0, 7, 255] {
             assert!(matches!(decode_frame(&mut d, missing(), channels), Err(Error::InvalidArgument(_))));
         }
-        let short = TrackFrame { number: 0, content: FrameContent::Dsd(vec![0; 10]) };
+        let short = TrackFrame::new(0, FrameContent::Dsd(vec![0; 10]));
         assert!(matches!(decode_frame(&mut d, short, 2), Err(Error::InvalidArgument(_))));
         let ok = decode_frame(&mut d, missing(), 2).unwrap();
         assert_eq!((ok.status, ok.data.len()), (FrameStatus::Missing, 2 * 4704));
