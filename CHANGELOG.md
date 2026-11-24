@@ -11,6 +11,16 @@ from 0.5.8).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-25
+
+### Added
+
+- Unreadable sectors: a reader can mark sectors as unreadable (`Disc::unreadable_sectors`, `UnreadableSectors`; `sb_disc_unreadable_add`, `_remove` and `_range`) or report them from a reader or read callback (`read_at::unreadable_error`, `SB_READ_UNREADABLE`). Every position whose frame touches such a sector is reported lost (`FrameStatus::Lost`, `TrackFrame::is_lost`, `SB_FRAME_STATUS_LOST`, `SB_FRAME_KIND_LOST`) and counted apart (`lost_frames`, `sb_track_audio_lost`, `sb_raw_frames_lost`), never decoded from part of its data; reading resumes at the next readable frame with its own timecode, in decoded, raw-frame and stored-frame reads, from files and callbacks alike. `Image::read_sectors` and seek index extension stop at such a sector with `Error::SectorUnreadable` / `SB_STATUS_SECTOR_UNREADABLE`. Nothing changes for a disc with no unreadable sectors. ABI 2 gains functions and enum values (#435, #439).
+
+### Changed
+
+- A read callback (`SbReadFn`, `SbReadAtFn`) that returns -2 now means "these bytes are unreadable" (`SB_READ_UNREADABLE`): the library rereads the request one sector at a time, marks each sector that still fails as unreadable and reads on, reporting the frames that touch it as lost, where before -2 failed the read with `SB_STATUS_IO` like -1. The documented error value was always -1; a callback that returns -2 for other failures should return -1 (#435, #439).
+
 ## [1.1.1] - 2026-11-25
 
 **1.1.1 is a bug-fix release: two fixes to provisional seeking, no API or ABI change.** Both change only which sectors a `SeekPolicy::Speculative` reading reads, never the frames it returns. Rust code that builds against 1.1.0 builds against 1.1.1 with only the version changed; C programs need no change (`SB_ABI_VERSION` 2, the header is unchanged).
@@ -1200,7 +1210,8 @@ First release: a clean-room reader for SACD images, written from sacd-spec, pass
 - DST decoding about 3.8 times faster on one thread, and parallel decoding that overlaps
   demultiplexing with decoding within a bounded memory (#16, #17, #19).
 
-[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/aclater/scarletbook-rs/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/aclater/scarletbook-rs/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/aclater/scarletbook-rs/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/aclater/scarletbook-rs/compare/v1.0.1...v1.0.2
