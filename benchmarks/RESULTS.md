@@ -64,6 +64,10 @@ In the run list, but not in every table:
   DSF and DSD to PCM are blank, unless an equivalent revision is compared instead (0.5.6
   below uses `3eb96dc` for 0.5.5).
 
+## 1.1.0
+
+Not measured. 1.1.0 deprecates the C library's `sb_pcm_*` functions (#398, #399): since `v1.0.2` the crates changed only in attributes (`#[deprecated]`, the header's `SB_DEPRECATED`) and documentation, so no code path that runs changed, and the 1.0.0 section below stands for 1.1.0.
+
 ## 1.0.2
 
 Not measured. 1.0.2 changes documentation and comments only (#412): no code changed since `v1.0.1`, so the 1.0.0 section below stands for 1.0.2.
