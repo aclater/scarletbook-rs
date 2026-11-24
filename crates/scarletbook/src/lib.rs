@@ -101,7 +101,7 @@ pub use audio::{
     FrameContent, FrameKind, FrameSpan, FrameStatus, Opening, Stored, TrackAudio, TrackAudioCursor,
     TrackCursor, TrackFrame, TrackFrames,
 };
-pub use control::{CancelToken, Progress};
+pub use control::{CancelToken, Progress, UnreadableSectors};
 pub use disc::{Disc, DiscOptions};
 pub use dst::{DstDecoder, DstError};
 pub use error::{EditedMasterCheck, Error, ErrorClass, OutputRefusal, Slot, Warning, WarningCode};
@@ -158,6 +158,7 @@ const _: () = {
     both::<DiscOptions>();
     both::<ImageOptions>();
     both::<CancelToken>();
+    both::<UnreadableSectors>();
     both::<Progress>();
     both::<log::Log>();
     both::<log::Level>();

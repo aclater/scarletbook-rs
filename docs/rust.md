@@ -238,6 +238,34 @@ and key match, so a re-rip with different audio bytes would get confirmed readin
 differ: key saved indexes by the image file's identity (path, size and modification time, or
 a content hash) as well.
 
+### Unreadable sectors
+
+A reader of a damaged disc can tell the library which sectors could not be read
+(1.2.0, #435). Every timeline position whose frame has a byte in such a sector, or starts in
+one, is then **lost**: decoded reads give `FrameStatus::Lost` (filled with 0x69), stored
+reads give `FrameContent::Missing` with `TrackFrame::is_lost()`, and the cursors count them
+with `lost_frames()`, apart from `missing_frames()`. A lost frame is never decoded from the
+part of it that could be read. Reading resumes at the next frame that starts in a readable
+sector, at its own frame number, and every other position is as without the marks.
+
+```rust
+let disc = scarletbook::Disc::open(std::fs::File::open("damaged.iso")?)?;
+disc.unreadable_sectors().insert(123_456, 3); // shared with clones and shares
+```
+
+A reader or `ReadAt` source can also report sectors as it reads them, by returning
+`scarletbook::read_at::unreadable_error()`. The library then reads those sectors again one
+at a time, marks each that still fails, and goes on. A mark applies to every sector a cursor
+processes after the mark is made, including sectors already in its read buffer; only frames
+it has already demultiplexed (a decoding cursor holds a bounded window of them ahead) keep
+what they had. `Image::read_sectors` refuses marked sectors with
+`Error::SectorUnreadable`. Seek indexes never hold reading state from past an unreadable
+sector: `AreaIndex::extend` stops there with that error, and a cursor does not resume from a
+checkpoint at or after a marked sector. The cost: a range opened past a marked sector
+scans the area from its start, whatever the index holds (sequential reads continued with
+`continue_*` read on and don't pay this; #441). In the stored frame list (`AreaFrame::lost_from`,
+`AreaFrames::lost_from`), each frame carries the lost stretch it closes.
+
 ## Features
 
 `parallel` decodes DST frames on rayon's thread pool, ahead of the caller: the

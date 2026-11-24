@@ -142,6 +142,16 @@ pub enum Error {
     /// format, may write it.
     #[error("output refused: {0}")]
     OutputRefused(OutputRefusal),
+    /// Sector `lsn` is unreadable ([`crate::UnreadableSectors`], #435): marked so, or
+    /// reported so by the reader ([`crate::read_at::unreadable_error`]). Returned by
+    /// [`crate::Image::read_sectors`], which gives no bytes in its place, and by
+    /// [`crate::AreaIndex::extend`], which records no reading state at or past it.
+    #[error("sector {lsn} is unreadable")]
+    #[non_exhaustive]
+    SectorUnreadable {
+        /// The first unreadable sector met.
+        lsn: u64,
+    },
 }
 
 /// Why an output file can't be written ([`Error::OutputRefused`]).
@@ -231,7 +241,8 @@ impl Error {
             | Error::InvalidArgument(_)
             | Error::Io(_)
             | Error::Cancelled
-            | Error::OutputRefused(_) => {
+            | Error::OutputRefused(_)
+            | Error::SectorUnreadable { .. } => {
                 return None;
             }
         })
@@ -255,7 +266,7 @@ impl Error {
             | Error::DstLanesInvalid { .. }
             | Error::InvalidArgument(_)
             | Error::OutputRefused(_) => ErrorClass::Usage,
-            Error::Io(_) => ErrorClass::Io,
+            Error::Io(_) | Error::SectorUnreadable { .. } => ErrorClass::Io,
             Error::Cancelled => ErrorClass::Cancelled,
         }
     }

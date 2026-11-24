@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Cancelling and observing long reads from another thread: [`CancelToken`] and
-//! [`Progress`].
+//! [`Progress`]; and the sectors that cannot be read: [`UnreadableSectors`].
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, PoisonError, RwLock};
 
 use crate::error::Error;
 
@@ -79,6 +79,152 @@ impl CancelToken {
     #[inline]
     pub(crate) fn check(&self) -> Result<(), Error> {
         if self.is_cancelled() { Err(Error::Cancelled) } else { Ok(()) }
+    }
+}
+
+/// The audio sectors of an image that cannot be read (#435): one set per image, shared by
+/// every disc made from it ([`crate::Disc::share`], `clone`) and their cursors, like
+/// [`CancelToken`]. Get it with [`crate::Disc::unreadable_sectors`] (or
+/// [`crate::Image::unreadable_sectors`]) and mark sectors with
+/// [`UnreadableSectors::insert`]; a reader can also report sectors as it reads them, with
+/// [`crate::read_at::unreadable_error`], and they are added here.
+///
+/// A cursor never asks the reader for a marked sector, and never parses one: the frame it
+/// was assembling is dropped unless it is already complete, and the timeline positions from
+/// the next acceptable frame number to the next frame accepted after the damage are
+/// **lost** ([`crate::FrameStatus::Lost`], [`crate::TrackFrame::is_lost`]), never decoded
+/// from part of their data. Reading resumes at the next frame that starts in a readable
+/// sector, at its own frame number. On a well-formed disc the lost positions are exactly the
+/// frames with a byte in a marked sector or starting in one; every other position is as
+/// without marks. A mark applies to every sector a cursor processes after the mark is
+/// made, sectors already in its read buffer included; only frames it has already
+/// demultiplexed (a [`crate::TrackAudioCursor`] holds a bounded window of them ahead of the
+/// caller) keep what they had. Mark before opening the cursors that read past the sectors,
+/// or reopen them, for a result that does not depend on timing.
+///
+/// Seek indexes hold only reading state from before the first marked sector a cursor
+/// reads, and a cursor does not resume from a checkpoint at or after a marked sector, so
+/// marks never change what an index holds (see [`crate::seek`]). The cost: a range opened
+/// past a marked sector scans the area from its start (#441); continued cursors read on.
+///
+/// The TOC, read when the disc is opened, is not affected. [`crate::Image::read_sectors`]
+/// refuses marked sectors with [`Error::SectorUnreadable`].
+///
+/// The set holds merged ranges: its memory is one entry per run of marked sectors the
+/// caller keeps apart.
+// TODO(sacd-spec#55): reading with unreadable sectors is not yet in the specification.
+#[derive(Clone, Debug, Default)]
+pub struct UnreadableSectors(Arc<Marks>);
+
+#[derive(Debug, Default)]
+struct Marks {
+    /// Whether any sector is marked: the test every audio read makes.
+    any: AtomicBool,
+    /// Sorted, disjoint, non-adjacent half-open ranges `[start, end)`.
+    ranges: RwLock<Vec<(u64, u64)>>,
+}
+
+impl UnreadableSectors {
+    /// A set of its own, empty.
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    fn read(&self) -> std::sync::RwLockReadGuard<'_, Vec<(u64, u64)>> {
+        // Nothing panics while the lock is held.
+        self.0.ranges.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn update(&self, f: impl FnOnce(&mut Vec<(u64, u64)>)) {
+        let mut ranges = self.0.ranges.write().unwrap_or_else(PoisonError::into_inner);
+        f(&mut ranges);
+        self.0.any.store(!ranges.is_empty(), Ordering::Release);
+    }
+
+    /// Marks `count` sectors from `lsn` as unreadable (a range past `u64::MAX` ends there).
+    pub fn insert(&self, lsn: u64, count: u64) {
+        let end = lsn.saturating_add(count);
+        if end == lsn {
+            return;
+        }
+        self.update(|ranges| {
+            // The ranges that touch or overlap [lsn, end) merge with it.
+            let first = ranges.partition_point(|&(_, e)| e < lsn);
+            let last = ranges.partition_point(|&(s, _)| s <= end);
+            let (mut s, mut e) = (lsn, end);
+            if let Some(&(a, _)) = ranges.get(first).filter(|_| first < last) {
+                s = s.min(a);
+            }
+            if let Some(&(_, b)) = last.checked_sub(1).and_then(|i| ranges.get(i)).filter(|_| first < last) {
+                e = e.max(b);
+            }
+            ranges.splice(first..last, [(s, e)]);
+        });
+    }
+
+    /// Marks `count` sectors from `lsn` as readable again. Cursors that already read
+    /// them keep what they read.
+    pub fn remove(&self, lsn: u64, count: u64) {
+        let end = lsn.saturating_add(count);
+        if end == lsn {
+            return;
+        }
+        self.update(|ranges| {
+            let mut kept = Vec::with_capacity(ranges.len() + 1);
+            for &(s, e) in ranges.iter() {
+                if e <= lsn || s >= end {
+                    kept.push((s, e));
+                    continue;
+                }
+                if s < lsn {
+                    kept.push((s, lsn));
+                }
+                if e > end {
+                    kept.push((end, e));
+                }
+            }
+            *ranges = kept;
+        });
+    }
+
+    /// Marks every sector readable again.
+    pub fn clear(&self) {
+        self.update(Vec::clear);
+    }
+
+    /// Whether sector `lsn` is marked.
+    pub fn contains(&self, lsn: u64) -> bool {
+        self.first_in(lsn, lsn.saturating_add(1)).is_some()
+    }
+
+    /// Whether no sector is marked.
+    pub fn is_empty(&self) -> bool {
+        !self.0.any.load(Ordering::Acquire)
+    }
+
+    /// The marked runs, in increasing order, each as (first sector, count).
+    pub fn ranges(&self) -> Vec<(u64, u64)> {
+        self.read().iter().map(|&(s, e)| (s, e - s)).collect()
+    }
+
+    /// The first marked sector in `[start, end)`.
+    pub(crate) fn first_in(&self, start: u64, end: u64) -> Option<u64> {
+        if self.is_empty() || start >= end {
+            return None;
+        }
+        let ranges = self.read();
+        let i = ranges.partition_point(|&(_, e)| e <= start);
+        ranges.get(i).filter(|&&(s, _)| s < end).map(|&(s, _)| s.max(start))
+    }
+
+    /// The marked runs within `[start, end)`, clipped to it, as half-open ranges.
+    pub(crate) fn runs_in(&self, start: u64, end: u64) -> Vec<(u64, u64)> {
+        if self.is_empty() || start >= end {
+            return Vec::new();
+        }
+        let ranges = self.read();
+        let i = ranges.partition_point(|&(_, e)| e <= start);
+        ranges[i..].iter().take_while(|&&(s, _)| s < end).map(|&(s, e)| (s.max(start), e.min(end))).collect()
     }
 }
 

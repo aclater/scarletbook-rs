@@ -601,6 +601,12 @@ impl ProvisionalRecorder {
         lsn == self.next
     }
 
+    /// Records nothing more: the reading met an unreadable sector (#435). What it recorded
+    /// before stays.
+    pub(crate) fn halt(&mut self) {
+        self.next = u64::MAX;
+    }
+
     /// Records the boundary before sector `lsn`, if the reading has resynchronised.
     pub(crate) fn record(
         &mut self,
@@ -760,6 +766,9 @@ const LAST_READ_BUDGET: u64 = 80;
 /// such a read takes effect once it completes.
 pub const MAX_READ_SECTORS: u64 = 512;
 
+/// A read of a search: its first sector, its bytes and its unreadable runs.
+pub(crate) type Chunk = (u64, Vec<u8>, Vec<(u64, u64)>);
+
 /// What [`locate`] found.
 #[derive(Debug)]
 pub(crate) struct Located {
@@ -768,8 +777,9 @@ pub(crate) struct Located {
     pub(crate) lsn: u64,
     /// The reads made.
     pub(crate) reads: u32,
-    /// The last read that holds `lsn`, as (first sector, bytes), to read on from.
-    pub(crate) chunk: Option<(u64, Vec<u8>)>,
+    /// The last read that holds `lsn`, as (first sector, bytes, unreadable runs as in
+    /// [`Image::read_audio`]), to read on from.
+    pub(crate) chunk: Option<Chunk>,
     /// The frame number of `lsn`'s first record (0 if none was found).
     pub(crate) frame: u32,
     /// Sectors per frame around `lsn`, as (sectors, frames), frames at least 1.
@@ -831,7 +841,8 @@ pub(crate) fn locate<R: Read + Seek>(
     let mut hi_probed = false;
     let (mut halved_lo, mut halved_hi, mut moved) = (0u32, 0u32, None::<bool>);
     let (mut reads, mut halve, mut found_lo, mut slow) = (0u32, false, false, 0u32);
-    let mut chunk: Option<(u64, Vec<u8>)> = None;
+    let mut chunk: Option<Chunk> = None;
+    let mut bad = Vec::new();
     // The records the last two probes found nearest `first` (sector, frame number), and the
     // last probe's own sectors per frame (sectors, frames): on a disc of uneven bit rate
     // they predict the frame's sector better than an average over a long interval.
@@ -948,7 +959,8 @@ pub(crate) fn locate<R: Read + Seek>(
             let count = size.min(if final_read { end } else { hi } - at);
             let read = &mut buf[..count as usize * SECTOR_SIZE];
             image.check_cancel()?;
-            if image.read_into(at, read)? == crate::image::ReadOutcome::OutOfRange {
+            // Unreadable sectors come back as zeros, which hold no frame record.
+            if image.read_audio(at, read, &mut bad)? == crate::image::ReadOutcome::OutOfRange {
                 return Err(Error::InvalidArgument("audio sectors outside the image"));
             }
             on_read(count);
@@ -966,7 +978,7 @@ pub(crate) fn locate<R: Read + Seek>(
                 }
             }
             if below.is_some() {
-                chunk = Some((at, read.to_vec()));
+                chunk = Some((at, read.to_vec(), bad.clone()));
             }
             at += count;
         }
@@ -1007,8 +1019,8 @@ pub(crate) fn locate<R: Read + Seek>(
         slow = if halve || gap(a_t, b_t).saturating_mul(2) <= before { 0 } else { slow + 1 };
         halve = slow >= 2;
     }
-    let chunk =
-        chunk.filter(|(at, bytes)| found_lo && (*at..*at + (bytes.len() / SECTOR_SIZE) as u64).contains(&lo));
+    let chunk = chunk
+        .filter(|(at, bytes, _)| found_lo && (*at..*at + (bytes.len() / SECTOR_SIZE) as u64).contains(&lo));
     // For sizing the read that follows, the larger of the two: reading a few sectors too
     // many costs less than another call.
     let density = [density(anchor, previous, local), average]
@@ -1605,6 +1617,9 @@ impl AreaIndex {
     /// [`Error::InvalidArgument`] if `image` has another sector count than the index's, or
     /// is another image than the one the index was built from in this process;
     /// [`Error::Io`] if a read fails. The checkpoints recorded before stay.
+    /// [`Error::SectorUnreadable`] once the pass reaches an unreadable sector
+    /// ([`crate::UnreadableSectors`]): no checkpoint is recorded at or past it, so the index
+    /// cannot be completed while it stays marked.
     pub fn extend<R: Read + Seek>(&mut self, image: &mut Image<R>, max_sectors: u64) -> Result<bool, Error> {
         if image.sector_count() != self.key.image_sectors {
             return Err(Error::InvalidArgument("seek index of another image size"));
@@ -1620,9 +1635,21 @@ impl AreaIndex {
         }
         // No seek hints: they are of what a caller read, which a pass would crowd out.
         let mut cursor = AreaCursor::resume(self, u32::MAX);
+        cursor.for_index();
         // Past the next boundary, which is recorded when its sector is read.
         let next = self.checkpoint_lsn(self.checkpoints.len());
-        let stop = self.frontier().saturating_add(max_sectors).max(next.saturating_add(1));
+        let mut stop = self.frontier().saturating_add(max_sectors).max(next.saturating_add(1));
+        // A checkpoint needs the sectors before it and its own (#435): none is recorded at
+        // or past an unreadable sector the pass would read.
+        let (_, end) = self.key.audio_sector_range();
+        if let Some(lsn) = image.unreadable_sectors().first_in(cursor.scan_lsn(), end) {
+            if lsn <= next {
+                // The readings the index reaches are checked all the same.
+                self.verify(image)?;
+                return Err(Error::SectorUnreadable { lsn });
+            }
+            stop = stop.min(lsn);
+        }
         let scanned = cursor.scan_to(image, stop);
         if let ResumedFrom::Discarded { .. } = cursor.resumed_from() {
             return Err(Error::InvalidArgument("seek index does not match the image"));
@@ -1630,6 +1657,11 @@ impl AreaIndex {
         // A cursor of this index joins it.
         self.take_from(&cursor)?;
         scanned?;
+        if let Some(lsn) = cursor.damaged() {
+            // The reader reported it during the pass.
+            self.verify(image)?;
+            return Err(Error::SectorUnreadable { lsn });
+        }
         self.verify(image)?;
         Ok(self.is_complete())
     }
@@ -1707,6 +1739,7 @@ impl AreaIndex {
             stored: Stored::default(),
             end_state: None,
             kept: false,
+            halted: false,
         }))
     }
 
@@ -1981,6 +2014,11 @@ impl AreaIndex {
         self.image_id = Some(image.id());
         let mut settled = 0;
         let mut i = 0;
+        // The unreadable sector that stops the frontier, if one does: no checkpoint lies at
+        // or past it (#435).
+        let (s0, end) = self.key.audio_sector_range();
+        let next = self.checkpoint_lsn(self.checkpoints.len());
+        let blocked = image.unreadable_sectors().first_in(s0, end).filter(|&b| b <= next);
         while i < self.claims.len() {
             let claim = std::sync::Arc::clone(&self.claims[i]);
             let lsn = claim.lsn();
@@ -1988,22 +2026,38 @@ impl AreaIndex {
                 self.claims.remove(i);
                 continue;
             }
-            if !self.reaches(lsn) {
+            // A reading with an unreadable sector before its `L` or at it is never checked
+            // (#435): its exact reading has lost positions that the provisional one cannot
+            // know of, and no pass records state past the sector.
+            let marked = lsn != 0 && image.unreadable_sectors().first_in(s0, lsn.saturating_add(1)).is_some();
+            // Past the frontier, but before the unreadable sector that stops it: the state
+            // at `lsn` is a replay of at most an interval from the frontier's checkpoint.
+            let stuck = lsn != 0 && lsn < self.end && blocked.is_some_and(|b| lsn < b);
+            if !marked && !stuck && !self.reaches(lsn) {
                 i += 1;
                 continue;
             }
             // A reading of another image is never checked against this one.
             let foreign = claim.image().is_some_and(|id| id != image.id());
-            let verdict = match if foreign { None } else { AreaCursor::state_at(self, lsn, image)? } {
+            let verdict = match if foreign || marked { None } else { AreaCursor::state_at(self, lsn, image)? }
+            {
                 None => Verdict::Unverified,
                 Some((a, held, _)) => {
                     let u = claim.first;
                     if a <= u && held.is_none_or(|g| g < u) {
                         if self.fingerprint_checked && lsn < self.end {
-                            let d = digest(&crate::audio::read_sector(image, lsn)?);
-                            self.keep_confirmation(lsn, u, d);
+                            match crate::audio::read_sector(image, lsn) {
+                                Ok(sector) => {
+                                    self.keep_confirmation(lsn, u, digest(&sector));
+                                    Verdict::Confirmed
+                                }
+                                // Unreadable now (#435): its positions may be lost.
+                                Err(Error::SectorUnreadable { .. }) => Verdict::Unverified,
+                                Err(e) => return Err(e),
+                            }
+                        } else {
+                            Verdict::Confirmed
                         }
-                        Verdict::Confirmed
                     } else {
                         Verdict::Refuted { exact_from: a.max(held.map_or(0, |g| g.saturating_add(1))) }
                     }
@@ -2133,6 +2187,8 @@ pub(crate) struct Recorder {
     /// Made from the index a [`crate::Disc`] keeps, which takes the checkpoints; a cursor
     /// from a caller's index is left to the caller.
     pub(crate) kept: bool,
+    /// Stopped at an unreadable sector ([`Recorder::halt`]).
+    halted: bool,
 }
 
 impl Recorder {
@@ -2169,9 +2225,19 @@ impl Recorder {
         self.next += u64::from(self.interval);
     }
 
-    /// Records the end of the scan.
+    /// Records the end of the scan, unless it [halted](Recorder::halt).
     pub(crate) fn finish(&mut self, next_acceptable: u32, malformed: u64) {
-        self.end_state = Some(EndState { next_acceptable, malformed });
+        if !self.halted {
+            self.end_state = Some(EndState { next_acceptable, malformed });
+        }
+    }
+
+    /// Records nothing more: the scan met an unreadable sector (#435), after which its
+    /// state is not the image's. The checkpoints before it stay: they depend only on the
+    /// sectors before them.
+    pub(crate) fn halt(&mut self) {
+        self.next = u64::MAX;
+        self.halted = true;
     }
 }
 

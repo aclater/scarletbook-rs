@@ -51,6 +51,35 @@ pub trait ReadAt {
     fn size(&self) -> io::Result<u64>;
 }
 
+/// The error a reader or [`ReadAt`] source returns for bytes it cannot read, when it wants
+/// the sectors they belong to treated as unreadable rather than the read failing (#435).
+///
+/// A cursor that gets it from a read of audio sectors reads those sectors again one at a
+/// time, adds each that still fails this way to the image's
+/// [`crate::UnreadableSectors`], and goes on as if it had been marked; any other error
+/// fails the read as before. [`crate::Image::read_sectors`] reports it as
+/// [`crate::Error::SectorUnreadable`].
+pub fn unreadable_error() -> io::Error {
+    io::Error::other(Unreadable)
+}
+
+/// Whether `e` is [`unreadable_error`].
+pub fn is_unreadable_error(e: &io::Error) -> bool {
+    e.get_ref().is_some_and(|inner| inner.is::<Unreadable>())
+}
+
+/// The payload of [`unreadable_error`].
+#[derive(Debug)]
+struct Unreadable;
+
+impl std::fmt::Display for Unreadable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("sectors unreadable")
+    }
+}
+
+impl std::error::Error for Unreadable {}
+
 /// Reads with `pread` on Unix and `seek_read` on Windows.
 ///
 /// On Windows `seek_read` also moves the file's cursor, and [`ReadAt::size`] does on every

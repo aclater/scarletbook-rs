@@ -171,7 +171,7 @@ fn status_name(status: i32) -> String {
 /// Every status has its own name, and the integers between and around them are "unknown".
 #[test]
 fn every_status_has_a_name() {
-    let names: Vec<String> = (-21..=2).map(status_name).collect();
+    let names: Vec<String> = (-22..=2).map(status_name).collect();
     assert!(names.iter().all(|n| n != "unknown"), "{names:?}");
     let distinct: std::collections::BTreeSet<_> = names.iter().collect();
     assert_eq!(distinct.len(), names.len(), "{names:?}");
@@ -180,11 +180,12 @@ fn every_status_has_a_name() {
         (SbStatus::BufferTooSmall, "buffer-too-small"),
         (SbStatus::Panic, "internal-error"),
         (SbStatus::NotEditedMaster, "not-edited-master"),
+        (SbStatus::SectorUnreadable, "sector-unreadable"),
     ] {
         assert_eq!(status_name(status as i32), name);
     }
     assert_eq!(status_name(3), "unknown");
-    assert_eq!(status_name(-22), "unknown");
+    assert_eq!(status_name(-23), "unknown");
 }
 
 /// A disc handle's `Debug` names it without its contents.

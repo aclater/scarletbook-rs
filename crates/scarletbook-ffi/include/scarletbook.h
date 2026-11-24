@@ -162,6 +162,15 @@
 #define SB_ABI_VERSION 2
 
 /*
+ What a read callback (`SbReadFn`, `SbReadAtFn`) returns for bytes it cannot read, when the
+ sectors they belong to are to be treated as unreadable instead of the read failing: the
+ library reads those sectors again one at a time, marks each that still returns this as
+ unreadable (see `sb_disc_unreadable_add`) and reads on. Any other negative value fails
+ the read with `SB_STATUS_IO`.
+ */
+#define SB_READ_UNREADABLE -2
+
+/*
  Log levels, most severe first: the `level` of a message and the most verbose level a
  log callback receives. `SB_LOG_OFF` as a `level` argument turns the log off.
  */
@@ -526,6 +535,13 @@ enum SbStatus
    the message names the check that failed (`sb_output_layout_new`).
    */
   SB_STATUS_NOT_EDITED_MASTER = -21,
+  /*
+   A sector is unreadable: marked so (`sb_disc_unreadable_add`) or reported so by a
+   read callback (`SB_READ_UNREADABLE`). Returned by `sb_disc_read_sectors`, which gives
+   no bytes in its place, and by the seek index extension calls, which record nothing
+   at or past it.
+   */
+  SB_STATUS_SECTOR_UNREADABLE = -22,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -559,6 +575,12 @@ enum SbFrameStatus
    An invalid DST frame: filled with 0x55.
    */
   SB_FRAME_STATUS_INVALID = 3,
+  /*
+   Lost to unreadable sectors (`sb_disc_unreadable_add`, `SB_READ_UNREADABLE`): filled
+   with 0x69, as a missing position. Never reported for a disc with no unreadable
+   sectors.
+   */
+  SB_FRAME_STATUS_LOST = 4,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -588,6 +610,12 @@ enum SbFrameKind
    No frame fills the position: no bytes (decoded reads fill it with 0x69).
    */
   SB_FRAME_KIND_MISSING = 2,
+  /*
+   Lost to unreadable sectors: no bytes, as a missing position (decoded reads fill it
+   with 0x69 and report `SB_FRAME_STATUS_LOST`). Never reported for a disc with no
+   unreadable sectors.
+   */
+  SB_FRAME_KIND_LOST = 3,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -1405,7 +1433,8 @@ typedef struct SbTrackAudio SbTrackAudio;
 typedef void (*SbLogFn)(void *user, int32_t level, const char *message);
 
 /*
- Reads up to `len` bytes into `buf`; returns the count (0 at the end) or -1 on error.
+ Reads up to `len` bytes into `buf`; returns the count (0 at the end), -1 on error, or
+ `SB_READ_UNREADABLE`.
  */
 typedef int64_t (*SbReadFn)(void *user, uint8_t *buf, size_t len);
 
@@ -1417,7 +1446,7 @@ typedef int64_t (*SbSeekFn)(void *user, int64_t offset, int32_t whence);
 
 /*
  Reads up to `len` bytes at byte `offset` of the image into `buf`; returns the count (0
- at or past the end) or -1 on error. May be called from several threads at once (see
+ at or past the end), -1 on error, or `SB_READ_UNREADABLE`. May be called from several threads at once (see
  `sb_disc_open_callbacks_at`).
  */
 typedef int64_t (*SbReadAtFn)(void *user, uint64_t offset, uint8_t *buf, size_t len);
@@ -2962,6 +2991,53 @@ SbStatus sb_track_string(const struct SbDisc *disc,
 SbStatus sb_disc_warning(const struct SbDisc *disc, uint32_t index, struct SbWarning *out);
 
 /*
+ Marks the `count` sectors from `lsn` of the disc's image as unreadable (#435), for the
+ disc and its clones, which share one set. Every track audio or raw frames handle that
+ reads them afterwards (opened before or after this call) never asks the image for
+ them and never decodes from part of a frame: each timeline position whose frame has a
+ byte in them, or starts in them, is reported lost (`SB_FRAME_STATUS_LOST`,
+ `SB_FRAME_KIND_LOST`) and counted by `sb_track_audio_lost` and `sb_raw_frames_lost`,
+ not as missing; reading resumes at the next frame that starts in a readable sector, at
+ its own frame number, and every other position is as without the mark. A handle
+ that has already demultiplexed the frames of a sector (a track audio handle holds a
+ bounded window of them ahead) keeps them; sectors it has only read ahead into its
+ buffer are checked again when processed. A seek index never takes reading state from
+ past a marked sector. The TOC, read when the disc was opened, is not affected. A range
+ past `UINT64_MAX` ends there; `count` 0 marks nothing.
+
+ # Safety
+
+ `disc` must be NULL or a live handle.
+ */
+SbStatus sb_disc_unreadable_add(const struct SbDisc *disc, uint64_t lsn, uint64_t count);
+
+/*
+ Marks the `count` sectors from `lsn` readable again (see `sb_disc_unreadable_add`).
+ Handles that already read them keep what they read.
+
+ # Safety
+
+ `disc` must be NULL or a live handle.
+ */
+SbStatus sb_disc_unreadable_remove(const struct SbDisc *disc, uint64_t lsn, uint64_t count);
+
+/*
+ The `index`th run of unreadable sectors of the disc's image, in increasing order:
+ its first sector in `*lsn` and its length in `*count`. Runs are merged, and include
+ the sectors a read callback reported (`SB_READ_UNREADABLE`). Returns `SB_STATUS_ABSENT`
+ past the last run, writing nothing.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `lsn` and `count` NULL or valid for writes
+ (both are required).
+ */
+SbStatus sb_disc_unreadable_range(const struct SbDisc *disc,
+                                  uint64_t index,
+                                  uint64_t *lsn,
+                                  uint64_t *count);
+
+/*
  Copies the user data of the logical sectors `[lsn, lsn + count)` into `buf`, 2048
  bytes (`SB_SECTOR_SIZE`) per sector in order, whatever the image's stored sector size
  (`SbDiscInfo.sector_size`): the data a 2048-byte-sector image holds at those sectors.
@@ -2973,7 +3049,11 @@ SbStatus sb_disc_warning(const struct SbDisc *disc, uint32_t index, struct SbWar
  writes nothing; with `buf` NULL or `cap < count x 2048`, `SB_STATUS_BUFFER_TOO_SMALL`,
  and writes nothing. `count` 0 reads nothing and returns `SB_STATUS_OK` for any `lsn`
  up to `SbDiscInfo.sectors`. Nothing is ever written past `count x 2048` bytes of
- `buf`; after `SB_STATUS_IO`, what those bytes hold is unspecified.
+ `buf`; after `SB_STATUS_IO`, what those bytes hold is unspecified. A range holding a
+ sector marked unreadable (`sb_disc_unreadable_add`) returns
+ `SB_STATUS_SECTOR_UNREADABLE` without reading; so does one the read callback reports
+ unreadable (`SB_READ_UNREADABLE`), whose sectors are then marked, and the bytes are
+ then unspecified.
 
  The image is read many sectors at a time, not sector by sector: a range of an image of
  2048-byte stored sectors in one read, of other images in reads of 64 stored sectors.
@@ -3202,6 +3282,17 @@ SbStatus sb_track_audio_counts(const struct SbTrackAudio *audio,
                                uint64_t *invalid);
 
 /*
+ The number of positions returned so far that were lost to unreadable sectors
+ (`SB_FRAME_STATUS_LOST`, see `sb_disc_unreadable_add`); they are not in the missing
+ count of `sb_track_audio_counts`.
+
+ # Safety
+
+ `audio` must be NULL or a live handle; `lost` NULL or valid for a write.
+ */
+SbStatus sb_track_audio_lost(const struct SbTrackAudio *audio, uint64_t *lost);
+
+/*
  The number of malformed audio sectors processed so far by this handle's scan of its
  area. The scan starts at the area's first audio sector, not at the track; a handle from
  `sb_track_audio_open_next` keeps counting from where the earlier tracks left off.
@@ -3367,7 +3458,10 @@ SbStatus sb_raw_frames_open_next(const struct SbDisc *disc,
  Opens the **stored frame list** of the area from `slot` (specification 4, 4.6.1 item
  2): every accepted frame of the area in frame number order, including frames numbered
  at or past the play time, read with `sb_raw_frames_read` (each as stored, never
- `SB_FRAME_KIND_MISSING`: positions not listed are missing). Every audio sector is
+ `SB_FRAME_KIND_MISSING`: positions not listed are missing). With unreadable sectors
+ (`sb_disc_unreadable_add`), each lost position below the play time is listed too, in
+ frame number order, as `SB_FRAME_KIND_LOST` with no bytes; `sb_raw_frames_lost`
+ counts them. Every audio sector is
  processed. `sb_raw_frames_missing` gives 0 and `sb_raw_frames_read_dst_equivalent`
  refuses: DST equivalents are written only for tracks and ranges (4.6.1 item 4). Fails
  with `SB_STATUS_NO_SUCH_AREA` or `SB_STATUS_CHANNEL_COUNT_UNSUPPORTED` (4.6.1 item 1);
@@ -3395,7 +3489,7 @@ uint32_t sb_raw_frames_channels(const struct SbRawFrames *raw);
 /*
  Copies the next position's frame, as stored, into `buf` and describes it in `*info`:
  its number, its `SbFrameKind` and its size (`channels x 4704` for a plain frame, the
- DST frame's length for a DST frame, 0 for a missing position, never more than
+ DST frame's length for a DST frame, 0 for a missing or lost position, never more than
  `SB_MAX_FRAME_BYTES`). Returns `SB_STATUS_END` after the last position. `disc` must be
  the live disc the handle was opened from or a clone of it; its read callbacks, if any,
  run during this call. Invalid DST frames are not reported: validity is known only by decoding
@@ -3458,6 +3552,17 @@ SbStatus sb_raw_frames_read_dst_equivalent(const struct SbRawFrames *raw,
  `raw` must be NULL or a live handle; `missing` NULL or valid for a write.
  */
 SbStatus sb_raw_frames_missing(const struct SbRawFrames *raw, uint64_t *missing);
+
+/*
+ The number of lost positions returned so far by `sb_raw_frames_read`
+ (`SB_FRAME_KIND_LOST`, see `sb_disc_unreadable_add`); they are not in the count of
+ `sb_raw_frames_missing`. For a stored frame list, its lost entries.
+
+ # Safety
+
+ `raw` must be NULL or a live handle; `lost` NULL or valid for a write.
+ */
+SbStatus sb_raw_frames_lost(const struct SbRawFrames *raw, uint64_t *lost);
 
 /*
  The number of malformed audio sectors processed so far by this handle's scan of its
