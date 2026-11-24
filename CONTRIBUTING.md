@@ -55,7 +55,8 @@ a `TODO` that names the issue, and carry on with the rest.
 Each open issue says what it is planned for, how much it matters, where it stands and who has
 it (#194).
 
-- **Milestone:** the release it is planned for, such as `0.6.0` or `1.0.0`, or `Later`.
+- **Milestone:** the release it is planned for, such as `1.0.1`, or `Docs` for
+  documentation-only changes, or `Later`.
   Umbrella and design issues that track other work have no milestone and carry `tracking`.
 - **Priority**, one of:
   - `P1`: must be in its milestone's release;
@@ -66,7 +67,8 @@ it (#194).
   - `status: in review`: a pull request is open;
   - `status: fixed on main`: merged. The issue stays open until the release that contains it
     is published; the reviewer closes it after verifying the release's tag and assets;
-  - `status: needs decision`: waiting on the owner.
+  - `status: needs decision`: waiting on a decision by the issue's requester or the
+    maintainers.
 - **Model**, one of:
   - `model: opus`: hard work, such as concurrency, performance, design and bugs whose cause
     is unknown;
@@ -82,7 +84,8 @@ else has claimed; ask on the issue instead.
 3. If you stop without a pull request, say on the issue that you are releasing it, and
    remove the label.
 4. When your pull request opens, change the label to `status: in review`. The pull request
-   says `Closes #N` only if it resolves the whole issue, and `Part of #N` otherwise.
+   says `Part of #N`, never `Closes #N` or `Fixes #N`, even when it resolves the whole issue:
+   GitHub would close the issue at merge, and it stays open until step 5.
 5. After it merges, the label becomes `status: fixed on main`. The reviewer closes the issue
    once the release that ships it has been verified.
 
@@ -106,9 +109,12 @@ else has claimed; ask on the issue instead.
 - Every new source file starts with an SPDX header:
   `// SPDX-License-Identifier: MIT OR Apache-2.0` (or `#` for YAML and shell).
 - Match the surrounding code's style, comments and naming.
-- After changing the C ABI, regenerate the header with
+- After changing the C ABI, regenerate the header with cbindgen 0.29.4:
   `cbindgen --config cbindgen.toml --crate scarletbook-ffi --output include/scarletbook.h`
-  in `crates/scarletbook-ffi`; CI checks it is up to date.
+  in `crates/scarletbook-ffi`; CI checks it is up to date. Then run
+  `python3 .github/scripts/abi-check.py`: it says whether the ABI baseline needs `--write` (an
+  addition) or a new ABI version (a breaking change), as
+  [Changing the C ABI](docs/contributing.md#changing-the-c-abi) describes.
 - Record the change in fragments, not in CHANGELOG.md or the CLEANROOM.md Log directly (see
   "Change records" below).
 
@@ -137,11 +143,21 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
 cargo test --workspace --all-features
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --no-default-features
 ```
 
-If you changed `scarletbook` or `scarletbook-ffi`, also run Miri
-(`cargo +nightly miri test -p scarletbook -p scarletbook-ffi`), and if you changed
-dependencies, `cargo deny check`. The minimum supported Rust version is 1.85;
+If you changed `scarletbook` or `scarletbook-ffi`, also run Miri with CI's pinned nightly,
+one command per crate: `cargo +nightly-2026-10-30 miri test -p scarletbook-ffi`, and for
+`scarletbook` the slices of `.github/workflows/miri.yml` that cover your change. Each slice's
+command is in that file; the core crate's whole test suite takes over an hour under Miri.
+Never run the two crates in one command: feature unification would turn on `parallel` for
+both. On pull requests that change a crate, CI runs the short slices: `scarletbook-ffi`'s
+tests and a few of the core crate's. The core crate's full tests and the dispatch modules'
+wrappers run on every push to `main` and nightly (`.github/workflows/miri-full.yml`). If you
+changed dependencies, also run `cargo deny check`. If you changed any Markdown, run CI's
+`link-check`, which checks relative links and anchors offline:
+`python3 -I .github/scripts/linkcheck.py`. The minimum supported Rust version is 1.85;
 [docs/stability.md](docs/stability.md#minimum-supported-rust-version) says when it can rise.
 
 If you changed `scarletbook-ffi`, CI's `lsan` job checks it for memory leaks with

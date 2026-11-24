@@ -1,4 +1,6 @@
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+[scarletbook](../README.md) › [Documentation](README.md) › Contributing and the clean room
+
 # Contributing and the clean room
 
 [![Fuzzing](https://github.com/aclater/scarletbook-rs/actions/workflows/fuzz-long.yml/badge.svg?branch=main)](https://github.com/aclater/scarletbook-rs/actions/workflows/fuzz-long.yml)
@@ -6,9 +8,6 @@
 scarletbook is a clean-room implementation: it is written only from the specifications and
 conformance corpus of [aclater/sacd-spec](https://github.com/aclater/sacd-spec). Before
 contributing, read [CONTRIBUTING.md](../CONTRIBUTING.md), which explains the clean-room rule.
-The clean-room record is in [CLEANROOM.md](../CLEANROOM.md), and vulnerabilities are reported
-as described in [SECURITY.md](../SECURITY.md). Changes are listed in
-[CHANGELOG.md](../CHANGELOG.md); how a release is made is in [RELEASING.md](../RELEASING.md).
 
 ## Layout
 
@@ -53,3 +52,12 @@ if a baseline of an earlier version is edited, moved or removed.
 `.github/scripts/abi-check-test.py` tests the check. A behaviour change that leaves the
 declarations alone is invisible to it: bump `SB_ABI_VERSION` in `src/lib.rs` by hand,
 regenerate the header (it then differs only in that line) and run `--write`.
+
+## See also
+
+- [CLEANROOM.md](../CLEANROOM.md): the clean-room record
+- [SECURITY.md](../SECURITY.md): how to report a vulnerability
+- [CHANGELOG.md](../CHANGELOG.md): the changes in each release
+- [RELEASING.md](../RELEASING.md): how a release is made
+- [C ABI guide: ABI compatibility](c-abi.md#abi-compatibility)
+- [Documentation index](README.md)

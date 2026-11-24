@@ -1,4 +1,6 @@
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+[scarletbook](../README.md) › [Documentation](README.md) › Performance and benchmarks
+
 # Performance and benchmarks
 
 How fast scarletbook is, and the tools to measure it. Published figures, with the machines
@@ -125,7 +127,7 @@ The scripts in `perf/` need Linux and `perf`:
 |---|---|
 | `perf/cycles-per-symbol.sh [NAME...]` | cycles, instructions, IPC per decoded symbol and ms per frame for `dst_frames` benchmarks, from `perf stat` |
 | `perf/flamegraph.sh NAME [OUT.svg]` | `perf record` and inferno (`cargo install --locked inferno --version 0.12.8`) flame graph of `DstDecoder::decode` |
-| `perf/dispatch-inlining.sh` | disassembles the core crate's run-time dispatch (`dispatch.rs`) in a generic x86-64 build and fails if a dispatched function lost its AVX2 or BMI hot loop (or a generic one gained it); CI runs it on the release `libscarletbook_ffi.so` |
+| `perf/dispatch-inlining.sh` | disassembles the core crate's run-time dispatch (`dispatch.rs`) in a generic x86-64 build and fails if a dispatched function lost its AVX2 or BMI hot loop (or a generic one gained it); CI runs it on the `libscarletbook_ffi.so` of `cargo build -p scarletbook-ffi --release`. The release archives' library is built with profile `dist` (one codegen unit), which leaves no separate generic `decode_group`: the script fails on that library, reporting the function missing |
 | `perf/compare.sh REV_A REV_B [FILTER]` | builds two revisions (`.` is the working tree) into separate target directories, runs `dst_frames` alternately, pinned, and prints per-benchmark and per-group changes |
 | `perf/build-configs.sh` | builds `bench` in several release configurations (LTO, codegen units, PGO) for generic x86-64, x86-64-v3 and znver5, and times single-thread decoding on synthetic images, alternately, pinned, best of several rounds |
 | `perf/pgo.sh TARGET_DIR` | a deterministic profile-guided build of `bench` (needs `rustup component add llvm-tools-preview`) |
@@ -145,3 +147,10 @@ alternately on one runner, and fails when the median of the per-round ratios hea
 CPU time exceeds 1.15 (`.github/scripts/bench-regress.py`, #226). It runs on pull requests that
 touch the library sources or build settings, on main (against the previous main) and nightly
 (against the latest release), and is informational, not a required check.
+
+## See also
+
+- [benchmarks/RESULTS.md](../benchmarks/RESULTS.md)
+- [benchmarks/README.md](../benchmarks/README.md)
+- [Rust guide: Seeking within an area](rust.md#seeking-within-an-area)
+- [Documentation index](README.md)

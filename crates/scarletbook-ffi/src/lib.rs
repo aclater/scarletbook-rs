@@ -1114,8 +1114,8 @@ unsafe fn open_reader(
 /// behaviour changed incompatibly. Additions (new functions, types, enum values, macros)
 /// keep it. 1 is the first released ABI; 2 made statuses, sizes and flags fixed-width
 /// integers and the structs free of padding, and bounds `sb_dst_decode`'s input. The
-/// compatibility policy, and what changed from 1 to 2, are in the repository's README
-/// ("ABI compatibility").
+/// compatibility policy, and what changed from 1 to 2, are in the repository's
+/// docs/c-abi.md ("ABI compatibility" and "From ABI 1 to ABI 2").
 pub const SB_ABI_VERSION: u32 = 2;
 
 /// The ABI version the library was built with; compare it with `SB_ABI_VERSION` from the
@@ -5823,8 +5823,8 @@ fn write_layout(d: &Disc<Reader>, plan: &LayoutPlan, buf: &mut [u8]) -> Result<(
 /// `SbTocHeader` (at offset 0), `SbTocDisc`, `SbTocArea`, `SbTocTrack`, `SbTocWarning` and
 /// `SbTocStr`: every integer is little-endian whatever the host, every field is at a fixed
 /// offset that is a multiple of its size, and a buffer aligned to 8 bytes can be read
-/// through these structs on a little-endian host. The README describes it, with a ctypes
-/// example.
+/// through these structs on a little-endian host. The repository's docs/python.md
+/// describes it, with a ctypes example ("The whole TOC in one call").
 ///
 /// `flags` must be 0. `*len` (required) receives the layout's size, the same on every call
 /// for a disc and its clones. If `buf` is NULL or `cap < *len`, nothing is written and the
@@ -5908,7 +5908,7 @@ unsafe extern "C" fn fuzz_read_at(user: *mut c_void, offset: u64, buf: *mut u8, 
 
 /// Fuzzing harness of `sb_disc_toc` (#132), for the `toc` fuzz target: not part of the C
 /// interface. Opens the image of `prefix` zero bytes followed by `data` with
-/// `sb_disc_open_callbacks_at` and, if it opens, reads its whole TOC as the README
+/// `sb_disc_open_callbacks_at` and, if it opens, reads its whole TOC as docs/python.md
 /// recommends: into a 64 KiB buffer, then into one of exactly the size given. Panics unless
 /// both succeed (the first may be `SB_STATUS_BUFFER_TOO_SMALL` only past 64 KiB) with the
 /// same size and bytes, and a buffer one byte short is refused with that size.
