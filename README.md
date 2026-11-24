@@ -32,17 +32,17 @@ Performance figures are measured on an AMD Ryzen 9 3950X (Zen 2); see
 ## Quick start
 
 Both examples read a small synthetic image from this repository's conformance corpus,
-[`full-text.iso`](https://github.com/aclater/scarletbook-rs/blob/v1.1.0/corpus/images/full-text.iso)
+[`full-text.iso`](https://github.com/aclater/scarletbook-rs/blob/v1.1.1/corpus/images/full-text.iso)
 (1.1 MB, CC0-1.0, [corpus/LICENSE](corpus/LICENSE)): a stereo area with three tracks of one or two
 frames each, and every text field filled in. It holds generated test signals, no real audio.
-Every command below was run against v1.1.0 on 2026-11-24.
+Every command below was run against v1.1.1 on 2026-11-25.
 
 ### Rust
 
 ```sh
 cargo new quickstart && cd quickstart
-cargo add scarletbook@=1.1.0
-curl -fsSLO https://raw.githubusercontent.com/aclater/scarletbook-rs/v1.1.0/corpus/images/full-text.iso
+cargo add scarletbook@=1.1.1
+curl -fsSLO https://raw.githubusercontent.com/aclater/scarletbook-rs/v1.1.1/corpus/images/full-text.iso
 cat > src/main.rs <<'EOF'
 use std::{fs::File, io::BufReader};
 
@@ -74,7 +74,7 @@ TwoChannel area: 2 channels, 3 tracks
   track 3: 2 frames, "Track 3 title, second item"
 ```
 
-The `=1.1.0` pin keeps the example on the release whose output is shown. For a project of your
+The `=1.1.1` pin keeps the example on the release whose output is shown. For a project of your
 own, [Installing](docs/rust.md#installing) gives a plain `cargo add scarletbook`, and pins only
 `scarletbook-pcm` exactly. A frame is 1/75 s.
 `{:?}` quotes a string and escapes control characters, including U+007F and U+0080 to U+009F,
@@ -88,13 +88,13 @@ those of [Release assets](docs/releases.md#release-assets) and [Verifying a down
 
 ```sh
 mkdir quickstart-c && cd quickstart-c
-gh release download v1.1.0 -R aclater/scarletbook-rs -p 'scarletbook-ffi-1.1.0-x86_64-unknown-linux-gnu.tar.gz*'
-sha256sum -c scarletbook-ffi-1.1.0-x86_64-unknown-linux-gnu.tar.gz.sha256
-gh attestation verify scarletbook-ffi-1.1.0-x86_64-unknown-linux-gnu.tar.gz -R aclater/scarletbook-rs \
-  --signer-workflow aclater/scarletbook-rs/.github/workflows/release.yml --source-ref refs/tags/v1.1.0 \
+gh release download v1.1.1 -R aclater/scarletbook-rs -p 'scarletbook-ffi-1.1.1-x86_64-unknown-linux-gnu.tar.gz*'
+sha256sum -c scarletbook-ffi-1.1.1-x86_64-unknown-linux-gnu.tar.gz.sha256
+gh attestation verify scarletbook-ffi-1.1.1-x86_64-unknown-linux-gnu.tar.gz -R aclater/scarletbook-rs \
+  --signer-workflow aclater/scarletbook-rs/.github/workflows/release.yml --source-ref refs/tags/v1.1.1 \
   --deny-self-hosted-runners
-tar xzf scarletbook-ffi-1.1.0-x86_64-unknown-linux-gnu.tar.gz
-curl -fsSLO https://raw.githubusercontent.com/aclater/scarletbook-rs/v1.1.0/corpus/images/full-text.iso
+tar xzf scarletbook-ffi-1.1.1-x86_64-unknown-linux-gnu.tar.gz
+curl -fsSLO https://raw.githubusercontent.com/aclater/scarletbook-rs/v1.1.1/corpus/images/full-text.iso
 cat > toc.c <<'EOF'
 #include <stdio.h>
 #include "scarletbook.h"
@@ -138,13 +138,13 @@ int main(void) {
     return 0;
 }
 EOF
-P=scarletbook-ffi-1.1.0-x86_64-unknown-linux-gnu
+P=scarletbook-ffi-1.1.1-x86_64-unknown-linux-gnu
 cc -std=c99 -Wall -Wextra -pedantic -I$P/include toc.c -L$P/lib -lscarletbook_ffi -Wl,-rpath,'$ORIGIN/'$P/lib -o toc
 ./toc
 ```
 
 ```
-scarletbook-ffi-1.1.0-x86_64-unknown-linux-gnu.tar.gz: OK
+scarletbook-ffi-1.1.1-x86_64-unknown-linux-gnu.tar.gz: OK
 ABI 2, album: Album title
 area slot 0: 2 channels, 3 tracks
   track 1: 1 frames, Title 1
@@ -155,7 +155,7 @@ area slot 0: 2 channels, 3 tracks
 Titles and other text come from the disc and can hold control characters (U+007F, U+0080 to U+009F,
 and U+009B starts a control sequence on some terminals), so both examples escape what they print;
 code of yours should do the same, as the docs of
-[`DiscText`](https://docs.rs/scarletbook/1.1.0/scarletbook/toc/struct.DiscText.html) and of
+[`DiscText`](https://docs.rs/scarletbook/1.1.1/scarletbook/toc/struct.DiscText.html) and of
 [`sb_disc_string`](crates/scarletbook-ffi/include/scarletbook.h) say.
 
 `gh attestation verify` exits with status 0 when it succeeds, and non-zero on a failure. In a

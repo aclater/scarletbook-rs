@@ -11,6 +11,26 @@ from 0.5.8).
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-11-25
+
+**1.1.1 is a bug-fix release: two fixes to provisional seeking, no API or ABI change.** Both change only which sectors a `SeekPolicy::Speculative` reading reads, never the frames it returns. Rust code that builds against 1.1.0 builds against 1.1.1 with only the version changed; C programs need no change (`SB_ABI_VERSION` 2, the header is unchanged).
+
+- **No more exact-scan fallback in the speculative search (#434, #436).** Where the bit rate rises, the search's read back from its first probe could start just past the frame before the one wanted, and the reading then fell back to an exact scan of the area. The search now goes on below that read. On #434's image (6 minutes, 2 channels, uneven DST bit rate), the 7-frame range from frame 18443 took 1,113 reads and 72.9 MB, and now takes 5 reads and 194,560 bytes. A sweep of every frame of 8 synthetic images (plain DSD and DST, regular and uneven, 2, 5 and 6 channels; ranges of 1, 7 and 75 frames) found 130 exact-scan fallbacks before at each range length and none after, and the worst 7-frame seek on #434's image fell from 1,113 reads / 72.9 MB to 65 reads / 4.3 MB (a range within `min_gap_sectors` of the area's start, read exactly by design). Speculative still equals Exact for every frame of every image in the sweep.
+- **A track's head now begins at the track's start (#431, #437).** A provisional reading of a range that begins at a track's first frame, opened from a saved seek index, began at the nearest seek hint below it, which after a remount is often where the previous track's tail read began. It now begins at the track's start LSN from the TOC, with the same single read call. Replaying sacdfs's head-then-tail sequence on synthetic images, pass 2 (index loaded) reads 19.64 MB, against 25.75 MB on 1.1.0 and 23.54 MB on 0.6.2, at the same 215 read calls and with the same frames. On sacdfs's real library (7,519 DSF files, head and tail of each), image bytes went from +7.9 % over 0.6.2 (1.0.2 and 1.1.0) to −8.6 % with #437, with identical output. This resolves 1.1.0's "Known item (#431)" for bytes.
+- **The remaining ~4 % more read calls than 0.6.2 are expected (#390, #433).** Since 0.7.0, `Layout::positions_for` gives only the positions of the bytes asked for, so a position cache that fetches only what is missing makes one more fetch when a later request reads the rest of a DSF row. Rounding each request out to whole rows of the sound data gives 0.6.2's call count exactly; [`docs/rust.md`](docs/rust.md#dsf-and-dsdiff-files) gives the recipe. A helper that does the rounding is being discussed on #431 for 1.2.0.
+- **Checked against 1.1.0:** `cargo semver-checks --baseline-rev v1.1.0 --release-type patch` finds no semver update required for `scarletbook` or `scarletbook-ffi` (default and all features), and `abi-check.py` passes with `SB_ABI_VERSION` 2.
+- **No benchmark table:** both fixes change how many sectors are read, not how fast anything runs, and read counts are exact, so they were measured by count (above) rather than timed; 1.0.0's table stands.
+- **Not measured:** real discs for #434 (how often they hit its trigger, a local bit rate well above the area's average), and for #437 anything beyond sacdfs's DSF library: 1-, 3- and 4-channel areas, 2064- and 2054-byte sectors, and timings.
+
+### Changed
+
+- Clarification for 0.7.0, no code change. From 0.7.0 on, `Layout::positions_for` gives only the positions of the DSF bytes asked for (#307, #390), not every position of the 4096 x C-byte rows they touch. A consumer that caches positions and fetches only those a request is missing can therefore make one more fetch, and one more seek, when a later request reads the rest of a row. sacdfs measured +3.6 % image reads and +7.9 % image bytes for the head and tail of every file of a 7,519-file library, with identical output. To fetch as 0.6.2 did, round each request out to whole rows of the sound data before calling `positions_for`; `docs/rust.md` gives the recipe (#431, #433).
+
+### Fixed
+
+- A provisional reading (`SeekPolicy::Speculative`) of a range that begins at a track's first frame, opened from a seek index whose nearest seek hint lies before the track's start sector, now begins at the track's start LSN from the TOC when that sector's first frame record is at most the range's first frame, with the same single read call. Before, it began at the hint, which after a remount is often where the previous track's tail read began: 67,584 bytes of the previous track read again for each track head on sacdfs's plain DSD disc, 75,776 on the synthetic ones. Replaying sacdfs's head-then-tail call sequence on synthetic images, the reads with a loaded index fall from 25,751,552 to 19,636,224 bytes (0.6.2: 23,537,664) at the same 215 read calls, with the same frames. Positions stay provisional exactly as from a hint (specification 4, 4.2 item 8, which names track start LSNs as a way to choose the start); a hint with a saved confirmation is still preferred (#431, #437).
+- A provisional reading (`SeekPolicy::Speculative`) no longer falls back to an exact scan of the area when the search's read back from its first probe starts just past the frame before the one wanted, as it could where the bit rate rises. The search now goes on below that read. On a 6-minute 2-channel image of uneven DST bit rate, the 7-frame range from frame 18443 took 1,113 reads and 72.9 MB, and now takes 5 reads and 194,560 bytes. A sweep of every frame of 8 synthetic images (plain DSD and DST, regular and uneven, 2, 5 and 6 channels) found no exact fallbacks left, against 130 before. The frames returned are unchanged (#434, #436).
+
 ## [1.1.0] - 2026-11-24
 
 **1.1.0 deprecates the C library's DSD-to-PCM functions; nothing breaks.** It is a semver minor release because a deprecation is an addition: no API is removed, no ABI changes, and nothing changes in behaviour or output. Besides the versions, `scarletbook` is unchanged since 1.0.2, and `scarletbook-ffi` differs only in attributes and documentation. Rust code that builds against 1.0.2 builds against 1.1.0 with only the version changed (calls to the `sb_pcm_*` functions from Rust now get a deprecation warning). C programs need no change (`SB_ABI_VERSION` 2); a program that calls an `sb_pcm_*` function gets a compiler warning, which `-DSB_DEPRECATED(m)=` (or defining `SB_DEPRECATED(msg)` as nothing before including the header) silences.
@@ -1180,7 +1200,8 @@ First release: a clean-room reader for SACD images, written from sacd-spec, pass
 - DST decoding about 3.8 times faster on one thread, and parallel decoding that overlaps
   demultiplexing with decoding within a bounded memory (#16, #17, #19).
 
-[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/aclater/scarletbook-rs/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/aclater/scarletbook-rs/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/aclater/scarletbook-rs/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/aclater/scarletbook-rs/compare/v1.0.0...v1.0.1

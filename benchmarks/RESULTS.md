@@ -64,6 +64,10 @@ In the run list, but not in every table:
   DSF and DSD to PCM are blank, unless an equivalent revision is compared instead (0.5.6
   below uses `3eb96dc` for 0.5.5).
 
+## 1.1.1
+
+Not timed. 1.1.1 fixes two cases of provisional seeking (#434, #436; #431, #437) that read more sectors than needed. They change how many sectors a reading reads, not how fast anything decodes or converts, and their pull requests measured that exactly by read count: #434's exact-scan fallbacks went from 130 to 0 on an 8-image sweep, and a replay of sacdfs's head-then-tail sequence reads 19.64 MB in pass 2 against 25.75 MB on 1.1.0 (0.6.2: 23.54 MB). The 1.0.0 section below stands for 1.1.1's throughput.
+
 ## 1.1.0
 
 Not measured. 1.1.0 deprecates the C library's `sb_pcm_*` functions (#398, #399): since `v1.0.2` the crates changed only in attributes (`#[deprecated]`, the header's `SB_DEPRECATED`) and documentation, so no code path that runs changed, and the 1.0.0 section below stands for 1.1.0.
