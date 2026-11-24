@@ -257,6 +257,12 @@ impl<R: Read + Seek> Image<R> {
         self.cancel.clone()
     }
 
+    /// Whether sector `lsn` is marked unreadable now (one atomic load when none is).
+    #[inline]
+    pub(crate) fn is_unreadable(&self, lsn: u64) -> bool {
+        !self.unreadable.is_empty() && self.unreadable.contains(lsn)
+    }
+
     /// The sectors of this image that cannot be read (see [`UnreadableSectors`]), shared
     /// with the images of [`crate::Disc::share`] and of `clone`.
     pub fn unreadable_sectors(&self) -> UnreadableSectors {
@@ -377,17 +383,13 @@ impl<R: Read + Seek> Image<R> {
                 return Err(Error::SectorUnreadable { lsn: bad });
             }
         }
-        let outcome = match self.read_into(lsn, buf) {
-            Err(e) if is_unreadable_error(&e) => {
-                let mut bad = Vec::new();
-                self.read_audio(lsn, buf, &mut bad)?;
-                return match bad.first() {
-                    Some(&(s, _)) => Err(Error::SectorUnreadable { lsn: s }),
-                    None => Ok(()),
-                };
-            }
-            r => r?,
-        };
+        // Unmarked sectors the reader reports unreadable are marked; each request is made
+        // once (see `read_audio`).
+        let mut bad = Vec::new();
+        let outcome = self.read_audio(lsn, buf, &mut bad)?;
+        if let Some(&(s, _)) = bad.first() {
+            return Err(Error::SectorUnreadable { lsn: s });
+        }
         match outcome {
             ReadOutcome::Ok => Ok(()),
             ReadOutcome::OutOfRange => Err(Error::SectorRangeInvalid {
@@ -443,7 +445,9 @@ impl<R: Read + Seek> Image<R> {
     /// [`Image::read_into`] for audio sectors, with unreadable sectors (#435): the marked
     /// sectors of the range are not read but filled with zeros, and a read the reader
     /// reports as unreadable ([`crate::read_at::unreadable_error`]) is made again one sector
-    /// at a time, each sector that still fails being marked and filled with zeros. `bad`
+    /// at a time, each sector that still fails being marked and filled with zeros. No
+    /// request the reader failed is made again: on a physical drive each failure can take
+    /// seconds. `bad`
     /// receives the unreadable runs of the range, as half-open ranges in increasing order:
     /// the sectors of `buf` that hold no bytes of the image.
     pub(crate) fn read_audio(
@@ -458,9 +462,11 @@ impl<R: Read + Seek> Image<R> {
             return self.read_into(lsn, buf);
         }
         let end = lsn + count;
+        // Whether the whole request failed already.
+        let mut failed = false;
         if self.unreadable.is_empty() {
             match self.read_into(lsn, buf) {
-                Err(e) if is_unreadable_error(&e) => {}
+                Err(e) if is_unreadable_error(&e) => failed = true,
                 r => return r,
             }
         }
@@ -468,7 +474,8 @@ impl<R: Read + Seek> Image<R> {
         let mut at = lsn;
         for (s, e) in marked.iter().copied().chain([(end, end)]) {
             if at < s {
-                self.read_run(at, &mut buf[slot(lsn, at)..slot(lsn, s)])?;
+                let known = failed && (at, s) == (lsn, end);
+                self.read_run(at, &mut buf[slot(lsn, at)..slot(lsn, s)], known)?;
             }
             buf[slot(lsn, s)..slot(lsn, e)].fill(0);
             at = e;
@@ -478,16 +485,22 @@ impl<R: Read + Seek> Image<R> {
     }
 
     /// Reads the sectors of `buf` from `lsn`, all in the image, marking and zeroing those
-    /// the reader reports unreadable.
-    fn read_run(&mut self, lsn: u64, buf: &mut [u8]) -> io::Result<()> {
-        match self.read_into(lsn, buf) {
-            Ok(_) => return Ok(()),
-            Err(e) if is_unreadable_error(&e) => {}
-            Err(e) => return Err(e),
+    /// the reader reports unreadable; `failed` if this very request already failed so.
+    fn read_run(&mut self, lsn: u64, buf: &mut [u8], failed: bool) -> io::Result<()> {
+        if !failed {
+            match self.read_into(lsn, buf) {
+                Ok(_) => return Ok(()),
+                Err(e) if is_unreadable_error(&e) => {}
+                Err(e) => return Err(e),
+            }
         }
+        let single = buf.len() == SECTOR_SIZE;
         for (i, sector) in buf.chunks_exact_mut(SECTOR_SIZE).enumerate() {
             let at = lsn + i as u64;
-            match self.read_into(at, sector) {
+            // A request of this one sector has failed already.
+            let result =
+                if single { Err(crate::read_at::unreadable_error()) } else { self.read_into(at, sector) };
+            match result {
                 Ok(_) => {}
                 Err(e) if is_unreadable_error(&e) => {
                     sb_log!(&self.log, Warn, "sector LSN {at}: unreadable (reported by the reader), marked");

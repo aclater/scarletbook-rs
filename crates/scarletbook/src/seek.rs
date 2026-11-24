@@ -2014,6 +2014,11 @@ impl AreaIndex {
         self.image_id = Some(image.id());
         let mut settled = 0;
         let mut i = 0;
+        // The unreadable sector that stops the frontier, if one does: no checkpoint lies at
+        // or past it (#435).
+        let (s0, end) = self.key.audio_sector_range();
+        let next = self.checkpoint_lsn(self.checkpoints.len());
+        let blocked = image.unreadable_sectors().first_in(s0, end).filter(|&b| b <= next);
         while i < self.claims.len() {
             let claim = std::sync::Arc::clone(&self.claims[i]);
             let lsn = claim.lsn();
@@ -2024,9 +2029,11 @@ impl AreaIndex {
             // A reading with an unreadable sector before its `L` or at it is never checked
             // (#435): its exact reading has lost positions that the provisional one cannot
             // know of, and no pass records state past the sector.
-            let (s0, _) = self.key.audio_sector_range();
             let marked = lsn != 0 && image.unreadable_sectors().first_in(s0, lsn.saturating_add(1)).is_some();
-            if !marked && !self.reaches(lsn) {
+            // Past the frontier, but before the unreadable sector that stops it: the state
+            // at `lsn` is a replay of at most an interval from the frontier's checkpoint.
+            let stuck = lsn != 0 && lsn < self.end && blocked.is_some_and(|b| lsn < b);
+            if !marked && !stuck && !self.reaches(lsn) {
                 i += 1;
                 continue;
             }
@@ -2039,10 +2046,18 @@ impl AreaIndex {
                     let u = claim.first;
                     if a <= u && held.is_none_or(|g| g < u) {
                         if self.fingerprint_checked && lsn < self.end {
-                            let d = digest(&crate::audio::read_sector(image, lsn)?);
-                            self.keep_confirmation(lsn, u, d);
+                            match crate::audio::read_sector(image, lsn) {
+                                Ok(sector) => {
+                                    self.keep_confirmation(lsn, u, digest(&sector));
+                                    Verdict::Confirmed
+                                }
+                                // Unreadable now (#435): its positions may be lost.
+                                Err(Error::SectorUnreadable { .. }) => Verdict::Unverified,
+                                Err(e) => return Err(e),
+                            }
+                        } else {
+                            Verdict::Confirmed
                         }
-                        Verdict::Confirmed
                     } else {
                         Verdict::Refuted { exact_from: a.max(held.map_or(0, |g| g.saturating_add(1))) }
                     }

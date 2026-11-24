@@ -482,9 +482,17 @@ impl<R: Read + Seek> Disc<R> {
     ///
     /// # Errors
     ///
-    /// As [`Disc::extend_seek_index`].
+    /// As [`Disc::extend_seek_index`], except [`Error::SectorUnreadable`]: an unreadable
+    /// sector stops the index (#435), the readings it holds are settled (those past the
+    /// sector as [`Speculation::Unverified`]), and the call returns `true` as for a
+    /// complete index.
     pub fn verify_speculation(&mut self, slot: Slot, max_sectors: u64) -> Result<bool, Error> {
-        let complete = self.extend_seek_index(slot, max_sectors)?;
+        let complete = match self.extend_seek_index(slot, max_sectors) {
+            // An unreadable sector stops the index (#435): every reading the index holds is
+            // settled by now, those past the sector as unverified.
+            Err(Error::SectorUnreadable { .. }) => true,
+            r => r?,
+        };
         // A reading registered during the round is not in the copy it checked: not done yet.
         // The next call checks it, within its own budget.
         let unchecked = |kept: Option<&AreaIndex>| kept.is_some_and(AreaIndex::has_reached_claims);

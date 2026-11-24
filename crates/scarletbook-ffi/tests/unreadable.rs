@@ -205,3 +205,49 @@ fn callbacks_report_unreadable_sectors() {
     c!(sb_disc_free(disc));
     drop(src);
 }
+
+/// `sb_track_audio_read_with_stored` reports a lost position as lost in both of its
+/// descriptions, and counts it.
+#[test]
+fn reads_with_stored_report_lost_positions() {
+    let (img, touched) = image();
+    let disc = open(&img);
+    assert_eq!(c!(sb_disc_unreadable_add(disc, (AUDIO_LSN + BAD) as u64, 1)), SbStatus::Ok);
+    for equivalent in [0u8, 1] {
+        let mut a = ptr::null_mut();
+        assert_eq!(c!(sb_track_audio_open(disc, 0, 1, &mut a)), SbStatus::Ok);
+        assert_eq!(c!(sb_track_audio_keep_stored(a)), SbStatus::Ok);
+        let mut buf = vec![0u8; 2 * 4704];
+        let mut raw = vec![0u8; SB_MAX_FRAME_BYTES];
+        for n in 0..FRAMES {
+            let (mut info, mut raw_info) = (SbFrameInfo::default(), SbRawFrameInfo::default());
+            let status = c!(sb_track_audio_read_with_stored(
+                a,
+                disc,
+                buf.as_mut_ptr(),
+                buf.len(),
+                &mut info,
+                raw.as_mut_ptr(),
+                raw.len(),
+                &mut raw_info,
+                equivalent
+            ));
+            assert_eq!(status, SbStatus::Ok);
+            assert_eq!((info.number, raw_info.number), (n, n));
+            if touched.contains(&n) {
+                assert_eq!(info.status, SbFrameStatus::Lost as u32, "{n}");
+                assert_eq!(raw_info.kind, SbFrameKind::Lost as u32, "{n}, equivalent {equivalent}");
+                // No bytes, or a missing position's DST equivalent.
+                assert_eq!(raw_info.size, if equivalent == 1 { 1 + 2 * 4704 } else { 0 });
+            } else {
+                assert_eq!(raw_info.kind, SbFrameKind::Dst as u32, "{n}");
+            }
+        }
+        let (mut missing, mut invalid, mut lost) = (9, 9, 9);
+        assert_eq!(c!(sb_track_audio_counts(a, &mut missing, &mut invalid)), SbStatus::Ok);
+        assert_eq!(c!(sb_track_audio_lost(a, &mut lost)), SbStatus::Ok);
+        assert_eq!((missing, invalid, lost), (0, 0, touched.len() as u64));
+        c!(sb_track_audio_free(a));
+    }
+    c!(sb_disc_free(disc));
+}

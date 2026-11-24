@@ -14,7 +14,7 @@ mod dst_enc;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use common::{AUDIO_LSN, PFrame, S, Spec, TrackSpec, pack};
 use proptest::prelude::*;
@@ -297,20 +297,33 @@ fn the_set_merges_and_splits() {
 #[derive(Clone)]
 struct Flaky {
     bytes: Arc<Vec<u8>>,
-    bad: (u64, u64),
+    /// The byte range reported unreadable, which a test may move.
+    bad: Arc<Mutex<(u64, u64)>>,
+    /// Every request that failed, as (offset, length).
+    failed: Arc<Mutex<Vec<(u64, usize)>>>,
+    /// Fails only requests of one sector, as a drive whose retries of a sector fail.
+    single_only: Arc<std::sync::atomic::AtomicBool>,
     pos: u64,
 }
 
+/// The byte range of audio sectors `[a, b)` (indexes).
+fn bytes_of((a, b): (usize, usize)) -> (u64, u64) {
+    (((AUDIO_LSN + a) * S) as u64, ((AUDIO_LSN + b) * S) as u64)
+}
+
 impl Flaky {
-    fn new(bytes: Vec<u8>, (a, b): (usize, usize)) -> Self {
-        let bad = (((AUDIO_LSN + a) * S) as u64, ((AUDIO_LSN + b) * S) as u64);
-        Flaky { bytes: Arc::new(bytes), bad, pos: 0 }
+    fn new(bytes: Vec<u8>, bad: (usize, usize)) -> Self {
+        let bad = Arc::new(Mutex::new(bytes_of(bad)));
+        Flaky { bytes: Arc::new(bytes), bad, failed: Arc::default(), single_only: Arc::default(), pos: 0 }
     }
 }
 
 impl ReadAt for Flaky {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
-        if offset < self.bad.1 && offset + buf.len() as u64 > self.bad.0 {
+        let bad = *self.bad.lock().unwrap();
+        let single = self.single_only.load(std::sync::atomic::Ordering::Relaxed);
+        if offset < bad.1 && offset + buf.len() as u64 > bad.0 && (!single || buf.len() == S) {
+            self.failed.lock().unwrap().push((offset, buf.len()));
             return Err(unreadable_error());
         }
         self.bytes.read_at(offset, buf)
@@ -484,4 +497,194 @@ proptest! {
         check_raw("property", &got, &want, &lost);
         prop_assert_eq!((missing, n_lost), (0, lost.len() as u64));
     }
+}
+
+/// A request the reader reports unreadable is never made again: it is split at once, and
+/// each sector is tried alone once (physical drives retry slowly).
+#[test]
+fn failing_reads_are_not_repeated() {
+    let (image, audio) = dst_disc(if cfg!(miri) { 4 } else { 12 });
+    let playtime = spans(&audio).len() as u32;
+    for sequential in [false, true] {
+        let flaky = Flaky::new(image.clone(), (2, 3));
+        let failed = Arc::clone(&flaky.failed);
+        if sequential {
+            let mut disc = Disc::open(flaky).unwrap();
+            raw(&mut disc, (0, playtime));
+            let mut buf = vec![0u8; 4 * S];
+            let e = disc.image_mut().read_sectors(AUDIO_LSN as u64 + 3, &mut buf[..S]);
+            assert!(e.is_ok(), "{e:?}");
+            let flaky = Flaky::new(image.clone(), (2, 3));
+            let failed = Arc::clone(&flaky.failed);
+            let mut fresh = Disc::open(flaky).unwrap();
+            let e = fresh.image_mut().read_sectors(AUDIO_LSN as u64, &mut buf).unwrap_err();
+            assert!(matches!(e, Error::SectorUnreadable { .. }), "{e:?}");
+            let f = failed.lock().unwrap();
+            assert_eq!(f.len(), 2, "read_sectors: the request once, then the sector once: {f:?}");
+        } else {
+            let mut disc = Disc::open(ReadAtReader::new(flaky)).unwrap();
+            raw(&mut disc, (0, playtime));
+        }
+        let f = failed.lock().unwrap();
+        let distinct: BTreeSet<_> = f.iter().collect();
+        assert_eq!(distinct.len(), f.len(), "sequential {sequential}: a failing request repeated: {f:?}");
+        assert!(f.iter().filter(|r| r.1 == S).count() == 1, "sequential {sequential}: {f:?}");
+    }
+}
+
+/// A sector marked while a cursor is open, after the cursor read it into its buffer but
+/// before it processed it, is unreadable to that cursor too.
+#[test]
+fn marks_made_mid_read_apply_to_buffered_sectors() {
+    let (image, audio) = dst_disc(if cfg!(miri) { 4 } else { 12 });
+    let spans = spans(&audio);
+    let playtime = spans.len() as u32;
+    // A sector within the cursor's first read (32 sectors), past the first frame.
+    let a = spans[&1].1.min(30);
+    let bad = (a, a + 1);
+    let lost = touched(&spans, bad);
+    assert!(!lost.contains(&0), "the first frame is read before the mark");
+    let (want, _, _) = raw(&mut marked(image.clone(), bad), (0, playtime));
+    let mut disc = Disc::open(Cursor::new(image)).unwrap();
+    let set = disc.unreadable_sectors();
+    let mut frames = disc.range_frames(SLOT, 0, playtime).unwrap();
+    let mut got = vec![frames.next().unwrap().unwrap()];
+    set.insert((AUDIO_LSN + a) as u64, 1);
+    got.extend(frames.map(Result::unwrap));
+    assert_eq!(got, want);
+}
+
+/// A disc of `n` DST frames in two tracks.
+fn two_tracks(n: u32) -> (Vec<u8>, Vec<[u8; S]>) {
+    let (_, audio) = dst_disc(n);
+    let tracks =
+        vec![TrackSpec { start: 0, duration: n / 2 }, TrackSpec { start: n / 2, duration: n - n / 2 }];
+    (Spec { channels: 2, playtime: n, tracks, audio: audio.clone() }.build(), audio)
+}
+
+/// Continuing a cursor across unreadable sectors, with and without a seek index, gives
+/// what fresh cursors give, and a stretch that spans the two ranges is lost in both.
+#[test]
+fn continuations_across_damage() {
+    let n = if cfg!(miri) { 4 } else { 16 };
+    let (image, audio) = two_tracks(n);
+    let spans = spans(&audio);
+    let half = n / 2;
+    // The sector where frame `half` starts: the stretch reaches across the track boundary.
+    let a = spans[&(half - 1)].1;
+    let bad = (a, a + 1);
+    for indexed in [false, true] {
+        let mut fresh = marked(image.clone(), bad);
+        let first = raw(&mut fresh, (0, half));
+        let second = raw(&mut fresh, (half, n));
+        let mut disc = marked(image.clone(), bad);
+        if indexed {
+            disc.enable_seek_index(SLOT, IndexOptions::new().with_interval(2)).unwrap();
+        }
+        let cursor =
+            disc.frames_cursor(SLOT, scarletbook::FrameSpan::Range(0, half), Default::default()).unwrap();
+        let mut frames = disc.read_frames(cursor);
+        let got: Vec<TrackFrame> = frames.by_ref().map(Result::unwrap).collect();
+        assert_eq!((got, frames.missing_frames(), frames.lost_frames()), first, "indexed {indexed}");
+        let cursor = frames.into_cursor();
+        let next = disc.continue_range_frames(cursor, SLOT, half, n).unwrap();
+        let mut frames = disc.read_frames(next);
+        let got: Vec<TrackFrame> = frames.by_ref().map(Result::unwrap).collect();
+        assert_eq!((got, frames.missing_frames(), frames.lost_frames()), second, "indexed {indexed}");
+        // Decoded, continued the same way.
+        let mut audio_a = disc.range_audio(SLOT, 0, half).unwrap();
+        let a_frames: Vec<AudioFrame> = audio_a.by_ref().map(Result::unwrap).collect();
+        let c = audio_a.into_cursor();
+        let c = disc.continue_range_audio(c, SLOT, half, n).unwrap();
+        let b_frames: Vec<AudioFrame> = disc.read_track_audio(c).map(Result::unwrap).collect();
+        let lost = touched(&spans, bad);
+        for f in a_frames.iter().chain(&b_frames) {
+            assert_eq!(
+                f.status == FrameStatus::Lost,
+                lost.contains(&f.number),
+                "indexed {indexed}: {}",
+                f.number
+            );
+        }
+    }
+}
+
+/// A provisional range whose first frame lies inside a lost stretch, and one read through
+/// a reader that reports sectors unreadable during the search, give the exact positions.
+#[test]
+fn provisional_ranges_inside_lost_stretches() {
+    let n = if cfg!(miri) { 6 } else { 60 };
+    let (image, audio) = dst_disc(n);
+    let spans = spans(&audio);
+    let k = audio.len();
+    let bad = (k / 2, k / 2 + 2);
+    let lost = touched(&spans, bad);
+    let first = *lost.iter().nth(lost.len() / 2).unwrap();
+    let options = SpeculativeOptions::new().with_min_gap_sectors(0);
+    let want = raw(&mut marked(image.clone(), bad), (first, n));
+    let mut disc = marked(image.clone(), bad);
+    disc.set_seek_policy(SLOT, SeekPolicy::Speculative(options)).unwrap();
+    assert_eq!(raw(&mut disc, (first, n)), want, "marked");
+    // Reported by the reader, whose sectors the search's probes may read.
+    for first in [first, n * 3 / 4] {
+        let want = raw(&mut marked(image.clone(), bad), (first, n));
+        let mut disc = Disc::open(ReadAtReader::new(Flaky::new(image.clone(), bad))).unwrap();
+        disc.set_seek_policy(SLOT, SeekPolicy::Speculative(options)).unwrap();
+        assert_eq!(raw(&mut disc, (first, n)), want, "reported, from {first}");
+    }
+}
+
+/// `verify_speculation` ends (`Ok(true)`) when a mark stops the seek index, with every
+/// reading settled; a claim whose own sector turns out unreadable is unverified, not an
+/// error.
+#[test]
+fn verification_ends_with_unreadable_sectors() {
+    let n = if cfg!(miri) { 6 } else { 60 };
+    let (image, audio) = dst_disc(n);
+    let k = audio.len();
+    let options = SpeculativeOptions::new().with_min_gap_sectors(0);
+    // A mark ahead of a provisional reading's L.
+    let mut disc = marked(image.clone(), (k * 3 / 4, k * 3 / 4 + 1));
+    disc.enable_seek_index(SLOT, IndexOptions::new().with_interval(2)).unwrap();
+    disc.set_seek_policy(SLOT, SeekPolicy::Speculative(options)).unwrap();
+    let mut frames = disc.range_frames(SLOT, n / 2, n).unwrap();
+    frames.by_ref().for_each(drop);
+    let speculation = frames.speculation();
+    drop(frames);
+    let mut rounds = 0;
+    while !disc.verify_speculation(SLOT, 8).unwrap() {
+        rounds += 1;
+        assert!(rounds < 10_000, "verify_speculation never ends");
+    }
+    if matches!(speculation, Speculation::Pending { .. }) {
+        assert_eq!(disc.take_seek_events(SLOT).len(), 1, "the reading is settled");
+    }
+    // The claim's own sector fails when the check reads it alone, after the pass read it
+    // with its neighbours.
+    let flaky = Flaky::new(image, (k, k));
+    let bad = Arc::clone(&flaky.bad);
+    flaky.single_only.store(true, std::sync::atomic::Ordering::Relaxed);
+    let mut disc = Disc::open(ReadAtReader::new(flaky)).unwrap();
+    disc.enable_seek_index(SLOT, IndexOptions::new().with_interval(2)).unwrap();
+    disc.set_seek_policy(SLOT, SeekPolicy::Speculative(options)).unwrap();
+    let mut frames = disc.range_frames(SLOT, n / 2, n).unwrap();
+    frames.by_ref().for_each(drop);
+    let speculation = frames.speculation();
+    drop(frames);
+    let Speculation::Pending { lsn, .. } = speculation else {
+        // Under Miri the area is too short for a provisional start.
+        assert!(cfg!(miri), "not provisional: {speculation:?}");
+        return;
+    };
+    *bad.lock().unwrap() = ((lsn as usize * S) as u64, ((lsn as usize + 1) * S) as u64);
+    let mut rounds = 0;
+    while !disc.verify_speculation(SLOT, 64).unwrap() {
+        rounds += 1;
+        assert!(rounds < 10_000, "verify_speculation never ends");
+    }
+    let events = disc.take_seek_events(SLOT);
+    assert!(
+        events.iter().all(|e| matches!(e.speculation, Speculation::Unverified { .. })) && !events.is_empty(),
+        "{events:?}"
+    );
 }

@@ -255,11 +255,15 @@ disc.unreadable_sectors().insert(123_456, 3); // shared with clones and shares
 
 A reader or `ReadAt` source can also report sectors as it reads them, by returning
 `scarletbook::read_at::unreadable_error()`. The library then reads those sectors again one
-at a time, marks each that still fails, and goes on. A mark applies to the sectors a cursor
-reads after it is made. `Image::read_sectors` refuses marked sectors with
+at a time, marks each that still fails, and goes on. A mark applies to every sector a cursor
+processes after the mark is made, including sectors already in its read buffer; only frames
+it has already demultiplexed (a decoding cursor holds a bounded window of them ahead) keep
+what they had. `Image::read_sectors` refuses marked sectors with
 `Error::SectorUnreadable`. Seek indexes never hold reading state from past an unreadable
 sector: `AreaIndex::extend` stops there with that error, and a cursor does not resume from a
-checkpoint at or after a marked sector. In the stored frame list (`AreaFrame::lost_from`,
+checkpoint at or after a marked sector. The cost: a range opened past a marked sector
+scans the area from its start, whatever the index holds (sequential reads continued with
+`continue_*` read on and don't pay this; #441). In the stored frame list (`AreaFrame::lost_from`,
 `AreaFrames::lost_from`), each frame carries the lost stretch it closes.
 
 ## Features

@@ -833,7 +833,7 @@ impl AreaCursor {
                 }
                 r => r?,
             };
-            if self.is_bad(l) {
+            if self.is_bad(l) || image.is_unreadable(l) {
                 // Unreadable (#435): the hint is not wrong, only of no use now.
                 sb_log!(image.log(), Debug, "area {}: seek hint at LSN {l} unreadable: searching", self.slot);
                 self.read_to = 0;
@@ -1053,7 +1053,7 @@ impl AreaCursor {
         if let Some((at, want)) = cursor.verify {
             if at < cursor.end_lsn {
                 let sector = cursor.sector(image, at)?;
-                if cursor.is_bad(at) || digest(&sector) != want {
+                if cursor.is_bad(at) || image.is_unreadable(at) || digest(&sector) != want {
                     return Ok(None);
                 }
             }
@@ -1442,7 +1442,9 @@ impl AreaCursor {
                 let lsn = self.next_lsn;
                 self.next_lsn += 1;
                 match self.load(image, lsn) {
-                    Ok(_) if self.is_bad(lsn) => {
+                    // Marked when read, or since (#435): a sector in the buffer is
+                    // checked against the set as it is processed.
+                    Ok(_) if self.is_bad(lsn) || image.is_unreadable(lsn) => {
                         let replaying = self.replay.is_some_and(|r| lsn < r.until);
                         let verifying = self.verify.is_some_and(|(at, _)| at == lsn);
                         if (replaying || verifying) && !self.for_index {
@@ -1551,15 +1553,20 @@ impl AreaCursor {
     }
 }
 
-/// Sector `lsn` of `image`, read alone.
+/// Sector `lsn` of `image`, read alone: [`Error::SectorUnreadable`] if it is unreadable
+/// (marked, or reported so by the reader, which marks it).
 pub(crate) fn read_sector<R: Read + Seek>(
     image: &mut Image<R>,
     lsn: u64,
 ) -> Result<[u8; SECTOR_SIZE], Error> {
     let mut out = [0u8; SECTOR_SIZE];
     image.check_cancel()?;
-    if image.read_into(lsn, &mut out)? == ReadOutcome::OutOfRange {
+    let mut bad = Vec::new();
+    if image.read_audio(lsn, &mut out, &mut bad)? == ReadOutcome::OutOfRange {
         return Err(Error::InvalidArgument("audio sectors outside the image"));
+    }
+    if !bad.is_empty() {
+        return Err(Error::SectorUnreadable { lsn });
     }
     Ok(out)
 }

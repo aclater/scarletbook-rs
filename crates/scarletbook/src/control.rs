@@ -96,12 +96,16 @@ impl CancelToken {
 /// from part of their data. Reading resumes at the next frame that starts in a readable
 /// sector, at its own frame number. On a well-formed disc the lost positions are exactly the
 /// frames with a byte in a marked sector or starting in one; every other position is as
-/// without marks. A mark applies to the sectors a cursor reads after it is made: mark
-/// before opening the cursors that read past the sectors, or reopen them.
+/// without marks. A mark applies to every sector a cursor processes after the mark is
+/// made, sectors already in its read buffer included; only frames it has already
+/// demultiplexed (a [`crate::TrackAudioCursor`] holds a bounded window of them ahead of the
+/// caller) keep what they had. Mark before opening the cursors that read past the sectors,
+/// or reopen them, for a result that does not depend on timing.
 ///
 /// Seek indexes hold only reading state from before the first marked sector a cursor
 /// reads, and a cursor does not resume from a checkpoint at or after a marked sector, so
-/// marks never change what an index holds (see [`crate::seek`]).
+/// marks never change what an index holds (see [`crate::seek`]). The cost: a range opened
+/// past a marked sector scans the area from its start (#441); continued cursors read on.
 ///
 /// The TOC, read when the disc is opened, is not affected. [`crate::Image::read_sectors`]
 /// refuses marked sectors with [`Error::SectorUnreadable`].

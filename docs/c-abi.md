@@ -234,7 +234,8 @@ The library never asks the image for a marked sector. When a callback returns
 each sector that still fails; `sb_disc_unreadable_range` lists the marked runs.
 `sb_disc_read_sectors` refuses marked sectors with `SB_STATUS_SECTOR_UNREADABLE`, and the
 seek index extension calls stop at the first marked sector with the same status, because a
-seek index never holds state from past one. `sb_disc_unreadable_remove` unmarks sectors.
+seek index never holds state from past one. The cost: a range opened past a marked sector
+scans the area from its start (handles continued with `_open_next` read on instead; #441). `sb_disc_unreadable_remove` unmarks sectors.
 
 ### DSD to PCM
 

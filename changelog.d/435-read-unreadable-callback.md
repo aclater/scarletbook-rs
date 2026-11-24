@@ -1,0 +1,2 @@
+Changed
+- A read callback (`SbReadFn`, `SbReadAtFn`) that returns -2 now means "these bytes are unreadable" (`SB_READ_UNREADABLE`): the library rereads the request one sector at a time, marks each sector that still fails as unreadable and reads on, reporting the frames that touch it as lost, where before -2 failed the read with `SB_STATUS_IO` like -1. The documented error value was always -1; a callback that returns -2 for other failures should return -1 (#435, #439).

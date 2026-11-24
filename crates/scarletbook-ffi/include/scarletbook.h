@@ -2998,8 +2998,10 @@ SbStatus sb_disc_warning(const struct SbDisc *disc, uint32_t index, struct SbWar
  byte in them, or starts in them, is reported lost (`SB_FRAME_STATUS_LOST`,
  `SB_FRAME_KIND_LOST`) and counted by `sb_track_audio_lost` and `sb_raw_frames_lost`,
  not as missing; reading resumes at the next frame that starts in a readable sector, at
- its own frame number, and every other position is as without the mark. A handle that
- already read a sector keeps what it read. A seek index never takes reading state from
+ its own frame number, and every other position is as without the mark. A handle
+ that has already demultiplexed the frames of a sector (a track audio handle holds a
+ bounded window of them ahead) keeps them; sectors it has only read ahead into its
+ buffer are checked again when processed. A seek index never takes reading state from
  past a marked sector. The TOC, read when the disc was opened, is not affected. A range
  past `UINT64_MAX` ends there; `count` 0 marks nothing.
 
