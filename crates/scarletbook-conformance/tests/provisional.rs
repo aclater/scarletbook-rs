@@ -202,3 +202,67 @@ fn suspect_readings_of_the_corpus() {
     }
     assert!(past_end > 0 && valid_provisional > 100, "{past_end} {valid_provisional}");
 }
+
+/// Counts the read calls and bytes through it.
+struct Counting<R>(R, std::rc::Rc<std::cell::Cell<(u64, u64)>>);
+
+impl<R: std::io::Read> std::io::Read for Counting<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.0.read(buf)?;
+        let (reads, bytes) = self.1.get();
+        self.1.set((reads + 1, bytes + n as u64));
+        Ok(n)
+    }
+}
+
+impl<R: std::io::Seek> std::io::Seek for Counting<R> {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.0.seek(pos)
+    }
+}
+
+/// Issue #434: on a 2-channel area of uneven DST bit rate (`scarletbook-synth --minutes 6
+/// --area 2ch --kind dst --track-minutes 0.41 --dst-frames uneven`), the search for frame
+/// 18443 read back from its first probe at the area's average density, began one sector
+/// past frame 18442's start, found no sector below 18443 and gave up: an exact scan of
+/// 1 113 reads and 72.9 MB. It now searches on below that read. Each range near it, opened
+/// on a fresh disc, starts provisionally within a few reads and returns the exact frames.
+#[test]
+#[cfg_attr(miri, ignore = "a 6-minute image; the search's unit tests cover it")]
+fn uneven_dst_search_does_not_fall_back_to_a_scan() {
+    use scarletbook::{ResumedFrom, SectorFormat};
+    use scarletbook_conformance::synth::{Config, DstSource, Kind, write_image};
+
+    let cfg = Config {
+        frames: 6 * 60 * 75,
+        two_channel: true,
+        multichannel: false,
+        mc_channels: 5,
+        kind: Kind::Dst,
+        format: SectorFormat::Plain,
+        track_frames: 1845,
+    };
+    let src = DstSource::from_corpus(&corpus_dir()).unwrap().uneven();
+    let mut image = std::io::Cursor::new(Vec::new());
+    write_image(&mut image, &cfg, &src).unwrap();
+    let image = image.into_inner();
+    let slot = Slot::TwoChannel;
+    let (lo, hi) = (18_430, 18_460);
+    let mut plain = Disc::open(std::io::Cursor::new(&image)).unwrap();
+    let (exact, _) = read(&mut plain, slot, (lo, hi + 7));
+    for first in lo..hi {
+        let count = std::rc::Rc::new(std::cell::Cell::new((0, 0)));
+        let mut disc = Disc::open(Counting(std::io::Cursor::new(&image), count.clone())).unwrap();
+        disc.set_seek_policy(slot, SeekPolicy::Speculative(SpeculativeOptions::new())).unwrap();
+        count.set((0, 0));
+        let (frames, cursor) = read(&mut disc, slot, (first, first + 7));
+        let at = (first - lo) as usize;
+        assert_eq!(frames, exact[at..at + 7], "frames {first}..{}", first + 7);
+        assert!(matches!(cursor.resumed_from(), ResumedFrom::Speculative { .. }), "{first}");
+        let (reads, bytes) = count.get();
+        assert!(reads <= 6 && bytes <= 256 << 10, "{first}: {reads} reads, {bytes} bytes");
+        if first == 18_443 {
+            assert_eq!((reads, bytes), (5, 194_560));
+        }
+    }
+}

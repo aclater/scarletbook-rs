@@ -771,7 +771,7 @@ impl AreaCursor {
         exact: AreaCursor,
         (first, end): (u32, u32),
         (playtime, knots): (u32, Vec<(u64, u32)>),
-        (interval, hint): (u32, Option<crate::seek::Hint>),
+        (interval, hint, track_start): (u32, Option<crate::seek::Hint>, Option<u64>),
         options: crate::seek::SpeculativeOptions,
     ) -> Self {
         let from = match exact.resumed {
@@ -792,6 +792,7 @@ impl AreaCursor {
             exact: Box::new(exact),
             from,
             hint,
+            track_start,
         });
         cursor
     }
@@ -805,6 +806,26 @@ impl AreaCursor {
             // A seek hint: one read from its sector to the range's end. Its first record
             // must be the hint's, or the hints are of another image (or a stale one).
             self.read_to = to;
+            // The range begins at a track whose start LSN lies past the hint: one read from
+            // there instead (4.2 item 8 lets track start LSNs choose `L`), when the first
+            // record there is at most `first`. On an image whose frames start in
+            // non-decreasing number order, every frame that starts before it is then
+            // numbered below `first`, so (a) and (b) hold as from the hint. Otherwise (a
+            // later frame, or none starting there), from the hint as before.
+            if let Some(ts) = sp.track_start.take() {
+                let sector = match self.sector(image, ts) {
+                    Err(Error::Cancelled) => {
+                        sp.track_start = Some(ts);
+                        self.speculate = Some(sp);
+                        return Err(Error::Cancelled);
+                    }
+                    r => r?,
+                };
+                if first_record(&sector).is_some_and(|r| r <= sp.first) {
+                    self.start_provisional(start, (ts, 0), &sp);
+                    return Ok(());
+                }
+            }
             let sector = match self.sector(image, l) {
                 Err(Error::Cancelled) => {
                     self.speculate = Some(sp);
@@ -2518,6 +2539,17 @@ impl TrackCursor {
             }
             return TrackCursor { area: area_cursor, ..self };
         }
+        // A track that begins at `first` and starts past the hint's sector, within its read:
+        // begun at instead (see `AreaCursor::begin`), unless a saved confirmation covers the
+        // hint's reading. The read through the next hint past the range stays as it was.
+        let track_start = hint.filter(|h| h.3.is_none()).and_then(|(lsn, _, to, _)| {
+            area.tracks
+                .iter()
+                .filter(|t| t.start_frame == first)
+                .map(|t| u64::from(t.start_lsn))
+                .filter(|&l| l > lsn && l < to && (start..stop).contains(&l))
+                .max()
+        });
         // Track starts inside the audio sectors, as points to interpolate between (4.2 item
         // 8 lets them choose `L`; they never change what is read from it).
         let knots = area
@@ -2530,7 +2562,7 @@ impl TrackCursor {
             self.area,
             (first, self.end),
             (playtime, knots),
-            (interval, hint),
+            (interval, hint, track_start),
             options,
         );
         TrackCursor { area: area_cursor, ..self }
