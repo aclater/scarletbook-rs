@@ -14,7 +14,7 @@ use std::io::Cursor;
 use std::rc::Rc;
 
 use common::hostile::S;
-use common::{PFrame, Spec, TrackSpec, pack};
+use common::{AREA_TOC_LSN, AUDIO_LSN, PFrame, Spec, TrackSpec, pack};
 use scarletbook::seek::DEFAULT_INLINE_BUDGET;
 use scarletbook::{
     AreaIndex, CursorOptions, Disc, FrameSpan, IndexOptions, ResumedFrom, SeekPolicy, Slot, Speculation,
@@ -344,4 +344,181 @@ fn confirmations_need_a_disc_that_checked_the_fingerprint() {
     speculative(&mut disc_a);
     let (_, c) = read(&mut disc_a, (first, end));
     assert!(matches!(c.speculation(), Speculation::Confirmed { .. }), "{:?}", c.speculation());
+}
+
+/// A 2-channel area of `n` frames in `tracks` tracks of equal length, plain DSD or DST
+/// frames of varying sizes, whose TOC gives each track's start LSN as the sector where the
+/// track's first frame starts (as on a well-formed disc), moved `shift` sectors later for
+/// every track but the first; and those sectors, unmoved.
+fn image_tracked(dst: bool, n: u32, tracks: u32, shift: u32) -> (Vec<u8>, Vec<u64>) {
+    let fs: Vec<PFrame> = (0..n)
+        .map(|k| PFrame {
+            number: k,
+            dst,
+            data: vec![k as u8; if dst { 3000 + (k as usize * 53) % 6000 } else { 2 * 4704 }],
+        })
+        .collect();
+    let audio = pack(&fs);
+    // The sector each frame starts in, from the sectors' frame records (4.3.1, 4.3.3).
+    let mut at = vec![0u64; n as usize];
+    for (i, s) in audio.iter().enumerate() {
+        let (f, k, r) =
+            (usize::from((s[0] >> 2) & 7), usize::from(s[0] >> 5), if s[0] & 1 == 1 { 4 } else { 3 });
+        for j in 0..f {
+            let p = 1 + 2 * k + j * r;
+            let t = (u32::from(s[p]) * 60 + u32::from(s[p + 1])) * 75 + u32::from(s[p + 2]);
+            at[t as usize] = (AUDIO_LSN + i) as u64;
+        }
+    }
+    let per = n / tracks;
+    let starts: Vec<u64> = (0..tracks).map(|i| at[(i * per) as usize]).collect();
+    let specs = (0..tracks).map(|i| TrackSpec { start: i * per, duration: per }).collect();
+    let mut img = Spec { channels: 2, playtime: n, tracks: specs, audio }.build();
+    let trl1 = (AREA_TOC_LSN + 4) * S;
+    for (i, &l) in starts.iter().enumerate() {
+        let l = if i == 0 { l } else { l + u64::from(shift) };
+        img[trl1 + 8 + 4 * i..][..4].copy_from_slice(&(l as u32).to_be_bytes());
+    }
+    (img, starts)
+}
+
+/// A reader that logs each read call's image offset and length.
+struct Logged<R> {
+    inner: R,
+    pos: u64,
+    log: Rc<std::cell::RefCell<Vec<(u64, usize)>>>,
+}
+
+impl<R: std::io::Read> std::io::Read for Logged<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.log.borrow_mut().push((self.pos, n));
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+
+impl<R: std::io::Seek> std::io::Seek for Logged<R> {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.pos = self.inner.seek(pos)?;
+        Ok(self.pos)
+    }
+}
+
+/// The reads of one file system's head and tail reads (issue #431): for each track in
+/// turn, its first `head` positions, then its last `tail`, each from a new cursor, the
+/// cursor before absorbed once the next is open; every range's frames, and each range's
+/// reads (offset, length), after the disc is open and `saved` (if any) loaded.
+#[allow(clippy::type_complexity)]
+fn head_then_tail(
+    img: &[u8],
+    saved: Option<&[u8]>,
+    (head, tail): (u32, u32),
+) -> (Vec<Vec<TrackFrame>>, Vec<Vec<(u64, usize)>>, Vec<u8>) {
+    let log = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let reader = Logged { inner: Cursor::new(img.to_vec()), pos: 0, log: Rc::clone(&log) };
+    let mut disc = Disc::open(reader).unwrap();
+    let area = disc.toc().areas[0].clone();
+    match saved {
+        Some(saved) => {
+            let index =
+                AreaIndex::from_bytes(&area, disc.toc().sectors, saved, DEFAULT_INLINE_BUDGET).unwrap();
+            disc.set_seek_index(Slot::TwoChannel, index).unwrap();
+        }
+        None => disc.enable_seek_index(Slot::TwoChannel, IndexOptions::new()).unwrap(),
+    }
+    let options = SpeculativeOptions::new().with_min_gap_sectors(16);
+    disc.set_seek_policy(Slot::TwoChannel, SeekPolicy::Speculative(options)).unwrap();
+    let (mut frames, mut reads, mut prev) = (Vec::new(), Vec::new(), None);
+    for t in &area.tracks {
+        let (s, e) = (t.start_frame, t.end_frame());
+        for (first, end) in [(s, s + head), (e - tail, e)] {
+            log.borrow_mut().clear();
+            let c = disc
+                .frames_cursor(Slot::TwoChannel, FrameSpan::Range(first, end), CursorOptions::new())
+                .unwrap();
+            if let Some(mut p) = prev.take() {
+                disc.absorb_seek_checkpoints(&mut p);
+            }
+            let mut it = disc.read_frames(c);
+            frames.push(it.by_ref().map(Result::unwrap).collect());
+            prev = Some(it.into_cursor());
+            reads.push(log.borrow().clone());
+        }
+    }
+    if let Some(mut p) = prev.take() {
+        disc.absorb_seek_checkpoints(&mut p);
+    }
+    (frames, reads, disc.seek_index(Slot::TwoChannel).unwrap().to_bytes())
+}
+
+/// Issue #431: after a remount, the head of a track read after the tail of the one before
+/// begins at the track's start sector, not at the seek hint where that tail's reading
+/// began, with one read call; the frames are an exact read's. The reads are pinned.
+#[test]
+fn a_track_head_after_a_tail_starts_at_the_track() {
+    let (n, tracks) = if cfg!(miri) { (60, 2) } else { (240, 4) };
+    let (img, starts) = image_tracked(false, n, tracks, 0);
+    let (_, _, saved) = head_then_tail(&img, None, (14, 7));
+    let (got, reads, _) = head_then_tail(&img, Some(&saved), (14, 7));
+    // Under Miri, without the exact reads (the next test compares under Miri).
+    let mut plain = Disc::open(Cursor::new(img.clone())).unwrap();
+    let area = plain.toc().areas[0].clone();
+    let ranges = area
+        .tracks
+        .iter()
+        .flat_map(|t| [(t.start_frame, t.start_frame + 14), (t.end_frame() - 7, t.end_frame())]);
+    for ((first, end), got) in ranges.zip(&got).filter(|_| !cfg!(miri)) {
+        assert_eq!(*got, read(&mut plain, (first, end)).0, "[{first}, {end})");
+    }
+    for (i, &l) in starts.iter().enumerate().skip(1) {
+        let head = &reads[2 * i];
+        assert_eq!(head.len(), 1, "track {}: {head:?}", i + 1);
+        assert_eq!(head[0].0, l * S as u64, "track {} head from its start sector: {head:?}", i + 1);
+    }
+    if !cfg!(miri) {
+        // One read per range: track 1's head from the area's first sector, each tail from
+        // its hint, each later head from its track's start sector.
+        let pinned: &[&[(u64, usize)]] = &[
+            &[(1_118_208, 262_144)],
+            &[(1_607_680, 77_824)],
+            &[(1_683_456, 133_120)],
+            &[(2_115_584, 135_168)],
+            &[(2_248_704, 133_120)],
+            &[(2_682_880, 133_120)],
+            &[(2_813_952, 133_120)],
+            &[(3_248_128, 133_120)],
+        ];
+        assert_eq!(reads, pinned, "reads");
+    }
+}
+
+/// Speculative reads equal exact ones for every first frame, with seek hints from a first
+/// session, on plain DSD and DST areas; also where the TOC's track start LSNs lie a few
+/// sectors past the tracks' first frames (the reading then begins at the hint).
+#[test]
+fn speculative_equals_exact_from_every_frame_with_track_starts() {
+    // Under Miri: plain DSD with the start LSNs moved, from the second track's first frame
+    // and the next (the previous test covers the start LSNs as they are).
+    let (n, tracks) = if cfg!(miri) { (60, 2) } else { (240, 4) };
+    let variants: &[(bool, u32)] =
+        if cfg!(miri) { &[(false, 3)] } else { &[(false, 0), (true, 0), (false, 3), (true, 2)] };
+    for &(dst, shift) in variants {
+        let (img, _) = image_tracked(dst, n, tracks, shift);
+        let (_, _, saved) = head_then_tail(&img, None, (14, 7));
+        let mut plain = Disc::open(Cursor::new(img.clone())).unwrap();
+        let firsts: Vec<u32> = if cfg!(miri) { vec![n / tracks, n / tracks + 1] } else { (0..n).collect() };
+        for first in firsts {
+            let end = (first + 3).min(n);
+            let (mut disc, _, _) = open(img.clone());
+            let area = disc.toc().areas[0].clone();
+            let index =
+                AreaIndex::from_bytes(&area, disc.toc().sectors, &saved, DEFAULT_INLINE_BUDGET).unwrap();
+            disc.set_seek_index(Slot::TwoChannel, index).unwrap();
+            let options = SpeculativeOptions::new().with_min_gap_sectors(16);
+            disc.set_seek_policy(Slot::TwoChannel, SeekPolicy::Speculative(options)).unwrap();
+            let (got, _) = read(&mut disc, (first, end));
+            assert_eq!(got, read(&mut plain, (first, end)).0, "dst {dst}, shift {shift}: [{first}, {end})");
+        }
+    }
 }
