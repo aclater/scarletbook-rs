@@ -22,7 +22,7 @@ use proptest::strategy::ValueTree;
 use scarletbook::seek::DEFAULT_INLINE_BUDGET;
 use scarletbook::{
     Area, AreaIndex, AudioFrame, CursorOptions, Disc, FrameSpan, IndexOptions, ReadAt, ReadAtReader,
-    ResumedFrom, Slot, TrackCursor, TrackFrame, Warning,
+    ResumedFrom, SeekPolicy, Slot, Speculation, SpeculativeOptions, TrackCursor, TrackFrame, Warning,
 };
 
 const SLOT: Slot = Slot::TwoChannel;
@@ -529,6 +529,47 @@ fn ranges_past_marks_start_from_the_damage_record() {
     let (got, missing, lost, from) = raw(&mut again, late);
     assert!(checkpoint(from).is_some_and(|l| l > mark), "{from:?}");
     assert_eq!((got, missing, lost), straight(&image, &again, late));
+}
+
+/// The speculative choice sees the marks (#443 review): with a mark before the index's
+/// checkpoint and no damage record that fits, the exact start is the area's first sector,
+/// so a range far past it starts provisionally rather than scanning the area; once the
+/// record fits, the range starts exactly from it. Both read what a scan reads.
+#[test]
+fn speculative_starts_see_the_marks() {
+    // Frames of 2500 bytes also under Miri: the provisional search needs an area of more
+    // than a few sectors.
+    let n = if cfg!(miri) { 40 } else { 150 };
+    let frames: Vec<PFrame> =
+        (0..n).map(|number| PFrame { number, dst: true, data: vec![number as u8 ^ 0x33; 2500] }).collect();
+    let audio = pack(&frames);
+    let sectors = audio.len();
+    let playtime = n;
+    let image =
+        Spec { channels: 2, playtime, tracks: vec![TrackSpec { start: 0, duration: n }], audio }.build();
+    let counting = Counting::new(image.clone());
+    let mut disc = Disc::open(ReadAtReader::new(counting.clone())).unwrap();
+    disc.enable_seek_index(SLOT, IndexOptions::new().with_interval(2)).unwrap();
+    while !disc.extend_seek_index(SLOT, 64).unwrap() {}
+    let options = SpeculativeOptions::new().with_min_gap_sectors(16);
+    disc.set_seek_policy(SLOT, SeekPolicy::Speculative(options)).unwrap();
+    disc.unreadable_sectors().insert((AUDIO_LSN + sectors / 4) as u64, 1);
+    counting.take();
+    let range = (playtime * 9 / 10, playtime);
+    let mut frames = disc.range_frames(SLOT, range.0, range.1).unwrap();
+    let got: Vec<TrackFrame> = frames.by_ref().map(Result::unwrap).collect();
+    let (missing, lost) = (frames.missing_frames(), frames.lost_frames());
+    let cursor = frames.into_cursor();
+    assert!(matches!(cursor.resumed_from(), ResumedFrom::Speculative { .. }), "{:?}", cursor.resumed_from());
+    assert_ne!(cursor.speculation(), Speculation::Exact);
+    let (_, read) = counting.take();
+    assert!((read as usize) < sectors / 2, "{read} of {sectors} sectors");
+    assert_eq!((got, missing, lost), straight(&image, &disc, range));
+    // The record, then an exact start from it.
+    while !disc.extend_seek_index_past_marks(SLOT, 4096).unwrap() {}
+    let (got, missing, lost, from) = raw(&mut disc, range);
+    assert!(checkpoint(from).is_some_and(|l| l > (AUDIO_LSN + sectors / 4) as u64), "{from:?}");
+    assert_eq!((got, missing, lost), straight(&image, &disc, range));
 }
 
 /// Reads and sectors to open a range past a mark, before and after the damage record

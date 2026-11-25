@@ -244,6 +244,9 @@ An index saved with that state
 
 `sb_seek_index_without_damage` gives a copy of an index without that state (#443), to save for
 a library version that does not load it.
+`sb_disc_seek_index_extend_past_marks` and `sb_seek_index_extend_past_marks` build that state
+ahead of the reads, in calls of any size (#443), so that the first range opened past a new mark
+starts near its first frame too; unlike the extension calls above they don't stop at a mark.
 
 ### DSD to PCM
 

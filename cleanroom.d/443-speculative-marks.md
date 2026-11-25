@@ -1,0 +1,1 @@
+| 2026-11-25 | provisional starts with unreadable sectors (#443) | Own derivation: the choice of sacd-spec 4.2 item 8 compares with the exact start that 4.2 item 7 and #441's record give with the marks of now (sacd-spec#55's reading). No new sources consulted. |

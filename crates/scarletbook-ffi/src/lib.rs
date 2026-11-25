@@ -4477,6 +4477,43 @@ pub unsafe extern "C" fn sb_seek_index_extend(
     })
 }
 
+/// Reads the index's area past its unreadable sectors (`sb_disc_unreadable_add`), about
+/// `max_sectors` sectors (at least to the next point it can record), recording the state
+/// of a read that meets them, so that ranges opened past them start near their first
+/// frame instead of scanning the area from its first sector (#443). `*complete` (if not
+/// NULL) receives 1 once that state reaches the area's end for the sectors marked now (or
+/// nothing is marked, or past the 4096 runs of marks it keeps), else 0. Unlike
+/// `sb_seek_index_extend` it does not stop at a marked sector. Call it until complete, for
+/// example on a second disc handle of the same image on another thread, then merge
+/// (`sb_seek_index_merge`). The disc's read and log callbacks run during this call. Fails
+/// as `sb_seek_index_extend`.
+///
+/// # Safety
+///
+/// `disc` and `index` must be NULL or live handles; `complete` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_seek_index_extend_past_marks(
+    disc: *const SbDisc,
+    index: *mut SbSeekIndex,
+    max_sectors: u64,
+    complete: *mut u8,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?;
+        // SAFETY: forwarded contract.
+        let i = unsafe { index_handle(index) }?;
+        let mut index = i.inner.try_borrow_mut().map_err(|_| Failure::arg(REENTRANT))?;
+        let mut disc = d.get_mut()?;
+        let done = index.extend_past_marks(disc.image_mut(), max_sectors)?;
+        if !complete.is_null() {
+            // SAFETY: non-NULL and valid for a write by this function's contract.
+            unsafe { complete.write(u8::from(done)) };
+        }
+        Ok(SbStatus::Ok)
+    })
+}
+
 /// The LSN up to which the index holds the area's reading state (`*lsn`, required), and
 /// whether it covers the whole area (`*complete`, optional: 1 or 0).
 ///
@@ -4809,6 +4846,36 @@ pub unsafe extern "C" fn sb_disc_seek_index_extend(
         // SAFETY: forwarded contract.
         let d = unsafe { disc_handle(disc) }?;
         let done = d.get_mut()?.extend_seek_index(slot_from(slot)?, max_sectors)?;
+        if !complete.is_null() {
+            // SAFETY: non-NULL and valid for a write by this function's contract.
+            unsafe { complete.write(u8::from(done)) };
+        }
+        Ok(SbStatus::Ok)
+    })
+}
+
+/// Reads the area from `slot` past its unreadable sectors, about `max_sectors` sectors,
+/// recording the state of a read that meets them in the seek index `disc` keeps (see
+/// `sb_seek_index_extend_past_marks`); `*complete` (if not NULL) receives 1 once it
+/// reaches the area's end for the sectors marked now, else 0. Call it on a clone in a
+/// thread of its own once sectors are marked: the first range opened past a new mark then
+/// starts near it. Fails with `SB_STATUS_INVALID_ARGUMENT` when no index is kept or it
+/// does not match the image, `SB_STATUS_IO` if a read fails.
+///
+/// # Safety
+///
+/// `disc` must be NULL or a live handle; `complete` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_disc_seek_index_extend_past_marks(
+    disc: *const SbDisc,
+    slot: u32,
+    max_sectors: u64,
+    complete: *mut u8,
+) -> SbStatus {
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let d = unsafe { disc_handle(disc) }?;
+        let done = d.get_mut()?.extend_seek_index_past_marks(slot_from(slot)?, max_sectors)?;
         if !complete.is_null() {
             // SAFETY: non-NULL and valid for a write by this function's contract.
             unsafe { complete.write(u8::from(done)) };
