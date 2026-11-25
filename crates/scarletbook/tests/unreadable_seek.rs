@@ -684,7 +684,7 @@ fn indexes_of_1_1_1_load_and_save_unchanged() {
 
 /// The damage record's saved form: flags bit 2 and a section before the checksum. It
 /// round-trips; without the bit and the section it is the index without the record (so a
-/// reader that does not know the bit, as before 1.3.0, sees an unknown flag and refuses
+/// reader that does not know the bit, as before 1.2.0, sees an unknown flag and refuses
 /// it); and changing any byte of it (with the checksum made right) never panics.
 #[test]
 fn damage_records_round_trip() {
