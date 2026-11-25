@@ -58,7 +58,26 @@
 //! An index is saved as version 1 when it has no fingerprint, no hints and the default
 //! hint options, so that version 1 bytes load and save unchanged; version 2 bytes that add
 //! nothing to version 1 are refused, so that each index has one saved form.
+//!
+//! **Damage record (#441).** Flags bit 2, in any version, is set when the index holds the
+//! state of a scan that met unreadable sectors (`super::damage`); this section then
+//! follows the last one above, before the checksum:
+//!
+//! | Size | Field |
+//! |---|---|
+//! | 4 | unreadable runs `r`, 1 to 4096 |
+//! | 4 | damage checkpoints `d`, at least 1, at most the boundaries |
+//! | 4 | malformed LSNs `m'` |
+//! | 4 | 0 |
+//! | 8 `r` | runs by increasing LSN, apart: first LSN (4), one past the last (4) |
+//! | 40 `d` | by increasing LSN: LSN (4), runs before it (4), `a` (4), `c - r` (4), malformed before (8), digest (8), the open lost stretch's first position plus 1, or 0 (4), 0 (4) |
+//! | 4 `m'` | malformed LSNs of that scan, increasing |
+//!
+//! An index without one is saved exactly as before. Readers before 1.3.0 refuse an index
+//! with one ("seek index flags invalid"), as they refuse any flag they do not know: save
+//! [`AreaIndex::without_damage`] for them. This reader loads every earlier form.
 
+use super::damage::{Damage, DamageCheckpoint, MAX_DAMAGE_RUNS};
 use super::{AreaIndex, Checkpoint, EndState, Frame, Held, MAX_HINTS, MAX_INTERVAL, Stored};
 use crate::audio::{AreaKey, FrameKind, MAX_FRAME_BYTES, MAX_MALFORMED_WARNINGS};
 use crate::error::{Error, Slot};
@@ -76,6 +95,11 @@ const HEADER: usize = 80;
 const CHECKPOINT: usize = 24;
 const FRAME_HEADER: usize = 8;
 const HELD: usize = 24;
+const DAMAGE_HEADER: usize = 16;
+const RUN: usize = 8;
+const DAMAGE_CHECKPOINT: usize = 40;
+/// Flags bit 2: a damage record follows.
+const DAMAGED: u8 = 4;
 
 /// The largest frame number plus one: no `a` is larger (specification 4, 4.5).
 const MAX_NEXT_ACCEPTABLE: u32 = (255 * 60 + 255) * 75 + 255 + 1;
@@ -160,7 +184,12 @@ impl AreaIndex {
             Slot::Multichannel => 1,
         });
         out.push(self.key.channels);
-        out.push(u8::from(self.end_state.is_some()) | u8::from(v2 && self.fingerprint.is_some()) << 1);
+        let damaged = !self.damage.is_empty();
+        out.push(
+            u8::from(self.end_state.is_some())
+                | u8::from(v2 && self.fingerprint.is_some()) << 1
+                | if damaged { DAMAGED } else { 0 },
+        );
         out.push(0);
         u32s(&mut out, self.key.start);
         u32s(&mut out, self.key.end);
@@ -222,6 +251,32 @@ impl AreaIndex {
                 u64s(&mut out, d);
             }
         }
+        if damaged {
+            let d = &self.damage;
+            // Runs at most MAX_DAMAGE_RUNS, checkpoints at most the boundaries, malformed
+            // LSNs at most MAX_MALFORMED_WARNINGS; audio LSNs come from u32 fields.
+            for n in [d.runs.len(), d.checkpoints.len(), d.malformed.len(), 0] {
+                u32s(&mut out, n as u32);
+            }
+            for &(s, e) in &d.runs {
+                u32s(&mut out, s as u32);
+                u32s(&mut out, e as u32);
+            }
+            for c in &d.checkpoints {
+                u32s(&mut out, c.lsn as u32);
+                u32s(&mut out, c.runs);
+                u32s(&mut out, c.checkpoint.next_acceptable);
+                u32s(&mut out, c.checkpoint.back);
+                u64s(&mut out, c.checkpoint.malformed_before);
+                u64s(&mut out, c.checkpoint.digest);
+                // At most MAX_NEXT_ACCEPTABLE.
+                u32s(&mut out, c.lost_from.map_or(0, |l| l + 1));
+                u32s(&mut out, 0);
+            }
+            for &m in &d.malformed {
+                u32s(&mut out, m);
+            }
+        }
         let sum = fnv(&out);
         u64s(&mut out, sum);
         out
@@ -239,7 +294,11 @@ impl AreaIndex {
     /// inline budget, by increasing start sector inside the area; each referred to by
     /// checkpoints that have a frame under assembly starting there, with lengths that
     /// never decrease and the same frame number and kind); the malformed LSNs (increasing, below the frontier,
-    /// as many as the count says up to 4096); and the trailing checksum. Whether the index
+    /// as many as the count says up to 4096); a damage record, if saved (#441: at most 4096
+    /// runs, increasing and apart inside the area; checkpoints on the interval's boundaries
+    /// outside every run, each after at least one, with `a` and the malformed count never
+    /// decreasing and the frame under assembly starting after the last run before it; its
+    /// malformed LSNs as for the checkpoints); and the trailing checksum. Whether the index
     /// is of this very image is checked as it is used (see the [module
     /// documentation](super#trust)).
     ///
@@ -294,7 +353,7 @@ impl AreaIndex {
         };
         let channels = input.u8()?;
         let flags = input.u8()?;
-        let known = if version >= VERSION_HINTS { 3 } else { 1 };
+        let known = if version >= VERSION_HINTS { 3 } else { 1 } | DAMAGED;
         if flags & !known != 0 || input.u8()? != 0 {
             return Err(bad("seek index flags invalid"));
         }
@@ -339,6 +398,7 @@ impl AreaIndex {
                 .saturating_add(4 * m)
                 .saturating_add(if version >= VERSION_HINTS { HINTS_HEADER } else { 0 })
                 .saturating_add(if version >= VERSION_CONFIRMED { CONFIRMED_HEADER } else { 0 })
+                .saturating_add(if flags & DAMAGED != 0 { DAMAGE_HEADER } else { 0 })
                 > input.left()
         {
             return Err(bad("seek index counts invalid"));
@@ -508,6 +568,9 @@ impl AreaIndex {
             }
             index.confirmed = confirmed;
         }
+        if flags & DAMAGED != 0 {
+            index.damage = load_damage(&mut input, &index)?;
+        }
         if input.left() != 0 {
             return Err(bad("seek index has trailing bytes"));
         }
@@ -582,6 +645,11 @@ impl AreaIndex {
             self.provisional.entry(lsn).or_insert(p);
         }
         self.prune_provisional();
+        // The damage record (#441): each checkpoint is keyed by the marks before it, so
+        // either index's is right; this one's is kept when it has one.
+        if self.damage.is_empty() {
+            self.damage.clone_from(&other.damage);
+        }
         // An area without existing audio sectors has its frontier at its end from the
         // start: completeness is then all there is to take. Checkpoints are counted, not
         // frontiers compared: no checkpoint and one have the same frontier, and a pass of a
@@ -601,4 +669,90 @@ impl AreaIndex {
         self.prune_provisional();
         Ok(())
     }
+}
+
+/// The damage record of `index` (its key and options loaded) from `input`: every count
+/// against the bytes left before anything is allocated; runs increasing, apart and inside
+/// the area; checkpoints on the index's boundaries, by increasing LSN, each after at least
+/// one run and outside every run, with `a` and the malformed count never decreasing, its
+/// frame under assembly starting after the last run before it and its lost stretch at
+/// most `a`; the malformed LSNs as many as the last checkpoint counts (up to 4096),
+/// increasing and below it.
+fn load_damage(input: &mut Input<'_>, index: &AreaIndex) -> Result<Damage, Error> {
+    let invalid = || bad("seek index damage record invalid");
+    let (r, d, m) = (input.u32()? as usize, input.u32()? as usize, input.u32()? as usize);
+    if input.u32()? != 0
+        || r == 0
+        || r > MAX_DAMAGE_RUNS
+        || d == 0
+        || d > index.boundaries()
+        || m > MAX_MALFORMED_WARNINGS
+        || r.saturating_mul(RUN).saturating_add(d.saturating_mul(DAMAGE_CHECKPOINT)).saturating_add(4 * m)
+            > input.left()
+    {
+        return Err(invalid());
+    }
+    let mut runs: Vec<(u64, u64)> = Vec::with_capacity(r);
+    for _ in 0..r {
+        let (s, e) = (u64::from(input.u32()?), u64::from(input.u32()?));
+        if s < index.start || e > index.end || s >= e || runs.last().is_some_and(|&(_, p)| s <= p) {
+            return Err(invalid());
+        }
+        runs.push((s, e));
+    }
+    let k = u64::from(index.interval);
+    let mut checkpoints: Vec<DamageCheckpoint> = Vec::with_capacity(d);
+    for _ in 0..d {
+        let lsn = u64::from(input.u32()?);
+        let n = input.u32()?;
+        let checkpoint = Checkpoint {
+            next_acceptable: input.u32()?,
+            back: input.u32()?,
+            malformed_before: input.u64()?,
+            digest: input.u64()?,
+        };
+        let lost = input.u32()?;
+        if input.u32()? != 0 {
+            return Err(invalid());
+        }
+        let lost_from = lost.checked_sub(1);
+        let below = runs.partition_point(|&(_, e)| e <= lsn);
+        let last_end = runs.get(below.wrapping_sub(1)).map_or(index.start, |&(_, e)| e);
+        let prev = checkpoints.last();
+        if lsn < index.start
+            || lsn >= index.end
+            || (lsn - index.start) % k != 0
+            || prev.is_some_and(|p| lsn <= p.lsn)
+            || n == 0
+            || n as usize != below
+            || runs.get(below).is_some_and(|&(s, _)| s <= lsn)
+            || checkpoint.next_acceptable > MAX_NEXT_ACCEPTABLE
+            || prev.is_some_and(|p| {
+                checkpoint.next_acceptable < p.checkpoint.next_acceptable
+                    || checkpoint.malformed_before < p.checkpoint.malformed_before
+            })
+            || checkpoint.malformed_before > lsn - index.start
+            || lsn.checked_sub(u64::from(checkpoint.back)).is_none_or(|r| r < last_end)
+            || lost_from.is_some_and(|l| l > checkpoint.next_acceptable)
+        {
+            return Err(invalid());
+        }
+        checkpoints.push(DamageCheckpoint { lsn, runs: n, checkpoint, lost_from });
+    }
+    let last = checkpoints.last().map_or((0, 0), |c| (c.lsn, c.checkpoint.malformed_before));
+    if m as u64 != last.1.min(MAX_MALFORMED_WARNINGS as u64) {
+        return Err(invalid());
+    }
+    let mut malformed: Vec<u32> = Vec::with_capacity(m);
+    for _ in 0..m {
+        let lsn = input.u32()?;
+        if u64::from(lsn) < index.start
+            || u64::from(lsn) >= last.0
+            || malformed.last().is_some_and(|&p| lsn <= p)
+        {
+            return Err(invalid());
+        }
+        malformed.push(lsn);
+    }
+    Ok(Damage { runs, checkpoints, malformed })
 }
