@@ -1,2 +1,0 @@
-Added
-- Seek indexes keep the reading state of the scans that met unreadable sectors, each point keyed by the marked runs before it, and save it with the index: a range opened past a marked sector now starts near its first frame once a read has passed that point with the same marks, instead of scanning the area from its first sector every time. What ranges return is unchanged. Adding or removing a mark before a point makes the state there unused until a read records it again. `AreaIndex::without_damage` drops that state (#441, #442).
