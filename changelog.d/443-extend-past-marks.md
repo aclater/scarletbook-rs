@@ -1,0 +1,2 @@
+Added
+- `AreaIndex::extend_past_marks` and `Disc::extend_seek_index_past_marks` build a seek index's reading state past unreadable sectors ahead of the reads that use it, in calls of any size (for example on another thread): the first range opened past a newly marked sector then starts near its first frame instead of scanning the area from its first sector. What ranges return is unchanged (#443, #447).

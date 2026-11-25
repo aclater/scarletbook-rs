@@ -5,15 +5,15 @@
 use std::collections::VecDeque;
 use std::io::{Read, Seek};
 
-use crate::control::Progress;
+use crate::control::{Progress, UnreadableSectors};
 use crate::dst::{DstDecoder, DstError};
 use crate::error::{Error, Slot, Warning, WarningCode};
 use crate::image::{Image, ReadOutcome, SECTOR_SIZE};
 use crate::log::{Level, Log, sb_log};
 use crate::seek::{
-    AreaIndex, Assembling, Claim, DamageRecorder, DamageStart, HintRecorder, Plan, Provisional,
-    ProvisionalRecorder, Recorder, ResumedFrom, SeekIndexes, SeekPolicy, Speculate, Speculation, digest,
-    first_record, locate,
+    AreaIndex, Assembling, Claim, DamageCandidates, DamageRecorder, DamageStart, HintRecorder, Plan,
+    Provisional, ProvisionalRecorder, Recorder, ResumedFrom, SeekIndexes, SeekPolicy, Speculate, Speculation,
+    digest, first_record, locate,
 };
 use crate::toc::{Area, Track};
 
@@ -579,9 +579,9 @@ pub struct AreaCursor {
     /// Records the state past unreadable sectors for a seek index (#441), when made from
     /// one and the state is a scan's from the area's first sector.
     damage: Option<Box<DamageRecorder>>,
-    /// A checkpoint of the index's damage record to start from instead, if the marks
-    /// before it are those its scan met; chosen on the first read (#441).
-    damage_start: Option<Box<DamageStart>>,
+    /// The checkpoints of the index's damage record to start from instead, if the marks
+    /// before one are those its scan met; chosen on the first read (#441, #443).
+    damage_start: Option<Box<DamageCandidates>>,
 }
 
 /// The state a resumed scan takes once its replay reaches the checkpoint.
@@ -1163,10 +1163,29 @@ impl AreaCursor {
         cursor
     }
 
+    /// A cursor of the area of `index` that records the state of a scan meeting the
+    /// unreadable sectors, the first at `mark` ([`AreaIndex::extend_past_marks`], #443):
+    /// from the index's last checkpoint before `mark` (or the area's first sector), or, on
+    /// the first read, from the latest damage checkpoint whose marks are those of then.
+    /// It records the index's checkpoints up to the first unreadable sector too.
+    pub(crate) fn past_marks(index: &AreaIndex, mark: u64) -> Self {
+        let mut cursor = Self::with_key(index.key());
+        match mark.checked_sub(1).and_then(|lsn| index.checkpoint_before(lsn)) {
+            Some(j) => cursor.resume_at(index, index.plan_at(j)),
+            None => cursor.recorder = index.recorder(cursor.next_lsn),
+        }
+        cursor.damage_start = index.damage_start(u32::MAX).map(Box::new);
+        cursor.damage = Some(index.damage_recorder());
+        cursor
+    }
+
     /// The LSN of the damage checkpoint this cursor may start from (#441), if any, and the
     /// first sector its replay reads.
     pub(crate) fn damage_start_lsn(&self) -> Option<(u64, u64)> {
-        self.damage_start.as_ref().map(|d| (d.at.lsn, d.at.lsn - u64::from(d.at.checkpoint.back)))
+        self.damage_start
+            .as_ref()
+            .map(|d| d.last())
+            .map(|at| (at.lsn, at.lsn - u64::from(at.checkpoint.back)))
     }
 
     /// Reads up to `lsn` (exclusive) in one call if this cursor starts from its damage
@@ -1181,11 +1200,13 @@ impl AreaCursor {
     /// its state is that of a scan from the area's first sector with these marks. Nothing
     /// was returned yet.
     fn resume_damaged(&mut self, log: &Log, d: &DamageStart) {
-        let (image_id, counts) = (self.image_id, self.take_progress());
+        let (image_id, stop, counts) = (self.image_id, self.stop_lsn, self.take_progress());
         let (hints, stale) = (self.hints.take(), self.hints_stale);
         let mut damage = self.damage.take();
         *self = Self::with_key(self.key);
         self.image_id = image_id;
+        // A scan bounded by `scan_to` ([`AreaIndex::extend_past_marks`]) stays bounded.
+        self.stop_lsn = stop;
         self.keep_progress(counts);
         (self.hints, self.hints_stale) = (hints, stale);
         if let Some(r) = damage.as_deref_mut() {
@@ -1495,12 +1516,15 @@ impl AreaCursor {
                 };
                 let marked = upto.and_then(|upto| image.unreadable_sectors().first_in(start, upto));
                 // Or from the state of a scan that met the marks there are now before its
-                // checkpoint (#441), when that starts later or the index's cannot be used.
+                // checkpoint (#441): the latest such checkpoint (#443), when that starts
+                // later or the index's cannot be used.
                 let from = upto.map_or(start, |u| u - 1);
-                let damage = self.damage_start.take().filter(|d| {
-                    (marked.is_some() || d.at.lsn > from)
-                        && d.fits(&image.unreadable_sectors().runs_in(start, d.at.lsn + 1))
-                });
+                let marks = image.unreadable_sectors();
+                let damage = self
+                    .damage_start
+                    .take()
+                    .and_then(|d| d.choose(|to| marks.runs_in(start, to)))
+                    .filter(|d| marked.is_some() || d.at.lsn > from);
                 if let Some(d) = damage {
                     self.resume_damaged(image.log(), &d);
                 } else if let Some(bad) = marked.filter(|_| !self.for_index) {
@@ -2027,6 +2051,8 @@ pub struct Continuation<'a> {
     seek: &'a SeekIndexes,
     /// The disc's seek policy for the area.
     policy: SeekPolicy,
+    /// The image's unreadable sectors.
+    marks: &'a UnreadableSectors,
 }
 
 impl<'a> Continuation<'a> {
@@ -2037,8 +2063,9 @@ impl<'a> Continuation<'a> {
         log: &'a Log,
         track: Option<u32>,
         (seek, policy): (&'a SeekIndexes, SeekPolicy),
+        marks: &'a UnreadableSectors,
     ) -> Self {
-        Continuation { area, first, end, image_sectors, image_id, log, track, seek, policy }
+        Continuation { area, first, end, image_sectors, image_id, log, track, seek, policy, marks }
     }
 
     /// The disc's index for this range's area, if it keeps one, under a read lock.
@@ -2097,7 +2124,7 @@ impl<'a> Continuation<'a> {
     #[doc(hidden)]
     pub fn log_audio(&self, prev: &TrackAudioCursor) -> Opening {
         let opening = self.with_index(|index| {
-            prev.opening(self.area, self.first, (self.image_sectors, self.image_id), index)
+            prev.opening(self.area, self.first, (self.image_sectors, self.image_id), index, Some(self.marks))
         });
         self.log_how("decoded audio", opening);
         opening
@@ -2114,7 +2141,7 @@ impl<'a> Continuation<'a> {
     #[doc(hidden)]
     pub fn audio_unlogged(self, prev: TrackAudioCursor) -> TrackAudioCursor {
         let opening = self.with_index(|index| {
-            prev.opening(self.area, self.first, (self.image_sectors, self.image_id), index)
+            prev.opening(self.area, self.first, (self.image_sectors, self.image_id), index, Some(self.marks))
         });
         self.audio_as(prev, opening)
     }
@@ -2157,7 +2184,7 @@ impl<'a> Continuation<'a> {
     #[doc(hidden)]
     pub fn log_frames(&self, prev: &TrackCursor) -> Opening {
         let opening = self.with_index(|index| {
-            prev.opening(self.area, self.first, self.image_sectors, self.image_id, index)
+            prev.opening(self.area, self.first, self.image_sectors, self.image_id, index, Some(self.marks))
         });
         self.log_how("frames", opening);
         opening
@@ -2170,7 +2197,7 @@ impl<'a> Continuation<'a> {
     #[doc(hidden)]
     pub fn frames_unlogged(self, prev: TrackCursor) -> TrackCursor {
         let opening = self.with_index(|index| {
-            prev.opening(self.area, self.first, self.image_sectors, self.image_id, index)
+            prev.opening(self.area, self.first, self.image_sectors, self.image_id, index, Some(self.marks))
         });
         self.frames_as(prev, opening)
     }
@@ -2220,7 +2247,8 @@ impl<'a> Continuation<'a> {
     #[doc(hidden)]
     pub fn log_audio_indexed(&self, prev: &TrackAudioCursor, index: &AreaIndex) -> Opening {
         let index = Some(index).filter(|i| self.check_index(i).is_ok());
-        let opening = prev.opening(self.area, self.first, (self.image_sectors, self.image_id), index);
+        let opening =
+            prev.opening(self.area, self.first, (self.image_sectors, self.image_id), index, Some(self.marks));
         self.log_how("decoded audio", opening);
         opening
     }
@@ -2236,7 +2264,7 @@ impl<'a> Continuation<'a> {
     pub fn audio_indexed_unlogged(self, prev: TrackAudioCursor, index: &mut AreaIndex) -> TrackAudioCursor {
         let opening = {
             let index = Some(&*index).filter(|i| self.check_index(i).is_ok());
-            prev.opening(self.area, self.first, (self.image_sectors, self.image_id), index)
+            prev.opening(self.area, self.first, (self.image_sectors, self.image_id), index, Some(self.marks))
         };
         self.audio_indexed_as(prev, index, opening)
     }
@@ -2271,7 +2299,8 @@ impl<'a> Continuation<'a> {
     #[doc(hidden)]
     pub fn log_frames_indexed(&self, prev: &TrackCursor, index: &AreaIndex) -> Opening {
         let index = Some(index).filter(|i| self.check_index(i).is_ok());
-        let opening = prev.opening(self.area, self.first, self.image_sectors, self.image_id, index);
+        let opening =
+            prev.opening(self.area, self.first, self.image_sectors, self.image_id, index, Some(self.marks));
         self.log_how("frames", opening);
         opening
     }
@@ -2285,7 +2314,7 @@ impl<'a> Continuation<'a> {
     pub fn frames_indexed_unlogged(self, prev: TrackCursor, index: &mut AreaIndex) -> TrackCursor {
         let opening = {
             let index = Some(&*index).filter(|i| self.check_index(i).is_ok());
-            prev.opening(self.area, self.first, self.image_sectors, self.image_id, index)
+            prev.opening(self.area, self.first, self.image_sectors, self.image_id, index, Some(self.marks))
         };
         self.frames_indexed_as(prev, index, opening)
     }
@@ -2828,11 +2857,12 @@ impl TrackCursor {
         (image_sectors, image_id): (u64, Option<u64>),
         index: Option<&AreaIndex>,
     ) -> Self {
-        let opening = self.opening(area, first, image_sectors, image_id, index);
+        let opening = self.opening(area, first, image_sectors, image_id, index, None);
         self.open_as(area, (first, end), (image_sectors, image_id), index, (opening, SeekPolicy::Exact))
     }
 
-    /// How [`TrackCursor::continue_in`] opens the range starting at `first`.
+    /// How [`TrackCursor::continue_in`] opens the range starting at `first`, with the
+    /// image's unreadable sectors `marks` if known.
     pub(crate) fn opening(
         &self,
         area: &Area,
@@ -2840,8 +2870,9 @@ impl TrackCursor {
         image_sectors: u64,
         image_id: Option<u64>,
         index: Option<&AreaIndex>,
+        marks: Option<&UnreadableSectors>,
     ) -> Opening {
-        if self.reuses(area, first, image_sectors, image_id, index) {
+        if self.reuses(area, first, image_sectors, image_id, index, marks) {
             Opening::Continues
         } else if index.is_some() {
             Opening::FromIndex
@@ -2891,6 +2922,11 @@ impl TrackCursor {
     /// Whether [`TrackCursor::continue_in`] keeps this cursor's reading state: when it
     /// can ([`TrackCursor::reusable`]), unless `index` starts the range more than two
     /// checkpoints past the sector this cursor reads next.
+    ///
+    /// With unreadable sectors, where the index starts the range depends on the marks
+    /// (`marks`, the image's): from a checkpoint before them, from its damage record, or
+    /// from the area's first sector ([`AreaIndex::start_lsn_with`]). Without `marks`, a
+    /// cursor that met a mark reads on.
     fn reuses(
         &self,
         area: &Area,
@@ -2898,14 +2934,22 @@ impl TrackCursor {
         image_sectors: u64,
         image_id: Option<u64>,
         index: Option<&AreaIndex>,
+        marks: Option<&UnreadableSectors>,
     ) -> bool {
         self.reusable(area, first, image_sectors, image_id)
-            // Past an unreadable sector, a start from the index would scan from the first
-            // sector (#435): reading on costs less.
-            && (self.area.damaged().is_some() || index.is_none_or(|index| {
+            && index.is_none_or(|index| {
+                let start = match marks {
+                    Some(marks) => index.start_lsn_with(first, marks),
+                    // Past an unreadable sector, a start from the index may scan from the
+                    // first sector (#435): reading on costs less.
+                    None if self.area.damaged().is_some() => return true,
+                    None => index.plan_lsn(first),
+                };
+                // If the marks change before the new cursor reads, it may start elsewhere:
+                // the same frames all the same, at another cost.
                 let ahead = 2 * u64::from(index.interval());
-                index.plan_lsn(first).is_some_and(|lsn| lsn <= self.area.scan_lsn().saturating_add(ahead))
-            }))
+                start.is_some_and(|lsn| lsn <= self.area.scan_lsn().saturating_add(ahead))
+            })
     }
 
     /// Whether [`TrackCursor::continue_in`] keeps this cursor's reading state.
@@ -3470,7 +3514,7 @@ impl TrackAudioCursor {
         image: (u64, Option<u64>),
         index: Option<&AreaIndex>,
     ) -> Self {
-        let opening = self.opening(area, first, image, index);
+        let opening = self.opening(area, first, image, index, None);
         self.open_as(area, (first, end), image, index, (opening, SeekPolicy::Exact))
     }
 
@@ -3481,11 +3525,12 @@ impl TrackAudioCursor {
         first: u32,
         (image_sectors, image_id): (u64, Option<u64>),
         index: Option<&AreaIndex>,
+        marks: Option<&UnreadableSectors>,
     ) -> Opening {
         match self.pending_error {
             Some(_) if index.is_some() => Opening::FromIndex,
             Some(_) => Opening::Fresh,
-            None => self.frames.opening(area, first, image_sectors, image_id, index),
+            None => self.frames.opening(area, first, image_sectors, image_id, index, marks),
         }
     }
 

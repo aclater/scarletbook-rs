@@ -455,6 +455,41 @@ impl<R: Read + Seek> Disc<R> {
         }
     }
 
+    /// Reads the area from `slot` past its unreadable sectors, about `max_sectors` sectors,
+    /// recording the state of a scan that meets them in its seek index's damage record
+    /// (see [`AreaIndex::extend_past_marks`], #443): whether the record now reaches the
+    /// area's end for the sectors marked now. Run in a loop, for example on a clone of the
+    /// disc in another thread once sectors are marked, it lets the first range opened past
+    /// a new mark start near it instead of scanning the area from its first sector (up to
+    /// the 4096 runs of marks a record keeps, see [`AreaIndex::extend_past_marks`]). As for
+    /// [`Disc::extend_seek_index`], a copy of the index is extended, then joined with the
+    /// one kept; this call's record replaces the kept one's if their marks differ.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidArgument`] if no seek index is kept for `slot` or it does not match
+    /// the image, [`Error::Io`] if a read fails.
+    pub fn extend_seek_index_past_marks(&mut self, slot: Slot, max_sectors: u64) -> Result<bool, Error> {
+        let Some(mut index) = self.seek_index(slot) else {
+            return Err(Error::InvalidArgument("no seek index kept for the area"));
+        };
+        let result = index.extend_past_marks(&mut self.image, max_sectors);
+        let merged = self.shared.seek.write(slot, |kept| match kept {
+            Some(kept) => kept.merge(&index).map(|()| {
+                kept.join_damage(&index, true);
+                kept.take_events()
+            }),
+            None => Ok(Vec::new()),
+        });
+        match (result, merged) {
+            (Err(e), _) | (Ok(_), Err(e)) => Err(e),
+            (Ok(done), Ok(events)) => {
+                self.shared.seek.push_events(slot, events);
+                Ok(done)
+            }
+        }
+    }
+
     /// Builds the seek index of the area from `slot` by about `max_sectors` more sectors
     /// and checks the provisional readings it then reaches (specification 4, 4.2 item 8):
     /// [`Disc::extend_seek_index`], named for what a caller of [`SeekPolicy::Speculative`]
@@ -913,6 +948,7 @@ impl<R: Read + Seek> Disc<R> {
             self.log(),
             Some(number),
             (&self.shared.seek, self.cursor_policy(area.slot)),
+            self.image.unreadable(),
         ))
     }
 
@@ -935,6 +971,7 @@ impl<R: Read + Seek> Disc<R> {
             self.log(),
             None,
             (&self.shared.seek, self.cursor_policy(area.slot)),
+            self.image.unreadable(),
         ))
     }
 

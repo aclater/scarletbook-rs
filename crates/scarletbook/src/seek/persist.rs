@@ -569,7 +569,7 @@ impl AreaIndex {
             index.confirmed = confirmed;
         }
         if flags & DAMAGED != 0 {
-            index.damage = load_damage(&mut input, &index)?;
+            index.damage = std::sync::Arc::new(load_damage(&mut input, &index)?);
         }
         if input.left() != 0 {
             return Err(bad("seek index has trailing bytes"));
@@ -601,7 +601,9 @@ impl AreaIndex {
     /// Takes into this index the checkpoints of `other`, an index of the same area, image
     /// size and interval (for example one built on another thread): checkpoints both hold
     /// must agree, and the index then reaches the farther of the two frontiers. Frames
-    /// under assembly beyond this index's inline budget are replayed instead.
+    /// under assembly beyond this index's inline budget are replayed instead. Damage
+    /// records (see [Unreadable sectors](crate::seek#unreadable-sectors)) of the same marks
+    /// are joined; of other marks, this index's is kept if it has one.
     ///
     /// # Errors
     ///
@@ -646,10 +648,9 @@ impl AreaIndex {
         }
         self.prune_provisional();
         // The damage record (#441): each checkpoint is keyed by the marks before it, so
-        // either index's is right; this one's is kept when it has one.
-        if self.damage.is_empty() {
-            self.damage.clone_from(&other.damage);
-        }
+        // either index's is right. Of the same marks, they are joined (#443); of others,
+        // this one's is kept when it has one.
+        self.join_damage(other, false);
         // An area without existing audio sectors has its frontier at its end from the
         // start: completeness is then all there is to take. Checkpoints are counted, not
         // frontiers compared: no checkpoint and one have the same frontier, and a pass of a

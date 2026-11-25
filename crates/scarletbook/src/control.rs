@@ -221,6 +221,19 @@ impl UnreadableSectors {
         ranges.get(i).filter(|&&(s, _)| s < end).map(|&(s, _)| s.max(start))
     }
 
+    /// The first sector of `[start, end)` not marked, or `end`.
+    pub(crate) fn first_unmarked(&self, start: u64, end: u64) -> u64 {
+        if self.is_empty() || start >= end {
+            return start.min(end);
+        }
+        let ranges = self.read();
+        let i = ranges.partition_point(|&(_, e)| e <= start);
+        match ranges.get(i) {
+            Some(&(s, e)) if s <= start => e.min(end),
+            _ => start,
+        }
+    }
+
     /// The marked runs within `[start, end)`, clipped to it, as half-open ranges.
     pub(crate) fn runs_in(&self, start: u64, end: u64) -> Vec<(u64, u64)> {
         if self.is_empty() || start >= end {

@@ -269,6 +269,11 @@ impl<R: Read + Seek> Image<R> {
         self.unreadable.clone()
     }
 
+    /// [`Image::unreadable_sectors`], borrowed.
+    pub(crate) fn unreadable(&self) -> &UnreadableSectors {
+        &self.unreadable
+    }
+
     /// [`crate::Error::Cancelled`] if cancellation of this image's reads is requested.
     #[inline]
     pub(crate) fn check_cancel(&self) -> Result<(), Error> {

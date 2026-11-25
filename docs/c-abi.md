@@ -238,7 +238,8 @@ seek index's own checkpoints never hold state from past one. Past marked sectors
 keeps the state of the reads that met them, each point keyed by the marked runs before it
 (#441): the first range opened past a marked sector scans the area from its start, and later
 ones start near their first frame while the marks before them stay the same (handles
-continued with `_open_next` read on). An index saved with that state
+continued with `_open_next` read on, unless that state starts their range further on, #443).
+An index saved with that state
 (`sb_seek_index_save`) loads in this and later versions only. `sb_disc_unreadable_remove` unmarks sectors.
 
 `sb_seek_index_without_damage` gives a copy of an index without that state (#443), to save for
