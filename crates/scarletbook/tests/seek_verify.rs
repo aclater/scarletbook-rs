@@ -794,3 +794,56 @@ fn a_full_index_does_not_pass_the_cap_during_a_pass() {
     let every: Vec<_> = kept.into_iter().chain(during.take()).collect();
     assert_each_once(&seen, &every);
 }
+
+/// A disc read on one thread while its clone checks readings on another (#445): both grow
+/// the index they share, and the reads register provisional readings that the clone's
+/// calls check, each thread through its own handle, from a fresh disc in every round.
+/// Under ThreadSanitizer (CI's `tsan` job) any access to shared state outside its lock is
+/// reported. Every reading ends confirmed or exact and reads as a straight read; frames and
+/// rounds are fewer under Miri.
+#[test]
+fn a_read_on_a_disc_while_its_clone_verifies() {
+    let (count, rounds, budget) = if cfg!(miri) { (24, 2, 4) } else { (400, 24, 16) };
+    let fs: Vec<PFrame> =
+        (0..count).map(|k| PFrame { number: k, dst: true, data: vec![k as u8; 1500] }).collect();
+    let img: std::sync::Arc<[u8]> = image(&fs, count).into();
+    let ranges: Vec<(u32, u32)> = (1..=4).rev().map(|k| (count * k / 5, count * k / 5 + 3)).collect();
+    let mut plain = Disc::open(scarletbook::ReadAtReader::new(std::sync::Arc::clone(&img))).unwrap();
+    let want: Vec<Vec<TrackFrame>> = ranges
+        .iter()
+        .map(|&(first, end)| {
+            let c = plain.frames_cursor(Slot::TwoChannel, FrameSpan::Range(first, end), CursorOptions::new());
+            read(&mut plain, c.unwrap()).0
+        })
+        .collect();
+    let speculative = SeekPolicy::Speculative(SpeculativeOptions::new().with_min_gap_sectors(0));
+    for _ in 0..rounds {
+        let mut disc = Disc::open(scarletbook::ReadAtReader::new(std::sync::Arc::clone(&img))).unwrap();
+        disc.enable_seek_index(Slot::TwoChannel, IndexOptions::new().with_interval(1)).unwrap();
+        disc.set_seek_policy(Slot::TwoChannel, speculative).unwrap();
+        let mut clone = disc.clone();
+        let readings = std::thread::scope(|s| {
+            let reader = s.spawn(|| {
+                let mut readings = Vec::new();
+                for &(first, end) in &ranges {
+                    let span = FrameSpan::Range(first, end);
+                    let c = disc.frames_cursor(Slot::TwoChannel, span, CursorOptions::new()).unwrap();
+                    readings.push(read(&mut disc, c));
+                }
+                readings
+            });
+            s.spawn(|| while !clone.verify_speculation(Slot::TwoChannel, budget).unwrap() {});
+            reader.join().unwrap()
+        });
+        // Readings registered after the clone's last call are checked now.
+        while !clone.verify_speculation(Slot::TwoChannel, budget).unwrap() {}
+        for ((got, c), want) in readings.iter().zip(&want) {
+            assert!(
+                matches!(c.speculation(), Speculation::Confirmed { .. } | Speculation::Exact),
+                "{:?}",
+                c.speculation()
+            );
+            assert_eq!(got, want);
+        }
+    }
+}

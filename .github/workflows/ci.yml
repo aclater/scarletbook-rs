@@ -375,6 +375,36 @@ jobs:
             ./smoke-lsan "corpus/images/$id.iso"
           done
 
+  # ThreadSanitizer (#445): a disc read on one thread while its clone runs the seek index's
+  # verification on another, through the Rust API and the C interface. The standard library
+  # is rebuilt instrumented (-Zbuild-std): its locks are futexes and atomics, which TSan
+  # sees only when they are compiled with it. Linked uninstrumented, every allocation made
+  # under those locks would be reported as a race. Only these two tests run, to keep it short.
+  tsan:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install "$RUST_NIGHTLY" --profile minimal --component rust-src
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Only main writes the cache; pull requests read it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: A read on a disc while its clone verifies, under ThreadSanitizer
+        env:
+          RUSTFLAGS: -Zsanitizer=thread
+          TSAN_OPTIONS: halt_on_error=1 exitcode=66
+        run: |
+          tsan() {
+            cargo +"$RUST_NIGHTLY" test -Zbuild-std --target x86_64-unknown-linux-gnu --locked \
+              -p "$1" --test "$2" -- --exact a_read_on_a_disc_while_its_clone_verifies
+          }
+          tsan scarletbook seek_verify
+          tsan scarletbook-ffi seek
+
   deny:
     runs-on: ubuntu-latest
     steps:
