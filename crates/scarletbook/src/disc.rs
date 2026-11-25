@@ -653,7 +653,13 @@ impl<R: Read + Seek> Disc<R> {
     ) -> TrackCursor {
         let n = self.image.sector_count();
         let (cursor, how) = self.shared.seek.read(area.slot, |index| {
-            let mut cursor = TrackCursor::start_with(area, (first, end), n, index, policy);
+            let mut cursor = TrackCursor::start_with(
+                area,
+                (first, end),
+                n,
+                index,
+                (policy, Some(self.image.unreadable())),
+            );
             if index.is_some() {
                 cursor.area_mut().keep_for_disc();
             }
@@ -741,7 +747,7 @@ impl<R: Read + Seek> Disc<R> {
             None => sb_log!(self.log(), Info, "area {slot} range: frames {first}..{end}: {e}"),
         })?;
         audio::log_open(self.log(), area, track, range, what, "from the seek index");
-        Ok(TrackCursor::start_with(area, range, n, Some(index), policy))
+        Ok(TrackCursor::start_with(area, range, n, Some(index), (policy, Some(self.image.unreadable()))))
     }
 
     /// The timeline positions of the frame range `[first, end)` of the area from `slot`,
