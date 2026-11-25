@@ -913,3 +913,30 @@ fn eager_passes_end_past_the_runs_a_record_keeps() {
     let (area, n) = area(&disc);
     assert_eq!(AreaIndex::from_bytes(&area, n, &index.to_bytes(), DEFAULT_INLINE_BUDGET).unwrap(), index);
 }
+
+/// A record replaced by a scan that met other marks keeps the checkpoints that fit both
+/// (#443 review): a mark added at 3/4 after the record reached the end, a range past it
+/// (which records the new marks from the record's checkpoint before it), then a range at
+/// 1/2 starts from the record, not from the area's first sector.
+#[test]
+fn replaced_records_keep_the_checkpoints_both_fit() {
+    let (image, playtime, sectors) = frames_disc(if cfg!(miri) { 48 } else { 150 });
+    let lsn = |i: usize| (AUDIO_LSN + i) as u64;
+    let mut disc = Disc::open(Cursor::new(image.clone())).unwrap();
+    disc.enable_seek_index(SLOT, IndexOptions::new().with_interval(2)).unwrap();
+    while !disc.extend_seek_index(SLOT, 64).unwrap() {}
+    let first = lsn(sectors / 4);
+    disc.unreadable_sectors().insert(first, 1);
+    let check = |disc: &mut Disc<Cursor<Vec<u8>>>, range: (u32, u32)| {
+        let (got, missing, lost, from) = raw(disc, range);
+        assert_eq!((got, missing, lost), straight(&image, disc, range), "{range:?} from {from:?}");
+        from
+    };
+    check(&mut disc, (playtime / 2, playtime));
+    let second = lsn(sectors * 3 / 4);
+    disc.unreadable_sectors().insert(second, 1);
+    let late = check(&mut disc, (playtime * 9 / 10, playtime));
+    assert!(checkpoint(late).is_some_and(|l| l > first && l < second), "{late:?}");
+    let middle = check(&mut disc, (playtime / 2, playtime * 6 / 10));
+    assert!(checkpoint(middle).is_some_and(|l| l > first && l < second), "{middle:?}");
+}
