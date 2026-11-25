@@ -3771,6 +3771,27 @@ SbStatus sb_seek_index_extend(const struct SbDisc *disc,
                               uint8_t *complete);
 
 /*
+ Reads the index's area past its unreadable sectors (`sb_disc_unreadable_add`), about
+ `max_sectors` sectors (at least to the next point it can record), recording the state
+ of a read that meets them, so that ranges opened past them start near their first
+ frame instead of scanning the area from its first sector (#443). `*complete` (if not
+ NULL) receives 1 once that state reaches the area's end for the sectors marked now (or
+ nothing is marked, or past the 4096 runs of marks it keeps), else 0. Unlike
+ `sb_seek_index_extend` it does not stop at a marked sector. Call it until complete, for
+ example on a second disc handle of the same image on another thread, then merge
+ (`sb_seek_index_merge`). The disc's read and log callbacks run during this call. Fails
+ as `sb_seek_index_extend`.
+
+ # Safety
+
+ `disc` and `index` must be NULL or live handles; `complete` NULL or valid for a write.
+ */
+SbStatus sb_seek_index_extend_past_marks(const struct SbDisc *disc,
+                                         struct SbSeekIndex *index,
+                                         uint64_t max_sectors,
+                                         uint8_t *complete);
+
+/*
  The LSN up to which the index holds the area's reading state (`*lsn`, required), and
  whether it covers the whole area (`*complete`, optional: 1 or 0).
 
@@ -3944,6 +3965,24 @@ SbStatus sb_disc_seek_index_extend(const struct SbDisc *disc,
                                    uint32_t slot,
                                    uint64_t max_sectors,
                                    uint8_t *complete);
+
+/*
+ Reads the area from `slot` past its unreadable sectors, about `max_sectors` sectors,
+ recording the state of a read that meets them in the seek index `disc` keeps (see
+ `sb_seek_index_extend_past_marks`); `*complete` (if not NULL) receives 1 once it
+ reaches the area's end for the sectors marked now, else 0. Call it on a clone in a
+ thread of its own once sectors are marked: the first range opened past a new mark then
+ starts near it. Fails with `SB_STATUS_INVALID_ARGUMENT` when no index is kept or it
+ does not match the image, `SB_STATUS_IO` if a read fails.
+
+ # Safety
+
+ `disc` must be NULL or a live handle; `complete` NULL or valid for a write.
+ */
+SbStatus sb_disc_seek_index_extend_past_marks(const struct SbDisc *disc,
+                                              uint32_t slot,
+                                              uint64_t max_sectors,
+                                              uint8_t *complete);
 
 /*
  As `sb_range_audio_open`, starting from `index` (a seek index of the area, or NULL for
