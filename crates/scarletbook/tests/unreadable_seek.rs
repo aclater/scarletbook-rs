@@ -537,7 +537,16 @@ fn ranges_past_marks_start_from_the_damage_record() {
 /// record fits, the range starts exactly from it. Both read what a scan reads.
 #[test]
 fn speculative_starts_see_the_marks() {
-    let (image, playtime, sectors) = frames_disc(if cfg!(miri) { 48 } else { 150 });
+    // Frames of 2500 bytes also under Miri: the provisional search needs an area of more
+    // than a few sectors.
+    let n = if cfg!(miri) { 40 } else { 150 };
+    let frames: Vec<PFrame> =
+        (0..n).map(|number| PFrame { number, dst: true, data: vec![number as u8 ^ 0x33; 2500] }).collect();
+    let audio = pack(&frames);
+    let sectors = audio.len();
+    let playtime = n;
+    let image =
+        Spec { channels: 2, playtime, tracks: vec![TrackSpec { start: 0, duration: n }], audio }.build();
     let counting = Counting::new(image.clone());
     let mut disc = Disc::open(ReadAtReader::new(counting.clone())).unwrap();
     disc.enable_seek_index(SLOT, IndexOptions::new().with_interval(2)).unwrap();
