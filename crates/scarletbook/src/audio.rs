@@ -1200,11 +1200,13 @@ impl AreaCursor {
     /// its state is that of a scan from the area's first sector with these marks. Nothing
     /// was returned yet.
     fn resume_damaged(&mut self, log: &Log, d: &DamageStart) {
-        let (image_id, counts) = (self.image_id, self.take_progress());
+        let (image_id, stop, counts) = (self.image_id, self.stop_lsn, self.take_progress());
         let (hints, stale) = (self.hints.take(), self.hints_stale);
         let mut damage = self.damage.take();
         *self = Self::with_key(self.key);
         self.image_id = image_id;
+        // A scan bounded by `scan_to` ([`AreaIndex::extend_past_marks`]) stays bounded.
+        self.stop_lsn = stop;
         self.keep_progress(counts);
         (self.hints, self.hints_stale) = (hints, stale);
         if let Some(r) = damage.as_deref_mut() {

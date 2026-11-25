@@ -586,13 +586,20 @@ fn eager_building_past_marks() {
     assert_eq!(counting.take(), (0, 0));
     let mark = lsn(if cfg!(miri) { 1 } else { sectors / 4 });
     disc.unreadable_sectors().insert(mark, 2);
-    // In small steps: each call makes progress.
-    let mut calls = 0;
-    while !disc.extend_seek_index_past_marks(SLOT, 8).unwrap() {
+    // In small steps: each call makes progress, and reads about its budget (a read chunk
+    // of 32 sectors, the replay and an interval more), also once it resumes from the record.
+    let (mut calls, mut pass) = (0, 0);
+    loop {
+        let done = disc.extend_seek_index_past_marks(SLOT, 8).unwrap();
+        let (_, read) = counting.take();
+        assert!(read <= 64, "call {calls} read {read} sectors");
+        pass += read;
+        if done {
+            break;
+        }
         calls += 1;
         assert!(calls < sectors, "no progress");
     }
-    let (_, pass) = counting.take();
     let range = (playtime / 2, playtime);
     let (got, missing, lost, from) = raw(&mut disc, range);
     assert_eq!((got, missing, lost), straight(&image, &disc, range));
@@ -833,4 +840,76 @@ fn earlier_damage_checkpoints_are_used() {
     let (got, missing, lost, from) = raw(&mut disc, range);
     assert_eq!((got, missing, lost), straight(&image, &disc, range));
     assert!(checkpoint(from).is_some_and(|l| l > mark + 1 && l < second), "{from:?}");
+}
+
+/// Time to read an area through the disc's own index, which absorbs on every frame, and
+/// to build a caller's index's damage record eagerly in calls of one boundary each, with
+/// many marks at `K = 1` (#443 review): printed for the PR, not checked.
+#[test]
+#[ignore = "a measurement for #443, run by hand"]
+fn cost_of_absorbing_with_many_marks() {
+    let (image, playtime, sectors) = frames_disc(5200);
+    let mark = |disc: &Disc<Cursor<Vec<u8>>>| {
+        for i in 0..2000u64 {
+            disc.unreadable_sectors().insert((AUDIO_LSN + 1) as u64 + 4 * i, 1);
+        }
+    };
+    let mut disc = Disc::open(Cursor::new(image.clone())).unwrap();
+    disc.enable_seek_index(SLOT, IndexOptions::new().with_interval(1)).unwrap();
+    mark(&disc);
+    let t = std::time::Instant::now();
+    raw(&mut disc, (0, playtime));
+    println!(
+        "I443 sectors {sectors} marks 2000 K 1 read through the disc: {:.3} s",
+        t.elapsed().as_secs_f64()
+    );
+    let mut disc = Disc::open(Cursor::new(image.clone())).unwrap();
+    mark(&disc);
+    let (area, n) = area(&disc);
+    let mut index = AreaIndex::new(&area, n, IndexOptions::new().with_interval(1)).unwrap();
+    let t = std::time::Instant::now();
+    let mut calls = 1;
+    while !index.extend_past_marks(disc.image_mut(), 0).unwrap() {
+        calls += 1;
+    }
+    println!(
+        "I443 sectors {sectors} marks 2000 K 1 eager pass: {calls} calls, {:.3} s",
+        t.elapsed().as_secs_f64()
+    );
+}
+
+/// An eager pass ends with more runs of unreadable sectors than a record keeps (#443
+/// review): `extend_seek_index_past_marks` returns `true` once the pass meets the run past
+/// the 4096 kept, in a bounded number of calls, and reads still equal a scan from the
+/// first sector.
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "needs more than 4096 marked runs; eager_building_past_marks covers the pass under Miri"
+)]
+fn eager_passes_end_past_the_runs_a_record_keeps() {
+    let (image, playtime, sectors) = frames_disc(5200);
+    assert!(sectors > 2 * 4100 + 64, "{sectors} sectors");
+    let mut disc = Disc::open(Cursor::new(image.clone())).unwrap();
+    disc.enable_seek_index(SLOT, IndexOptions::new().with_interval(64)).unwrap();
+    while !disc.extend_seek_index(SLOT, 4096).unwrap() {}
+    for i in 0..4100u64 {
+        disc.unreadable_sectors().insert((AUDIO_LSN + 1) as u64 + 2 * i, 1);
+    }
+    let mut calls = 1;
+    while !disc.extend_seek_index_past_marks(SLOT, 256).unwrap() {
+        calls += 1;
+        assert!(calls < 200, "the eager pass does not end");
+    }
+    // Ended at once, as later calls do.
+    assert!(disc.extend_seek_index_past_marks(SLOT, 256).unwrap());
+    for first in [playtime / 4, playtime * 3 / 4] {
+        let range = (first, playtime);
+        let (got, missing, lost, from) = raw(&mut disc, range);
+        assert_eq!((got, missing, lost), straight(&image, &disc, range), "{range:?} from {from:?}");
+    }
+    // The record saves and loads.
+    let index = disc.seek_index(SLOT).unwrap();
+    let (area, n) = area(&disc);
+    assert_eq!(AreaIndex::from_bytes(&area, n, &index.to_bytes(), DEFAULT_INLINE_BUDGET).unwrap(), index);
 }

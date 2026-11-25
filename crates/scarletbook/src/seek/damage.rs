@@ -100,36 +100,43 @@ impl Damage {
     /// included; otherwise it is of other marks and replaces this one if `replace` (the
     /// newer marks are the likelier to be read with) or this one is empty. Either way each
     /// checkpoint stays keyed by the runs before it, so the record is never wrong, only of
-    /// use to fewer marks. Whether anything changed.
+    /// use to fewer marks.
     fn join(
         &mut self,
         runs: &[(u64, u64)],
         checkpoints: &[DamageCheckpoint],
         malformed: impl Iterator<Item = u32>,
         replace: bool,
-    ) -> bool {
-        let Some(last) = checkpoints.last().map(|c| c.lsn) else { return false };
+    ) {
+        let Some(agree) = self.joins(runs, checkpoints, replace) else { return };
+        let last = checkpoints.last().map_or(0, |c| c.lsn);
         let held = self.checkpoints.last().map_or(0, |c| c.lsn);
-        // Through the sector at the lower checkpoint: it must be readable to both.
-        let upto = held.min(last) + 1;
-        let agree = !self.is_empty() && below(&self.runs, upto) == below(runs, upto);
-        if agree && last <= held || !agree && !replace && !self.is_empty() {
-            return false;
-        }
         if !agree {
             self.checkpoints.clear();
         }
         self.checkpoints.extend(checkpoints.iter().filter(|c| c.lsn > held || !agree));
-        self.runs = runs.to_vec();
-        self.malformed =
-            malformed.take_while(|&m| u64::from(m) < last).take(MAX_MALFORMED_WARNINGS).collect();
-        true
+        self.runs.clear();
+        self.runs.extend_from_slice(runs);
+        self.malformed.clear();
+        self.malformed.extend(malformed.take_while(|&m| u64::from(m) < last).take(MAX_MALFORMED_WARNINGS));
+    }
+
+    /// Whether [`Damage::join`] changes this record, and if so whether the runs agree:
+    /// `None` when it changes nothing.
+    fn joins(&self, runs: &[(u64, u64)], checkpoints: &[DamageCheckpoint], replace: bool) -> Option<bool> {
+        let last = checkpoints.last()?.lsn;
+        let held = self.checkpoints.last().map_or(0, |c| c.lsn);
+        // Through the sector at the lower checkpoint: it must be readable to both.
+        let upto = held.min(last) + 1;
+        let agree = !self.is_empty() && below(&self.runs, upto).eq(below(runs, upto));
+        let changes = if agree { last > held } else { replace || self.is_empty() };
+        changes.then_some(agree)
     }
 }
 
 /// The runs of `runs` below `upto`, clipped to it.
-fn below(runs: &[(u64, u64)], upto: u64) -> Vec<(u64, u64)> {
-    runs.iter().take_while(|&&(s, _)| s < upto).map(|&(s, e)| (s, e.min(upto))).collect()
+fn below(runs: &[(u64, u64)], upto: u64) -> impl Iterator<Item = (u64, u64)> + '_ {
+    runs.iter().take_while(move |&&(s, _)| s < upto).map(move |&(s, e)| (s, e.min(upto)))
 }
 
 /// The first sector below `to` that is in a run of one of `a` and `b` but not of the
@@ -188,7 +195,7 @@ impl DamageCandidates {
     pub(crate) fn choose(&self, marked: impl FnOnce(u64) -> Vec<(u64, u64)>) -> Option<DamageStart> {
         let d = &self.damage;
         let to = self.last().lsn + 1;
-        let differ = first_difference(&marked(to), &below(&d.runs, to), to);
+        let differ = first_difference(&marked(to), &below(&d.runs, to).collect::<Vec<_>>(), to);
         let j = d.checkpoints[..=self.last].partition_point(|c| c.lsn < differ).checked_sub(1)?;
         let at = d.checkpoints[j];
         Some(DamageStart {
@@ -234,6 +241,11 @@ pub(crate) struct DamageRecorder {
 }
 
 impl DamageRecorder {
+    /// Whether the scan met more runs than [`MAX_DAMAGE_RUNS`]: it records nothing more.
+    pub(crate) fn is_full(&self) -> bool {
+        self.full
+    }
+
     /// Whether anything was recorded since the last absorb.
     pub(crate) fn has_news(&self) -> bool {
         !self.checkpoints.is_empty()
@@ -342,6 +354,9 @@ impl AreaIndex {
     /// whether the record now reaches the area's end for these marks. With no sector of the
     /// area marked, there is nothing to record: `Ok(true)` without reading
     /// ([`AreaIndex::extend`] builds the index then).
+    /// A record keeps at most 4096 runs of unreadable sectors: once the pass meets a run
+    /// past those, it records nothing more and returns `Ok(true)`, and ranges past that
+    /// run start as without the record.
     ///
     /// The pass starts at the latest damage checkpoint whose marks are those of now, else
     /// at the index's last checkpoint before the first mark (recording the index's own
@@ -382,6 +397,11 @@ impl AreaIndex {
         }
         self.take_from(&cursor)?;
         scanned?;
+        // Past the most runs a record keeps, nothing more can be recorded: another call
+        // would read the same sectors again.
+        if cursor.damage_recorder().is_some_and(DamageRecorder::is_full) {
+            return Ok(true);
+        }
         Ok(self
             .past_marks_from(image.unreadable())
             .is_none_or(|(_, from)| self.next_unmarked_boundary(from, image.unreadable()).is_none()))
@@ -449,10 +469,9 @@ impl AreaIndex {
         {
             return;
         }
-        // Cloned only if a cursor still holds the record (#443).
-        let mut d = Damage::clone(&self.damage);
-        if d.join(&r.runs, &r.checkpoints, warnings, true) {
-            self.damage = Arc::new(d);
+        // Changed in place; cloned first only if a cursor still holds the record (#443).
+        if self.damage.joins(&r.runs, &r.checkpoints, true).is_some() {
+            Arc::make_mut(&mut self.damage).join(&r.runs, &r.checkpoints, warnings, true);
         }
     }
 
@@ -464,9 +483,13 @@ impl AreaIndex {
             return;
         }
         let o = &other.damage;
-        let mut d = Damage::clone(&self.damage);
-        if d.join(&o.runs, &o.checkpoints, o.malformed.iter().copied(), replace) {
-            self.damage = Arc::new(d);
+        if self.damage.joins(&o.runs, &o.checkpoints, replace).is_some() {
+            Arc::make_mut(&mut self.damage).join(
+                &o.runs,
+                &o.checkpoints,
+                o.malformed.iter().copied(),
+                replace,
+            );
         }
     }
 }

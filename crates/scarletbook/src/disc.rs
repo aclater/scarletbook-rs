@@ -460,7 +460,8 @@ impl<R: Read + Seek> Disc<R> {
     /// (see [`AreaIndex::extend_past_marks`], #443): whether the record now reaches the
     /// area's end for the sectors marked now. Run in a loop, for example on a clone of the
     /// disc in another thread once sectors are marked, it lets the first range opened past
-    /// a new mark start near it instead of scanning the area from its first sector. As for
+    /// a new mark start near it instead of scanning the area from its first sector (up to
+    /// the 4096 runs of marks a record keeps, see [`AreaIndex::extend_past_marks`]). As for
     /// [`Disc::extend_seek_index`], a copy of the index is extended, then joined with the
     /// one kept; this call's record replaces the kept one's if their marks differ.
     ///
