@@ -242,6 +242,9 @@ continued with `_open_next` read on, unless that state starts their range furthe
 An index saved with that state
 (`sb_seek_index_save`) loads in this and later versions only. `sb_disc_unreadable_remove` unmarks sectors.
 
+`sb_seek_index_without_damage` gives a copy of an index without that state (#443), to save for
+a library version that does not load it.
+
 ### DSD to PCM
 
 `scarletbook-pcm` is decommissioned
