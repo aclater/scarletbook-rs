@@ -64,6 +64,10 @@ In the run list, but not in every table:
   DSF and DSD to PCM are blank, unless an equivalent revision is compared instead (0.5.6
   below uses `3eb96dc` for 0.5.5).
 
+## 1.2.0
+
+Not timed. 1.2.0 adds unreadable sectors (#435, #439). With no sector marked, the output is unchanged (the existing tests and the conformance corpus pass unchanged), and the added work on that path is one atomic load per sector checked (the set's "any marks" flag). A short no-marks overhead check against v1.1.1 was prepared for the Zen 2 benchmark host but not taken: the host's shared benchmark lock waited over an hour for the load to fall and the run was withdrawn. Timings with marks set, including the rescan of a range opened past a mark (#441), are not measured. The 1.0.0 section below stands for 1.2.0's throughput.
+
 ## 1.1.1
 
 Not timed. 1.1.1 fixes two cases of provisional seeking (#434, #436; #431, #437) that read more sectors than needed. They change how many sectors a reading reads, not how fast anything decodes or converts, and their pull requests measured that exactly by read count: #434's exact-scan fallbacks went from 130 to 0 on an 8-image sweep, and a replay of sacdfs's head-then-tail sequence reads 19.64 MB in pass 2 against 25.75 MB on 1.1.0 (0.6.2: 23.54 MB). The 1.0.0 section below stands for 1.1.1's throughput.
