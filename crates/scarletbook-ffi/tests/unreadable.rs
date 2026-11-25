@@ -251,3 +251,57 @@ fn reads_with_stored_report_lost_positions() {
     }
     c!(sb_disc_free(disc));
 }
+
+/// The bytes `sb_seek_index_save` gives for `index`.
+fn save(index: *const SbSeekIndex) -> Vec<u8> {
+    let mut len = 0;
+    assert_eq!(c!(sb_seek_index_save(index, ptr::null_mut(), 0, &mut len)), SbStatus::BufferTooSmall);
+    let mut buf = vec![0u8; len];
+    assert_eq!(c!(sb_seek_index_save(index, buf.as_mut_ptr(), buf.len(), &mut len)), SbStatus::Ok);
+    buf
+}
+
+/// `sb_seek_index_without_damage` (#443): a copy without the state past marked sectors,
+/// which saves without flags bit 2 (the form of indexes before #441) and reads the same;
+/// the index it was made from is unchanged. NULL arguments are refused.
+#[test]
+fn indexes_without_damage_save_in_the_earlier_form() {
+    let (img, touched) = image();
+    let disc = open(&img);
+    assert_eq!(c!(sb_disc_seek_index_enable(disc, 0, 1, SB_SEEK_DEFAULT_INLINE_BUDGET)), SbStatus::Ok);
+    assert_eq!(c!(sb_disc_unreadable_add(disc, (AUDIO_LSN + BAD) as u64, 1)), SbStatus::Ok);
+    let (got, _, lost) = raw(disc);
+    check_raw("indexed", &got, &touched);
+    assert_eq!(lost, touched.len() as u64);
+    let mut index = ptr::null_mut();
+    assert_eq!(c!(sb_disc_seek_index_get(disc, 0, &mut index)), SbStatus::Ok);
+    let bytes = save(index);
+    assert_eq!(bytes[14] & 4, 4, "the state past the mark is saved");
+    let mut plain = ptr::null_mut();
+    assert_eq!(c!(sb_seek_index_without_damage(index, &mut plain)), SbStatus::Ok);
+    assert!(!plain.is_null());
+    let plain_bytes = save(plain);
+    assert_eq!(plain_bytes[14] & 4, 0, "saved without it");
+    assert_eq!(save(index), bytes, "the index it was made from is unchanged");
+    // Loaded and kept by a new disc with the same mark, it reads the same.
+    let again = open(&img);
+    let mut loaded = ptr::null_mut();
+    let budget = SB_SEEK_DEFAULT_INLINE_BUDGET;
+    assert_eq!(
+        c!(sb_seek_index_load(again, 0, plain_bytes.as_ptr(), plain_bytes.len(), budget, &mut loaded)),
+        SbStatus::Ok
+    );
+    assert_eq!(c!(sb_disc_seek_index_set(again, 0, loaded)), SbStatus::Ok);
+    assert_eq!(c!(sb_disc_unreadable_add(again, (AUDIO_LSN + BAD) as u64, 1)), SbStatus::Ok);
+    check_raw("from the copy", &raw(again).0, &touched);
+    // NULL arguments.
+    let mut out = plain;
+    assert_eq!(c!(sb_seek_index_without_damage(ptr::null(), &mut out)), SbStatus::InvalidArgument);
+    assert!(out.is_null());
+    assert_eq!(c!(sb_seek_index_without_damage(index, ptr::null_mut())), SbStatus::InvalidArgument);
+    for i in [index, plain, loaded] {
+        c!(sb_seek_index_free(i));
+    }
+    c!(sb_disc_free(disc));
+    c!(sb_disc_free(again));
+}

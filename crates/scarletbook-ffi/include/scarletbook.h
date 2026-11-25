@@ -3816,6 +3816,22 @@ SbStatus sb_seek_index_merge(struct SbSeekIndex *into, const struct SbSeekIndex 
 SbStatus sb_seek_index_save(const struct SbSeekIndex *index, uint8_t *buf, size_t cap, size_t *len);
 
 /*
+ A copy of `index` without the reading state it holds of scans that met unreadable
+ sectors (`sb_disc_unreadable_add`, #441), as a new handle in `*out`: what an index of
+ the same reads without marks holds. Saved (`sb_seek_index_save`), it is in the form
+ that library versions without that state load; they refuse an index that holds it
+ (`SB_STATUS_INVALID_ARGUMENT`). Reads from the copy return the same as from `index`,
+ except that a range opened past a marked sector scans the area from its first sector
+ until a read records that state again. `index` is unchanged. The copy is without the
+ verdicts on provisional readings `index` holds, as for `sb_disc_seek_index_set`.
+
+ # Safety
+
+ `index` must be NULL or a live handle; `out` NULL or valid for a write.
+ */
+SbStatus sb_seek_index_without_damage(const struct SbSeekIndex *index, struct SbSeekIndex **out);
+
+/*
  Loads a seek index of the area from `slot` of `disc` from `len` bytes saved by
  `sb_seek_index_save`. The bytes may be anything: every bound and invariant is checked
  before use, and the memory taken is proportional to `len`. On failure `*out` is set to
