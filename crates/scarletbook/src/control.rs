@@ -102,10 +102,14 @@ impl CancelToken {
 /// caller) keep what they had. Mark before opening the cursors that read past the sectors,
 /// or reopen them, for a result that does not depend on timing.
 ///
-/// Seek indexes hold only reading state from before the first marked sector a cursor
-/// reads, and a cursor does not resume from a checkpoint at or after a marked sector, so
-/// marks never change what an index holds (see [`crate::seek`]). The cost: a range opened
-/// past a marked sector scans the area from its start (#441); continued cursors read on.
+/// A seek index's checkpoints hold the reading state of a scan without marks, and a cursor
+/// does not resume from one at or after a marked sector. Past marked sectors, the index
+/// keeps the state of the scans that met them instead, each checkpoint keyed by the marked
+/// runs before it, and a cursor resumes there only when the marks before it are the same
+/// (#441; see [`crate::seek`]). So the first range opened past a marked sector scans the
+/// area from its start, and later ones start near their first frame, as long as the marks
+/// before them stay as they were; adding or removing a mark before a point makes the state
+/// there unused until a scan records it again. Continued cursors read on.
 ///
 /// The TOC, read when the disc is opened, is not affected. [`crate::Image::read_sectors`]
 /// refuses marked sectors with [`Error::SectorUnreadable`].

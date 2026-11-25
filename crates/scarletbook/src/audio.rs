@@ -11,8 +11,9 @@ use crate::error::{Error, Slot, Warning, WarningCode};
 use crate::image::{Image, ReadOutcome, SECTOR_SIZE};
 use crate::log::{Level, Log, sb_log};
 use crate::seek::{
-    AreaIndex, Assembling, Claim, HintRecorder, Plan, Provisional, ProvisionalRecorder, Recorder,
-    ResumedFrom, SeekIndexes, SeekPolicy, Speculate, Speculation, digest, first_record, locate,
+    AreaIndex, Assembling, Claim, DamageRecorder, DamageStart, HintRecorder, Plan, Provisional,
+    ProvisionalRecorder, Recorder, ResumedFrom, SeekIndexes, SeekPolicy, Speculate, Speculation, digest,
+    first_record, locate,
 };
 use crate::toc::{Area, Track};
 
@@ -567,13 +568,20 @@ pub struct AreaCursor {
     progress: Option<Progress>,
     /// The unreadable runs of `buf`, as half-open LSN ranges ([`Image::read_audio`]).
     buf_bad: Vec<(u64, u64)>,
-    /// The first unreadable sector this cursor processed (#435), if any.
+    /// The first unreadable sector this cursor processed (#435), or that the scan whose
+    /// state it resumed from did (#441), if any.
     damaged: Option<u64>,
     /// Scanning only to record checkpoints ([`AreaIndex::extend`]): it resumes at its
     /// checkpoint whatever sectors before it are unreadable.
     for_index: bool,
     /// Lines written about unreadable sectors.
     unreadable_lines: LineCap,
+    /// Records the state past unreadable sectors for a seek index (#441), when made from
+    /// one and the state is a scan's from the area's first sector.
+    damage: Option<Box<DamageRecorder>>,
+    /// A checkpoint of the index's damage record to start from instead, if the marks
+    /// before it are those its scan met; chosen on the first read (#441).
+    damage_start: Option<Box<DamageStart>>,
 }
 
 /// The state a resumed scan takes once its replay reaches the checkpoint.
@@ -582,6 +590,8 @@ struct Replay {
     until: u64,
     next_acceptable: u32,
     malformed: u64,
+    /// The lost stretch open at the checkpoint (#441).
+    lost_from: Option<u32>,
 }
 
 /// Sectors read per call to the reader.
@@ -639,6 +649,8 @@ impl AreaCursor {
             damaged: None,
             for_index: false,
             unreadable_lines: LineCap::default(),
+            damage: None,
+            damage_start: None,
         }
     }
 
@@ -656,6 +668,8 @@ impl AreaCursor {
     /// Marks this cursor as one that only records checkpoints (see `for_index`).
     pub(crate) fn for_index(&mut self) {
         self.for_index = true;
+        // Its state past a mark is not a scan's that met it: nothing to record from it.
+        (self.damage, self.damage_start) = (None, None);
     }
 
     /// Starts afresh at the area's first audio sector, without the seek index this cursor
@@ -669,10 +683,17 @@ impl AreaCursor {
             ResumedFrom::Checkpoint { lsn, .. } => lsn,
             _ => self.end_lsn,
         };
+        let mut damage = self.damage.take();
         *self = Self::with_key(self.key);
         self.image_id = image_id;
         self.keep_progress(counts);
         (self.hints, self.hints_stale) = (hints, stale);
+        // A scan from the first sector that meets the marks: its state past them is what
+        // the index's damage record keeps (#441).
+        if let Some(d) = damage.as_deref_mut() {
+            d.restart();
+        }
+        self.damage = damage;
         if stop != u64::MAX {
             self.stop_lsn = self.next_lsn;
         }
@@ -698,6 +719,9 @@ impl AreaCursor {
             if let Some(p) = self.provisional.as_deref_mut() {
                 p.halt();
             }
+        }
+        if let Some(d) = self.damage.as_deref_mut() {
+            d.unreadable(lsn);
         }
         if self.unreadable_lines.admit(log, Level::Warn, self.slot.name(), "unreadable-sector") {
             sb_log!(log, Warn, "area {} audio sector LSN {lsn}: unreadable; its frames are lost", self.slot);
@@ -1009,7 +1033,8 @@ impl AreaCursor {
         cursor.demux.next_acceptable = first;
         if from < lsn {
             // Lemma B of #68, as for an exact resume: rebuilds the frame under assembly.
-            cursor.replay = Some(Replay { until: lsn, next_acceptable: first, malformed: 0 });
+            cursor.replay =
+                Some(Replay { until: lsn, next_acceptable: first, malformed: 0, lost_from: None });
         }
         cursor.verify = Some((lsn, p.digest));
         cursor.resumed = ResumedFrom::Speculative { lsn, probes: 0 };
@@ -1097,6 +1122,7 @@ impl AreaCursor {
     #[inline]
     pub(crate) fn has_news(&self) -> bool {
         self.recorder.as_deref().is_some_and(Recorder::has_news)
+            || self.damage.as_deref().is_some_and(DamageRecorder::has_news)
             || (!self.claim_registered && self.claim.as_ref().is_some_and(|c| c.lsn() > 0))
             || self.provisional.as_ref().is_some_and(|p| !p.list.is_empty())
             || self.hints_stale
@@ -1130,7 +1156,86 @@ impl AreaCursor {
             }
             plan @ Plan::At { .. } => cursor.resume_at(index, plan),
         }
+        // Past unreadable sectors (#441): the state there of a scan that met them, chosen
+        // on the first read if the marks then are the ones it met; and the record of it.
+        cursor.damage_start = index.damage_start(first).map(Box::new);
+        cursor.damage = Some(index.damage_recorder());
         cursor
+    }
+
+    /// The LSN of the damage checkpoint this cursor may start from (#441), if any, and the
+    /// first sector its replay reads.
+    pub(crate) fn damage_start_lsn(&self) -> Option<(u64, u64)> {
+        self.damage_start.as_ref().map(|d| (d.at.lsn, d.at.lsn - u64::from(d.at.checkpoint.back)))
+    }
+
+    /// Reads up to `lsn` (exclusive) in one call if this cursor starts from its damage
+    /// checkpoint.
+    pub(crate) fn size_damage_read(&mut self, lsn: u64) {
+        if let Some(d) = self.damage_start.as_deref_mut() {
+            d.read_to = lsn;
+        }
+    }
+
+    /// Starts at the damage checkpoint `d` (#441), whose runs are the marks before it now:
+    /// its state is that of a scan from the area's first sector with these marks. Nothing
+    /// was returned yet.
+    fn resume_damaged(&mut self, log: &Log, d: &DamageStart) {
+        let (image_id, counts) = (self.image_id, self.take_progress());
+        let (hints, stale) = (self.hints.take(), self.hints_stale);
+        let mut damage = self.damage.take();
+        *self = Self::with_key(self.key);
+        self.image_id = image_id;
+        self.keep_progress(counts);
+        (self.hints, self.hints_stale) = (hints, stale);
+        if let Some(r) = damage.as_deref_mut() {
+            r.resume(d);
+        }
+        self.damage = damage;
+        // Its state is past unreadable sectors, as if it had processed them: a continuation
+        // reads on rather than starting afresh ([`TrackCursor::reuses`]).
+        self.damaged = d.runs.first().map(|r| r.0);
+        let slot = self.slot;
+        self.warnings = d
+            .malformed
+            .iter()
+            .map(|&lsn| Warning {
+                code: WarningCode::AudioSectorMalformed,
+                slot: Some(slot),
+                track: None,
+                lsn: Some(lsn),
+            })
+            .collect();
+        let (lsn, c) = (d.at.lsn, d.at.checkpoint);
+        let replay_from = lsn - u64::from(c.back);
+        self.demux.next_acceptable = c.next_acceptable;
+        self.demux.malformed = c.malformed_before;
+        if replay_from < lsn {
+            // Lemma B1 of #68, as from an index checkpoint: no sector of the replay is
+            // unreadable (the frame under assembly started after the last one), and the
+            // frames it delivers are all numbered below `a`.
+            self.replay = Some(Replay {
+                until: lsn,
+                next_acceptable: c.next_acceptable,
+                malformed: c.malformed_before,
+                lost_from: d.at.lost_from,
+            });
+        } else {
+            self.demux.lost_from = d.at.lost_from;
+        }
+        self.next_lsn = replay_from;
+        self.read_to = d.read_to;
+        self.verify = Some((lsn, c.digest));
+        self.resumed = ResumedFrom::Checkpoint { lsn, replay_from };
+        sb_log!(
+            log,
+            Info,
+            "area {}: unreadable sectors before LSN {lsn}: resuming at the state a scan meeting them had there \
+             (next acceptable {}, lost from {:?})",
+            self.slot,
+            c.next_acceptable,
+            d.at.lost_from
+        );
     }
 
     /// Resumes at the checkpoint `plan` names (a [`Plan::At`] of `index`).
@@ -1170,6 +1275,7 @@ impl AreaCursor {
                 until: lsn,
                 next_acceptable: checkpoint.next_acceptable,
                 malformed: checkpoint.malformed_before,
+                lost_from: None,
             });
         }
         self.next_lsn = replay_from;
@@ -1244,6 +1350,9 @@ impl AreaCursor {
         if let Some(r) = self.recorder.as_deref_mut() {
             r.kept = true;
         }
+        if let Some(d) = self.damage.as_deref_mut() {
+            d.kept = true;
+        }
         if let Some(sp) = self.speculate.as_mut() {
             sp.exact.keep_for_disc();
         }
@@ -1252,6 +1361,16 @@ impl AreaCursor {
     /// Records no more checkpoints.
     pub(crate) fn stop_recording(&mut self) {
         self.recorder = None;
+        self.damage = None;
+    }
+
+    /// The damage checkpoints recorded for a seek index (#441).
+    pub(crate) fn damage_recorder(&self) -> Option<&DamageRecorder> {
+        self.damage.as_deref()
+    }
+
+    pub(crate) fn damage_recorder_mut(&mut self) -> Option<&mut DamageRecorder> {
+        self.damage.as_deref_mut()
     }
 
     /// Reports, until this cursor first reads, the malformed count and warnings of `from`,
@@ -1375,7 +1494,16 @@ impl AreaCursor {
                     _ => None,
                 };
                 let marked = upto.and_then(|upto| image.unreadable_sectors().first_in(start, upto));
-                if let Some(bad) = marked.filter(|_| !self.for_index) {
+                // Or from the state of a scan that met the marks there are now before its
+                // checkpoint (#441), when that starts later or the index's cannot be used.
+                let from = upto.map_or(start, |u| u - 1);
+                let damage = self.damage_start.take().filter(|d| {
+                    (marked.is_some() || d.at.lsn > from)
+                        && d.fits(&image.unreadable_sectors().runs_in(start, d.at.lsn + 1))
+                });
+                if let Some(d) = damage {
+                    self.resume_damaged(image.log(), &d);
+                } else if let Some(bad) = marked.filter(|_| !self.for_index) {
                     self.restart_unindexed(image.log(), bad);
                 }
                 match self.resumed {
@@ -1433,6 +1561,7 @@ impl AreaCursor {
                 self.demux.ready.clear();
                 self.demux.next_acceptable = r.next_acceptable;
                 self.demux.malformed = r.malformed;
+                self.demux.lost_from = r.lost_from;
                 self.replay = None;
             }
             if self.next_lsn >= self.stop_lsn && self.replay.is_none() && self.next_lsn < self.end_lsn {
@@ -1497,6 +1626,15 @@ impl AreaCursor {
                                 data: &a.data,
                             });
                             rec.record(lsn, d.next_acceptable, d.malformed, assembling, s);
+                        }
+                        if let Some(rec) = self.damage.as_deref_mut().filter(|r| r.due(lsn)) {
+                            let d = &self.demux;
+                            // The frame started in an audio sector at or before this one.
+                            let back = d
+                                .assembling
+                                .as_ref()
+                                .map_or(0, |a| u32::try_from(lsn - a.start_lsn).unwrap_or(u32::MAX).max(1));
+                            rec.record(lsn, (d.next_acceptable, back, d.malformed), d.lost_from, s);
                         }
                         let at = self.demux.at(image.log(), lsn);
                         let malformed = self.demux.push_sector_at(s, at);
@@ -2436,13 +2574,13 @@ impl TrackCursor {
             ..Self::start(area, first, end, image_sectors)
         }
         .estimated(area);
-        if let ResumedFrom::Checkpoint { lsn, replay_from } = cursor.area.resumed {
-            // One read from the replay to the range's end: through the seek hint after it,
-            // or the range's frames at the area's average density from the checkpoint (whose
-            // successor is past `first`, so frame `first` starts within an interval of it),
-            // plus a quarter and a few sectors.
-            let (s0, s1) = audio_sector_range(area, image_sectors);
-            let hinted = index.hint(first, end, area.playtime_frames()).filter(|h| h.3).map(|h| h.2);
+        // One read from the replay to the range's end: through the seek hint after it, or
+        // the range's frames at the area's average density from the checkpoint (whose
+        // successor is past `first`, so frame `first` starts within an interval of it), plus
+        // a quarter and a few sectors.
+        let (s0, s1) = audio_sector_range(area, image_sectors);
+        let hinted = index.hint(first, end, area.playtime_frames()).filter(|h| h.3).map(|h| h.2);
+        let sized = |lsn: u64, replay_from: u64| {
             let to = hinted.filter(|&to| to > lsn).unwrap_or_else(|| {
                 let frames = u128::from(end - first);
                 let span = frames * u128::from(s1 - s0) / u128::from(area.playtime_frames().max(1));
@@ -2452,7 +2590,14 @@ impl TrackCursor {
             // At most the replay, an interval and 64 sectors of the range (128 KiB): a range
             // to the area's end is not read ahead further than that.
             let most = lsn + u64::from(index.interval()) + 64;
-            cursor.area.size_first_read(to.min(most).min(replay_from + crate::seek::MAX_READ_SECTORS));
+            to.min(most).min(replay_from + crate::seek::MAX_READ_SECTORS)
+        };
+        if let ResumedFrom::Checkpoint { lsn, replay_from } = cursor.area.resumed {
+            cursor.area.size_first_read(sized(lsn, replay_from));
+        }
+        // The same from the damage record's checkpoint, if the cursor starts there (#441).
+        if let Some((lsn, replay_from)) = cursor.area.damage_start_lsn() {
+            cursor.area.size_damage_read(sized(lsn, replay_from));
         }
         cursor.area.record_hints(index.hint_recorder());
         cursor
