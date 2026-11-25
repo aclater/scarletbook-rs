@@ -4577,6 +4577,41 @@ pub unsafe extern "C" fn sb_seek_index_save(
     })
 }
 
+/// A copy of `index` without the reading state it holds of scans that met unreadable
+/// sectors (`sb_disc_unreadable_add`, #441), as a new handle in `*out`: what an index of
+/// the same reads without marks holds. Saved (`sb_seek_index_save`), it is in the form
+/// that library versions without that state load; they refuse an index that holds it
+/// (`SB_STATUS_INVALID_ARGUMENT`). Reads from the copy return the same as from `index`,
+/// except that a range opened past a marked sector scans the area from its first sector
+/// until a read records that state again. `index` is unchanged. The copy is without the
+/// verdicts on provisional readings `index` holds, as for `sb_disc_seek_index_set`.
+///
+/// # Safety
+///
+/// `index` must be NULL or a live handle; `out` NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sb_seek_index_without_damage(
+    index: *const SbSeekIndex,
+    out: *mut *mut SbSeekIndex,
+) -> SbStatus {
+    // SAFETY: forwarded contract.
+    unsafe { clear_out(out) };
+    guard(|| {
+        // SAFETY: forwarded contract.
+        let i = unsafe { index_handle(index) }?;
+        if out.is_null() {
+            return Err(Failure::arg("NULL output pointer"));
+        }
+        let mut copy = i.inner.try_borrow().map_err(|_| Failure::arg(REENTRANT))?.without_damage();
+        // The verdicts not yet taken stay on `index` only, so each is returned once (#326).
+        copy.take_events();
+        let copy = Box::new(SbSeekIndex { inner: RefCell::new(copy), events: RefCell::default() });
+        // SAFETY: non-NULL and valid for a write by this function's contract.
+        unsafe { out.write(Box::into_raw(copy)) };
+        Ok(SbStatus::Ok)
+    })
+}
+
 /// Loads a seek index of the area from `slot` of `disc` from `len` bytes saved by
 /// `sb_seek_index_save`. The bytes may be anything: every bound and invariant is checked
 /// before use, and the memory taken is proportional to `len`. On failure `*out` is set to

@@ -717,6 +717,7 @@ SbStatus sb_seek_index_frontier(const struct SbSeekIndex *index, uint64_t *lsn, 
 SbStatus sb_seek_index_memory(const struct SbSeekIndex *index, uint64_t *bytes);
 SbStatus sb_seek_index_merge(struct SbSeekIndex *into, const struct SbSeekIndex *from);
 SbStatus sb_seek_index_save(const struct SbSeekIndex *index, uint8_t *buf, size_t cap, size_t *len);
+SbStatus sb_seek_index_without_damage(const struct SbSeekIndex *index, struct SbSeekIndex **out);
 SbStatus sb_seek_index_load(const struct SbDisc *disc, uint32_t slot, const uint8_t *buf, size_t len, uint64_t inline_budget, struct SbSeekIndex **out);
 void sb_seek_index_free(struct SbSeekIndex *index);
 SbStatus sb_disc_seek_index_enable(const struct SbDisc *disc, uint32_t slot, uint32_t interval, uint64_t inline_budget);
