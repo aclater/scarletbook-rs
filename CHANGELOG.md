@@ -11,6 +11,41 @@ from 0.5.8).
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-25
+
+**1.3.0 makes reading past unreadable sectors cheaper: a seek index's state past marked sectors can be built ahead of the reads, so the first range past a new mark no longer has to scan the area from its start (#443).** It is a semver minor release: the Rust API of `scarletbook` and ABI 2 of the C library gain items, nothing is removed, and what reads return is unchanged. A disc with no unreadable sectors reads exactly as before. Rust code that builds against 1.2.0 builds against 1.3.0 with only the version changed; C programs need no change (`SB_ABI_VERSION` 2, and the header only gains declarations).
+
+- **Eager building past unreadable sectors (#447).** `AreaIndex::extend_past_marks(image, max_sectors)` and `Disc::extend_seek_index_past_marks(slot, max_sectors)` read on from where the seek index's damage record ends for the marks of now, in calls of any size (for example on another thread), and return whether the record reaches the area's end. After such a pass, the first range opened past a newly marked sector starts near its first frame instead of scanning the area from its first sector. Ranges past marks also start from the latest point of the damage record that the marks of now still fit, not only from its last point before the range, and a cursor continued past a mark opens its range from the record when it lies further on, instead of reading on. Read calls for 75-frame ranges past one sector marked at a quarter of the area, the index built complete before the mark (a counting reader, `K` = 64; read counts, not timings):
+
+  | area | eager pass | first range past the mark | later ranges past it |
+  |---|---|---|---|
+  | 2754 sectors | none (1.2.0 behaviour) | 49 calls / 1535 sectors | 3-12 calls |
+  | | one pass: 68 calls / 2115 sectors | 3 calls / 194 sectors | 2-4 calls |
+  | 11018 sectors | none (1.2.0 behaviour) | 178 calls / 5663 sectors | 3-50 calls |
+  | | one pass: 261 calls / 8298 sectors | 2 calls / 162 sectors | 2-4 calls |
+
+  So after a one-time pass, the first range past the mark takes 2 to 3 read calls instead of 49 to 178, and every later range costs about what it costs from an index with no marks. The pass is opt-in; without it, reads behave as in 1.2.0 apart from the improvements below.
+- **The eager pass always ends.** A damage record keeps at most 4096 marked runs; once a pass meets a run past that, `extend_past_marks` returns `true` (complete), since another call would only read the same sectors again. A loop that calls it until it returns `true` therefore ends on any disc, however many sectors are marked (#447).
+- **Other damage-record improvements.** A record replaced by a read that met other marks keeps its points before the first sector where the two sets of marks differ, which fit both, so a range opened between the old and the new marks still starts near its first frame (#449). With `SeekPolicy::Speculative`, a disc's choice between a provisional and an exact start now compares the range with where the exact reading would really start with the marks of now (an index checkpoint before them, the damage record, or the area's first sector): a range far past a mark no longer scans from the area's start when a provisional start is allowed, and one the record serves starts exactly from it (#450). `AreaIndex::merge` joins damage records of the same marks, and the record is changed in place, copied only while a cursor still holds it (#447). Every resumed read still equals a scan from the area's start with the same marks: #441's property test, now also driving the disc's own index, continued cursors, reads to the area's end and eager passes, passes 50 000 cases.
+- **C additions (ABI 2).** `sb_disc_seek_index_extend_past_marks` and `sb_seek_index_extend_past_marks` are the C counterparts of the eager pass (#451), and `sb_seek_index_without_damage` gives a copy of a seek index without its damage record (#448), the C equivalent of `AreaIndex::without_damage` that 1.2.0's notes said was pending. ABI 2 gains these three functions; `abi/abi-2.txt` only gains lines.
+- **Saved seek indexes: the format is unchanged since 1.2.0.** An index saved with no damage record is byte-identical to what 1.1.x saves (checked against two indexes saved by 1.1.1), and every earlier saved index loads. An index saved with a record loads in 1.2.0 and later; 1.1.x refuses it (`InvalidArgument("seek index flags invalid")`, `SB_STATUS_INVALID_ARGUMENT` in C). To hand indexes to 1.1.x readers, save `AreaIndex::without_damage()` in Rust or `sb_seek_index_without_damage` in C.
+- **ThreadSanitizer in CI (#445, #446).** A new CI job runs a read on a disc while its clone runs the seek index's verification, through the Rust API and the C interface, under ThreadSanitizer with the standard library instrumented. It keeps under test the case of #445, whose report of races in `realloc` was a false positive of a TSan run against an uninstrumented static library: built with std instrumented, the library reports none. Nothing in the library changed for it.
+- **Checked against 1.2.0:** `cargo semver-checks --baseline-rev v1.2.0 --release-type minor` finds no semver update required for `scarletbook` and `scarletbook-ffi` (default and all features). `abi-check.py` passes with `SB_ABI_VERSION` 2.
+- **No benchmark table.** The changes in this release change how many sectors a reading past a marked sector reads, which #447 measured exactly by read count (above); they don't change how fast anything decodes or converts, and output with no sectors marked is unchanged. 1.0.0's table stands.
+- **Not measured:** real damaged discs and drives (the tests use marked sectors of generated images), timings with marks set (the figures above are read counts), and the C interface's timings.
+
+### Added
+
+- `AreaIndex::extend_past_marks` and `Disc::extend_seek_index_past_marks` build a seek index's reading state past unreadable sectors ahead of the reads that use it, in calls of any size (for example on another thread): the first range opened past a newly marked sector then starts near its first frame instead of scanning the area from its first sector. What ranges return is unchanged (#443, #447).
+- C ABI: `sb_disc_seek_index_extend_past_marks` and `sb_seek_index_extend_past_marks` build a seek index's reading state past unreadable sectors ahead of the reads (the C counterparts of `Disc::extend_seek_index_past_marks` and `AreaIndex::extend_past_marks`). An ABI 2 addition (#443, #451).
+- C ABI: `sb_seek_index_without_damage` gives a copy of a seek index without the reading state it holds past unreadable sectors, to save for a library version that does not load that state (the C counterpart of `AreaIndex::without_damage`). An ABI 2 addition (#443, #448).
+
+### Changed
+
+- A seek index's damage record replaced by a read that met other marks keeps its points before the first sector where the two sets of marks differ, which fit both: a range opened between the old and the new marks still starts near its first frame instead of scanning the area from its first sector. What ranges return is unchanged (#443, #449).
+- Ranges opened past unreadable sectors start from the latest point of the seek index's damage record that the marks of now still fit, not only from its last point before the range, so a mark added late in the area no longer sends them back to the area's first sector. A cursor continued past a mark (`Disc::continue_range_frames` and the like) opens its range from that record when it lies further on, instead of reading on. `AreaIndex::merge` joins damage records of the same marks. What ranges return is unchanged (#443, #447).
+- With `SeekPolicy::Speculative` and unreadable sectors, a disc's choice between a provisional and an exact start compares the range's position with where the exact reading would really start with the marks of now (a seek index checkpoint before them, the damage record, or the area's first sector), not with the index's checkpoint before the range: a range far past a mark no longer scans the area from its first sector when a provisional start is allowed, and one the damage record serves starts exactly from it (#443, #450).
+
 ## [1.2.0] - 2026-11-25
 
 **1.2.0 reads damaged discs: sectors can be marked unreadable, and the frames that touch them are reported lost (#435, #439); ranges opened past them resume from the state of the read that met them (#441, #442).** It is a semver minor release: the Rust API of `scarletbook` and ABI 2 of the C library gain items, nothing is removed, and a disc with no unreadable sectors reads exactly as before. One behaviour changes, for C read callbacks that return -2 (below). Rust code that builds against 1.1.1 builds against 1.2.0 with only the version changed; C programs need no change (`SB_ABI_VERSION` 2, and the header only gains declarations).
@@ -1236,7 +1271,8 @@ First release: a clean-room reader for SACD images, written from sacd-spec, pass
 - DST decoding about 3.8 times faster on one thread, and parallel decoding that overlaps
   demultiplexing with decoding within a bounded memory (#16, #17, #19).
 
-[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/aclater/scarletbook-rs/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/aclater/scarletbook-rs/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/aclater/scarletbook-rs/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/aclater/scarletbook-rs/compare/v1.0.2...v1.1.0

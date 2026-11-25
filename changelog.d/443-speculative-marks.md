@@ -1,2 +1,0 @@
-Changed
-- With `SeekPolicy::Speculative` and unreadable sectors, a disc's choice between a provisional and an exact start compares the range's position with where the exact reading would really start with the marks of now (a seek index checkpoint before them, the damage record, or the area's first sector), not with the index's checkpoint before the range: a range far past a mark no longer scans the area from its first sector when a provisional start is allowed, and one the damage record serves starts exactly from it (#443, #450).
