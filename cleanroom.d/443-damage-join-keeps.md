@@ -1,1 +1,0 @@
-| 2026-11-25 | seek state past unreadable sectors: replaced records keep the points that fit both (#443) | Own derivation from the record of #441 (sacd-spec chapter 4, 4.2 item 7, applied to the reading proposed in sacd-spec#55). No new sources consulted. |

@@ -1,2 +1,0 @@
-Changed
-- Ranges opened past unreadable sectors start from the latest point of the seek index's damage record that the marks of now still fit, not only from its last point before the range, so a mark added late in the area no longer sends them back to the area's first sector. A cursor continued past a mark (`Disc::continue_range_frames` and the like) opens its range from that record when it lies further on, instead of reading on. `AreaIndex::merge` joins damage records of the same marks. What ranges return is unchanged (#443, #447).

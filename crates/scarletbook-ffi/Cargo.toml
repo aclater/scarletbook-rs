@@ -30,7 +30,7 @@ rayon = "1.10"
 # The exact versions of this release (crates.io needs a version beside the path); the
 # release that bumps a crate's version bumps its pin here too, or nothing builds.
 # scarletbook follows the workspace version; scarletbook-pcm has its own (0.7.0, #398).
-scarletbook = { path = "../scarletbook", version = "=1.2.0", features = ["parallel", "output"] }
+scarletbook = { path = "../scarletbook", version = "=1.3.0", features = ["parallel", "output"] }
 scarletbook-pcm = { path = "../scarletbook-pcm", version = "=0.7.0" }
 
 [lints.rust]

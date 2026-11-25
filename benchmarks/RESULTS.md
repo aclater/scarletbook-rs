@@ -64,6 +64,10 @@ In the run list, but not in every table:
   DSF and DSD to PCM are blank, unless an equivalent revision is compared instead (0.5.6
   below uses `3eb96dc` for 0.5.5).
 
+## 1.3.0
+
+Not timed. 1.3.0 changes where reads past unreadable sectors start (#443: #447, #449, #450) and adds calls that build the seek index's state past marked sectors ahead of the reads (`AreaIndex::extend_past_marks`, `Disc::extend_seek_index_past_marks` and their C counterparts, #451). These change how many sectors a reading past a mark reads, not how fast anything decodes or converts, and #447 measured that by read count: after one eager pass, the first 75-frame range past a new mark took 2 to 3 read calls instead of 49 to 178. With no sector marked, the output is unchanged (the existing tests and the conformance corpus pass unchanged). Timings with marks set are not measured. The 1.0.0 section below stands for 1.3.0's throughput.
+
 ## 1.2.0
 
 Not timed. 1.2.0 adds unreadable sectors (#435, #439). With no sector marked, the output is unchanged (the existing tests and the conformance corpus pass unchanged), and the added work on that path is one atomic load per sector checked (the set's "any marks" flag). A short no-marks overhead check against v1.1.1 was prepared for the Zen 2 benchmark host but not taken: the host's shared benchmark lock waited over an hour for the load to fall and the run was withdrawn. Timings with marks set, including the rescan of a range opened past a mark (#441), are not measured. The 1.0.0 section below stands for 1.2.0's throughput.

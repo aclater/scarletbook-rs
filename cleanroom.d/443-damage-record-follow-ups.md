@@ -1,1 +1,0 @@
-| 2026-11-25 | seek state past unreadable sectors: earlier points, continuations, eager building (#443) | Own derivation from the record of #441 (sacd-spec chapter 4, 4.2 item 7, applied to the reading proposed in sacd-spec#55); the code stays marked `TODO(sacd-spec#55)`. No new sources consulted. |
