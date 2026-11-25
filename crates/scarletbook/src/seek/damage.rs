@@ -98,9 +98,10 @@ impl Damage {
     /// sectors `malformed` (from the area's first sector, increasing): it extends this one
     /// when the runs of both agree up to the lower of their last checkpoints, its sector
     /// included; otherwise it is of other marks and replaces this one if `replace` (the
-    /// newer marks are the likelier to be read with) or this one is empty. Either way each
-    /// checkpoint stays keyed by the runs before it, so the record is never wrong, only of
-    /// use to fewer marks.
+    /// newer marks are the likelier to be read with) or this one is empty, keeping this
+    /// one's checkpoints before the first sector where the runs differ, which fit both.
+    /// Either way each checkpoint stays keyed by the runs before it, so the record is never
+    /// wrong, only of use to fewer marks.
     fn join(
         &mut self,
         runs: &[(u64, u64)],
@@ -111,10 +112,23 @@ impl Damage {
         let Some(agree) = self.joins(runs, checkpoints, replace) else { return };
         let last = checkpoints.last().map_or(0, |c| c.lsn);
         let held = self.checkpoints.last().map_or(0, |c| c.lsn);
-        if !agree {
-            self.checkpoints.clear();
+        if agree {
+            self.checkpoints.extend(checkpoints.iter().filter(|c| c.lsn > held));
+        } else {
+            // Of other marks: this record's checkpoints before the first sector where the
+            // runs differ fit both (the same scan up to there), so they stay, with the
+            // other's (#443). They count the same runs before them.
+            let upto = held.min(last) + 1;
+            let differ = first_difference(
+                &below(&self.runs, upto).collect::<Vec<_>>(),
+                &below(runs, upto).collect::<Vec<_>>(),
+                upto,
+            );
+            let kept = self.checkpoints.partition_point(|c| c.lsn < differ);
+            self.checkpoints.truncate(kept);
+            let from = checkpoints.partition_point(|c| c.lsn <= self.checkpoints.last().map_or(0, |c| c.lsn));
+            self.checkpoints.extend_from_slice(&checkpoints[from..]);
         }
-        self.checkpoints.extend(checkpoints.iter().filter(|c| c.lsn > held || !agree));
         self.runs.clear();
         self.runs.extend_from_slice(runs);
         self.malformed.clear();
