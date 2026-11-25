@@ -49,7 +49,7 @@ fn seek_index_regressions() {
 #[cfg_attr(miri, ignore = "slow under Miri")]
 fn seek_index_seeds_load() {
     let (image, area) = harness::seek_area();
-    let (mut stored, mut hinted, mut confirmed) = (false, false, false);
+    let (mut stored, mut hinted, mut confirmed, mut damaged) = (false, false, false, false);
     for seed in harness::seek_index_seeds() {
         let mut bytes = seed.clone();
         let sum = seed
@@ -63,11 +63,14 @@ fn seek_index_seeds_load() {
         // Format version 2 (#124): seek hints recorded by extend.
         hinted |= full.hint_count() > 0;
         confirmed |= full.confirmation_count() > 0;
+        // Flags bit 2 (#441): a damage record.
+        damaged |= bytes[14] & 4 != 0;
         harness::seek_index(&seed);
     }
     assert!(stored, "no seed stores a frame under assembly");
     assert!(hinted, "no seed holds seek hints");
     assert!(confirmed, "no seed holds a saved confirmation");
+    assert!(damaged, "no seed holds a damage record");
 }
 
 /// The disc seeds of the fuzz target (#124): a disc of the harness takes them (their TOC

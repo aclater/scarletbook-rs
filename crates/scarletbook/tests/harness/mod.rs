@@ -429,7 +429,15 @@ const SEEK_SECTORS: u32 = 64;
 /// sectors, a malformed sector, a frame held over 37 sectors without packets and a frame
 /// with the largest timecode; and its image.
 pub fn seek_area() -> (scarletbook::Image<std::io::Cursor<Vec<u8>>>, scarletbook::Area) {
-    use scarletbook::toc::{AreaKind, AreaText, Timecode, Version};
+    let image = scarletbook::Image::options()
+        .with_format(scarletbook::SectorFormat::Plain)
+        .open(std::io::Cursor::new(seek_area_sectors()))
+        .unwrap();
+    (image, seek_area_of())
+}
+
+/// The sectors of the image of [`seek_area`].
+fn seek_area_sectors() -> Vec<u8> {
     let mut bytes = vec![0u8; SEEK_SECTORS as usize * 2048];
     for (i, s) in bytes.chunks_exact_mut(2048).enumerate() {
         let packet = |start: bool, len: u16| ((u16::from(start) << 15) | (2 << 11) | len).to_be_bytes();
@@ -459,10 +467,12 @@ pub fn seek_area() -> (scarletbook::Image<std::io::Cursor<Vec<u8>>>, scarletbook
             }
         }
     }
-    let image = scarletbook::Image::options()
-        .with_format(scarletbook::SectorFormat::Plain)
-        .open(std::io::Cursor::new(bytes))
-        .unwrap();
+    bytes
+}
+
+/// The area of [`seek_area`].
+fn seek_area_of() -> scarletbook::Area {
+    use scarletbook::toc::{AreaKind, AreaText, Timecode, Version};
     // `Area` can't be built by literal outside the crate: start from a parsed one and set
     // every field, so that this area does not depend on the disc it came from.
     static PARSED: std::sync::OnceLock<scarletbook::Area> = std::sync::OnceLock::new();
@@ -494,7 +504,7 @@ pub fn seek_area() -> (scarletbook::Image<std::io::Cursor<Vec<u8>>>, scarletbook
     area.text_charset = 0;
     area.text = AreaText::default();
     area.tracks = Vec::new();
-    (image, area)
+    area
 }
 
 fn fnv(bytes: &[u8]) -> u64 {
@@ -508,8 +518,8 @@ pub fn with_checksum(bytes: &[u8]) -> Vec<u8> {
     summed
 }
 
-/// Seeds for [`seek_index`]: complete indexes of [`seek_area`] at a few intervals, and a
-/// partial one, without their checksums.
+/// Seeds for [`seek_index`]: complete indexes of [`seek_area`] at a few intervals, a
+/// partial one, and two with damage records, without their checksums.
 pub fn seek_index_seeds() -> Vec<Vec<u8>> {
     let (mut image, area) = seek_area();
     let n = image.sector_count();
@@ -554,6 +564,30 @@ pub fn seek_index_seeds() -> Vec<Vec<u8>> {
         v3.extend_from_slice(&7u64.to_le_bytes());
         out.push(v3);
     }
+    // Damage records (#441, #443): recorded by a first read past two marked runs, and built
+    // ahead of the reads past one.
+    for (k, eager) in [(2, false), (5, true)] {
+        let (mut image, area) = seek_area();
+        let n = image.sector_count();
+        let options = scarletbook::IndexOptions::new().with_interval(k);
+        let mut index = AreaIndex::new(&area, n, options).unwrap();
+        while !index.extend(&mut image, 1000).unwrap() {}
+        image.unreadable_sectors().insert(30, 2);
+        if eager {
+            while !index.extend_past_marks(&mut image, 8).unwrap() {}
+        } else {
+            image.unreadable_sectors().insert(44, 1);
+            let p = area.playtime_frames();
+            let mut cursor =
+                scarletbook::TrackCursor::open_range(&area, 0, p, n, CursorOptions::new().with_index(&index))
+                    .unwrap();
+            while let Some(Ok(_)) = cursor.next_frame(&mut image) {}
+            index.absorb(&mut cursor).unwrap();
+        }
+        let mut bytes = index.to_bytes();
+        bytes.truncate(bytes.len() - 8);
+        out.push(bytes);
+    }
     out
 }
 
@@ -562,8 +596,10 @@ pub fn seek_index_seeds() -> Vec<Vec<u8>> {
 /// loaded index takes memory proportional to the input, saves to the same bytes, and
 /// cursors started from it (exact and speculative, from its seek hints) and its extension
 /// read without panicking. The same bytes are then loaded for the disc of [`seek_disc`]
-/// (see [`seek_index_disc`]).
+/// (see [`seek_index_disc`]); before all that, the input's last bytes choose unreadable
+/// sectors for [`seek_index_marks`], which also loads it.
 pub fn seek_index(data: &[u8]) {
+    seek_index_marks(data);
     let (mut image, area) = seek_area();
     let n = image.sector_count();
     let summed = with_checksum(data);
@@ -613,6 +649,162 @@ pub fn seek_index(data: &[u8]) {
         let _ = copy.extend(&mut image, 1000);
         let _ = copy.verify(&mut image);
         let _ = copy.take_events();
+        let mut merged = index.clone();
+        let _ = merged.merge(&copy);
+    }
+}
+
+/// A reader over the sectors of [`seek_area`] that reports sector `bad` unreadable
+/// ([`scarletbook::read_at::unreadable_error`], #435) once it is set: damage found by the
+/// reader as it reads, which the cursor then marks.
+#[derive(Debug)]
+struct Flaky {
+    inner: std::io::Cursor<Vec<u8>>,
+    bad: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl Read for Flaky {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let bad = self.bad.load(std::sync::atomic::Ordering::Relaxed);
+        let from = self.inner.position();
+        if bad != u64::MAX && from < (bad + 1) * 2048 && from + buf.len() as u64 > bad * 2048 {
+            return Err(scarletbook::read_at::unreadable_error());
+        }
+        self.inner.read(buf)
+    }
+}
+
+impl Seek for Flaky {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        self.inner.seek(pos)
+    }
+}
+
+/// What a read of `[first, end)` of the area of [`seek_area`] returns: its frames, missing
+/// and lost counts; and its cursor.
+fn area_read<R: Read + Seek>(
+    image: &mut scarletbook::Image<R>,
+    area: &scarletbook::Area,
+    (first, end): (u32, u32),
+    index: Option<&AreaIndex>,
+) -> ((Vec<scarletbook::TrackFrame>, u64, u64), scarletbook::TrackCursor) {
+    let options = index.map_or_else(CursorOptions::new, |i| CursorOptions::new().with_index(i));
+    let n = image.sector_count();
+    let mut cursor = scarletbook::TrackCursor::open_range(area, first, end, n, options).unwrap();
+    let mut frames = Vec::new();
+    while let Some(f) = cursor.next_frame(image) {
+        frames.push(f.unwrap());
+    }
+    ((frames, cursor.missing_frames(), cursor.lost_frames()), cursor)
+}
+
+/// Reading [`seek_area`] with unreadable sectors (#435), through an index that holds a
+/// damage record (#441, #443), with the marks chosen by the input's last five bytes: up
+/// to two marked runs, the interval, whether the record is built ahead of the reads
+/// ([`AreaIndex::extend_past_marks`]) or by a first read, and a sector the reader reports
+/// unreadable as it reads it.
+///
+/// An index built here, complete before the marks: every range read through it, through
+/// it saved and loaded, and through an index merged with it, equals a read without an
+/// index with the same marks (the damage record resumes reads where a scan from the first
+/// sector would be). The input as a saved index, as it is and with its checksum: loaded,
+/// with the same marks, it reads (frames within the range, increasing), takes the
+/// reads' records and builds its record ahead, without panicking.
+pub fn seek_index_marks(data: &[u8]) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let mut t = [0u8; 5];
+    let tail = &data[data.len().saturating_sub(5)..];
+    t[..tail.len()].copy_from_slice(tail);
+    let marks: Vec<(u64, u64)> = [(t[0], t[1]), (t[2], t[3])]
+        .into_iter()
+        .filter(|&(s, _)| s & 0x80 == 0)
+        .map(|(s, c)| (u64::from(s) % u64::from(SEEK_SECTORS), u64::from(c % 4) + 1))
+        .collect();
+    let interval = u32::from(t[4] % 8) + 1;
+    let eager = t[4] & 0x08 != 0;
+    let bad = (t[4] & 0x10 != 0).then_some(u64::from(t[3] >> 2) % u64::from(SEEK_SECTORS));
+    let area = seek_area_of();
+    let p = area.playtime_frames();
+    let open = |bad: &std::sync::Arc<AtomicU64>| {
+        scarletbook::Image::options()
+            .with_format(scarletbook::SectorFormat::Plain)
+            .open(Flaky { inner: std::io::Cursor::new(seek_area_sectors()), bad: bad.clone() })
+            .unwrap()
+    };
+    let mark = |image: &scarletbook::Image<Flaky>, flag: &AtomicU64| {
+        for &(lsn, count) in &marks {
+            image.unreadable_sectors().insert(lsn, count);
+        }
+        flag.store(bad.unwrap_or(u64::MAX), Ordering::Relaxed);
+    };
+
+    // An index built here.
+    let flag = std::sync::Arc::new(AtomicU64::new(u64::MAX));
+    let mut image = open(&flag);
+    let n = image.sector_count();
+    let options = scarletbook::IndexOptions::new().with_interval(interval);
+    let mut index = AreaIndex::new(&area, n, options).unwrap();
+    while !index.extend(&mut image, 1000).unwrap() {}
+    mark(&image, &flag);
+    if eager {
+        let mut calls = 0;
+        while !index.extend_past_marks(&mut image, 8).unwrap() {
+            calls += 1;
+            assert!(calls <= SEEK_SECTORS, "building the damage record makes no progress");
+        }
+    }
+    // A first read of the whole area, which also finds the sector the reader reports.
+    let (_, mut cursor) = area_read(&mut image, &area, (0, p), Some(&index));
+    index.absorb(&mut cursor).unwrap();
+    // The same marks, all known now, on an image read without an index.
+    let mut plain = seek_area().0;
+    for (lsn, count) in image.unreadable_sectors().ranges() {
+        plain.unreadable_sectors().insert(lsn, count);
+    }
+    let firsts = [0, p / 2, p - 1, u32::from(t[1]) % p];
+    for first in firsts {
+        let want = area_read(&mut plain, &area, (first, p), None).0;
+        let (got, mut cursor) = area_read(&mut image, &area, (first, p), Some(&index));
+        assert!(got == want, "[{first}, {p}) differs from a read without an index");
+        let _ = index.absorb(&mut cursor);
+    }
+    // Saved and loaded, and merged into the index without its record.
+    let saved = index.to_bytes();
+    let loaded = AreaIndex::from_bytes(&area, n, &saved, usize::MAX).unwrap();
+    assert_eq!(loaded.to_bytes(), saved, "saving a loaded damage record changes it");
+    let light = index.without_damage().to_bytes();
+    assert_eq!(AreaIndex::from_bytes(&area, n, &light, usize::MAX).unwrap().to_bytes(), light);
+    let mut merged = index.without_damage();
+    merged.merge(&index).unwrap();
+    for first in [p / 2, u32::from(t[1]) % p] {
+        let want = area_read(&mut plain, &area, (first, p), None).0;
+        for (which, i) in [("loaded", &loaded), ("merged", &merged)] {
+            let got = area_read(&mut image, &area, (first, p), Some(i)).0;
+            assert!(got == want, "[{first}, {p}) through the {which} index differs");
+        }
+    }
+
+    // The input as a saved index.
+    let summed = with_checksum(data);
+    for bytes in [data, &summed[..]] {
+        let Ok(index) = AreaIndex::from_bytes(&area, n, bytes, usize::MAX) else { continue };
+        let flag = std::sync::Arc::new(AtomicU64::new(u64::MAX));
+        let mut image = open(&flag);
+        mark(&image, &flag);
+        let mut copy = index.clone();
+        for first in [0, p / 2, u32::from(t[1]) % p] {
+            let ((frames, ..), mut cursor) = area_read(&mut image, &area, (first, p), Some(&index));
+            assert!(frames.iter().all(|f| (first..p).contains(&f.number)), "a frame outside [{first}, {p})");
+            assert!(frames.windows(2).all(|w| w[0].number < w[1].number), "frames not increasing");
+            let _ = copy.absorb(&mut cursor);
+        }
+        for _ in 0..SEEK_SECTORS {
+            if copy.extend_past_marks(&mut image, 8).unwrap_or(true) {
+                break;
+            }
+        }
+        let saved = copy.to_bytes();
+        assert_eq!(AreaIndex::from_bytes(&area, n, &saved, usize::MAX).unwrap().to_bytes(), saved);
         let mut merged = index.clone();
         let _ = merged.merge(&copy);
     }
