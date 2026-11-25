@@ -66,13 +66,16 @@ fn frames_disc(n: u32) -> (Vec<u8>, u32, usize) {
     (spec.build(), n, sectors)
 }
 
-/// Well-formed areas: frames of both kinds and any size, numbered one apart.
+/// Well-formed areas: frames of both kinds and any size, numbered one apart (under Miri,
+/// a few short DST frames).
 fn well_formed() -> impl Strategy<Value = Vec<[u8; S]>> {
-    proptest::collection::vec((any::<bool>(), 1usize..9000, any::<u8>()), 1..40).prop_map(|kinds| {
+    let (most, longest) = if cfg!(miri) { (6, 3000) } else { (40, 9000) };
+    proptest::collection::vec((any::<bool>(), 1usize..longest, any::<u8>()), 1..most).prop_map(|kinds| {
         let frames: Vec<PFrame> = kinds
             .iter()
             .enumerate()
             .map(|(i, &(dst, len, seed))| {
+                let dst = dst || cfg!(miri);
                 let len = if dst { len } else { 2 * 4704 };
                 PFrame { number: i as u32, dst, data: (0..len).map(|j| seed ^ j as u8).collect() }
             })
@@ -213,25 +216,31 @@ proptest! {
     /// state of the scans that met the marks, saved and loaded on the way) equals a scan
     /// from the first sector, position for position: numbers, contents, lost statuses,
     /// missing, lost and malformed counts (after every position) and warnings.
+    ///
+    /// Under Miri: two cases of a few short well-formed frames and a few steps.
     #[test]
-    #[cfg_attr(miri, ignore = "reads many ranges; ranges_past_marks_start_from_the_damage_record covers it under Miri")]
     fn resumed_reads_equal_rescans(
-        audio in prop_oneof![stream(), well_formed()],
+        audio in if cfg!(miri) { well_formed().boxed() } else { prop_oneof![stream(), well_formed()].boxed() },
         interval in prop_oneof![Just(1u32), Just(2), Just(7), Just(64)],
         eager in any::<bool>(),
-        ops in proptest::collection::vec(op(), 1..24),
+        ops in proptest::collection::vec(op(), 1..if cfg!(miri) { 6 } else { 24 }),
     ) {
         resumed_equals_rescan(audio, interval, eager, &ops)?;
     }
 }
 
-/// The property test reaches damage resumes (not under Miri: it runs two cases there).
+/// The property test reaches damage resumes: 64 generated cases, or under Miri one fixed
+/// case that must (a mark early in a few frames, then two ranges past it).
 #[test]
-#[cfg_attr(
-    miri,
-    ignore = "reads many ranges; ranges_past_marks_start_from_the_damage_record covers it under Miri"
-)]
 fn the_property_reaches_damage_resumes() {
+    if cfg!(miri) {
+        let frames: Vec<PFrame> =
+            (0..8).map(|number| PFrame { number, dst: true, data: vec![number as u8; 2500] }).collect();
+        let ops = [Op::Mark(0.1, 1), Op::Read(0.5, 1.0, 40), Op::Read(0.75, 1.0, 40)];
+        resumed_equals_rescan(pack(&frames), 1, true, &ops).unwrap();
+        assert!(DAMAGE_RESUMES.load(Ordering::Relaxed) > 0, "no read resumed past a mark");
+        return;
+    }
     let mut runner = proptest::test_runner::TestRunner::deterministic();
     for _ in 0..64 {
         let ops = proptest::collection::vec(op(), 8..24);
@@ -414,11 +423,10 @@ fn cost_of_ranges_past_a_mark() {
 /// below: `complete-v1.bin` by `AreaIndex::extend` at `K = 4` (version 1),
 /// `disc-v2.bin` by a disc's own index at `K = 8` after one range read and extending it
 /// complete (version 2, with the TOC fingerprint and seek hints).
+///
+/// Under Miri, only loading and saving the fixtures: building indexes of 120 frames is left
+/// to the native run.
 #[test]
-#[cfg_attr(
-    miri,
-    ignore = "builds two indexes of 120 frames; damage_records_round_trip covers loading and saving"
-)]
 fn indexes_of_1_1_1_load_and_save_unchanged() {
     let v1: &[u8] = include_bytes!("fixtures/seek_index_v1_1_1/complete-v1.bin");
     let v2: &[u8] = include_bytes!("fixtures/seek_index_v1_1_1/disc-v2.bin");
@@ -438,6 +446,9 @@ fn indexes_of_1_1_1_load_and_save_unchanged() {
     for bytes in [v1, v2] {
         let index = AreaIndex::from_bytes(&area, n, bytes, DEFAULT_INLINE_BUDGET).unwrap();
         assert_eq!(index.to_bytes(), bytes);
+    }
+    if cfg!(miri) {
+        return;
     }
     let mut index = AreaIndex::new(&area, n, IndexOptions::new().with_interval(4)).unwrap();
     while !index.extend(disc.image_mut(), 7).unwrap() {}
@@ -499,4 +510,50 @@ fn damage_records_round_trip() {
             }
         }
     }
+}
+
+/// More runs of unreadable sectors than a damage record keeps (4096): the record keeps the
+/// first 4096 and the checkpoints before the next, saves and loads, and reads from it
+/// equal a scan from the first sector.
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "needs more than 4096 marked runs; damage_records_round_trip covers saving under Miri"
+)]
+fn more_runs_than_a_record_keeps() {
+    let (image, playtime, sectors) = frames_disc(5200);
+    assert!(sectors > 2 * 4100 + 64, "{sectors} sectors");
+    let mut disc = Disc::open(Cursor::new(image.clone())).unwrap();
+    disc.enable_seek_index(SLOT, IndexOptions::new().with_interval(64)).unwrap();
+    // 4100 single sectors apart, from the second sector on: every boundary is readable.
+    for i in 0..4100u64 {
+        disc.unreadable_sectors().insert((AUDIO_LSN + 1) as u64 + 2 * i, 1);
+    }
+    let all = (0, playtime);
+    let (got, missing, lost, _) = raw(&mut disc, all);
+    assert_eq!((got, missing, lost), straight(&image, &disc, all));
+    let index = disc.seek_index(SLOT).unwrap();
+    let bytes = index.to_bytes();
+    assert_eq!(bytes[14] & 4, 4, "a damage record is kept");
+    let (area, n) = area(&disc);
+    let loaded = AreaIndex::from_bytes(&area, n, &bytes, DEFAULT_INLINE_BUDGET).unwrap();
+    assert_eq!(loaded, index);
+    assert_eq!(loaded.to_bytes(), bytes);
+    // A new disc with the loaded index and the same marks: ranges equal the scan, and one
+    // past the marks starts from the record.
+    let mut again = Disc::open(Cursor::new(image.clone())).unwrap();
+    again.set_seek_index(SLOT, loaded).unwrap();
+    for (l, c) in disc.unreadable_sectors().ranges() {
+        again.unreadable_sectors().insert(l, c);
+    }
+    let mut resumed = false;
+    for first in [playtime / 4, playtime / 2, playtime * 3 / 4, playtime - 1] {
+        let range = (first, playtime);
+        let (got, missing, lost, from) = raw(&mut again, range);
+        assert_eq!((got, missing, lost), straight(&image, &again, range), "{range:?} from {from:?}");
+        resumed |= checkpoint(from).is_some_and(|l| l > (AUDIO_LSN + 1) as u64);
+    }
+    assert!(resumed, "no range started from the record");
+    let bytes = again.seek_index(SLOT).unwrap().to_bytes();
+    AreaIndex::from_bytes(&area, n, &bytes, DEFAULT_INLINE_BUDGET).unwrap();
 }

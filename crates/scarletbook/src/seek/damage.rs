@@ -124,7 +124,8 @@ pub(crate) struct DamageRecorder {
     /// Recording: the scan met an unreadable sector, and its state is that of a scan from
     /// the area's first sector.
     active: bool,
-    /// More runs than [`MAX_DAMAGE_RUNS`]: records nothing more.
+    /// More runs than [`MAX_DAMAGE_RUNS`]: records nothing more, and keeps the first
+    /// [`MAX_DAMAGE_RUNS`] runs and the checkpoints before the next one.
     full: bool,
     /// Every unreadable run the scan processed, from the area's first sector.
     runs: Vec<(u64, u64)>,
@@ -165,14 +166,17 @@ impl DamageRecorder {
         if self.full {
             return;
         }
+        let full = self.runs.len() == MAX_DAMAGE_RUNS;
         match self.runs.last_mut() {
             Some(run) if run.1 == lsn => run.1 += 1,
+            _ if full => {
+                // One run too many: nothing more is recorded. The runs kept are complete
+                // (a readable sector ends the last), and the checkpoints recorded so far lie
+                // before this one and count only them, so they stay a valid record.
+                (self.active, self.full, self.next) = (false, true, u64::MAX);
+                return;
+            }
             _ => self.runs.push((lsn, lsn + 1)),
-        }
-        if self.runs.len() > MAX_DAMAGE_RUNS {
-            (self.active, self.full, self.next) = (false, true, u64::MAX);
-            self.runs.clear();
-            return;
         }
         self.active = true;
         self.next = self.boundary_after(lsn);
