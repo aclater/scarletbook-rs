@@ -1,1 +1,0 @@
-| 2026-11-25 | seek state past unreadable sectors (#441) | Own derivation from sacd-spec chapter 4 (4.2 item 7, 4.4, 4.5) applied to the reading of unreadable sectors proposed in sacd-spec#55; the code is marked `TODO(sacd-spec#55)`. The compatibility fixtures were saved by this repository's own v1.1.1. No new sources consulted. |
