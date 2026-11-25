@@ -496,7 +496,58 @@ impl AreaIndex {
 
 #[cfg(test)]
 mod tests {
-    use super::first_difference;
+    use std::sync::Arc;
+
+    use super::{Checkpoint, Damage, DamageCheckpoint, first_difference};
+
+    /// A record of one scan that met the run `[10, 12)`, with checkpoints at 14, 16 and 18
+    /// whose `a` is the LSN.
+    fn record() -> Arc<Damage> {
+        let at = |lsn: u64| DamageCheckpoint {
+            lsn,
+            runs: 1,
+            checkpoint: Checkpoint { next_acceptable: lsn as u32, back: 0, malformed_before: 0, digest: 0 },
+            lost_from: None,
+        };
+        Arc::new(Damage {
+            runs: vec![(10, 12)],
+            checkpoints: vec![at(14), at(16), at(18)],
+            malformed: Vec::new(),
+        })
+    }
+
+    /// The checkpoint a cursor of positions `first` or more starts from with the marked
+    /// runs `marks` (#443).
+    fn chosen(first: u32, marks: &[(u64, u64)]) -> Option<u64> {
+        let clip = |to: u64| -> Vec<(u64, u64)> {
+            marks.iter().filter(|r| r.0 < to).map(|&(s, e)| (s, e.min(to))).collect()
+        };
+        record().candidates(first)?.choose(clip).map(|d| d.at.lsn)
+    }
+
+    /// The exact fit boundary (#443 review): a checkpoint fits when the sectors before it
+    /// and its own are marked as its scan found them, and only then.
+    #[test]
+    fn fit_boundaries() {
+        let run = (10, 12);
+        assert_eq!(chosen(u32::MAX, &[run]), Some(18));
+        // A mark on a checkpoint's own sector: the one before it.
+        assert_eq!(chosen(u32::MAX, &[run, (18, 19)]), Some(16));
+        assert_eq!(chosen(u32::MAX, &[run, (16, 17)]), Some(14));
+        assert_eq!(chosen(u32::MAX, &[run, (14, 15)]), None);
+        // Just before one: the one before; just after the last: the last.
+        assert_eq!(chosen(u32::MAX, &[run, (17, 18)]), Some(16));
+        assert_eq!(chosen(u32::MAX, &[run, (15, 16)]), Some(14));
+        assert_eq!(chosen(u32::MAX, &[run, (19, 20)]), Some(18));
+        // The run met changed by one sector at either end, or gone: none fits.
+        for marks in [&[(10, 13)][..], &[(9, 12)], &[(10, 11)], &[(11, 12)], &[]] {
+            assert_eq!(chosen(u32::MAX, marks), None, "{marks:?}");
+        }
+        // Only the candidates with `a <= first`.
+        assert_eq!(chosen(16, &[run]), Some(16));
+        assert_eq!(chosen(17, &[run, (17, 18)]), Some(16));
+        assert_eq!(chosen(13, &[run]), None);
+    }
 
     #[test]
     fn first_differences() {
