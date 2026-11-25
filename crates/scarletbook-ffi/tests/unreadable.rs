@@ -113,6 +113,101 @@ fn check_raw(what: &str, got: &[(u32, u32, u32)], touched: &BTreeSet<u32>) {
     }
 }
 
+/// The flags byte of the bytes `sb_seek_index_save` gives for `index`.
+fn saved_flags(index: *const SbSeekIndex) -> u8 {
+    let mut len = 0;
+    assert_eq!(c!(sb_seek_index_save(index, ptr::null_mut(), 0, &mut len)), SbStatus::BufferTooSmall);
+    let mut buf = vec![0u8; len];
+    assert_eq!(c!(sb_seek_index_save(index, buf.as_mut_ptr(), buf.len(), &mut len)), SbStatus::Ok);
+    buf[14]
+}
+
+/// A larger area for building seek state past a mark: 40 frames of 3000 bytes.
+fn larger_image() -> Vec<u8> {
+    let frames: Vec<PFrame> = (0..40u32)
+        .map(|number| {
+            let payload: Vec<u8> = (0..3000).map(|i| (i as u32 * 7 + number) as u8).collect();
+            PFrame { number, dst: true, data: [&[0x40], &payload[..]].concat() }
+        })
+        .collect();
+    Spec {
+        channels: 2,
+        playtime: 40,
+        tracks: vec![TrackSpec { start: 0, duration: 40 }],
+        audio: pack(&frames),
+    }
+    .build()
+}
+
+/// Positions `[first, 40)` through `sb_raw_frames_read`.
+fn raw_from(disc: *const SbDisc, first: u32) -> Vec<(u32, u32, u32)> {
+    let mut r = ptr::null_mut();
+    assert_eq!(c!(sb_raw_frames_open(disc, 0, first, 40, &mut r)), SbStatus::Ok);
+    let out = read_raw(r, disc);
+    c!(sb_raw_frames_free(r));
+    out
+}
+
+/// Building the seek state past marked sectors ahead of the reads (#443):
+/// `sb_disc_seek_index_extend_past_marks` and `sb_seek_index_extend_past_marks` end, in
+/// small steps, with the state saved with the index (flags bit 2), and reads past the mark
+/// equal those of a disc without an index. Without marks there is nothing to do; NULL
+/// handles and a disc without an index are refused.
+#[test]
+fn seek_state_past_marks_builds_ahead() {
+    let img = larger_image();
+    let mark = (AUDIO_LSN + 8) as u64;
+    let plain = open(&img);
+    assert_eq!(c!(sb_disc_unreadable_add(plain, mark, 1)), SbStatus::Ok);
+    let want = raw_from(plain, 30);
+    // The disc's own index.
+    let disc = open(&img);
+    let mut complete = 9u8;
+    assert_eq!(
+        c!(sb_disc_seek_index_extend_past_marks(disc, 0, 8, &mut complete)),
+        SbStatus::InvalidArgument
+    );
+    assert_eq!(c!(sb_disc_seek_index_enable(disc, 0, 2, SB_SEEK_DEFAULT_INLINE_BUDGET)), SbStatus::Ok);
+    assert_eq!(c!(sb_disc_seek_index_extend_past_marks(disc, 0, 8, &mut complete)), SbStatus::Ok);
+    assert_eq!(complete, 1, "nothing marked: nothing to do");
+    assert_eq!(c!(sb_disc_unreadable_add(disc, mark, 1)), SbStatus::Ok);
+    let mut calls = 0;
+    loop {
+        assert_eq!(c!(sb_disc_seek_index_extend_past_marks(disc, 0, 8, &mut complete)), SbStatus::Ok);
+        if complete == 1 {
+            break;
+        }
+        calls += 1;
+        assert!(calls < 200, "does not end");
+    }
+    let mut index = ptr::null_mut();
+    assert_eq!(c!(sb_disc_seek_index_get(disc, 0, &mut index)), SbStatus::Ok);
+    assert_eq!(saved_flags(index) & 4, 4, "the state past the mark is kept");
+    c!(sb_seek_index_free(index));
+    assert_eq!(raw_from(disc, 30), want);
+    // A caller's index, through a disc of its own; NULL `complete` is allowed.
+    let other = open(&img);
+    assert_eq!(c!(sb_disc_unreadable_add(other, mark, 1)), SbStatus::Ok);
+    let mut index = ptr::null_mut();
+    assert_eq!(c!(sb_seek_index_new(other, 0, 2, SB_SEEK_DEFAULT_INLINE_BUDGET, &mut index)), SbStatus::Ok);
+    assert_eq!(c!(sb_seek_index_extend_past_marks(other, index, 1 << 20, ptr::null_mut())), SbStatus::Ok);
+    assert_eq!(c!(sb_seek_index_extend_past_marks(other, index, 8, &mut complete)), SbStatus::Ok);
+    assert_eq!(complete, 1);
+    assert_eq!(saved_flags(index) & 4, 4);
+    assert_eq!(
+        c!(sb_seek_index_extend_past_marks(ptr::null(), index, 8, &mut complete)),
+        SbStatus::InvalidArgument
+    );
+    assert_eq!(
+        c!(sb_seek_index_extend_past_marks(other, ptr::null_mut(), 8, &mut complete)),
+        SbStatus::InvalidArgument
+    );
+    c!(sb_seek_index_free(index));
+    for d in [plain, disc, other] {
+        c!(sb_disc_free(d));
+    }
+}
+
 #[test]
 fn marked_sectors_are_lost_in_every_read() {
     let (img, touched) = image();

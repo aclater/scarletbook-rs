@@ -713,6 +713,7 @@ SbStatus sb_pcm_samples_per_frame(const struct SbPcmConverter *conv, uint32_t *o
 SbStatus sb_pcm_convert_run(struct SbPcmConverter *conv, const uint8_t *before, const uint8_t *frames, size_t frames_len, const uint8_t *after, uint32_t fmt, void *out, size_t out_len, uint64_t *clipped);
 SbStatus sb_seek_index_new(const struct SbDisc *disc, uint32_t slot, uint32_t interval, uint64_t inline_budget, struct SbSeekIndex **out);
 SbStatus sb_seek_index_extend(const struct SbDisc *disc, struct SbSeekIndex *index, uint64_t max_sectors, uint8_t *complete);
+SbStatus sb_seek_index_extend_past_marks(const struct SbDisc *disc, struct SbSeekIndex *index, uint64_t max_sectors, uint8_t *complete);
 SbStatus sb_seek_index_frontier(const struct SbSeekIndex *index, uint64_t *lsn, uint8_t *complete);
 SbStatus sb_seek_index_memory(const struct SbSeekIndex *index, uint64_t *bytes);
 SbStatus sb_seek_index_merge(struct SbSeekIndex *into, const struct SbSeekIndex *from);
@@ -725,6 +726,7 @@ SbStatus sb_disc_seek_index_set(const struct SbDisc *disc, uint32_t slot, const 
 SbStatus sb_disc_seek_index_get(const struct SbDisc *disc, uint32_t slot, struct SbSeekIndex **out);
 SbStatus sb_disc_seek_index_disable(const struct SbDisc *disc, uint32_t slot);
 SbStatus sb_disc_seek_index_extend(const struct SbDisc *disc, uint32_t slot, uint64_t max_sectors, uint8_t *complete);
+SbStatus sb_disc_seek_index_extend_past_marks(const struct SbDisc *disc, uint32_t slot, uint64_t max_sectors, uint8_t *complete);
 SbStatus sb_range_audio_open_indexed(const struct SbDisc *disc, uint32_t slot, uint32_t first, uint32_t end, const struct SbSeekIndex *index, struct SbTrackAudio **out);
 SbStatus sb_range_audio_open_next_indexed(const struct SbDisc *disc, struct SbTrackAudio *prev, uint32_t slot, uint32_t first, uint32_t end, struct SbSeekIndex *index, struct SbTrackAudio **out);
 SbStatus sb_raw_frames_open_indexed(const struct SbDisc *disc, uint32_t slot, uint32_t first, uint32_t end, const struct SbSeekIndex *index, struct SbRawFrames **out);
