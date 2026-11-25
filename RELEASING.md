@@ -32,7 +32,10 @@ python3 .github/scripts/abi-check.py   # the C ABI; SB_ABI_VERSION stays 2 throu
 
 Both must report "no semver update required"; give the result in the pull request. A check
 that fails, or any change to `abi/abi-2.txt` other than an addition, stops the release. `scarletbook-ffi`'s contract is the C ABI, so `abi-check.py` is its real check; the
-Rust check of it is for completeness. `scarletbook-pcm` is not checked: it is decommissioned and
+Rust check of it is for completeness. For `scarletbook-ffi`, a `semver-checks` finding confined
+to the Rust mirrors of C items (its enums, structs and constants) is judged by `abi-check.py`:
+additions to ABI 2 are a minor release, and a break that `abi-check.py` reports is a new ABI
+(#444). `scarletbook-pcm` is not checked: it is decommissioned and
 frozen at 0.7.0 (#398), so no release changes its version.
 
 It also moves the README's Quick start (#364) to the new version: the `cargo add` pin, the

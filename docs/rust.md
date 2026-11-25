@@ -268,7 +268,7 @@ start; later ones start from that state, near their first frame, while the marks
 stay the same. Adding or removing a mark before a point makes the state there unused until a
 scan records it again. Sequential reads continued with `continue_*` read on.
 `AreaIndex::without_damage` drops that state, for example to save an index that readers
-before 1.3.0 load (they refuse one that holds it). In the stored frame list (`AreaFrame::lost_from`,
+before 1.2.0 load (they refuse one that holds it). In the stored frame list (`AreaFrame::lost_from`,
 `AreaFrames::lost_from`), each frame carries the lost stretch it closes.
 
 ## Features
