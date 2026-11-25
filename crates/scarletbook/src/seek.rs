@@ -58,13 +58,17 @@
 //! (#441): the state of a scan from the first sector that met marked sectors (its next
 //! acceptable frame number, frame under assembly, malformed count and the lost stretch open
 //! there) at the boundaries past the first of them, each keyed by the unreadable runs that
-//! scan processed before it. A cursor starts at the last such checkpoint whose `a` is at
-//! most the range's first frame when the sectors marked before it (and at it) are exactly
-//! those runs, and that checkpoint lies past the usable one of the index's own. It then
-//! returns what a scan from the first sector with these marks returns, on any image; with
-//! other marks before it, the record is not used. The record grows as cursors read past
-//! the marks, is replaced by a scan that met other marks, and is saved with the index
-//! ([`AreaIndex::to_bytes`]; [`AreaIndex::without_damage`] drops it).
+//! scan processed before it. A cursor starts at the latest such checkpoint whose `a` is
+//! at most the range's first frame and before which (and at which) the sectors marked are
+//! exactly those runs (#443: those checkpoints form a prefix, which ends where the marks
+//! and the runs first differ), when that checkpoint lies past the usable one of the
+//! index's own. It then returns what a scan from the first sector with these marks
+//! returns, on any image; with other marks before every such checkpoint, the record is
+//! not used. The record grows as cursors read past the marks, or ahead of them
+//! ([`AreaIndex::extend_past_marks`]), is replaced by a scan that met other marks, and is
+//! saved with the index ([`AreaIndex::to_bytes`]; [`AreaIndex::without_damage`] drops it).
+//! A continued cursor ([`crate::Disc::continue_range_frames`] and the like) opens its
+//! range from the record, rather than reading on, when that starts it further on.
 //!
 //! # Specification
 //!
@@ -80,7 +84,7 @@
 mod damage;
 mod persist;
 
-pub(crate) use damage::{DamageRecorder, DamageStart};
+pub(crate) use damage::{DamageCandidates, DamageRecorder, DamageStart};
 
 use std::io::{Read, Seek};
 
@@ -1334,8 +1338,9 @@ pub struct AreaIndex {
     /// Established provisional starts (specification 4, 4.2 item 9): (`L`, `u_L`, digest of
     /// sector `L`), by increasing `L`, for an index with a fingerprint.
     confirmed: Vec<(u32, u32, u64)>,
-    /// The state of a scan that met unreadable sectors, past the first of them (#441).
-    damage: damage::Damage,
+    /// The state of a scan that met unreadable sectors, past the first of them (#441):
+    /// shared with the cursors that may start from it until they first read (#443).
+    damage: std::sync::Arc<damage::Damage>,
 }
 
 /// Two indexes are equal when they hold the same reading state: the image they were
@@ -1386,7 +1391,7 @@ impl AreaIndex {
             fingerprint: None,
             fingerprint_checked: false,
             confirmed: Vec::new(),
-            damage: damage::Damage::default(),
+            damage: std::sync::Arc::default(),
         })
     }
 
@@ -1461,7 +1466,7 @@ impl AreaIndex {
             fingerprint: self.fingerprint,
             fingerprint_checked: self.fingerprint_checked,
             confirmed: Vec::new(),
-            damage: damage::Damage::default(),
+            damage: std::sync::Arc::default(),
         }
     }
 
@@ -1647,7 +1652,8 @@ impl AreaIndex {
     /// [`Error::Io`] if a read fails. The checkpoints recorded before stay.
     /// [`Error::SectorUnreadable`] once the pass reaches an unreadable sector
     /// ([`crate::UnreadableSectors`]): no checkpoint is recorded at or past it, so the index
-    /// cannot be completed while it stays marked.
+    /// cannot be completed while it stays marked ([`AreaIndex::extend_past_marks`] builds
+    /// the state past it instead).
     pub fn extend<R: Read + Seek>(&mut self, image: &mut Image<R>, max_sectors: u64) -> Result<bool, Error> {
         if image.sector_count() != self.key.image_sectors {
             return Err(Error::InvalidArgument("seek index of another image size"));
@@ -2416,7 +2422,7 @@ mod tests {
             fingerprint: None,
             fingerprint_checked: false,
             confirmed: Vec::new(),
-            damage: damage::Damage::default(),
+            damage: std::sync::Arc::default(),
         }
     }
 

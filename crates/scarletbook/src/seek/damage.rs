@@ -29,9 +29,17 @@
 // resuming from such state is specification 4, 4.2 item 7 applied to a scan that processes
 // unreadable sectors as proposed there.
 
-use super::{AreaIndex, Checkpoint, digest};
-use crate::audio::{AreaKey, MAX_MALFORMED_WARNINGS};
+use std::sync::Arc;
+
+use std::io::{Read, Seek};
+
+use super::{AreaIndex, Checkpoint, Plan, digest};
+use crate::audio::{AreaCursor, AreaKey, MAX_MALFORMED_WARNINGS};
+use crate::control::UnreadableSectors;
+use crate::error::Error;
+use crate::image::Image;
 use crate::image::SECTOR_SIZE;
+use crate::seek::ResumedFrom;
 
 /// Most runs of unreadable sectors a damage record keeps: a scan that meets more records
 /// nothing more (specification 7, 7.1 item 2: its memory is bounded whatever the marks).
@@ -76,23 +84,123 @@ impl Damage {
             + self.malformed.capacity() * std::mem::size_of::<u32>()
     }
 
-    /// Where a cursor of positions `first` or more may start: the last checkpoint with
-    /// `a <= first` (`a` grows with the LSN), with the runs before it and the malformed
-    /// sectors below it. Usable only if the marks before it are those runs
-    /// ([`DamageStart::fits`]).
-    pub(crate) fn start(&self, first: u32) -> Option<DamageStart> {
-        let j = self.checkpoints.partition_point(|c| c.checkpoint.next_acceptable <= first).checked_sub(1)?;
-        let at = self.checkpoints[j];
+    /// The checkpoints a cursor of positions `first` or more may start from: those with
+    /// `a <= first` (`a` grows with the LSN), shared with the record; `None` if there is
+    /// none. Which one is chosen on the first read ([`DamageCandidates::choose`]), against
+    /// the marks of that moment.
+    pub(crate) fn candidates(self: &Arc<Self>, first: u32) -> Option<DamageCandidates> {
+        let last =
+            self.checkpoints.partition_point(|c| c.checkpoint.next_acceptable <= first).checked_sub(1)?;
+        Some(DamageCandidates { damage: Arc::clone(self), last, read_to: 0 })
+    }
+
+    /// Joins the record of another scan, `runs` and `checkpoints` with its malformed
+    /// sectors `malformed` (from the area's first sector, increasing): it extends this one
+    /// when the runs of both agree up to the lower of their last checkpoints, its sector
+    /// included; otherwise it is of other marks and replaces this one if `replace` (the
+    /// newer marks are the likelier to be read with) or this one is empty. Either way each
+    /// checkpoint stays keyed by the runs before it, so the record is never wrong, only of
+    /// use to fewer marks. Whether anything changed.
+    fn join(
+        &mut self,
+        runs: &[(u64, u64)],
+        checkpoints: &[DamageCheckpoint],
+        malformed: impl Iterator<Item = u32>,
+        replace: bool,
+    ) -> bool {
+        let Some(last) = checkpoints.last().map(|c| c.lsn) else { return false };
+        let held = self.checkpoints.last().map_or(0, |c| c.lsn);
+        // Through the sector at the lower checkpoint: it must be readable to both.
+        let upto = held.min(last) + 1;
+        let agree = !self.is_empty() && below(&self.runs, upto) == below(runs, upto);
+        if agree && last <= held || !agree && !replace && !self.is_empty() {
+            return false;
+        }
+        if !agree {
+            self.checkpoints.clear();
+        }
+        self.checkpoints.extend(checkpoints.iter().filter(|c| c.lsn > held || !agree));
+        self.runs = runs.to_vec();
+        self.malformed =
+            malformed.take_while(|&m| u64::from(m) < last).take(MAX_MALFORMED_WARNINGS).collect();
+        true
+    }
+}
+
+/// The runs of `runs` below `upto`, clipped to it.
+fn below(runs: &[(u64, u64)], upto: u64) -> Vec<(u64, u64)> {
+    runs.iter().take_while(|&&(s, _)| s < upto).map(|&(s, e)| (s, e.min(upto))).collect()
+}
+
+/// The first sector below `to` that is in a run of one of `a` and `b` but not of the
+/// other, or `to` if there is none. Both are half-open, increasing and apart (a sector
+/// after a run is never the start of the next), and below `to`.
+fn first_difference(a: &[(u64, u64)], b: &[(u64, u64)], to: u64) -> u64 {
+    let mut i = 0;
+    loop {
+        let at = match (a.get(i), b.get(i)) {
+            (None, None) => to,
+            (Some(&x), Some(&y)) if x == y => {
+                i += 1;
+                continue;
+            }
+            // The earlier start is in one run only; with the same start, so is the
+            // earlier end, which the longer run holds.
+            (Some(&(s, e)), Some(&(t, f))) => {
+                if s == t {
+                    e.min(f)
+                } else {
+                    s.min(t)
+                }
+            }
+            (Some(&(s, _)), None) | (None, Some(&(s, _))) => s,
+        };
+        return at.min(to);
+    }
+}
+
+/// The damage checkpoints a cursor may start from (#441), chosen when it first reads: the
+/// first `last + 1` of the record it shares (#443).
+#[derive(Clone, Debug)]
+pub(crate) struct DamageCandidates {
+    damage: Arc<Damage>,
+    /// The last checkpoint with `a <= first`.
+    last: usize,
+    /// The first read from the last candidate reaches up to this LSN (0: by chunks).
+    pub(crate) read_to: u64,
+}
+
+impl DamageCandidates {
+    /// The last candidate, the one a cursor starts from when the marks have not changed.
+    pub(crate) fn last(&self) -> &DamageCheckpoint {
+        &self.damage.checkpoints[self.last]
+    }
+
+    /// The latest candidate whose scan met exactly the marks there are now before it, and
+    /// at it: `marked(to)` gives the runs marked now within `[S0, to)`. Its state is then
+    /// that of a scan from the area's first sector with these marks.
+    ///
+    /// The candidates that fit form a prefix (#443): a checkpoint at `lsn` fits when the
+    /// sectors `[S0, lsn]` are marked now as its scan found them, which holds below the
+    /// first sector where the marks and the record's runs differ and nowhere from there on.
+    /// The record's runs below a checkpoint are those its scan processed there (a
+    /// checkpoint's own sector is readable, so its runs end before it).
+    pub(crate) fn choose(&self, marked: impl FnOnce(u64) -> Vec<(u64, u64)>) -> Option<DamageStart> {
+        let d = &self.damage;
+        let to = self.last().lsn + 1;
+        let differ = first_difference(&marked(to), &below(&d.runs, to), to);
+        let j = d.checkpoints[..=self.last].partition_point(|c| c.lsn < differ).checked_sub(1)?;
+        let at = d.checkpoints[j];
         Some(DamageStart {
             at,
-            runs: self.runs.get(..at.runs as usize)?.to_vec(),
-            malformed: self.malformed.iter().copied().take_while(|&m| u64::from(m) < at.lsn).collect(),
-            read_to: 0,
+            runs: d.runs.get(..at.runs as usize)?.to_vec(),
+            malformed: d.malformed.iter().copied().take_while(|&m| u64::from(m) < at.lsn).collect(),
+            read_to: if j == self.last { self.read_to } else { 0 },
         })
     }
 }
 
-/// A damage checkpoint a cursor may start from, chosen when it first reads.
+/// A damage checkpoint a cursor starts from, chosen when it first reads.
 #[derive(Clone, Debug)]
 pub(crate) struct DamageStart {
     pub(crate) at: DamageCheckpoint,
@@ -102,15 +210,6 @@ pub(crate) struct DamageStart {
     pub(crate) malformed: Vec<u32>,
     /// The first read reaches up to this LSN (0: by chunks).
     pub(crate) read_to: u64,
-}
-
-impl DamageStart {
-    /// Whether the marks before the checkpoint and at it, `marked` (the runs of the set
-    /// within `[S0, lsn + 1)`), are the runs its scan processed: only then is its state that
-    /// of a scan from the first sector with these marks.
-    pub(crate) fn fits(&self, marked: &[(u64, u64)]) -> bool {
-        marked == self.runs.as_slice()
-    }
 }
 
 /// The damage checkpoints a cursor records, for [`AreaIndex::absorb`].
@@ -226,41 +325,166 @@ impl AreaIndex {
     /// ([`crate::UnreadableSectors`]; see [`AreaIndex`]): what an index without marks holds,
     /// and saves ([`AreaIndex::to_bytes`]) in the form readers before 1.3.0 load.
     pub fn without_damage(&self) -> AreaIndex {
-        AreaIndex { damage: Damage::default(), ..self.clone() }
+        AreaIndex { damage: Arc::default(), ..self.clone() }
     }
 
     /// Where a cursor of positions `first` or more may start from the damage record.
-    pub(crate) fn damage_start(&self, first: u32) -> Option<DamageStart> {
-        self.damage.start(first)
+    pub(crate) fn damage_start(&self, first: u32) -> Option<DamageCandidates> {
+        self.damage.candidates(first)
+    }
+
+    /// Builds the damage record ahead of the reads that use it (#443): reads the area on
+    /// from where the record ends for the sectors of `image` marked unreadable now
+    /// ([`crate::UnreadableSectors`]), about `max_sectors` sectors (at least to the next
+    /// checkpoint it can record, so that each call makes progress), and records the state
+    /// of a scan from the area's first sector that meets those sectors, as cursors that
+    /// read past them do (see [Unreadable sectors](crate::seek#unreadable-sectors)):
+    /// whether the record now reaches the area's end for these marks. With no sector of the
+    /// area marked, there is nothing to record: `Ok(true)` without reading
+    /// ([`AreaIndex::extend`] builds the index then).
+    ///
+    /// The pass starts at the latest damage checkpoint whose marks are those of now, else
+    /// at the index's last checkpoint before the first mark (recording the index's own
+    /// checkpoints up to it), else at the area's first sector. Marks added or removed
+    /// during the pass, or sectors the reader reports unreadable, are processed as a
+    /// cursor processes them: the record stays keyed by what the pass met. Building the
+    /// whole record so costs one pass from the first mark, split into calls of any size,
+    /// for example on another thread with an image of its own and a copy of the index,
+    /// then joined with [`AreaIndex::merge`]. The index is of `image` from then on (see
+    /// [One index per image](Self#one-index-per-image)).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidArgument`] if `image` has another sector count than the index's, is
+    /// another image than the one the index was built from in this process, or does not
+    /// match the index; [`Error::Io`] if a read fails ([`Error::Cancelled`] if cancelled).
+    /// What was recorded before stays.
+    pub fn extend_past_marks<R: Read + Seek>(
+        &mut self,
+        image: &mut Image<R>,
+        max_sectors: u64,
+    ) -> Result<bool, Error> {
+        if image.sector_count() != self.key.image_sectors {
+            return Err(Error::InvalidArgument("seek index of another image size"));
+        }
+        if self.image_id.is_some_and(|id| id != image.id()) {
+            return Err(Error::InvalidArgument("seek index of another image"));
+        }
+        self.image_id = Some(image.id());
+        let Some((mark, from)) = self.past_marks_from(image.unreadable()) else { return Ok(true) };
+        let Some(need) = self.next_unmarked_boundary(from, image.unreadable()) else { return Ok(true) };
+        let mut cursor = AreaCursor::past_marks(self, mark);
+        // Past the next boundary to record, which is recorded when its sector is read.
+        let stop = from.saturating_add(max_sectors).max(need.saturating_add(1));
+        let scanned = cursor.scan_to(image, stop);
+        if let ResumedFrom::Discarded { .. } = cursor.resumed_from() {
+            return Err(Error::InvalidArgument("seek index does not match the image"));
+        }
+        self.take_from(&cursor)?;
+        scanned?;
+        Ok(self
+            .past_marks_from(image.unreadable())
+            .is_none_or(|(_, from)| self.next_unmarked_boundary(from, image.unreadable()).is_none()))
+    }
+
+    /// The first marked sector of the area, and where the damage record ends for the
+    /// marks: its latest checkpoint whose marks are those of now, or the first mark.
+    /// `None` if no sector of the area is marked.
+    fn past_marks_from(&self, marks: &UnreadableSectors) -> Option<(u64, u64)> {
+        let (start, end) = self.key.audio_sector_range();
+        let mark = marks.first_in(start, end)?;
+        let from = self.damage_start(u32::MAX).and_then(|d| d.choose(|to| marks.runs_in(start, to)));
+        Some((mark, from.map_or(mark, |d| d.at.lsn)))
+    }
+
+    /// The first boundary of the index's grid after `lsn` that is not marked, if any: the
+    /// next one the damage record can hold.
+    fn next_unmarked_boundary(&self, lsn: u64, marks: &UnreadableSectors) -> Option<u64> {
+        let k = u64::from(self.interval);
+        let mut b = self.start + (lsn.saturating_sub(self.start) / k + 1) * k;
+        while b < self.end {
+            if !marks.contains(b) {
+                return Some(b);
+            }
+            // The first boundary past the run that holds it.
+            let run_end = marks.first_unmarked(b, self.end);
+            b = self.start + (run_end - self.start).div_ceil(k) * k;
+        }
+        None
+    }
+
+    /// The checkpoint LSN a cursor of positions `first` or more would start at if it read
+    /// now, with the unreadable sectors `marks` (as its first read chooses): from the
+    /// index's checkpoint if no sector before it is marked, from the latest damage
+    /// checkpoint whose marks are those of now if that is later or the index's cannot be
+    /// used, or from the area's first sector. `None` for one that reads nothing.
+    pub(crate) fn start_lsn_with(&self, first: u32, marks: &UnreadableSectors) -> Option<u64> {
+        let (start, end) = self.key.audio_sector_range();
+        let upto = match self.plan(first) {
+            Plan::Start => None,
+            Plan::End(_) => Some(end),
+            Plan::At { lsn, .. } => Some(lsn.saturating_add(1)),
+        };
+        let marked = upto.and_then(|upto| marks.first_in(start, upto));
+        let from = upto.map_or(start, |u| u - 1);
+        let damage = self
+            .damage_start(first)
+            .and_then(|d| d.choose(|to| marks.runs_in(start, to)))
+            .filter(|d| marked.is_some() || d.at.lsn > from);
+        match (damage, marked) {
+            (Some(d), _) => Some(d.at.lsn),
+            (None, Some(_)) => Some(start),
+            (None, None) => self.plan_lsn(first),
+        }
     }
 
     /// Takes the damage checkpoints `r` recorded, with the malformed sectors `warnings` of
-    /// its scan (from the area's first sector). They extend the record when the runs of
-    /// both agree up to the lower of their last checkpoints, its sector included; otherwise they are of other
-    /// marks and replace it (the newer marks are the likelier to be read with). Either way
-    /// each checkpoint stays keyed by the runs before it, so the record is never wrong,
-    /// only of use to fewer marks.
+    /// its scan (from the area's first sector): see [`Damage::join`], the newer replacing
+    /// the record when their marks differ.
     pub(crate) fn take_damage(&mut self, r: &DamageRecorder, warnings: impl Iterator<Item = u32>) {
-        if r.key != self.key || r.interval != self.interval || r.start != self.start {
+        if r.key != self.key
+            || r.interval != self.interval
+            || r.start != self.start
+            || r.checkpoints.is_empty()
+        {
             return;
         }
-        let Some(last) = r.checkpoints.last().map(|c| c.lsn) else { return };
-        let d = &mut self.damage;
-        let held = d.checkpoints.last().map_or(0, |c| c.lsn);
-        // Through the sector at the lower checkpoint: it must be readable to both.
-        let upto = held.min(last) + 1;
-        let below = |runs: &[(u64, u64)]| -> Vec<(u64, u64)> {
-            runs.iter().take_while(|&&(s, _)| s < upto).map(|&(s, e)| (s, e.min(upto))).collect()
-        };
-        let agree = !d.is_empty() && below(&d.runs) == below(&r.runs);
-        if agree && last <= held {
+        // Cloned only if a cursor still holds the record (#443).
+        let mut d = Damage::clone(&self.damage);
+        if d.join(&r.runs, &r.checkpoints, warnings, true) {
+            self.damage = Arc::new(d);
+        }
+    }
+
+    /// Joins the damage record of `other`, an index of the same area and interval (see
+    /// [`Damage::join`]): when their marks differ, `other`'s replaces this one's if
+    /// `replace`, or if this index has none.
+    pub(crate) fn join_damage(&mut self, other: &AreaIndex, replace: bool) {
+        if Arc::ptr_eq(&self.damage, &other.damage) || other.damage.is_empty() {
             return;
         }
-        if !agree {
-            d.checkpoints.clear();
+        let o = &other.damage;
+        let mut d = Damage::clone(&self.damage);
+        if d.join(&o.runs, &o.checkpoints, o.malformed.iter().copied(), replace) {
+            self.damage = Arc::new(d);
         }
-        d.checkpoints.extend(r.checkpoints.iter().filter(|c| c.lsn > held || !agree));
-        d.runs.clone_from(&r.runs);
-        d.malformed = warnings.take_while(|&m| u64::from(m) < last).take(MAX_MALFORMED_WARNINGS).collect();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::first_difference;
+
+    #[test]
+    fn first_differences() {
+        let to = 100;
+        assert_eq!(first_difference(&[], &[], to), to);
+        assert_eq!(first_difference(&[(5, 7)], &[(5, 7)], to), to);
+        // A run only one side has, a later or earlier start, a shorter or longer run.
+        assert_eq!(first_difference(&[(5, 7)], &[], to), 5);
+        assert_eq!(first_difference(&[(5, 7), (9, 10)], &[(5, 7)], to), 9);
+        assert_eq!(first_difference(&[(5, 7)], &[(6, 7)], to), 5);
+        assert_eq!(first_difference(&[(5, 7)], &[(5, 9)], to), 7);
+        assert_eq!(first_difference(&[(1, 2), (5, 7)], &[(1, 2), (4, 7)], to), 4);
     }
 }
