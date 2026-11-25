@@ -73,7 +73,7 @@
 //! | 40 `d` | by increasing LSN: LSN (4), runs before it (4), `a` (4), `c - r` (4), malformed before (8), digest (8), the open lost stretch's first position plus 1, or 0 (4), 0 (4) |
 //! | 4 `m'` | malformed LSNs of that scan, increasing |
 //!
-//! An index without one is saved exactly as before. Readers before 1.3.0 refuse an index
+//! An index without one is saved exactly as before. Readers before 1.2.0 refuse an index
 //! with one ("seek index flags invalid"), as they refuse any flag they do not know: save
 //! [`AreaIndex::without_damage`] for them. This reader loads every earlier form.
 

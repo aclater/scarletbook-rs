@@ -1,1 +1,0 @@
-| 2026-11-25 | Unreadable sectors (#435) | Own derivation from sacd-spec chapter 4 (4.2 items 7 to 9, 4.4.2, 4.4.3 item 5, 4.5); the gap is filed as sacd-spec#55 and the code is marked `TODO(sacd-spec#55)`. The consumer's need comes from its issue text only; none of its code was read. Tests use this repository's own test encoder and builders. No new sources consulted. |

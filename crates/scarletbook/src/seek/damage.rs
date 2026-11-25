@@ -335,7 +335,7 @@ impl AreaIndex {
 
     /// This index without the state it holds of scans that met unreadable sectors
     /// ([`crate::UnreadableSectors`]; see [`AreaIndex`]): what an index without marks holds,
-    /// and saves ([`AreaIndex::to_bytes`]) in the form readers before 1.3.0 load.
+    /// and saves ([`AreaIndex::to_bytes`]) in the form readers before 1.2.0 load.
     pub fn without_damage(&self) -> AreaIndex {
         AreaIndex { damage: Arc::default(), ..self.clone() }
     }
