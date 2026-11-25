@@ -36,11 +36,15 @@ jobs:
       # Left out, each on purpose:
       # - corpus/README.md: sacd-spec's copy, left out as in linkcheck.py;
       # - the walled repositories (CLEANROOM.md): never fetched, should a link to one appear;
-      # - ACM (10.1145) and Oxford Academic (10.1093) DOIs: their publishers answer automated
-      #   clients with 403 Forbidden whatever the link (docs/provenance/EVIDENCE.md cites many);
+      # - ACM (10.1145), Oxford Academic (10.1093), Wiley (10.1002) and SIAM (10.1137) DOIs:
+      #   their publishers answer automated clients with 403 Forbidden whatever the link
+      #   (docs/provenance/EVIDENCE.md cites many; Wiley and SIAM added after #454);
       # - two URLs quoted as records, not as links to follow: Wang's 1997 page, now gone and
       #   linked through its Wayback Machine capture (EVIDENCE.md), and the Wayback CDX
       #   endpoint a CLEANROOM.md log row names (400 without a query).
+      # Accepted as well as 2xx: 429 Too Many Requests and 503 Service Unavailable, which say
+      # "try later", not "gone" (#454: a GitHub blob page and a blog both fetched fine on a
+      # re-check). A site down for good still shows up as 404 or 410.
       - uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
         id: lychee
         with:
@@ -54,9 +58,10 @@ jobs:
             --exclude-path 'corpus/README\.md$'
             --exclude '^https?://github\.com/aclater/(sacd|dsd-toolbox|sacdfs|pysacd|beets-pysacd)([/?#]|$)'
             --exclude '(pysacd|sacdfs|dsd-toolbox)'
-            --exclude '^https://doi\.org/10\.(1145|1093)/'
+            --exclude '^https://doi\.org/10\.(1145|1093|1002|1137)/'
             --exclude '^http://www\.concentric\.net/~Ttwang/tech/inthash\.htm$'
             --exclude '^https://web\.archive\.org/cdx/search/cdx$'
+            --accept '200..=299,429,503'
             --max-retries 3
             --retry-wait-time 10
             --timeout 30
