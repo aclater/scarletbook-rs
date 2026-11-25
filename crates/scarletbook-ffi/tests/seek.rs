@@ -1055,3 +1055,62 @@ fn verify_reports_a_reading_registered_during_the_call() {
     free(hook.other.load(Ordering::Relaxed));
     free(disc);
 }
+
+/// A disc read on one thread while its clone runs `sb_disc_seek_verify` on another (#445),
+/// each thread through its own handle and the clone freed by its thread: both grow the index
+/// they share, and the reads register provisional readings that the clone checks. Under
+/// ThreadSanitizer (CI's `tsan` job) any access to shared state outside its lock is reported.
+/// Every reading ends confirmed or exact and reads as a straight read. Under Miri: one-sector
+/// frames of a small image and two rounds, instead of the corpus image's DST.
+#[test]
+fn a_read_on_a_disc_while_its_clone_verifies() {
+    let (bytes, rounds) =
+        if cfg!(miri) { (one_sector_frames(24, 24, 0), 2) } else { (image("dst-features-2ch-6ch"), 12) };
+    let plain = open(&bytes);
+    let p = playtime(plain, 0);
+    let ranges: Vec<(u32, u32)> = (1..=4).rev().map(|k| (p * k / 5, p * k / 5 + 2)).collect();
+    let want: Vec<Read> = ranges
+        .iter()
+        .map(|&(first, end)| {
+            let a = range_open(plain, 0, first, end);
+            let r = read_all(a, plain);
+            audio_free(a);
+            r
+        })
+        .collect();
+    free(plain);
+    for _ in 0..rounds {
+        let disc = open(&bytes);
+        assert_eq!(policy(disc, 0, SB_SEEK_POLICY_SPECULATIVE, 0), SbStatus::Ok);
+        // SAFETY: a live handle.
+        let st = unsafe { sb_disc_seek_index_enable(disc, 0, 1, SB_SEEK_DEFAULT_INLINE_BUDGET) };
+        assert_eq!(st, SbStatus::Ok);
+        let c = clone(disc).expose_provenance();
+        let verifier = std::thread::spawn(move || {
+            let c: *mut SbDisc = ptr::with_exposed_provenance_mut(c);
+            let mut done = 0u8;
+            // SAFETY: a live handle, used by this thread only, and a valid out-pointer.
+            while unsafe { sb_disc_seek_verify(c, 0, 16, &mut done) } == SbStatus::Ok && done == 0 {}
+            assert_eq!(done, 1, "{}", last_error());
+            free(c);
+        });
+        let readings: Vec<*mut SbTrackAudio> = ranges
+            .iter()
+            .zip(&want)
+            .map(|(&(first, end), want)| {
+                let a = range_open(disc, 0, first, end);
+                assert_eq!(&read_all(a, disc), want, "{first}..{end}");
+                a
+            })
+            .collect();
+        verifier.join().unwrap();
+        // Readings registered after the clone's last call are checked now.
+        verify_all(disc, 0);
+        for a in readings {
+            let state = speculation(a).state;
+            assert!([SB_SPECULATION_CONFIRMED, SB_SPECULATION_EXACT].contains(&state), "{state}");
+            audio_free(a);
+        }
+        free(disc);
+    }
+}

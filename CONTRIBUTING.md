@@ -178,6 +178,21 @@ A leak prints `SUMMARY: LeakSanitizer: ...` with the allocating stack and fails 
 `--target` keeps the sanitizer off build scripts and procedural macros. With GCC, `-fsanitize=leak`
 needs its `liblsan` package (Fedora: `liblsan`); `clang -fsanitize=leak` needs none.
 
+CI's `tsan` job (#445) runs a read on a disc while its clone verifies the seek index, on
+two threads, under ThreadSanitizer, through the Rust API and the C interface. TSan needs the
+standard library instrumented too, or the locks it takes are invisible to it and the
+allocations made under them are reported as races:
+
+```sh
+RUSTFLAGS=-Zsanitizer=thread cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu \
+  -p scarletbook --test seek_verify -- --exact a_read_on_a_disc_while_its_clone_verifies
+```
+
+(`rustup component add rust-src --toolchain nightly` first; the same with
+`-p scarletbook-ffi --test seek`.) A C program checked with `-fsanitize=thread` needs the
+library built the same way: `cargo +nightly build -Zbuild-std --target
+x86_64-unknown-linux-gnu -p scarletbook-ffi --release` with that `RUSTFLAGS`.
+
 Two more memory checks (#238). `crates/scarletbook-ffi/tests/no_growth.rs`, part of the
 tests, checks that the heap comes back to the same size after each of a run of short
 open → seek → decode → close cycles. The memory soak (`.github/workflows/soak.yml`, weekly)
