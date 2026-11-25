@@ -50,6 +50,22 @@
 //! allocation, but an index forged to pass those checks can make a cursor return other
 //! frames than the image holds (still within the bounds of any read).
 //!
+//! # Unreadable sectors
+//!
+//! A scan that meets sectors marked unreadable ([`crate::UnreadableSectors`], #435) has
+//! other state past them than the checkpoints hold, so a cursor never resumes from a
+//! checkpoint at or after a marked sector. Instead an index also keeps a **damage record**
+//! (#441): the state of a scan from the first sector that met marked sectors (its next
+//! acceptable frame number, frame under assembly, malformed count and the lost stretch open
+//! there) at the boundaries past the first of them, each keyed by the unreadable runs that
+//! scan processed before it. A cursor starts at the last such checkpoint whose `a` is at
+//! most the range's first frame when the sectors marked before it (and at it) are exactly
+//! those runs, and that checkpoint lies past the usable one of the index's own. It then
+//! returns what a scan from the first sector with these marks returns, on any image; with
+//! other marks before it, the record is not used. The record grows as cursors read past
+//! the marks, is replaced by a scan that met other marks, and is saved with the index
+//! ([`AreaIndex::to_bytes`]; [`AreaIndex::without_damage`] drops it).
+//!
 //! # Specification
 //!
 //! Beginning at a checkpoint is specification 4, 4.2 item 7 (sacd-spec `da6b900`): the
@@ -61,7 +77,10 @@
 //! reported again (4.4.5 item 2). Specification 7, 7.1 items 2 and 3 bound the memory and
 //! the passes.
 
+mod damage;
 mod persist;
+
+pub(crate) use damage::{DamageRecorder, DamageStart};
 
 use std::io::{Read, Seek};
 
@@ -1219,7 +1238,10 @@ const _: () = {
 /// frames under assembly stored within [`IndexOptions::inline_budget`] (each at most
 /// [`MAX_FRAME_BYTES`]), plus the LSNs of the first [`MAX_MALFORMED_WARNINGS`] malformed
 /// sectors (16 KiB): [`AreaIndex::memory`] reports it. A 50-minute 2-channel DST area
-/// (475 000 sectors) at `K = 64` takes about 180 KB.
+/// (475 000 sectors) at `K = 64` takes about 180 KB. A damage record (see [Unreadable
+/// sectors](self#unreadable-sectors)) adds at most 48 bytes per `K` existing audio sectors,
+/// 16 bytes per run of unreadable sectors (at most 4096 runs) and its own malformed LSNs
+/// (16 KiB).
 ///
 /// # Seek hints
 ///
@@ -1312,6 +1334,8 @@ pub struct AreaIndex {
     /// Established provisional starts (specification 4, 4.2 item 9): (`L`, `u_L`, digest of
     /// sector `L`), by increasing `L`, for an index with a fingerprint.
     confirmed: Vec<(u32, u32, u64)>,
+    /// The state of a scan that met unreadable sectors, past the first of them (#441).
+    damage: damage::Damage,
 }
 
 /// Two indexes are equal when they hold the same reading state: the image they were
@@ -1324,6 +1348,7 @@ impl PartialEq for AreaIndex {
             && self.stored == other.stored
             && self.end_state == other.end_state
             && self.malformed == other.malformed
+            && self.damage == other.damage
     }
 }
 
@@ -1361,6 +1386,7 @@ impl AreaIndex {
             fingerprint: None,
             fingerprint_checked: false,
             confirmed: Vec::new(),
+            damage: damage::Damage::default(),
         })
     }
 
@@ -1402,6 +1428,7 @@ impl AreaIndex {
             + self.malformed.capacity() * std::mem::size_of::<u32>()
             + self.samples.capacity() * std::mem::size_of::<(u32, u32)>()
             + self.confirmed.capacity() * std::mem::size_of::<(u32, u32, u64)>()
+            + self.damage.memory()
     }
 
     /// This index without its exact checkpoints (an empty frontier) but with its seek hints,
@@ -1434,6 +1461,7 @@ impl AreaIndex {
             fingerprint: self.fingerprint,
             fingerprint_checked: self.fingerprint_checked,
             confirmed: Vec::new(),
+            damage: damage::Damage::default(),
         }
     }
 
@@ -1790,10 +1818,28 @@ impl AreaIndex {
 
     /// [`AreaIndex::absorb`] without draining the cursor.
     pub(crate) fn take_from(&mut self, cursor: &AreaCursor) -> Result<(), Error> {
-        let Some(r) = cursor.recorder() else { return Ok(()) };
+        let damage = cursor.damage_recorder().filter(|d| d.has_news());
+        if cursor.recorder().is_none() && damage.is_none() {
+            return Ok(());
+        }
         if self.of_another_image(cursor) {
             return Err(Error::InvalidArgument("cursor of another image than the seek index's"));
         }
+        if let Some(r) = cursor.recorder() {
+            self.take_checkpoints(cursor, r)?;
+        }
+        if let Some(d) = damage {
+            self.take_damage(d, cursor.warnings().iter().filter_map(|w| w.lsn));
+        }
+        if self.image_id.is_none() {
+            self.image_id = cursor.image_id();
+        }
+        self.prune_provisional();
+        Ok(())
+    }
+
+    /// The checkpoints `r`, the recorder of `cursor`, holds (see [`AreaIndex::take_from`]).
+    fn take_checkpoints(&mut self, cursor: &AreaCursor, r: &Recorder) -> Result<(), Error> {
         if r.key != self.key || r.interval != self.interval {
             return Err(Error::InvalidArgument("cursor of another area, image size or seek interval"));
         }
@@ -1836,10 +1882,6 @@ impl AreaIndex {
                 .take(MAX_MALFORMED_WARNINGS)
                 .collect();
         }
-        if self.image_id.is_none() {
-            self.image_id = cursor.image_id();
-        }
-        self.prune_provisional();
         Ok(())
     }
 }
@@ -1859,6 +1901,9 @@ impl AreaIndex {
 
     /// Drops what `cursor` recorded, once taken: it records on from there.
     pub(crate) fn drain(cursor: &mut AreaCursor) {
+        if let Some(d) = cursor.damage_recorder_mut() {
+            d.checkpoints.clear();
+        }
         if let Some(r) = cursor.recorder_mut() {
             if r.end_state.is_some() {
                 cursor.stop_recording();
@@ -2132,7 +2177,8 @@ impl SeekIndexes {
     /// checkpoints are that image's.
     #[inline]
     pub(crate) fn absorb(&self, cursor: &mut AreaCursor, image_id: u64) {
-        let kept = cursor.recorder().is_none_or(|r| r.kept);
+        let kept =
+            cursor.recorder().is_none_or(|r| r.kept) && cursor.damage_recorder().is_none_or(|d| d.kept);
         if kept && cursor.has_news() {
             if cursor.image_id().is_some_and(|id| id != image_id) {
                 cursor.stop_recording();
@@ -2370,6 +2416,7 @@ mod tests {
             fingerprint: None,
             fingerprint_checked: false,
             confirmed: Vec::new(),
+            damage: damage::Damage::default(),
         }
     }
 

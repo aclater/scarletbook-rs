@@ -2643,8 +2643,9 @@ const _: () = assert!(FRAME_BYTES_PER_CHANNEL == scarletbook::audio::FRAME_BYTES
 /// its own frame number, and every other position is as without the mark. A handle
 /// that has already demultiplexed the frames of a sector (a track audio handle holds a
 /// bounded window of them ahead) keeps them; sectors it has only read ahead into its
-/// buffer are checked again when processed. A seek index never takes reading state from
-/// past a marked sector. The TOC, read when the disc was opened, is not affected. A range
+/// buffer are checked again when processed. A seek index takes reading state from past a
+/// marked sector only from a read that met the same marks before that point (#441). The
+/// TOC, read when the disc was opened, is not affected. A range
 /// past `UINT64_MAX` ends there; `count` 0 marks nothing.
 ///
 /// # Safety

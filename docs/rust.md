@@ -261,9 +261,14 @@ it has already demultiplexed (a decoding cursor holds a bounded window of them a
 what they had. `Image::read_sectors` refuses marked sectors with
 `Error::SectorUnreadable`. Seek indexes never hold reading state from past an unreadable
 sector: `AreaIndex::extend` stops there with that error, and a cursor does not resume from a
-checkpoint at or after a marked sector. The cost: a range opened past a marked sector
-scans the area from its start, whatever the index holds (sequential reads continued with
-`continue_*` read on and don't pay this; #441). In the stored frame list (`AreaFrame::lost_from`,
+checkpoint at or after a marked sector. Instead, the index keeps the reading state of the
+scans that met the marks, each checkpoint keyed by the marked runs before it, and saves it
+with the index (#441). The first range opened past a marked sector scans the area from its
+start; later ones start from that state, near their first frame, while the marks before it
+stay the same. Adding or removing a mark before a point makes the state there unused until a
+scan records it again. Sequential reads continued with `continue_*` read on.
+`AreaIndex::without_damage` drops that state, for example to save an index that readers
+before 1.3.0 load (they refuse one that holds it). In the stored frame list (`AreaFrame::lost_from`,
 `AreaFrames::lost_from`), each frame carries the lost stretch it closes.
 
 ## Features
