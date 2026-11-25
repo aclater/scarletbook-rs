@@ -790,18 +790,15 @@ impl AreaCursor {
     }
 
     /// A cursor that chooses on its first read whether to begin provisionally (specification
-    /// 4, 4.2 item 8) for positions `first` or more, or as `exact` does.
+    /// 4, 4.2 item 8) for positions `first` or more, or as `exact` does, which starts
+    /// reading at `from`.
     pub(crate) fn speculative(
-        exact: AreaCursor,
+        (exact, from): (AreaCursor, u64),
         (first, end): (u32, u32),
         (playtime, knots): (u32, Vec<(u64, u32)>),
         (interval, hint, track_start): (u32, Option<crate::seek::Hint>, Option<u64>),
         options: crate::seek::SpeculativeOptions,
     ) -> Self {
-        let from = match exact.resumed {
-            ResumedFrom::Checkpoint { lsn, .. } => lsn,
-            _ => exact.next_lsn,
-        };
         let mut cursor = Self::with_key(exact.key);
         cursor.next_lsn = from;
         cursor.resumed = ResumedFrom::Speculative { lsn: 0, probes: 0 };
@@ -2161,7 +2158,7 @@ impl<'a> Continuation<'a> {
                 (self.first, self.end),
                 (self.image_sectors, self.image_id),
                 index,
-                (opening, self.policy),
+                (opening, self.policy, Some(self.marks)),
             );
             if opening != Opening::Continues && index.is_some() {
                 next.frames.area.keep_for_disc();
@@ -2216,7 +2213,7 @@ impl<'a> Continuation<'a> {
                 (self.first, self.end),
                 (self.image_sectors, self.image_id),
                 index,
-                (opening, self.policy),
+                (opening, self.policy, Some(self.marks)),
             );
             if opening != Opening::Continues && index.is_some() {
                 next.area.keep_for_disc();
@@ -2287,7 +2284,7 @@ impl<'a> Continuation<'a> {
             (self.first, self.end),
             (self.image_sectors, self.image_id),
             index,
-            (opening, self.policy),
+            (opening, self.policy, Some(self.marks)),
         )
     }
 
@@ -2337,7 +2334,7 @@ impl<'a> Continuation<'a> {
             (self.first, self.end),
             (self.image_sectors, self.image_id),
             index,
-            (opening, self.policy),
+            (opening, self.policy, Some(self.marks)),
         )
     }
 
@@ -2361,7 +2358,13 @@ impl<'a> Continuation<'a> {
         self.seek.read(self.area.slot, |index| {
             let index = index.filter(|i| i.check_key(self.area, self.image_sectors).is_ok());
             let range = (self.first, self.end);
-            let mut c = TrackCursor::start_with(self.area, range, self.image_sectors, index, self.policy);
+            let mut c = TrackCursor::start_with(
+                self.area,
+                range,
+                self.image_sectors,
+                index,
+                (self.policy, Some(self.marks)),
+            );
             if index.is_some() {
                 c.area.keep_for_disc();
             }
@@ -2585,7 +2588,7 @@ impl TrackCursor {
         Ok(match (index, options.policy().unwrap_or_default()) {
             (None, SeekPolicy::Exact) => Self::start(area, first, end, image_sectors),
             (Some(index), SeekPolicy::Exact) => Self::start_indexed(area, first, end, image_sectors, index),
-            (index, policy) => Self::start_with(area, (first, end), image_sectors, index, policy),
+            (index, policy) => Self::start_with(area, (first, end), image_sectors, index, (policy, None)),
         })
     }
 
@@ -2659,14 +2662,15 @@ impl TrackCursor {
         (first, end): (u32, u32),
         image_sectors: u64,
         index: Option<&AreaIndex>,
-        policy: SeekPolicy,
+        (policy, marks): (SeekPolicy, Option<&UnreadableSectors>),
     ) -> Self {
         let exact = match index {
             Some(index) => Self::start_indexed(area, first, end, image_sectors, index),
             None => Self::start(area, first, end, image_sectors),
         };
         let interval = index.map_or(crate::seek::DEFAULT_INTERVAL, AreaIndex::interval);
-        let mut cursor = exact.speculate(area, (first, end), (interval, index), policy).estimated(area);
+        let mut cursor =
+            exact.speculate(area, (first, end), (interval, index), (policy, marks)).estimated(area);
         cursor.area.record_hints(index.and_then(AreaIndex::hint_recorder));
         cursor
     }
@@ -2678,7 +2682,7 @@ impl TrackCursor {
         area: &Area,
         (first, end): (u32, u32),
         (interval, provisional): (u32, Option<&AreaIndex>),
-        policy: SeekPolicy,
+        (policy, marks): (SeekPolicy, Option<&UnreadableSectors>),
     ) -> Self {
         let SeekPolicy::Speculative(mut options) = policy else { return self };
         // Audio sectors past the image's end make the area's layout suspect (4.2 item 8); a
@@ -2692,6 +2696,16 @@ impl TrackCursor {
             ResumedFrom::Start => self.area.next_lsn,
             // Reads nothing, or a cursor already chosen: keep it.
             _ => return self,
+        };
+        // With unreadable sectors, the exact start is where the index starts the range with
+        // the marks of now (#443): a checkpoint before them, the damage record, or the
+        // area's first sector.
+        let from = match (provisional, marks) {
+            (Some(index), Some(marks)) if !marks.is_empty() => match index.start_lsn_with(first, marks) {
+                Some(lsn) => lsn,
+                None => return self,
+            },
+            _ => from,
         };
         let (start, stop) = audio_sector_range(area, self.area_key.image_sectors);
         let playtime = area.playtime_frames();
@@ -2740,7 +2754,7 @@ impl TrackCursor {
             .filter(|&(l, _)| (start..stop).contains(&l))
             .collect();
         let area_cursor = AreaCursor::speculative(
-            self.area,
+            (self.area, from),
             (first, self.end),
             (playtime, knots),
             (interval, hint, track_start),
@@ -2858,7 +2872,7 @@ impl TrackCursor {
         index: Option<&AreaIndex>,
     ) -> Self {
         let opening = self.opening(area, first, image_sectors, image_id, index, None);
-        self.open_as(area, (first, end), (image_sectors, image_id), index, (opening, SeekPolicy::Exact))
+        self.open_as(area, (first, end), (image_sectors, image_id), index, (opening, SeekPolicy::Exact, None))
     }
 
     /// How [`TrackCursor::continue_in`] opens the range starting at `first`, with the
@@ -2889,7 +2903,7 @@ impl TrackCursor {
         (first, end): (u32, u32),
         (image_sectors, image_id): (u64, Option<u64>),
         index: Option<&AreaIndex>,
-        (opening, policy): (Opening, SeekPolicy),
+        (opening, policy, marks): (Opening, SeekPolicy, Option<&UnreadableSectors>),
     ) -> Self {
         let reusable = self.reusable(area, first, image_sectors, image_id);
         match (opening, index) {
@@ -2902,7 +2916,8 @@ impl TrackCursor {
             // the area again: specification 4, 4.2 item 6 allows a pass per track or range,
             // and item 7 a start from the seek index (item 8 a provisional one, if allowed).
             (Opening::Continues | Opening::FromIndex, Some(index)) => {
-                let mut next = Self::start_with(area, (first, end), image_sectors, Some(index), policy);
+                let mut next =
+                    Self::start_with(area, (first, end), image_sectors, Some(index), (policy, marks));
                 if reusable
                     && next.area.speculation() == Speculation::Exact
                     && self.area.speculation() == Speculation::Exact
@@ -2915,7 +2930,7 @@ impl TrackCursor {
                 }
                 next
             }
-            _ => Self::start_with(area, (first, end), image_sectors, None, policy),
+            _ => Self::start_with(area, (first, end), image_sectors, None, (policy, marks)),
         }
     }
 
@@ -3515,7 +3530,7 @@ impl TrackAudioCursor {
         index: Option<&AreaIndex>,
     ) -> Self {
         let opening = self.opening(area, first, image, index, None);
-        self.open_as(area, (first, end), image, index, (opening, SeekPolicy::Exact))
+        self.open_as(area, (first, end), image, index, (opening, SeekPolicy::Exact, None))
     }
 
     /// How [`TrackAudioCursor::continue_in`] opens the range starting at `first`.
@@ -3541,7 +3556,7 @@ impl TrackAudioCursor {
         range: (u32, u32),
         image: (u64, Option<u64>),
         index: Option<&AreaIndex>,
-        opening: (Opening, SeekPolicy),
+        opening: (Opening, SeekPolicy, Option<&UnreadableSectors>),
     ) -> Self {
         // Frames decoded or demultiplexed ahead of the caller came from the track cursor
         // already, so it stands after them and they lie inside this range: dropping them
