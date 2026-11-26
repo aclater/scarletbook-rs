@@ -1,0 +1,1 @@
+| 2026-11-26 | seek index: checkpoints and damage checkpoints whose malformed count differs from the malformed sectors kept are not taken (#461) | the seek-index load rules already in the crate; no technique added. No new sources consulted. |

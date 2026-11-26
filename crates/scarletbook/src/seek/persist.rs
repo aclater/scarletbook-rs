@@ -605,7 +605,9 @@ impl AreaIndex {
     /// records (see [Unreadable sectors](crate::seek#unreadable-sectors)) of the same marks
     /// are joined; of other marks, this index's is kept if it has one. A record whose
     /// checkpoints do not continue this one's (a loaded record whose `a` or malformed count
-    /// is ahead of a scan's, #458) is not joined: this index's stays as it is.
+    /// is ahead of a scan's, #458), or whose malformed count is not that of the malformed
+    /// sectors the joined record would keep (#461), is not joined: this index's stays as it
+    /// is.
     ///
     /// # Errors
     ///

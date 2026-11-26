@@ -1,0 +1,2 @@
+Fixed
+- `AreaIndex::absorb`, `extend` and `extend_past_marks` refuse a cursor's checkpoints whose malformed count is not that of the malformed sectors the index would keep, leaving the index unchanged; damage checkpoints (also through `merge`) are then not joined. Before, a loaded index with a checkpoint whose malformed count disagreed with the malformed sectors kept below it let a read resuming there leave an index that saved to bytes `AreaIndex::from_bytes` refuses; found by fuzzing (#461, #462).
