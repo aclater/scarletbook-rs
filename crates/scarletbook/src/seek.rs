@@ -1793,7 +1793,8 @@ impl AreaIndex {
     ///   process (it then stops recording);
     /// - if it was made from an index of another area, image size or interval, if its
     ///   checkpoints do not join this index's (it started past the frontier), or if they
-    ///   differ from those held (another image with the same key).
+    ///   differ from those held or do not continue them (another image with the same key,
+    ///   or a loaded index whose checkpoints are not of this image).
     pub fn absorb(&mut self, cursor: &mut impl crate::audio::SeekCursor) -> Result<(), Error> {
         let cursor = crate::audio::sealed::Sealed::area_cursor_mut(cursor);
         match self.take_from(cursor) {
@@ -1864,8 +1865,20 @@ impl AreaIndex {
         if matches!((self.end_state, r.end_state), (Some(a), Some(b)) if a != b) {
             return Err(Error::InvalidArgument("cursor's end state differs from the seek index"));
         }
-        let old_frontier = self.frontier();
         let skip = have - r.first as usize;
+        // `a` and the malformed count never decrease along a scan (specification 4, 4.5
+        // item 1): what the cursor adds must continue the last checkpoint held. A loaded
+        // index's checkpoints are not all checked against the image (a cursor that starts
+        // before one never compares it), so a forged one can be ahead of the cursor's scan;
+        // taking the scan's then would leave an index that saves to bytes loading refuses.
+        let added = r.checkpoints.get(skip).map(|c| (c.next_acceptable, c.malformed_before));
+        let added = added.or(r.end_state.map(|e| (e.next_acceptable, e.malformed)));
+        if let (Some(p), Some((a, m))) = (self.checkpoints.last(), added) {
+            if a < p.next_acceptable || m < p.malformed_before {
+                return Err(Error::InvalidArgument("cursor's checkpoints differ from the seek index"));
+            }
+        }
+        let old_frontier = self.frontier();
         for (i, c) in r.checkpoints.iter().enumerate().skip(skip) {
             let j = r.first + i as u32;
             // A frame under assembly past the budget is replayed from its first sector

@@ -1,0 +1,1 @@
+| 2026-11-26 | seek index: checkpoints that do not continue a loaded one are refused (#458) | specification 4, 4.5 item 1 (`a` never decreases) at sacd-spec `8519fad`; no technique added. No new sources consulted. |
