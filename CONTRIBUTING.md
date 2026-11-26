@@ -169,14 +169,16 @@ checks with:
 RUSTFLAGS=-Zsanitizer=leak cargo +nightly test -p scarletbook-ffi --all-features \
   --target x86_64-unknown-linux-gnu --tests
 cargo build -p scarletbook-ffi --release
-cc -std=c99 -fsanitize=leak -Icrates/scarletbook-ffi/include crates/scarletbook-ffi/examples/smoke.c \
-  target/release/libscarletbook_ffi.a -lpthread -ldl -lm -o smoke-lsan
-./smoke-lsan corpus/images/dst-features-2ch-6ch.iso
+cc -std=c99 -g -fsanitize=address,undefined -fno-sanitize-recover=all -Icrates/scarletbook-ffi/include \
+  crates/scarletbook-ffi/examples/smoke.c target/release/libscarletbook_ffi.a -lpthread -ldl -lm -o smoke-asan
+./smoke-asan corpus/images/dst-features-2ch-6ch.iso
 ```
 
 A leak prints `SUMMARY: LeakSanitizer: ...` with the allocating stack and fails the run. The
-`--target` keeps the sanitizer off build scripts and procedural macros. With GCC, `-fsanitize=leak`
-needs its `liblsan` package (Fedora: `liblsan`); `clang -fsanitize=leak` needs none.
+`--target` keeps the sanitizer off build scripts and procedural macros. The C smoke test is
+built with AddressSanitizer, whose leak check is on by default, and UndefinedBehaviorSanitizer
+(#465); the library itself is not instrumented, so this checks the C caller and the header.
+With GCC they need the `libasan` and `libubsan` packages; clang needs none.
 
 CI's `tsan` job (#445) runs a read on a disc while its clone verifies the seek index, on
 two threads, under ThreadSanitizer, through the Rust API and the C interface. TSan needs the

@@ -1,0 +1,1 @@
+| 2026-11-26 | The C smoke test under AddressSanitizer and UBSan (#465) | CI and CONTRIBUTING only: the `lsan` job builds the C smoke test with `-fsanitize=address,undefined -fno-sanitize-recover=all` instead of `-fsanitize=leak`, against the unchanged release library. General compiler documentation only (GCC and Clang sanitizer options). No new SACD sources consulted. |
