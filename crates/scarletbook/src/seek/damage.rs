@@ -94,47 +94,44 @@ impl Damage {
         Some(DamageCandidates { damage: Arc::clone(self), last, read_to: 0 })
     }
 
-    /// Joins the record of another scan, `runs` and `checkpoints` with its malformed
-    /// sectors `malformed` (from the area's first sector, increasing): it extends this one
-    /// when the runs of both agree up to the lower of their last checkpoints, its sector
-    /// included; otherwise it is of other marks and replaces this one if `replace` (the
-    /// newer marks are the likelier to be read with) or this one is empty, keeping this
-    /// one's checkpoints before the first sector where the runs differ, which fit both.
-    /// Either way each checkpoint stays keyed by the runs before it, so the record is never
-    /// wrong, only of use to fewer marks.
-    fn join(
-        &mut self,
-        runs: &[(u64, u64)],
-        checkpoints: &[DamageCheckpoint],
-        malformed: impl Iterator<Item = u32>,
-        replace: bool,
-    ) {
-        let Some((kept, from)) = self.joins(runs, checkpoints, replace) else { return };
-        let last = checkpoints.last().map_or(0, |c| c.lsn);
+    /// Joins the record of another scan, `runs` and `checkpoints`, as [`Damage::joins`]
+    /// found (`join`): it extends this one when the runs of both agree up to the lower of
+    /// their last checkpoints, its sector included; otherwise it is of other marks and
+    /// replaces this one if `replace` (the newer marks are the likelier to be read with) or
+    /// this one is empty, keeping this one's checkpoints before the first sector where the
+    /// runs differ, which fit both. Either way each checkpoint stays keyed by the runs
+    /// before it, so the record is never wrong, only of use to fewer marks.
+    fn join(&mut self, runs: &[(u64, u64)], checkpoints: &[DamageCheckpoint], join: Join) {
         // Of other marks, this record's checkpoints before the first sector where the runs
         // differ fit both (the same scan up to there), so they stay, with the other's
         // (#443). They count the same runs before them.
-        self.checkpoints.truncate(kept);
-        self.checkpoints.extend_from_slice(&checkpoints[from..]);
+        self.checkpoints.truncate(join.kept);
+        self.checkpoints.extend_from_slice(&checkpoints[join.from..]);
         self.runs.clear();
         self.runs.extend_from_slice(runs);
-        self.malformed.clear();
-        self.malformed.extend(malformed.take_while(|&m| u64::from(m) < last).take(MAX_MALFORMED_WARNINGS));
+        self.malformed = join.malformed;
     }
 
     /// What [`Damage::join`] keeps: this record's first checkpoints and `checkpoints` from
-    /// an index on; `None` when it changes nothing.
+    /// an index on, with the other scan's malformed sectors `malformed` (from the area's
+    /// first sector, increasing) below the last of `checkpoints`; `None` when it changes
+    /// nothing.
     ///
     /// Nor does it join checkpoints that do not continue the last one kept (#458): `a` and
     /// the malformed count never decrease along a scan (specification 4, 4.5 item 1), so
     /// such a record is not of a scan of these bytes (a loaded record can be forged), and
-    /// the joined record would save to bytes that loading refuses.
+    /// the joined record would save to bytes that loading refuses. For the same reason it
+    /// joins nothing whose checkpoints do not each count the malformed sectors the joined
+    /// record keeps below them (#461): a scan counts and keeps them together, but the
+    /// record kept and the one joined can be of scans that disagree (a loaded index
+    /// forged consistent, but not of this image).
     fn joins(
         &self,
         runs: &[(u64, u64)],
         checkpoints: &[DamageCheckpoint],
+        malformed: impl Iterator<Item = u32>,
         replace: bool,
-    ) -> Option<(usize, usize)> {
+    ) -> Option<Join> {
         let last = checkpoints.last()?.lsn;
         let held = self.checkpoints.last().map_or(0, |c| c.lsn);
         // Through the sector at the lower checkpoint: it must be readable to both.
@@ -163,8 +160,29 @@ impl Damage {
         if prev.zip(checkpoints.get(from)).is_some_and(|(p, c)| !continues(p, c)) {
             return None;
         }
-        Some((kept, from))
+        let malformed: Vec<u32> =
+            malformed.take_while(|&m| u64::from(m) < last).take(MAX_MALFORMED_WARNINGS).collect();
+        // Every checkpoint of the joined record counts the malformed sectors it keeps below
+        // it, as loading requires.
+        let joined = || self.checkpoints[..kept].iter().chain(&checkpoints[from..]);
+        let end = joined().last()?;
+        let at = joined().map(|c| (c.lsn, c.checkpoint.malformed_before));
+        if !AreaIndex::malformed_fit(&malformed, at, end.lsn, end.checkpoint.malformed_before) {
+            return None;
+        }
+        Some(Join { kept, from, malformed })
     }
+}
+
+/// What [`Damage::join`] does, as [`Damage::joins`] found it.
+#[derive(Debug)]
+pub(crate) struct Join {
+    /// This record's first checkpoints kept.
+    kept: usize,
+    /// The first of the other's checkpoints taken.
+    from: usize,
+    /// The joined record's malformed sectors.
+    malformed: Vec<u32>,
 }
 
 /// The runs of `runs` below `upto`, clipped to it.
@@ -503,8 +521,8 @@ impl AreaIndex {
             return;
         }
         // Changed in place; cloned first only if a cursor still holds the record (#443).
-        if self.damage.joins(&r.runs, &r.checkpoints, true).is_some() {
-            Arc::make_mut(&mut self.damage).join(&r.runs, &r.checkpoints, warnings, true);
+        if let Some(join) = self.damage.joins(&r.runs, &r.checkpoints, warnings, true) {
+            Arc::make_mut(&mut self.damage).join(&r.runs, &r.checkpoints, join);
         }
     }
 
@@ -516,13 +534,8 @@ impl AreaIndex {
             return;
         }
         let o = &other.damage;
-        if self.damage.joins(&o.runs, &o.checkpoints, replace).is_some() {
-            Arc::make_mut(&mut self.damage).join(
-                &o.runs,
-                &o.checkpoints,
-                o.malformed.iter().copied(),
-                replace,
-            );
+        if let Some(join) = self.damage.joins(&o.runs, &o.checkpoints, o.malformed.iter().copied(), replace) {
+            Arc::make_mut(&mut self.damage).join(&o.runs, &o.checkpoints, join);
         }
     }
 }

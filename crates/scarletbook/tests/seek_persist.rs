@@ -257,11 +257,18 @@ fn resum(bytes: &mut [u8]) {
 fn merging_never_joins_a_forged_checkpoint() {
     let (mut image, area) = harness::seek_area();
     let n = image.sector_count();
-    let bytes = harness::with_checksum(include_bytes!(
-        "regressions/seek_index/crash-3e61048c68db8489411a14adbf2156488778f96e"
-    ));
+    // Two checkpoints, the second's `a` (0) made 13: the #458 forgery past the area's first
+    // sector, where loading accepts it.
+    let mut start = AreaIndex::new(&area, n, IndexOptions::new().with_interval(1)).unwrap();
+    while start.checkpoint_count() < 2 {
+        start.extend(&mut image, 0).unwrap();
+    }
+    let mut bytes = start.to_bytes();
+    assert_eq!(bytes[104..108], 0u32.to_le_bytes());
+    bytes[104..108].copy_from_slice(&13u32.to_le_bytes());
+    resum(&mut bytes);
     let forged = AreaIndex::from_bytes(&area, n, &bytes, usize::MAX).unwrap();
-    let mut genuine = AreaIndex::new(&area, n, IndexOptions::new().with_interval(1)).unwrap();
+    let mut genuine = start.clone();
     while !genuine.extend(&mut image, 1000).unwrap() {}
     let genuine_bytes = genuine.to_bytes();
     let mut a = forged.clone();
@@ -270,9 +277,7 @@ fn merging_never_joins_a_forged_checkpoint() {
     let mut b = genuine.clone();
     assert!(matches!(b.merge(&forged), Err(Error::InvalidArgument("seek indexes differ"))));
     assert_eq!(b.to_bytes(), genuine_bytes);
-    // The forged index's inline budget, 1 GiB.
-    let options = IndexOptions::new().with_interval(1).with_inline_budget(1 << 30);
-    let mut empty = AreaIndex::new(&area, n, options).unwrap();
+    let mut empty = AreaIndex::new(&area, n, IndexOptions::new().with_interval(1)).unwrap();
     empty.merge(&forged).unwrap();
     assert_eq!(empty.to_bytes(), bytes);
 }
@@ -359,6 +364,165 @@ fn damage_checkpoints_that_do_not_continue_a_forged_record_are_not_joined() {
             );
         }
     }
+}
+
+/// `bytes` of a saved index of the area of [`harness::seek_area`] without damage record
+/// or seek hints (its malformed LSNs last), with every checkpoint's and the end state's
+/// malformed count made 0 and no malformed LSN kept: consistent, so loading accepts it,
+/// but not of the area, whose sector 10 is malformed (#461).
+fn without_malformed(bytes: &[u8]) -> Vec<u8> {
+    let u32_at = |o: usize| u32::from_le_bytes(bytes[o..o + 4].try_into().unwrap()) as usize;
+    let (n, m) = (u32_at(36), u32_at(48));
+    assert_eq!(m, 1, "the area's malformed sector is kept");
+    let mut out = bytes[..bytes.len() - 8 - 4 * m].to_vec();
+    out[48..52].copy_from_slice(&0u32.to_le_bytes());
+    out[72..80].copy_from_slice(&0u64.to_le_bytes());
+    for j in 0..n {
+        let at = 80 + j * 24 + 8;
+        out[at..at + 8].copy_from_slice(&0u64.to_le_bytes());
+    }
+    out.extend_from_slice(&[0; 8]);
+    resum(&mut out);
+    out
+}
+
+/// Reads frames `[first, p)` of the area of [`harness::seek_area`] through `index`, and
+/// absorbs the cursor into `into`: whether it was taken. Either way `into` saves to bytes
+/// that load to it; refused, it is unchanged.
+fn read_and_absorb<R: std::io::Read + std::io::Seek>(
+    image: &mut scarletbook::Image<R>,
+    area: &scarletbook::Area,
+    first: u32,
+    index: &AreaIndex,
+    into: &mut AreaIndex,
+) -> bool {
+    let (n, p) = (image.sector_count(), area.playtime_frames());
+    let mut c = TrackCursor::open_range(area, first, p, n, CursorOptions::new().with_index(index)).unwrap();
+    while let Some(f) = c.next_frame(image) {
+        f.unwrap();
+    }
+    let before = into.to_bytes();
+    let taken = into.absorb(&mut c);
+    if let Err(e) = &taken {
+        assert!(
+            matches!(e, Error::InvalidArgument("cursor's checkpoints differ from the seek index")),
+            "{e:?}"
+        );
+        assert_eq!(into.to_bytes(), before, "a refused absorb changed the index");
+    }
+    let saved = into.to_bytes();
+    let loaded = AreaIndex::from_bytes(area, n, &saved, usize::MAX);
+    assert!(loaded.is_ok_and(|l| l.to_bytes() == saved), "[{first}, {p}): saves to bytes that do not load");
+    taken.is_ok()
+}
+
+/// Small enough for Miri (#461): loading refuses a checkpoint whose malformed count is not
+/// that of the malformed sectors kept below it (here 1 at LSN 8, below which none is kept),
+/// and a checkpoint 0 whose `a` is not 0. A loaded index whose counts are consistent but
+/// not of the image (none counted) still meets a scan that finds sector 10 malformed: the
+/// checkpoints a read from frame 0 records past the frontier would keep it below
+/// checkpoints that count none, so absorbing them is refused, with the index unchanged,
+/// instead of leaving an index that saves to bytes loading refuses. The genuine index takes
+/// the same read.
+#[test]
+fn checkpoints_whose_malformed_sectors_differ_from_their_count_are_refused() {
+    let (mut image, area) = harness::seek_area();
+    let n = image.sector_count();
+    let mut genuine = AreaIndex::new(&area, n, IndexOptions::new().with_interval(4)).unwrap();
+    genuine.extend(&mut image, 13).unwrap();
+    assert_eq!(genuine.checkpoint_count(), 4);
+    let bytes = genuine.to_bytes();
+    // Checkpoint 2's malformed count (after its `a` and `c - r`) made 1; checkpoint 0's `a`
+    // made 1.
+    for (at, value) in [(80 + 2 * 24 + 8, 1u8), (80, 1)] {
+        let mut forged = bytes.clone();
+        assert_eq!(forged[at], 0);
+        forged[at] = value;
+        resum(&mut forged);
+        assert!(AreaIndex::from_bytes(&area, n, &forged, usize::MAX).is_err(), "offset {at}");
+    }
+    let forged = AreaIndex::from_bytes(&area, n, &without_malformed(&bytes), usize::MAX).unwrap();
+    let mut copy = forged.clone();
+    assert!(!read_and_absorb(&mut image, &area, 0, &forged, &mut copy), "a scan not of the index was taken");
+    let mut copy = genuine.clone();
+    assert!(read_and_absorb(&mut image, &area, 0, &genuine, &mut copy));
+    assert!(copy.is_complete());
+}
+
+/// Small enough for Miri (#461): the same for a damage record. A record whose
+/// checkpoints count no malformed sector (consistent, so loading accepts it) meets a read
+/// from frame 0 that finds sector 10 malformed before the unreadable sector 12: the
+/// record does not take the checkpoints it records past its last, which would keep sector
+/// 10 below checkpoints that count none, and the index saves to bytes that load. The
+/// genuine record takes them.
+#[test]
+fn damage_checkpoints_whose_malformed_sectors_differ_from_their_count_are_not_joined() {
+    let (mut image, area) = harness::seek_area();
+    let n = image.sector_count();
+    let mut partial = AreaIndex::new(&area, n, IndexOptions::new().with_interval(2)).unwrap();
+    while !partial.extend(&mut image, 1000).unwrap() {}
+    image.unreadable_sectors().insert(12, 1);
+    partial.extend_past_marks(&mut image, 6).unwrap();
+    let mut bytes = partial.to_bytes();
+    let (at, record) = damage_record(&bytes);
+    let u = |o: usize| u32::from_le_bytes(record[o..o + 4].try_into().unwrap()) as usize;
+    let (r, d, m) = (u(0), u(4), u(8));
+    assert_eq!((r, d, m), (1, 2, 1), "one run, two checkpoints, sector 10");
+    // Each checkpoint's malformed count (after its LSN, runs, `a` and `c - r`) made 0, and
+    // no malformed LSN kept.
+    for j in 0..d {
+        let c = at + 16 + 8 * r + 40 * j + 16;
+        assert_eq!(bytes[c..c + 8], 1u64.to_le_bytes());
+        bytes[c..c + 8].copy_from_slice(&0u64.to_le_bytes());
+    }
+    bytes[at + 8..at + 12].copy_from_slice(&0u32.to_le_bytes());
+    let end = bytes.len() - 8;
+    bytes.drain(end - 4..end);
+    resum(&mut bytes);
+    let forged = AreaIndex::from_bytes(&area, n, &bytes, usize::MAX).unwrap();
+    let held = damage_record(&bytes).1.to_vec();
+    let mut copy = forged.clone();
+    read_and_absorb(&mut image, &area, 0, &forged, &mut copy);
+    assert_eq!(damage_record(&copy.to_bytes()).1, held, "a scan not of the record was joined");
+    let mut copy = partial.clone();
+    read_and_absorb(&mut image, &area, 0, &partial, &mut copy);
+    let grown = damage_record(&copy.to_bytes()).1.len();
+    assert!(grown > damage_record(&partial.to_bytes()).1.len(), "the genuine record did not grow");
+}
+
+/// Small enough for Miri (#461): checkpoints that hold different frames under assembly
+/// never share one stored buffer. A loaded index whose last checkpoint (LSN 56, inside
+/// frame 5, which starts at sector 20) holds that frame with another number (6) meets a
+/// read from frame 4, which records the next checkpoint holding frame 5 from the same
+/// sector: it is taken without storing that frame (replayed instead), so the index saves
+/// to bytes that load, which require the checkpoints of one buffer to hold the same frame.
+#[test]
+fn checkpoints_holding_other_frames_do_not_share_a_stored_frame() {
+    let (mut image, area) = harness::seek_area();
+    let n = image.sector_count();
+    let mut genuine = AreaIndex::new(&area, n, IndexOptions::new().with_interval(4)).unwrap();
+    while genuine.checkpoint_count() < 15 {
+        genuine.extend(&mut image, 0).unwrap();
+    }
+    assert_eq!(genuine.checkpoint_count(), 15);
+    let mut bytes = genuine.to_bytes();
+    let u = |b: &[u8], o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap()) as usize;
+    let (count, f, h) = (u(&bytes, 36), u(&bytes, 40), u(&bytes, 44));
+    let mut at = 80 + 24 * count;
+    for _ in 0..f {
+        at += 8 + u(&bytes, at + 4);
+    }
+    // The last held frame: checkpoint 14's, frame 5 from sector 20.
+    let held = at + 24 * (h - 1);
+    assert_eq!((u(&bytes, held), u(&bytes, held + 12)), (14, 5));
+    bytes[held + 12..held + 16].copy_from_slice(&6u32.to_le_bytes());
+    resum(&mut bytes);
+    let forged = AreaIndex::from_bytes(&area, n, &bytes, usize::MAX).unwrap();
+    let mut copy = forged.clone();
+    assert!(read_and_absorb(&mut image, &area, 4, &forged, &mut copy));
+    assert!(copy.checkpoint_count() > 15, "the read's checkpoints were not taken");
+    let mut copy = genuine.clone();
+    assert!(read_and_absorb(&mut image, &area, 4, &genuine, &mut copy));
 }
 
 /// A DST sector starting frame `number` (sector count `count`) with a packet of `len`
