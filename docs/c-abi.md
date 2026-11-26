@@ -405,7 +405,7 @@ that loads the library at run time can look the symbol up instead.
 | `SB_ABI_VERSION` | First release |
 |---|---|
 | 1 | 0.1.0 to 0.3.0 (additions only in 0.3.0) |
-| 2 | 0.4.0 (additions in 0.4.1, 0.5.0, 0.5.1, 0.5.2, 0.5.4, 0.6.0, 1.2.0 and 1.3.0); unchanged from 0.6.1 to 1.1.1 (1.1.0 deprecates the `sb_pcm_*` functions, which stay in it) and in 1.3.1; the 1.0 ABI |
+| 2 | 0.4.0 (additions in 0.4.1, 0.5.0, 0.5.1, 0.5.2, 0.5.4, 0.6.0, 1.2.0 and 1.3.0); unchanged from 0.6.1 to 1.1.1 (1.1.0 deprecates the `sb_pcm_*` functions, which stay in it) and in 1.3.1 and 1.3.2; the 1.0 ABI |
 
 CI enforces this; how is in [Changing the C ABI](contributing.md#changing-the-c-abi).
 

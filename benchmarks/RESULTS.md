@@ -64,6 +64,10 @@ In the run list, but not in every table:
   DSF and DSD to PCM are blank, unless an equivalent revision is compared instead (0.5.6
   below uses `3eb96dc` for 0.5.5).
 
+## 1.3.2
+
+Not timed. 1.3.2 fixes #461 (#462): loading a saved seek index refuses a checkpoint whose malformed count disagrees with the malformed sectors kept below it, or a first checkpoint with `a` other than 0, and the joins (`absorb`, `extend`, `extend_past_marks`, `merge`) keep the same rules. These are validity checks on loading and on operations of persisted seek indexes, not on a hot path; nothing decodes, converts or reads differently, and an index the library built loads and saves byte for byte as in 1.3.1. The 1.0.0 section below stands for 1.3.2's throughput.
+
 ## 1.3.1
 
 Not timed. 1.3.1 fixes #458 (#459): a seek index loaded from forged bytes refuses, or does not join, checkpoints that do not continue its last one, so it never saves bytes that loading refuses. That is a validity check on operations of persisted seek indexes (`absorb`, `extend`, `extend_past_marks`, `merge`), not on a hot path; nothing decodes, converts or reads differently, and an index the library built takes the same checkpoints as in 1.3.0. The 1.0.0 section below stands for 1.3.1's throughput.

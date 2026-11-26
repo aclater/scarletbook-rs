@@ -11,6 +11,24 @@ from 0.5.8).
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-11-26
+
+**1.3.2 is a bug-fix release: loading a saved seek index now refuses checkpoints whose malformed count disagrees with the malformed sectors it keeps, and a first checkpoint with `a` other than 0, so a loaded index can no longer be led to save bytes that loading refuses (#461, #462). There is no API or ABI change.** Rust code that builds against 1.3.1 builds against 1.3.2 with only the version changed; C programs need no change (`SB_ABI_VERSION` 2, the header is unchanged).
+
+- **Loading is stricter, but it refuses only bytes no genuine scan writes.** `AreaIndex::from_bytes` (and `sb_seek_index_load`) now refuses an index, or a damage record, with a checkpoint whose malformed count is not the number of malformed sectors kept below it (up to 4096), and an index whose first checkpoint has `a` other than 0 (specification 4, 4.5: `a` starts at 0 for the area). A scan counts and keeps malformed sectors together and starts at `a` = 0, so no genuine index has either. This was checked against the 1.1.1 and 1.3.1 fixtures and 230 indexes saved by v1.3.1 from genuine scans, which all load and save byte for byte.
+- **For a consumer that caches indexes, the worst case is a rebuild, never a wrong read.** A cached index that loading now refuses gives the existing `InvalidArgument` (`SB_STATUS_INVALID_ARGUMENT` in C), the error a corrupt cache already gives; the consumer treats it as missing and rebuilds the index by scanning.
+- **The trust model is unchanged.** Loading checks an index for safety, not for truth ("trusted for correctness, validated for safety"): a forged checkpoint whose digest matches can still steer reads, as documented. Outside that, reads were never wrong; a forged malformed count by itself changed only the malformed count and the warnings a read reports, and the symptom was a save that couldn't be loaded back.
+- **The joins keep the same rules.** A loaded index can be consistent and still not be of this image, so `take_checkpoints` (behind `absorb`, `extend` and `extend_past_marks`) refuses a scan whose malformed sectors don't fit the checkpoints held and added, with `InvalidArgument` and the index unchanged; `Damage::joins` (behind `absorb`, `extend_past_marks` and `merge`) checks every checkpoint of the joined record and skips the join if one fails; and `Stored::add` no longer lets checkpoints that hold different frames share one stored frame under assembly (they are replayed instead, which is exact). #459's continuity checks from 1.3.1 remain, and each check has a test that fails without it.
+- **A new property test** mutates the saved fixtures (checkpoint and damage fields, held frames, arbitrary bytes), runs the `seek_index` fuzz oracle's reads, extensions and merges, and requires every loaded index to be refused or to stay saveable. On 1.3.1 it fails within 102 to 822 cases; on the fix it passed 100,000. The fuzz input is a regression test, and the C path is tested too.
+- **Found by fuzzing.** The `seek_index` fuzz target's round-trip oracle (#457) caught the save that loading refuses while fuzzing the 1.3.1 code during idle time.
+- **Checked against 1.3.1:** `cargo semver-checks --baseline-rev v1.3.1 --release-type patch` finds no semver update required for `scarletbook` and `scarletbook-ffi` (default and all features). `abi-check.py` passes with `SB_ABI_VERSION` 2, and `abi/abi-2.txt` and the header are unchanged.
+- **No benchmark table.** The fix adds validity checks on loading and on operations of persisted indexes (`from_bytes`, `absorb`, `extend`, `extend_past_marks`, `merge`), off the hot path: nothing decodes, converts or reads differently. 1.0.0's table stands.
+- **Not measured:** timings (none taken), and indexes forged other than in the ways the tests, the property test and the fuzz target build.
+
+### Fixed
+
+- `AreaIndex::from_bytes` refuses an index, or a damage record, with a checkpoint whose malformed count is not that of the malformed sectors kept below it, or whose first checkpoint's next acceptable frame number is not 0 (specification 4, 4.5); no index saved from a genuine scan has either. Before, a read resuming at such a checkpoint could leave an index that saved to bytes `from_bytes` refuses; found by fuzzing. `absorb`, `extend`, `extend_past_marks` and `merge` also refuse, with the index unchanged, a scan whose malformed sectors do not agree with the checkpoints held (a loaded index consistent, but not of the image), and never share a stored frame under assembly between checkpoints that hold different frames (#461, #462).
+
 ## [1.3.1] - 2026-11-26
 
 **1.3.1 is a bug-fix release: a seek index loaded from forged bytes can no longer be led to save bytes that loading refuses (#458, #459). There is no API or ABI change.** Rust code that builds against 1.3.0 builds against 1.3.1 with only the version changed; C programs need no change (`SB_ABI_VERSION` 2, the header is unchanged).
@@ -1287,7 +1305,8 @@ First release: a clean-room reader for SACD images, written from sacd-spec, pass
 - DST decoding about 3.8 times faster on one thread, and parallel decoding that overlaps
   demultiplexing with decoding within a bounded memory (#16, #17, #19).
 
-[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v1.3.1...HEAD
+[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v1.3.2...HEAD
+[1.3.2]: https://github.com/aclater/scarletbook-rs/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/aclater/scarletbook-rs/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/aclater/scarletbook-rs/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/aclater/scarletbook-rs/compare/v1.1.1...v1.2.0
