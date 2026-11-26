@@ -99,3 +99,50 @@ fn seek_index_disc_seeds_load() {
     assert!(hints_only, "no disc seed holds seek hints alone");
     assert!(confirmed, "no disc seed holds a saved confirmation");
 }
+
+/// Small enough for Miri (#458): a loaded index whose only checkpoint, at the area's first
+/// sector, claims `a = 13`. A read from frame 0 starts before it, so it never checks it,
+/// and its scan's checkpoints have a smaller `a`: absorbing them is refused, with the index
+/// unchanged, instead of leaving an index that saves to bytes loading refuses. A genuine
+/// index takes the same read's checkpoints.
+#[test]
+fn checkpoints_that_do_not_continue_a_forged_one_are_refused() {
+    let (mut image, area) = harness::seek_area();
+    let n = image.sector_count();
+    let bytes = harness::with_checksum(include_bytes!(
+        "regressions/seek_index/crash-3e61048c68db8489411a14adbf2156488778f96e"
+    ));
+    let mut forged = scarletbook::AreaIndex::from_bytes(&area, n, &bytes, usize::MAX).unwrap();
+    assert_eq!(forged.checkpoint_count(), 1);
+    let p = area.playtime_frames();
+    let read = |image: &mut _, index: &scarletbook::AreaIndex| {
+        let mut c = scarletbook::TrackCursor::open_range(
+            &area,
+            0,
+            p,
+            n,
+            scarletbook::CursorOptions::new().with_index(index),
+        )
+        .unwrap();
+        while let Some(f) = c.next_frame(image) {
+            f.unwrap();
+        }
+        c
+    };
+    let mut cursor = read(&mut image, &forged);
+    assert!(matches!(
+        forged.absorb(&mut cursor),
+        Err(scarletbook::Error::InvalidArgument("cursor's checkpoints differ from the seek index"))
+    ));
+    assert_eq!(forged.to_bytes(), bytes, "a refused absorb changed the index");
+    // The same read through a genuine index of one checkpoint.
+    let mut genuine =
+        scarletbook::AreaIndex::new(&area, n, scarletbook::IndexOptions::new().with_interval(1)).unwrap();
+    genuine.extend(&mut image, 0).unwrap();
+    assert_eq!(genuine.checkpoint_count(), 1);
+    let mut cursor = read(&mut image, &genuine);
+    genuine.absorb(&mut cursor).unwrap();
+    assert!(genuine.is_complete());
+    let saved = genuine.to_bytes();
+    assert_eq!(scarletbook::AreaIndex::from_bytes(&area, n, &saved, usize::MAX).unwrap().to_bytes(), saved);
+}

@@ -1114,3 +1114,34 @@ fn a_read_on_a_disc_while_its_clone_verifies() {
         free(disc);
     }
 }
+
+/// Small enough for Miri (#458): a loaded index whose only checkpoint, at the area's first
+/// sector, claims a next acceptable frame number of 13. A read from frame 0 starts before
+/// it, and its scan's checkpoints do not continue it: `sb_track_audio_absorb` refuses them
+/// with the index unchanged, so that it still saves to bytes `sb_seek_index_load` takes.
+#[test]
+fn absorb_refuses_checkpoints_that_do_not_continue_a_forged_one() {
+    let bytes = small_image(5);
+    let disc = open(&bytes);
+    let index = index_new(disc, 0, 1).unwrap();
+    extend(disc, index, 0).unwrap();
+    let mut forged = save(index);
+    index_free(index);
+    // One checkpoint (offset 36), its `a` at offset 80; then the checksum again.
+    assert_eq!(forged[36..40], 1u32.to_le_bytes());
+    forged[80..84].copy_from_slice(&13u32.to_le_bytes());
+    let body = forged.len() - 8;
+    let sum = forged[..body]
+        .iter()
+        .fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
+    forged[body..].copy_from_slice(&sum.to_le_bytes());
+    let index = load(disc, 0, &forged).unwrap();
+    let a = open_indexed(disc, 0, (0, playtime(disc, 0)), index).unwrap();
+    read_all(a, disc);
+    assert_eq!(absorb(a, index), SbStatus::InvalidArgument);
+    assert!(last_error().contains("differ from the seek index"), "{}", last_error());
+    audio_free(a);
+    assert_eq!(save(index), forged);
+    index_free(index);
+    free(disc);
+}

@@ -109,42 +109,61 @@ impl Damage {
         malformed: impl Iterator<Item = u32>,
         replace: bool,
     ) {
-        let Some(agree) = self.joins(runs, checkpoints, replace) else { return };
+        let Some((kept, from)) = self.joins(runs, checkpoints, replace) else { return };
         let last = checkpoints.last().map_or(0, |c| c.lsn);
-        let held = self.checkpoints.last().map_or(0, |c| c.lsn);
-        if agree {
-            self.checkpoints.extend(checkpoints.iter().filter(|c| c.lsn > held));
-        } else {
-            // Of other marks: this record's checkpoints before the first sector where the
-            // runs differ fit both (the same scan up to there), so they stay, with the
-            // other's (#443). They count the same runs before them.
-            let upto = held.min(last) + 1;
-            let differ = first_difference(
-                &below(&self.runs, upto).collect::<Vec<_>>(),
-                &below(runs, upto).collect::<Vec<_>>(),
-                upto,
-            );
-            let kept = self.checkpoints.partition_point(|c| c.lsn < differ);
-            self.checkpoints.truncate(kept);
-            let from = checkpoints.partition_point(|c| c.lsn <= self.checkpoints.last().map_or(0, |c| c.lsn));
-            self.checkpoints.extend_from_slice(&checkpoints[from..]);
-        }
+        // Of other marks, this record's checkpoints before the first sector where the runs
+        // differ fit both (the same scan up to there), so they stay, with the other's
+        // (#443). They count the same runs before them.
+        self.checkpoints.truncate(kept);
+        self.checkpoints.extend_from_slice(&checkpoints[from..]);
         self.runs.clear();
         self.runs.extend_from_slice(runs);
         self.malformed.clear();
         self.malformed.extend(malformed.take_while(|&m| u64::from(m) < last).take(MAX_MALFORMED_WARNINGS));
     }
 
-    /// Whether [`Damage::join`] changes this record, and if so whether the runs agree:
-    /// `None` when it changes nothing.
-    fn joins(&self, runs: &[(u64, u64)], checkpoints: &[DamageCheckpoint], replace: bool) -> Option<bool> {
+    /// What [`Damage::join`] keeps: this record's first checkpoints and `checkpoints` from
+    /// an index on; `None` when it changes nothing.
+    ///
+    /// Nor does it join checkpoints that do not continue the last one kept (#458): `a` and
+    /// the malformed count never decrease along a scan (specification 4, 4.5 item 1), so
+    /// such a record is not of a scan of these bytes (a loaded record can be forged), and
+    /// the joined record would save to bytes that loading refuses.
+    fn joins(
+        &self,
+        runs: &[(u64, u64)],
+        checkpoints: &[DamageCheckpoint],
+        replace: bool,
+    ) -> Option<(usize, usize)> {
         let last = checkpoints.last()?.lsn;
         let held = self.checkpoints.last().map_or(0, |c| c.lsn);
         // Through the sector at the lower checkpoint: it must be readable to both.
         let upto = held.min(last) + 1;
         let agree = !self.is_empty() && below(&self.runs, upto).eq(below(runs, upto));
         let changes = if agree { last > held } else { replace || self.is_empty() };
-        changes.then_some(agree)
+        if !changes {
+            return None;
+        }
+        let kept = if agree {
+            self.checkpoints.len()
+        } else {
+            let differ = first_difference(
+                &below(&self.runs, upto).collect::<Vec<_>>(),
+                &below(runs, upto).collect::<Vec<_>>(),
+                upto,
+            );
+            self.checkpoints.partition_point(|c| c.lsn < differ)
+        };
+        let prev = kept.checked_sub(1).map(|k| self.checkpoints[k]);
+        let from = checkpoints.partition_point(|c| c.lsn <= prev.map_or(0, |p| p.lsn));
+        let continues = |p: DamageCheckpoint, c: &DamageCheckpoint| {
+            c.checkpoint.next_acceptable >= p.checkpoint.next_acceptable
+                && c.checkpoint.malformed_before >= p.checkpoint.malformed_before
+        };
+        if prev.zip(checkpoints.get(from)).is_some_and(|(p, c)| !continues(p, c)) {
+            return None;
+        }
+        Some((kept, from))
     }
 }
 

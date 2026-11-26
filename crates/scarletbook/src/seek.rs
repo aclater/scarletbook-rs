@@ -1784,7 +1784,9 @@ impl AreaIndex {
     /// stored: those checkpoints are replayed instead. The cursor then drops what it
     /// recorded (absorbing it again costs nothing until it records more), and the index
     /// is of the cursor's image from then on (see [One index per
-    /// image](Self#one-index-per-image)).
+    /// image](Self#one-index-per-image)). Damage checkpoints (see [Unreadable
+    /// sectors](crate::seek#unreadable-sectors)) that do not continue the index's damage
+    /// record are not taken (#458), and the record stays as it is.
     ///
     /// # Errors
     ///
