@@ -1115,11 +1115,19 @@ impl Stored {
         if data.len() > MAX_FRAME_BYTES {
             return false;
         }
+        let frames = self.frames.len();
         let frame = match self.frames.last_mut() {
             Some(f) if f.start == start => {
                 let common = f.bytes.len().min(data.len());
-                // Always a prefix of the same frame; anything else is not stored.
-                if f.bytes[..common] != data[..common] {
+                // Always a prefix of the same frame; anything else is not stored. So is one
+                // shorter than the last held or of another number or kind (a loaded
+                // index's, forged): loading requires the checkpoints of one buffer to hold
+                // the same frame, never less of it (#461).
+                let last = self.held.last().filter(|h| h.frame as usize + 1 == frames);
+                if f.bytes[..common] != data[..common]
+                    || last
+                        .is_some_and(|h| (h.number, h.kind) != (number, kind) || data.len() < h.len as usize)
+                {
                     return false;
                 }
                 let grow = data.len() - common;
@@ -1748,14 +1756,26 @@ impl AreaIndex {
         (!self.checkpoints.is_empty()).then(|| j.min(self.checkpoints.len() - 1))
     }
 
-    /// Whether `malformed` are the malformed sectors kept below `lsn`, the last checkpoint
-    /// or the end, by a scan that counted `counted` there: as many (up to
-    /// [`MAX_MALFORMED_WARNINGS`]), increasing and below it. Loading refuses any other, of
-    /// an index or a damage record (`persist`).
-    pub(crate) fn malformed_fit(malformed: &[u32], counted: u64, lsn: u64) -> bool {
-        malformed.len() as u64 == counted.min(MAX_MALFORMED_WARNINGS as u64)
-            && malformed.last().is_none_or(|&m| u64::from(m) < lsn)
+    /// Whether `malformed` can be the malformed sectors a scan keeps below `below` (its
+    /// first [`MAX_MALFORMED_WARNINGS`]) when it counted `total` there and the counts
+    /// `at` (LSN, malformed count, by increasing LSN) at sectors before: increasing, below
+    /// `below`, and as many below each of those sectors as counted there (up to
+    /// [`MAX_MALFORMED_WARNINGS`]), as a scan counts and keeps them together. Loading
+    /// requires it of an index's checkpoints and end state, and of a damage record's
+    /// checkpoints (#461); whatever joins either keeps it.
+    pub(crate) fn malformed_fit(
+        malformed: &[u32],
+        at: impl IntoIterator<Item = (u64, u64)>,
+        below: u64,
+        total: u64,
+    ) -> bool {
+        let max = MAX_MALFORMED_WARNINGS as u64;
+        malformed.len() as u64 == total.min(max)
+            && malformed.last().is_none_or(|&m| u64::from(m) < below)
             && malformed.windows(2).all(|w| w[0] < w[1])
+            && at.into_iter().all(|(lsn, counted)| {
+                malformed.partition_point(|&m| u64::from(m) < lsn) as u64 == counted.min(max)
+            })
     }
 
     /// The malformed sectors before `lsn`, which must not lie past the frontier.
@@ -1893,10 +1913,10 @@ impl AreaIndex {
             }
         }
         // The malformed sectors the index keeps from then on, the cursor's warnings if its
-        // frontier moves: as many as the last checkpoint or end state counts, as loading
-        // requires. A scan's count and warnings grow together, but a cursor that resumed
-        // from a forged checkpoint (one whose count is not that of the malformed sectors
-        // kept below it) carries both as they were forged (#461).
+        // frontier moves: as many below each checkpoint as it counts, as loading requires
+        // (#461). A scan's count and warnings grow together; a cursor whose scan does not
+        // agree with the index's (a loaded index forged consistent, but not of this image)
+        // is refused.
         let old_frontier = self.frontier();
         let count = have + r.checkpoints.len().saturating_sub(skip);
         let complete = r.end_state.filter(|_| count == self.boundaries());
@@ -1915,9 +1935,14 @@ impl AreaIndex {
                     .collect::<Vec<_>>()
             });
         if let Some(m) = &malformed {
+            // The checkpoints held count the malformed sectors kept now below them; those
+            // added, and the end state, count those the cursor found.
             let last = r.checkpoints.get(skip..).and_then(<[_]>::last).or(self.checkpoints.last());
             let counted = end_state.map_or_else(|| last.map_or(0, |c| c.malformed_before), |e| e.malformed);
-            if !Self::malformed_fit(m, counted, frontier) {
+            let held = m.partition_point(|&x| u64::from(x) < old_frontier);
+            let added = r.checkpoints.iter().enumerate().skip(skip);
+            let added = added.map(|(i, c)| (self.checkpoint_lsn(r.first as usize + i), c.malformed_before));
+            if m[..held] != self.malformed[..] || !Self::malformed_fit(m, added, frontier, counted) {
                 return Err(Error::InvalidArgument("cursor's checkpoints differ from the seek index"));
             }
         }

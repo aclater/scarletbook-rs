@@ -646,12 +646,46 @@ pub fn seek_index(data: &[u8]) {
             while let Some(Ok(_)) = cursor.next_frame(&mut image) {}
             let _ = copy.absorb(&mut cursor);
         }
+        saves(&copy, &area, n, "after reads");
         let _ = copy.extend(&mut image, 1000);
         let _ = copy.verify(&mut image);
         let _ = copy.take_events();
+        saves(&copy, &area, n, "extended");
         let mut merged = index.clone();
         let _ = merged.merge(&copy);
+        saves(&merged, &area, n, "merged");
+        merges_with_genuine(&mut image, &area, &copy);
     }
+}
+
+/// `index` saves to bytes that load to an index saving the same bytes (#458, #461): what
+/// a loaded index does with real scans keeps it saveable.
+fn saves(index: &AreaIndex, area: &scarletbook::Area, n: u64, what: &str) {
+    let saved = index.to_bytes();
+    let loaded = AreaIndex::from_bytes(area, n, &saved, usize::MAX);
+    assert!(loaded.is_ok_and(|l| l.to_bytes() == saved), "{what}: saves to bytes that do not load");
+}
+
+/// A complete index of the area of `image` built now at `index`'s interval (if it can be)
+/// merges with `index` both ways, and either result saves (#461).
+fn merges_with_genuine<R: Read + Seek>(
+    image: &mut scarletbook::Image<R>,
+    area: &scarletbook::Area,
+    index: &AreaIndex,
+) {
+    let n = image.sector_count();
+    let options = scarletbook::IndexOptions::new().with_interval(index.options().interval);
+    let mut genuine = AreaIndex::new(area, n, options).unwrap();
+    // With marks, it may not be built: nothing to merge then.
+    while !genuine.extend(image, 1000).unwrap_or(true) {}
+    if !genuine.is_complete() {
+        return;
+    }
+    let mut into = index.clone();
+    let _ = into.merge(&genuine);
+    saves(&into, area, n, "merged with a genuine index");
+    let _ = genuine.merge(index);
+    saves(&genuine, area, n, "a genuine index merged with it");
 }
 
 /// A reader over the sectors of [`seek_area`] that reports sector `bad` unreadable
@@ -807,6 +841,8 @@ pub fn seek_index_marks(data: &[u8]) {
         assert_eq!(AreaIndex::from_bytes(&area, n, &saved, usize::MAX).unwrap().to_bytes(), saved);
         let mut merged = index.clone();
         let _ = merged.merge(&copy);
+        saves(&merged, &area, n, "merged, with marks");
+        merges_with_genuine(&mut image, &area, &copy);
     }
 }
 

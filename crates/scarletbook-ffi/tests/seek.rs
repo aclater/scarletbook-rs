@@ -1115,21 +1115,24 @@ fn a_read_on_a_disc_while_its_clone_verifies() {
     }
 }
 
-/// Small enough for Miri (#458): a loaded index whose only checkpoint, at the area's first
-/// sector, claims a next acceptable frame number of 13. A read from frame 0 starts before
-/// it, and its scan's checkpoints do not continue it: `sb_track_audio_absorb` refuses them
-/// with the index unchanged, so that it still saves to bytes `sb_seek_index_load` takes.
+/// Small enough for Miri (#458): a loaded index whose second checkpoint claims a next
+/// acceptable frame number of 13. A read from frame 0 resumes at the first, before it, and
+/// its scan's checkpoints do not continue it: `sb_track_audio_absorb` refuses them with
+/// the index unchanged, so that it still saves to bytes `sb_seek_index_load` takes. (The
+/// first checkpoint, at the area's first sector, can't claim it: loading requires `a` 0
+/// there, #461.)
 #[test]
 fn absorb_refuses_checkpoints_that_do_not_continue_a_forged_one() {
     let bytes = small_image(5);
     let disc = open(&bytes);
     let index = index_new(disc, 0, 1).unwrap();
     extend(disc, index, 0).unwrap();
+    extend(disc, index, 0).unwrap();
     let mut forged = save(index);
     index_free(index);
-    // One checkpoint (offset 36), its `a` at offset 80; then the checksum again.
-    assert_eq!(forged[36..40], 1u32.to_le_bytes());
-    forged[80..84].copy_from_slice(&13u32.to_le_bytes());
+    // Two checkpoints (offset 36), the second's `a` at offset 104; then the checksum again.
+    assert_eq!(forged[36..40], 2u32.to_le_bytes());
+    forged[104..108].copy_from_slice(&13u32.to_le_bytes());
     let body = forged.len() - 8;
     let sum = forged[..body]
         .iter()
@@ -1142,6 +1145,39 @@ fn absorb_refuses_checkpoints_that_do_not_continue_a_forged_one() {
     assert!(last_error().contains("differ from the seek index"), "{}", last_error());
     audio_free(a);
     assert_eq!(save(index), forged);
+    index_free(index);
+    free(disc);
+}
+
+/// Small enough for Miri (#461): `sb_seek_index_load` refuses a checkpoint whose malformed
+/// count is not that of the malformed sectors kept below it (every sector of this area is
+/// malformed: checkpoint 2 counts 2, made 1), and a first checkpoint whose next acceptable
+/// frame number is not 0 (#458's forgery), with `SB_STATUS_INVALID_ARGUMENT`; the bytes as
+/// saved load.
+#[test]
+fn load_refuses_checkpoints_that_disagree_with_the_index() {
+    let bytes = small_image(5);
+    let disc = open(&bytes);
+    let index = index_new(disc, 0, 1).unwrap();
+    while !extend(disc, index, 1000).unwrap() {}
+    let saved = save(index);
+    index_free(index);
+    let resum = |b: &mut Vec<u8>| {
+        let body = b.len() - 8;
+        let sum = b[..body]
+            .iter()
+            .fold(0xcbf2_9ce4_8422_2325u64, |h, &x| (h ^ u64::from(x)).wrapping_mul(0x0100_0000_01b3));
+        b[body..].copy_from_slice(&sum.to_le_bytes());
+    };
+    // Checkpoint 2's malformed count, after its `a` and `c - r`; checkpoint 0's `a`.
+    for (at, from, to) in [(80 + 2 * 24 + 8, 2u8, 1u8), (80, 0, 13)] {
+        let mut forged = saved.clone();
+        assert_eq!(forged[at], from, "offset {at}");
+        forged[at] = to;
+        resum(&mut forged);
+        assert_eq!(load(disc, 0, &forged).err(), Some(SbStatus::InvalidArgument), "offset {at}");
+    }
+    let index = load(disc, 0, &saved).unwrap();
     index_free(index);
     free(disc);
 }

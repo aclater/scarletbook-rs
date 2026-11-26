@@ -289,16 +289,17 @@ impl AreaIndex {
     /// The checks: the format and version; the key (the area's slot, audio sector range
     /// and channel count, and the image's sector count); every count against the area's
     /// size; each checkpoint against the ones before (`a` and the malformed count never
-    /// decrease, `a` at most 1 166 881, no frame under assembly starting before the area);
+    /// decrease, `a` 0 at the area's first sector and at most 1 166 881, no frame under
+    /// assembly starting before the area);
     /// each stored frame under assembly (buffers of at most 65 536 bytes in all within the
     /// inline budget, by increasing start sector inside the area; each referred to by
     /// checkpoints that have a frame under assembly starting there, with lengths that
     /// never decrease and the same frame number and kind); the malformed LSNs (increasing, below the frontier,
-    /// as many as the count says up to 4096); a damage record, if saved (#441: at most 4096
+    /// as many below each checkpoint and the end as their counts say, up to 4096); a damage record, if saved (#441: at most 4096
     /// runs, increasing and apart inside the area; checkpoints on the interval's boundaries
     /// outside every run, each after at least one, with `a` and the malformed count never
     /// decreasing and the frame under assembly starting after the last run before it; its
-    /// malformed LSNs as for the checkpoints); and the trailing checksum. Whether the index
+    /// malformed LSNs as for the index's checkpoints); and the trailing checksum. Whether the index
     /// is of this very image is checked as it is used (see the [module
     /// documentation](super#trust)).
     ///
@@ -414,7 +415,10 @@ impl AreaIndex {
             };
             let (a, ma) =
                 checkpoints.last().map_or((0, 0), |p: &Checkpoint| (p.next_acceptable, p.malformed_before));
+            // `a` starts at 0 for the area (specification 4, 4.5): so does the state at its
+            // first sector (#461).
             if c.next_acceptable < a
+                || (j == 0 && c.next_acceptable != 0)
                 || c.next_acceptable > MAX_NEXT_ACCEPTABLE
                 || c.malformed_before < ma
                 || c.malformed_before > j * k
@@ -506,6 +510,13 @@ impl AreaIndex {
                 return Err(bad("seek index malformed LSNs invalid"));
             }
             malformed.push(lsn);
+        }
+        // Each checkpoint counts the malformed sectors kept below it (#461): a scan counts
+        // and keeps them together, and a cursor resuming at one takes both.
+        let at =
+            index.checkpoints.iter().enumerate().map(|(j, c)| (index.checkpoint_lsn(j), c.malformed_before));
+        if !AreaIndex::malformed_fit(&malformed, at, frontier, counted) {
+            return Err(bad("seek index malformed LSNs invalid"));
         }
         if version >= VERSION_HINTS {
             let fingerprint = input.u64()?;
@@ -681,8 +692,8 @@ impl AreaIndex {
 /// the area; checkpoints on the index's boundaries, by increasing LSN, each after at least
 /// one run and outside every run, with `a` and the malformed count never decreasing, its
 /// frame under assembly starting after the last run before it and its lost stretch at
-/// most `a`; the malformed LSNs as many as the last checkpoint counts (up to 4096),
-/// increasing and below it.
+/// most `a`; the malformed LSNs increasing, below the last checkpoint, and as many below
+/// each checkpoint as it counts (up to 4096).
 fn load_damage(input: &mut Input<'_>, index: &AreaIndex) -> Result<Damage, Error> {
     let invalid = || bad("seek index damage record invalid");
     let (r, d, m) = (input.u32()? as usize, input.u32()? as usize, input.u32()? as usize);
@@ -758,6 +769,11 @@ fn load_damage(input: &mut Input<'_>, index: &AreaIndex) -> Result<Damage, Error
             return Err(invalid());
         }
         malformed.push(lsn);
+    }
+    // Each checkpoint counts the malformed sectors kept below it, as for the index's (#461).
+    let at = checkpoints.iter().map(|c| (c.lsn, c.checkpoint.malformed_before));
+    if !AreaIndex::malformed_fit(&malformed, at, last.0, last.1) {
+        return Err(invalid());
     }
     Ok(Damage { runs, checkpoints, malformed })
 }

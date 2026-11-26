@@ -121,10 +121,10 @@ impl Damage {
     /// the malformed count never decrease along a scan (specification 4, 4.5 item 1), so
     /// such a record is not of a scan of these bytes (a loaded record can be forged), and
     /// the joined record would save to bytes that loading refuses. For the same reason it
-    /// joins nothing whose malformed sectors are not those its last checkpoint counts
-    /// (#461): a scan's malformed count and its warnings grow together, but a cursor that
-    /// resumed from a forged checkpoint (an index's or a record's whose count is not that
-    /// of the malformed sectors kept below it) carries both as they were forged.
+    /// joins nothing whose checkpoints do not each count the malformed sectors the joined
+    /// record keeps below them (#461): a scan counts and keeps them together, but the
+    /// record kept and the one joined can be of scans that disagree (a loaded index
+    /// forged consistent, but not of this image).
     fn joins(
         &self,
         runs: &[(u64, u64)],
@@ -162,9 +162,12 @@ impl Damage {
         }
         let malformed: Vec<u32> =
             malformed.take_while(|&m| u64::from(m) < last).take(MAX_MALFORMED_WARNINGS).collect();
-        // The joined record's last checkpoint: the other's, or this one's last kept.
-        let end = checkpoints.get(from..).and_then(<[_]>::last).copied().or(prev)?;
-        if !counts(&malformed, end) {
+        // Every checkpoint of the joined record counts the malformed sectors it keeps below
+        // it, as loading requires.
+        let joined = || self.checkpoints[..kept].iter().chain(&checkpoints[from..]);
+        let end = joined().last()?;
+        let at = joined().map(|c| (c.lsn, c.checkpoint.malformed_before));
+        if !AreaIndex::malformed_fit(&malformed, at, end.lsn, end.checkpoint.malformed_before) {
             return None;
         }
         Some(Join { kept, from, malformed })
@@ -180,13 +183,6 @@ pub(crate) struct Join {
     from: usize,
     /// The joined record's malformed sectors.
     malformed: Vec<u32>,
-}
-
-/// Whether `malformed`, increasing, are the malformed sectors a record or index whose last
-/// checkpoint is `c` keeps: as many as it counts (up to [`MAX_MALFORMED_WARNINGS`]), all
-/// below it. Loading refuses any other (`persist`).
-fn counts(malformed: &[u32], c: DamageCheckpoint) -> bool {
-    AreaIndex::malformed_fit(malformed, c.checkpoint.malformed_before, c.lsn)
 }
 
 /// The runs of `runs` below `upto`, clipped to it.
