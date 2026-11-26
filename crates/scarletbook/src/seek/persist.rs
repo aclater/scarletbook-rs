@@ -603,7 +603,9 @@ impl AreaIndex {
     /// must agree, and the index then reaches the farther of the two frontiers. Frames
     /// under assembly beyond this index's inline budget are replayed instead. Damage
     /// records (see [Unreadable sectors](crate::seek#unreadable-sectors)) of the same marks
-    /// are joined; of other marks, this index's is kept if it has one.
+    /// are joined; of other marks, this index's is kept if it has one. A record whose
+    /// checkpoints do not continue this one's (a loaded record whose `a` or malformed count
+    /// is ahead of a scan's, #458) is not joined: this index's stays as it is.
     ///
     /// # Errors
     ///

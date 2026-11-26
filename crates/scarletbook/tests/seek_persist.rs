@@ -240,6 +240,127 @@ fn confirmations_beyond_the_saved_maximum_are_refused() {
     assert_eq!(loaded.to_bytes(), summed);
 }
 
+/// The FNV-1a (64-bit) checksum of saved bytes, rewritten after they were changed.
+fn resum(bytes: &mut [u8]) {
+    let body = bytes.len() - 8;
+    let sum = bytes[..body]
+        .iter()
+        .fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
+    bytes[body..].copy_from_slice(&sum.to_le_bytes());
+}
+
+/// Small enough for Miri (#458): merging never joins a loaded index's forged checkpoint
+/// with genuine ones. Checkpoints both indexes hold must be equal, so a merge takes all of
+/// one index's, which loading checked: here both orders are refused, the indexes
+/// unchanged; and an empty index takes the forged one whole, which saves as it loaded.
+#[test]
+fn merging_never_joins_a_forged_checkpoint() {
+    let (mut image, area) = harness::seek_area();
+    let n = image.sector_count();
+    let bytes = harness::with_checksum(include_bytes!(
+        "regressions/seek_index/crash-3e61048c68db8489411a14adbf2156488778f96e"
+    ));
+    let forged = AreaIndex::from_bytes(&area, n, &bytes, usize::MAX).unwrap();
+    let mut genuine = AreaIndex::new(&area, n, IndexOptions::new().with_interval(1)).unwrap();
+    while !genuine.extend(&mut image, 1000).unwrap() {}
+    let genuine_bytes = genuine.to_bytes();
+    let mut a = forged.clone();
+    assert!(matches!(a.merge(&genuine), Err(Error::InvalidArgument("seek indexes differ"))));
+    assert_eq!(a.to_bytes(), bytes);
+    let mut b = genuine.clone();
+    assert!(matches!(b.merge(&forged), Err(Error::InvalidArgument("seek indexes differ"))));
+    assert_eq!(b.to_bytes(), genuine_bytes);
+    // The forged index's inline budget, 1 GiB.
+    let options = IndexOptions::new().with_interval(1).with_inline_budget(1 << 30);
+    let mut empty = AreaIndex::new(&area, n, options).unwrap();
+    empty.merge(&forged).unwrap();
+    assert_eq!(empty.to_bytes(), bytes);
+}
+
+/// The damage record of saved bytes (#441): from its header to the checksum, found from
+/// the end, and the offset of its header.
+fn damage_record(bytes: &[u8]) -> (usize, &[u8]) {
+    let u = |o: usize| u32::from_le_bytes(bytes[o..o + 4].try_into().unwrap()) as usize;
+    let end = bytes.len() - 8;
+    let at = (80..end - 16)
+        .rev()
+        .find(|&o| {
+            let (r, d, m) = (u(o), u(o + 4), u(o + 8));
+            u(o + 12) == 0
+                && (1..64).contains(&r)
+                && (1..=64).contains(&d)
+                && m < 64
+                && o + 16 + 8 * r + 40 * d + 4 * m == end
+        })
+        .unwrap();
+    (at, &bytes[at..end])
+}
+
+/// Small enough for Miri (#458): a loaded damage record whose last checkpoint claims a
+/// larger `a` than its scan had. Reads from before it record a genuine scan's checkpoints
+/// past it, with a smaller `a`: neither absorbing them nor merging an index that holds them
+/// joins them to the forged one, so the record stays as loaded and the index saves to
+/// bytes that load. The genuine record takes the same reads and merge.
+#[test]
+fn damage_checkpoints_that_do_not_continue_a_forged_record_are_not_joined() {
+    let (mut image, area) = harness::seek_area();
+    let n = image.sector_count();
+    let p = area.playtime_frames();
+    let options = IndexOptions::new().with_interval(2);
+    let mut partial = AreaIndex::new(&area, n, options).unwrap();
+    while !partial.extend(&mut image, 1000).unwrap() {}
+    let mut full = partial.clone();
+    image.unreadable_sectors().insert(10, 1);
+    partial.extend_past_marks(&mut image, 6).unwrap();
+    while !full.extend_past_marks(&mut image, 64).unwrap() {}
+    let mut bytes = partial.to_bytes();
+    let (at, record) = damage_record(&bytes);
+    let (r, d) = (
+        u32::from_le_bytes(record[..4].try_into().unwrap()),
+        u32::from_le_bytes(record[4..8].try_into().unwrap()),
+    );
+    assert_eq!((r, d), (1, 2), "one run, two checkpoints");
+    // The last checkpoint's `a`, 2, made 19.
+    let a = at + 16 + 8 + 40 + 8;
+    assert_eq!(bytes[a..a + 4], 2u32.to_le_bytes());
+    bytes[a..a + 4].copy_from_slice(&19u32.to_le_bytes());
+    resum(&mut bytes);
+    let forged = AreaIndex::from_bytes(&area, n, &bytes, usize::MAX).unwrap();
+    let forged_record = damage_record(&bytes).1.to_vec();
+    let check = |index: &AreaIndex, what: &str| {
+        let saved = index.to_bytes();
+        let loaded = AreaIndex::from_bytes(&area, n, &saved, usize::MAX);
+        assert!(loaded.is_ok_and(|l| l.to_bytes() == saved), "{what}: saves to bytes that do not load");
+        damage_record(&saved).1.to_vec()
+    };
+    for start in [&forged, &partial] {
+        let mut copy = start.clone();
+        for first in [0, 5, p / 2] {
+            let mut c =
+                TrackCursor::open_range(&area, first, p, n, CursorOptions::new().with_index(start)).unwrap();
+            while let Some(f) = c.next_frame(&mut image) {
+                f.unwrap();
+            }
+            copy.absorb(&mut c).unwrap();
+        }
+        let absorbed = check(&copy, "absorbed");
+        let mut merged = start.clone();
+        merged.merge(&full).unwrap();
+        let merged = check(&merged, "merged");
+        if std::ptr::eq(start, &forged) {
+            assert_eq!(absorbed, forged_record, "a forged record took a scan's checkpoints");
+            assert_eq!(merged, forged_record, "a forged record took a merged index's checkpoints");
+        } else {
+            assert!(absorbed.len() > forged_record.len(), "the genuine record did not grow");
+            assert_eq!(
+                merged,
+                damage_record(&full.to_bytes()).1,
+                "the genuine record did not take the merge"
+            );
+        }
+    }
+}
+
 /// A DST sector starting frame `number` (sector count `count`) with a packet of `len`
 /// bytes.
 fn start_sector(number: u32, count: u8, len: u16) -> [u8; 2048] {

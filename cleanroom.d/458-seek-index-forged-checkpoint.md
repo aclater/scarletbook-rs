@@ -1,0 +1,1 @@
+| 2026-11-26 | seek index: checkpoints and damage checkpoints that do not continue a loaded index are not taken (#458) | specification 4, 4.5 item 1 (`a` never decreases) and 4.2 item 7 at sacd-spec `8519fad`; no technique added. No new sources consulted. |
