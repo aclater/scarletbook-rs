@@ -1,1 +1,0 @@
-| 2026-11-26 | seek index: loading checks each checkpoint's malformed count against the malformed sectors kept, and `a` = 0 at the area's first sector; joins keep both (#461) | specification 4, 4.5 (`a` starts at 0 for the area; it never decreases) at sacd-spec `8519fad`, and the crate's own load rules; no technique added. No new sources consulted. |
