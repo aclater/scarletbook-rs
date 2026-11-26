@@ -11,6 +11,22 @@ from 0.5.8).
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-11-26
+
+**1.3.1 is a bug-fix release: a seek index loaded from forged bytes can no longer be led to save bytes that loading refuses (#458, #459). There is no API or ABI change.** Rust code that builds against 1.3.0 builds against 1.3.1 with only the version changed; C programs need no change (`SB_ABI_VERSION` 2, the header is unchanged).
+
+- **Forged seek indexes (#458, #459).** `AreaIndex::from_bytes` checks a saved index for safety, not for truth, so a checkpoint can claim more than the scan it came from. When a loaded checkpoint claimed a frame (`a`) or malformed count ahead of what a later read's scan reached, `absorb`, `extend` and `extend_past_marks` took that read's checkpoints after it anyway, and `absorb`, `extend_past_marks` and `merge` did the same with the damage record's checkpoints. The index then held values that go down, which no scan produces (specification 4, 4.5 item 1), and `to_bytes` saved bytes that `from_bytes` refuses. Now `absorb`, `extend` and `extend_past_marks` (and `sb_track_audio_absorb`, `sb_raw_frames_absorb`) refuse such checkpoints with the existing `InvalidArgument` (`SB_STATUS_INVALID_ARGUMENT` in C), the error they already give for checkpoints that differ from the index, and leave the index unchanged. Damage checkpoints that don't continue the index's damage record are not joined by `absorb`, `extend_past_marks` or `merge`, and the record stays as it is. `merge` can't join forged checkpoints of the index itself: checkpoints both indexes hold must be equal, so it keeps one index's checkpoints, which loading checked.
+- **Who is affected.** Only indexes loaded from untrusted or forged bytes. An index built by the library, or saved by it and loaded back, never holds such a checkpoint, so it reads, absorbs, merges and saves exactly as in 1.3.0. Reads never returned wrong frames: 480 reads through indexes with a forged first checkpoint (six forged values, each with a wrong and with the true digest), before and after absorbing, all equalled the same reads without an index. The only symptom was a save that couldn't be loaded back. A forged checkpoint past the area's start whose digest matches can still steer reads, as documented before ("trusted for correctness, validated for safety"); this release doesn't change that.
+- **Found by fuzzing.** The `seek_index` fuzz target's new oracle (#457), which saves and loads every index it builds, caught the round trip failing during idle-time fuzzing. The 104-byte input is now a regression test.
+- **Maintenance.** The `seek_index` fuzz target now covers unreadable sectors and damage records: marked runs, a reader that reports a sector unreadable, damage records built ahead of the reads or by a first read, and indexes loaded from the input, with every range checked against a read without an index (#455, #457). The weekly external link check no longer reports Wiley and SIAM DOIs, which refuse automated clients, and treats 429 and 503 as "try later" rather than broken (#454, #456). Neither changes the library.
+- **Checked against 1.3.0:** `cargo semver-checks --baseline-rev v1.3.0 --release-type patch` finds no semver update required for `scarletbook` and `scarletbook-ffi` (default and all features). `abi-check.py` passes with `SB_ABI_VERSION` 2, and `abi/abi-2.txt` and the header are unchanged.
+- **No benchmark table.** The fix is a validity check on operations of persisted indexes (`absorb`, `extend`, `extend_past_marks`, `merge`), not on a hot path: nothing decodes, converts or reads differently. 1.0.0's table stands.
+- **Not measured:** timings (none taken), and indexes forged other than in the ways the tests and the fuzz target build.
+
+### Fixed
+
+- A seek index loaded with a forged checkpoint (its `a` or malformed count ahead of a scan's) no longer takes checkpoints that would leave it saving bytes `AreaIndex::from_bytes` refuses. `AreaIndex::absorb`, `extend` and `extend_past_marks` (and `sb_track_audio_absorb`, `sb_raw_frames_absorb`) now refuse a cursor's checkpoints that do not continue the index's last one, with `InvalidArgument` and the index unchanged. `absorb`, `extend_past_marks` and `merge` no longer join damage checkpoints that do not continue the index's damage record, and leave that record as it is. What reads through such an index return is unchanged. Found by fuzzing (#458, #459).
+
 ## [1.3.0] - 2026-11-25
 
 **1.3.0 makes reading past unreadable sectors cheaper: a seek index's state past marked sectors can be built ahead of the reads, so the first range past a new mark no longer has to scan the area from its start (#443).** It is a semver minor release: the Rust API of `scarletbook` and ABI 2 of the C library gain items, nothing is removed, and what reads return is unchanged. A disc with no unreadable sectors reads exactly as before. Rust code that builds against 1.2.0 builds against 1.3.0 with only the version changed; C programs need no change (`SB_ABI_VERSION` 2, and the header only gains declarations).
@@ -1271,7 +1287,8 @@ First release: a clean-room reader for SACD images, written from sacd-spec, pass
 - DST decoding about 3.8 times faster on one thread, and parallel decoding that overlaps
   demultiplexing with decoding within a bounded memory (#16, #17, #19).
 
-[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/aclater/scarletbook-rs/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/aclater/scarletbook-rs/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/aclater/scarletbook-rs/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/aclater/scarletbook-rs/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/aclater/scarletbook-rs/compare/v1.1.0...v1.1.1

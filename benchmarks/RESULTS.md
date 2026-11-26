@@ -64,6 +64,10 @@ In the run list, but not in every table:
   DSF and DSD to PCM are blank, unless an equivalent revision is compared instead (0.5.6
   below uses `3eb96dc` for 0.5.5).
 
+## 1.3.1
+
+Not timed. 1.3.1 fixes #458 (#459): a seek index loaded from forged bytes refuses, or does not join, checkpoints that do not continue its last one, so it never saves bytes that loading refuses. That is a validity check on operations of persisted seek indexes (`absorb`, `extend`, `extend_past_marks`, `merge`), not on a hot path; nothing decodes, converts or reads differently, and an index the library built takes the same checkpoints as in 1.3.0. The 1.0.0 section below stands for 1.3.1's throughput.
+
 ## 1.3.0
 
 Not timed. 1.3.0 changes where reads past unreadable sectors start (#443: #447, #449, #450) and adds calls that build the seek index's state past marked sectors ahead of the reads (`AreaIndex::extend_past_marks`, `Disc::extend_seek_index_past_marks` and their C counterparts, #451). These change how many sectors a reading past a mark reads, not how fast anything decodes or converts, and #447 measured that by read count: after one eager pass, the first 75-frame range past a new mark took 2 to 3 read calls instead of 49 to 178. With no sector marked, the output is unchanged (the existing tests and the conformance corpus pass unchanged). Timings with marks set are not measured. The 1.0.0 section below stands for 1.3.0's throughput.
